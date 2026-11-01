@@ -281,6 +281,7 @@ def test_the_phone_leaves_the_theme_alone_for_a_user_who_never_chose(app) -> Non
 
 
 def test_log_out_posts_to_the_logout_route_and_reloads(app) -> None:
+    app.js("window.primerApi.apiFetch = function (m, p) { LOG.fetches.push({ url: '/v1' + p, method: m }); return Promise.resolve({}); };")
     app.mount("NV_MobileProfileTheme")
     app.click("nv-mob-logout")
     assert app.data("LOG.fetches") == [{"url": "/v1/auth/logout", "method": "POST"}], (
@@ -289,13 +290,15 @@ def test_log_out_posts_to_the_logout_route_and_reloads(app) -> None:
     assert app.js("LOG.reloads") == 1, "the page reloads to land on the sign-in gate once the server has answered"
 
 
-def test_log_out_reloads_even_when_the_server_cannot_be_reached(app) -> None:
-    app.js("window.fetch = function (url, opts) { LOG.fetches.push({ url: url, method: opts && opts.method }); "
-           "return Promise.reject(new Error('offline')); };")
+def test_log_out_that_cannot_reach_the_server_says_so_and_stays(app) -> None:
+    """GU-12: a sign-out the server did not take is toasted, not reloaded as if it had worked (the phone stays signed in)."""
+    app.js("window.primerApi.apiFetch = function (m, p) { LOG.fetches.push({ url: '/v1' + p, method: m }); return Promise.reject({ status: 503, detail: 'offline' }); };"
+           "window.primerApi.readRefusal = function (e, fb) { return { message: e.detail || fb }; };"
+           "var TOASTS = []; __con.toast = function (m) { TOASTS.push(m); };")
     app.mount("NV_MobileProfileTheme")
     app.click("nv-mob-logout")
     assert len(app.data("LOG.fetches")) == 1
-    assert app.js("LOG.reloads") == 1, "a dead network must not leave the button doing nothing"
+    assert app.js("LOG.reloads") == 0 and app.data("TOASTS") == ["Couldn't sign out: offline"]
 
 
 # --- the platform list -------------------------------------------------------------------------------------------------------

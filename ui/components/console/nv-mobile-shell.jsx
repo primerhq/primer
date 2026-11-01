@@ -622,7 +622,7 @@ function NV_MobileSpaces(props) {
       <div className="nv-mob-sp-head">
         <h1 className="nv-mob-ib-h">Spaces</h1>
         {/* The command palette is the console's only search (workspaces, sessions, files, verbs); a phone has no keyboard chord for it. */}
-        <button type="button" className="nv-mob-search touch-target" data-testid="nv-mob-search"
+        <button type="button" className="nv-mob-search touch-target" data-testid="nv-mob-search" data-focus-home="true"
           aria-label="Search" title="Search"
           onClick={function () { if (con.paletteRef && con.paletteRef.current) con.paletteRef.current.open(); }}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
@@ -1242,12 +1242,7 @@ function NV_MobileProfileTheme() {
       </div>
       <button type="button" className="nv-btn-secondary nv-mob-logout touch-target"
         data-testid="nv-mob-logout"
-        onClick={function () {
-          fetch("/v1/auth/logout", { method: "POST" }).then(
-            function () { window.location.reload(); },
-            function () { window.location.reload(); }
-          );
-        }}>Log out</button>
+        onClick={function () { NV_signOut(con, "/auth/logout"); }}>Log out</button>
     </div>
   );
 }

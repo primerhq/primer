@@ -5,6 +5,48 @@
 
 var NV_FILE_EDIT_MAX_BYTES = 1024 * 1024;
 
+// GU-6: unsaved file drafts, keyed by workspace and path (the key of gap review GU-1). Each tab group renders only its active tab's document, so a
+// tab switch unmounts the file doc; a draft that lived in component state went with it. This map outlives the unmount, so the draft is there when
+// the tab comes back, and the tab bar reads it to mark a tab that holds one and to ask before closing it.
+var NV_FILE_DRAFTS = {};
+var NV_FILE_DRAFT_LISTENERS = [];
+function NV_fileDraftKey(wid, path) { return wid + ":" + path; }
+function NV_fileDraftGet(key) { return Object.prototype.hasOwnProperty.call(NV_FILE_DRAFTS, key) ? NV_FILE_DRAFTS[key] : null; }
+function NV_fileDraftSet(key, value) {
+  if (value == null) delete NV_FILE_DRAFTS[key]; else NV_FILE_DRAFTS[key] = value;
+  NV_FILE_DRAFT_LISTENERS.slice().forEach(function (fn) { fn(); });
+}
+// Re-renders the caller when any draft appears or goes; answers {dirty(path), confirmClose(tab)} for the current workspace.
+function NV_useFileDrafts() {
+  var con = NV_useConsole();
+  var tick = React.useState(0);
+  var bump = tick[1];
+  React.useEffect(function () {
+    var fn = function () { bump(function (n) { return n + 1; }); };
+    NV_FILE_DRAFT_LISTENERS.push(fn);
+    return function () { NV_FILE_DRAFT_LISTENERS = NV_FILE_DRAFT_LISTENERS.filter(function (f) { return f !== fn; }); };
+  }, []);
+  return {
+    dirty: function (path) { return NV_fileDraftGet(NV_fileDraftKey(con.wid, path)) != null; },
+    confirmClose: function (tab) { return NV_confirmCloseTab(con.wid, tab); },
+  };
+}
+// Closing a file tab that holds a draft asks first; true when the tab may close (a "yes" drops the draft). Other tabs close without a question.
+async function NV_confirmCloseTab(wid, tab) {
+  if (!tab || tab.kind !== "file") return true;
+  var key = NV_fileDraftKey(wid, tab.ref);
+  if (NV_fileDraftGet(key) == null) return true;
+  var ok = await window.confirmDialog({
+    title: "Discard unsaved changes",
+    message: tab.ref + " has changes that are not saved. Closing the tab discards them.",
+    confirmLabel: "Discard", danger: true,
+  });
+  if (ok) NV_fileDraftSet(key, null);
+  return !!ok;
+}
+window.NV_useFileDrafts = NV_useFileDrafts;
+window.NV_confirmCloseTab = NV_confirmCloseTab;
+
 function NV_FileDoc(props) {
   var con = NV_useConsole();
   var path = props.path;
@@ -13,9 +55,16 @@ function NV_FileDoc(props) {
     function (signal) { return SH_api.fileRead(con.wid, path, signal); },
     { pollMs: 0, deps: [con.wid, path] }
   );
-  var draftState = React.useState(null);
+  var draftKey = NV_fileDraftKey(con.wid, path);
+  var draftState = React.useState(function () { return NV_fileDraftGet(draftKey); });
   var draft = draftState[0];
-  var setDraft = draftState[1];
+  var setDraftState = draftState[1];
+  // The map is the draft's home (it outlives this component); the state only re-renders it. Accepts a value or an updater, like a state setter.
+  function setDraft(next) {
+    var value = typeof next === "function" ? next(NV_fileDraftGet(draftKey)) : next;
+    NV_fileDraftSet(draftKey, value);
+    setDraftState(value);
+  }
   var conflictState = React.useState(false);
   var conflict = conflictState[0];
   var setConflict = conflictState[1];

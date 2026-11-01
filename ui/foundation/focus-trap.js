@@ -157,14 +157,32 @@
     if (traps.length === 0) document.removeEventListener("keydown", onDocumentKeyDown);
   }
 
+  // GU-11: an overlay opened from the palette captures the palette's input as its opener, and the palette leaves the page in the same batch, so on
+  // close the opener is gone. The fallback is the opener of the dialog that held focus at that moment (the element focused before the palette
+  // opened), and after it the page's focus home (the palette button, marked data-focus-home).
+  function isLive(el) {
+    return !!el && typeof el.focus === "function" && document.contains(el);
+  }
+  function openerOfTrapHolding(el) {
+    if (!el) return null;
+    let held = null;
+    traps.forEach((t) => { if (t.node.contains(el) && (!held || t.order > held.order)) held = t; });
+    return held ? held.opener : null;
+  }
+  function focusHome() {
+    return typeof document.querySelector === "function" ? document.querySelector("[data-focus-home]") : null;
+  }
+
   // `deps` re-attaches the trap when the dialog's DOM node is replaced (Modal swaps its desktop and phone trees).
   function useFocusTrap(ref, active, opts, deps) {
     const o = opts || {};
     const openerRef = React.useRef(null);
+    const fallbackRef = React.useRef(null);
     const wasActiveRef = React.useRef(false);
     const orderRef = React.useRef(0);
     if (active && !wasActiveRef.current && typeof document !== "undefined") {
       openerRef.current = document.activeElement;
+      fallbackRef.current = openerOfTrapHolding(document.activeElement);
       orderRef.current = ++nextOrder;
     }
     wasActiveRef.current = !!active;
@@ -173,7 +191,7 @@
       if (!active) return undefined;
       const node = ref.current;
       if (!node) return undefined;
-      const trap = { node, order: orderRef.current, lost: null };
+      const trap = { node, order: orderRef.current, lost: null, opener: openerRef.current };
       // registered BEFORE the first focus move, so the focus the trap gives the dialog is remembered too
       const onFocusIn = (e) => { if (e.target && e.target !== node) remember(trap, e.target); };
       node.addEventListener("focusin", onFocusIn);
@@ -193,8 +211,8 @@
         removeTrap(trap);
         node.removeEventListener("keydown", onKeyDown);
         node.removeEventListener("focusin", onFocusIn);
-        const opener = openerRef.current;
-        if (opener && typeof opener.focus === "function" && document.contains(opener)) opener.focus();
+        const target = [openerRef.current, fallbackRef.current].find(isLive) || focusHome();
+        if (target) target.focus();
       };
     }, [active].concat(deps || []));
   }
