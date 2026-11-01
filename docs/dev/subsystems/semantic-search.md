@@ -267,10 +267,7 @@ Vector data is physically persisted by the SSP backend:
   `meta` is a JSON string because Arrow has no open-ended struct type. `put()`
   upserts via `merge_insert` on `(document_id, chunk_id)` and lazily builds an ANN
   index (trying `HnswSq` -> `HnswPq` -> `IvfPq`) once row count crosses
-  `index_min_rows`. A known quirk: LanceDB 0.30.2 returns squared L2 distance even
-  for a `cosine` catalogue entry, so `_similarity()` recovers cosine as
-  `1 - raw/2`, which is correct only because upstream embedders L2-normalise their
-  vectors.
+  `index_min_rows`. Every query names the collection's own metric (`distance_type`), so a `cosine` collection ranks and scores by exact cosine whatever the vectors' norm and whether or not the index exists, and `_similarity()` maps the returned distance (`1 - cos`, squared L2, `1 - <a, b>`) to a score that does not shift when the index is built (KN-11, D4: Lance scores moved from `1 - raw/2` of an L2 distance to true cosine). A table with no catalogue row (a crash between the create and the catalogue insert) is replaced by the next `create_collection` (KN-14). A `PgVectorStore` whose cached catalogue entry went stale (another process re-created the collection, perhaps at another width) evicts it and resolves once more instead of failing until restart (KN-18).
 
 The provider rows, cross-encoder rows, and internal-collections singletons persist
 through the generic `Storage[T]` interface with no special semantics.

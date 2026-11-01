@@ -26,6 +26,7 @@ run non-blocking to readers and writers.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -557,6 +558,44 @@ class PgVectorStoreProvider(VectorStoreProvider):
 # ===========================================================================
 
 
+class _DimensionMismatch(BadRequestError):
+    """A vector's width differs from the (cached) collection's: either the caller is wrong, or another process re-created the collection at another width."""
+
+
+def _collection_ids(args: tuple[Any, ...], kwargs: dict[str, Any]) -> set[str]:
+    """The collection ids a store call names: a record's, a batch's, or the first argument."""
+    first = args[0] if args else kwargs.get("record") or kwargs.get("records") or kwargs.get("collection_id")
+    if isinstance(first, str):
+        return {first}
+    if isinstance(first, list):
+        return {r.collection_id for r in first}
+    cid = getattr(first, "collection_id", None)
+    return {cid} if isinstance(cid, str) else set()
+
+
+def _recreated_elsewhere(method: Any) -> Any:
+    """Run a store call; if it fails because this process's cached catalogue entry is stale, evict it and run the call once more (KN-18).
+
+    Another process may drop and re-create a collection (here the table name is a function of the id, so it comes back under the same name, perhaps at
+    another width). This process then holds the old width, or the table is briefly missing: ``_DimensionMismatch`` or an undefined-table error. One
+    re-resolve against the catalogue row decides it; a caller that is really wrong gets the same error the second time.
+    """
+
+    @functools.wraps(method)
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await method(self, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            cause = getattr(exc, "cause", None) or exc.__cause__
+            if not (isinstance(exc, _DimensionMismatch) or isinstance(cause, asyncpg.UndefinedTableError)):
+                raise
+            for collection_id in _collection_ids(args, kwargs):
+                self._collections.pop(collection_id, None)
+            return await method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class PgVectorStore(VectorStore):
     """pgvector-backed :class:`VectorStore` with per-collection HNSW tables.
 
@@ -759,10 +798,11 @@ class PgVectorStore(VectorStore):
 
     # ---------- put / search / search_by_meta / get / delete --------------
 
+    @_recreated_elsewhere
     async def put(self, record: EmbeddingRecord) -> None:
         meta = await self._resolve(record.collection_id)
         if len(record.vector) != meta.dimensions:
-            raise BadRequestError(
+            raise _DimensionMismatch(
                 f"vector dimensionality {len(record.vector)} does not match "
                 f"collection {record.collection_id!r} dimensions={meta.dimensions}"
             )
@@ -795,6 +835,7 @@ class PgVectorStore(VectorStore):
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
+    @_recreated_elsewhere
     async def put_many(self, records: list[EmbeddingRecord]) -> None:
         """One transaction and one ``executemany`` per collection (validated first, so a bad row writes nothing)."""
         by_collection: dict[str, list[EmbeddingRecord]] = {}
@@ -804,7 +845,7 @@ class PgVectorStore(VectorStore):
             meta = await self._resolve(collection_id)
             for record in batch:
                 if len(record.vector) != meta.dimensions:
-                    raise BadRequestError(
+                    raise _DimensionMismatch(
                         f"vector dimensionality {len(record.vector)} does not match "
                         f"collection {collection_id!r} dimensions={meta.dimensions}"
                     )
@@ -830,6 +871,7 @@ class PgVectorStore(VectorStore):
             except Exception as exc:
                 raise self._wrap_db_error(exc) from exc
 
+    @_recreated_elsewhere
     async def list_chunk_texts(
         self, collection_id: str, document_id: str | None = None,
     ) -> list[tuple[str, str, str, str | None]]:
@@ -843,6 +885,7 @@ class PgVectorStore(VectorStore):
             raise self._wrap_db_error(exc) from exc
         return [(r["document_id"], r["chunk_id"], r["text"], r["embedder"]) for r in rows]
 
+    @_recreated_elsewhere
     async def search(
         self,
         collection_id: str,
@@ -854,7 +897,7 @@ class PgVectorStore(VectorStore):
 
         meta = await self._resolve(collection_id)
         if len(vector) != meta.dimensions:
-            raise BadRequestError(
+            raise _DimensionMismatch(
                 f"query vector dimensionality {len(vector)} does not match "
                 f"collection {collection_id!r} dimensions={meta.dimensions}"
             )
@@ -902,6 +945,7 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    @_recreated_elsewhere
     async def search_by_meta(
         self,
         collection_id: str,
@@ -935,6 +979,7 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    @_recreated_elsewhere
     async def count_documents(self, collection_id: str) -> int:
         col = await self._resolve(collection_id)
         # Distinct-document count over the whole namespace: the same row
@@ -952,6 +997,7 @@ class PgVectorStore(VectorStore):
 
         return int(row["count"])
 
+    @_recreated_elsewhere
     async def get(
         self,
         collection_id: str,
@@ -981,6 +1027,7 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    @_recreated_elsewhere
     async def delete(
         self,
         collection_id: str,
