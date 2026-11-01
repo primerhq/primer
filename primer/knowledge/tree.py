@@ -42,6 +42,10 @@ class TreeReadResult(BaseModel):
     children: list[TreeNode]
 
 
+class _Moved(Exception):
+    """The row moved between update's read and its write."""
+
+
 def _new_document_id() -> str:
     return Document(collection_id="_", slug="x", path="x").id
 
@@ -160,19 +164,29 @@ class DocumentTreeService:
     async def update(self, *, collection_id: str, path: str,
                      body: str | None = None, title: str | None = None,
                      meta: dict[str, Any] | None = None) -> Document:
-        doc = await self.resolve(collection_id=collection_id, path=path)
-        updated = doc.model_copy(update={
-            "title": doc.title if title is None else title,
-            "meta": doc.meta if meta is None else meta,
-            "updated_at": _utcnow(),
-        })
-        async with self._sp.transaction() as conn:
-            await self._docs.update(updated, conn=conn)
-            if body is not None:
-                await self._content.upsert(
-                    document_id=doc.id, collection_id=collection_id,
-                    path=doc.path, content=body, conn=conn,
-                )
+        fields: dict[str, Any] = {"updated_at": _utcnow()}
+        if title is not None:
+            fields["title"] = title
+        if meta is not None:
+            fields["meta"] = meta
+        while True:
+            doc = await self.resolve(collection_id=collection_id, path=path)
+            patch = doc.model_copy(update=fields).model_dump(mode="json", include=set(fields))
+            try:
+                async with self._sp.transaction() as conn:
+                    # Content first, the order move() takes its rows in; the guarded patch then writes only these fields, and only while
+                    # the row still sits at the path read, so a move that committed meanwhile is never reverted (KN-19f).
+                    if body is not None:
+                        await self._content.upsert(
+                            document_id=doc.id, collection_id=collection_id,
+                            path=doc.path, content=body, conn=conn,
+                        )
+                    updated = await self._docs.patch_if(doc.id, patch, where={"path": [doc.path]}, conn=conn)
+                    if updated is None:
+                        raise _Moved  # rolls the content write back
+                break
+            except _Moved:
+                continue  # answer as if the move ran first: resolve the path again
         if body is not None and self._indexer is not None:
             await self._indexer(document=updated, content=body)
         return updated
