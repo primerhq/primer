@@ -1,5 +1,6 @@
 """The shared live probe for artifact-storage provider rows."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -110,3 +111,45 @@ async def test_a_root_that_cannot_be_prepared_names_prepare(sp, tmp_path: Path) 
 
 async def test_prepare_on_a_database_row_is_a_plain_probe(sp) -> None:
     assert await probe_artifact_provider(_row(), storage_provider=sp, prepare=True) == ArtifactProbeResult(ok=True)
+
+
+class _SilentAfterPut(MemStore):
+    """An endpoint that takes the write and then never answers (a black-holed or silent server), cleanup included."""
+
+    async def get(self, artifact_id: str):
+        await asyncio.Event().wait()
+
+    async def delete(self, artifact_id: str) -> None:
+        await asyncio.Event().wait()
+
+
+class _SilentPut(MemStore):
+    async def put(self, *, data: bytes, mime_type: str, filename: str | None = None) -> str:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.parametrize("store_cls,step", [(_SilentPut, "put"), (_SilentAfterPut, "get")])
+async def test_a_silent_endpoint_fails_the_probe_at_its_step_within_the_bound(sp, monkeypatch, store_cls, step) -> None:
+    """GX-15: Test and the active-store selection ran the probe inline with the client's retries, so a silent endpoint held the request for
+    minutes. The probe is bounded, its cleanup too, and the timeout is reported as the step that hung."""
+    import time
+
+    monkeypatch.setattr("primer.artifact.probe.PROBE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr("primer.artifact.probe.CLEANUP_TIMEOUT_S", 0.1)
+    store = store_cls()
+    started = time.monotonic()
+    result = await probe_artifact_provider(_row(), storage_provider=sp, build=lambda row, storage_provider: store)
+    assert time.monotonic() - started < 2
+    assert (result.ok, result.step) == (False, step)
+    assert "no answer within 0.2s" in result.error
+    assert store.closed
+
+
+async def test_a_store_raising_its_own_timeout_error_is_reported_as_that_error(sp) -> None:
+    class _Raises(MemStore):
+        async def put(self, *, data: bytes, mime_type: str, filename: str | None = None) -> str:
+            raise TimeoutError("socket timed out")
+
+    result = await probe_artifact_provider(_row(), storage_provider=sp, build=lambda row, storage_provider: _Raises())
+    assert (result.ok, result.step, result.error) == (False, "put", "TimeoutError: socket timed out")

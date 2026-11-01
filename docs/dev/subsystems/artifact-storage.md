@@ -231,7 +231,9 @@ of #890).
 
 **Switching** (`set_active_artifact_store`, behind `PUT /v1/artifact_storage_active_config` and `system::set_active_artifact_store`): read
 the provider (422 `unknown_provider_id` when there is none), probe it (`probe_artifact_provider`: build, initialize, put a probe object,
-read it back, delete it; 422 `artifact_store_unusable` with the failing `step`), read it again, and write the selection with a
+read it back, delete it; 422 `artifact_store_unusable` with the failing `step`; the steps share a 20 s bound (`PROBE_TIMEOUT_S`, GX-15), so a
+silent endpoint fails at the step that hung with `no answer within 20s` instead of holding the request for the client's retries, and the
+cleanup after a failure is bounded too), read it again, and write the selection with a
 compare-and-set against the selection read before the probe (`patch_if_checked`; a create for the first selection). A provider deleted
 during the probe (409 `artifact_store_deleted`), or a selection of another provider someone else wrote meanwhile (409
 `active_artifact_store_changed`), leaves the selection unchanged; a selection of the same provider written meanwhile is the answer (a 200).
