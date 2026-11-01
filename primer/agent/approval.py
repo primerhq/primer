@@ -327,7 +327,9 @@ class ApprovalResolver:
         self._ttl = cache_ttl_seconds
         # Cache value layout: (expires_at_monotonic, policy_or_None)
         self._cache: dict[tuple[str, str], tuple[float, ToolApprovalPolicy | None]] = {}
-        self._lock = asyncio.Lock()
+        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._refreshing: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._generation = 0  # bumped by every invalidate, so a read that started before it never refills the cache
         self._invalidation_bus: "InvalidationBus | None" = None
         self._invalidation_sub: Any = None
 
@@ -344,26 +346,52 @@ class ApprovalResolver:
         key = (toolset_id, tool_name)
         now = time.monotonic()
         cached = self._cache.get(key)
-        if cached is not None and cached[0] > now:
+        if cached is not None:
+            if cached[0] <= now:
+                # Expired: serve the last answer now and refresh in the background, so the turn that finds a TTL edge does not wait on the
+                # database (an edit still reaches the gate at once through ``invalidate``, which drops the entry instead of letting it go stale).
+                self._refresh_in_background(key, toolset_id, tool_name)
             return cached[1]
-        async with self._lock:
+        # Nothing cached: one read per key at a time; other keys do not wait for it.
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
             cached = self._cache.get(key)
-            if cached is not None and cached[0] > now:
+            if cached is not None:
                 return cached[1]
-            # One read per spelling (one, for a toolset with no retired id), each the same lookup as always, so a backend needs no new operator. Keyed by id: a row is
-            # one policy however many of the reads returned it (a storage that ignores the predicate returns it every time).
-            candidates: dict[str, ToolApprovalPolicy] = {}
-            for spelling in toolset_id_spellings(toolset_id):
-                page = await self._storage.find(
-                    _policy_predicate(spelling, tool_name), OffsetPage(offset=0, length=_CANDIDATES),
-                )
-                candidates.update((row.id, row) for row in page.items)
-            policy = _choose_policy(list(candidates.values()), toolset_id=toolset_id, tool_name=tool_name)
-            self._cache[key] = (now + self._ttl, policy)
-            return policy
+            return await self._load(key, toolset_id, tool_name)
+
+    async def _load(self, key: tuple[str, str], toolset_id: str, tool_name: str) -> ToolApprovalPolicy | None:
+        generation = self._generation
+        # One read per spelling (one, for a toolset with no retired id), each the same lookup as always, so a backend needs no new operator. Keyed by id: a row is
+        # one policy however many of the reads returned it (a storage that ignores the predicate returns it every time).
+        candidates: dict[str, ToolApprovalPolicy] = {}
+        for spelling in toolset_id_spellings(toolset_id):
+            page = await self._storage.find(
+                _policy_predicate(spelling, tool_name), OffsetPage(offset=0, length=_CANDIDATES),
+            )
+            candidates.update((row.id, row) for row in page.items)
+        policy = _choose_policy(list(candidates.values()), toolset_id=toolset_id, tool_name=tool_name)
+        if generation == self._generation:  # not if an invalidate landed while the read was out: that answer may predate the edit
+            self._cache[key] = (time.monotonic() + self._ttl, policy)
+        return policy
+
+    def _refresh_in_background(self, key: tuple[str, str], toolset_id: str, tool_name: str) -> None:
+        if key in self._refreshing:
+            return
+
+        async def _refresh() -> None:
+            try:
+                await self._load(key, toolset_id, tool_name)
+            except Exception:  # noqa: BLE001 - the stale answer stays until the next try
+                logger.warning("approval policy refresh for %s::%s failed", toolset_id, tool_name, exc_info=True)
+            finally:
+                self._refreshing.pop(key, None)
+
+        self._refreshing[key] = asyncio.get_running_loop().create_task(_refresh())
 
     def invalidate(self) -> None:
         """Drop the in-process cache; next lookup hits storage."""
+        self._generation += 1
         self._cache.clear()
 
     async def invalidate_everywhere(self) -> None:
