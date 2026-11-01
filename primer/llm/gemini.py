@@ -802,6 +802,19 @@ def _translate_chunk(
     if usage_metadata is not None:
         state.last_usage_metadata = usage_metadata
 
+    block_reason = getattr(getattr(chunk, "prompt_feedback", None), "block_reason", None)
+    if candidate is None and block_reason is not None:
+        # The prompt itself was blocked: no candidate will ever come, so end the turn as a content filter.
+        usage_event = _build_usage(state.last_usage_metadata)
+        prompt_tokens = getattr(state.last_usage_metadata, "prompt_token_count", None)
+        if usage_event is None and prompt_tokens is not None:
+            usage_event = Usage(input_tokens=prompt_tokens, output_tokens=0, cumulative=True)
+        if usage_event is not None:
+            out.append(usage_event)
+        reason_str = getattr(block_reason, "name", None) or str(block_reason)
+        out.append(Done(stop_reason="content_filter", raw_reason=f"prompt_blocked:{reason_str}"))
+        return out
+
     finish_reason = getattr(candidate, "finish_reason", None) if candidate else None
     if finish_reason is not None:
         # Final chunk: emit cumulative Usage + Done.
