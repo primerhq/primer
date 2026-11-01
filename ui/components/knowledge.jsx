@@ -137,10 +137,20 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
     { pollMs: null },
   );
 
+  // The last body this pane seeded the editor with: a re-read (the save
+  // refetch, an agent's write, the tab-wake refetch) re-seeds only when the
+  // path changed or the editor still holds exactly what was seeded. An
+  // unsaved edit is the operator's and the pane keeps it.
+  const seeded = React.useRef({ path: null, body: null });
+
   React.useEffect(() => {
     if (doc.data) {
-      setDraft(doc.data.body ?? "");
-      setTitle(doc.data.document?.title || "");
+      const body = doc.data.body ?? "";
+      if (path !== seeded.current.path || draft === seeded.current.body) {
+        setDraft(body);
+        setTitle(doc.data.document?.title || "");
+        seeded.current = { path: path, body: body };
+      }
     }
   }, [doc.data, path]);
 
@@ -164,6 +174,9 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
         `/collections/${encodeURIComponent(cid)}/docs?path=${encodeURIComponent(path)}`,
         { body: draft, title: title || null },
       );
+      // The cache still holds the pre-save body; bring it to the saved
+      // body now so a later wake refetch lands nothing new.
+      doc.refetch();
       pushToast && pushToast({
         kind: "success", title: "Document saved", detail: path,
       });
@@ -272,6 +285,7 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
         <>
           <input
             className="input"
+            data-testid="kn-doc-title"
             value={title}
             placeholder="Title (defaults to the slug)"
             onChange={(e) => setTitle(e.target.value)}
@@ -281,6 +295,7 @@ function KN_DocumentPane({ collection, path, readOnly, ro, pushToast, onChanged,
           <textarea
             className="input mono"
             style={{ minHeight: 320 }}
+            data-testid="kn-doc-body"
             value={draft ?? ""}
             onChange={(e) => setDraft(e.target.value)}
             disabled={ro && !readOnly}
