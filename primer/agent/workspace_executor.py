@@ -20,6 +20,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from contextlib import aclosing
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from primer.agent.base import _BaseAgentExecutor, refuse_compaction_summaries
@@ -84,6 +85,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         turn_no: int | None = None,
         tool_calls_as_claims_enabled: bool = False,
         workspace_instructions: str | None = None,
+        memory_parts: Sequence[str] = (),
+        memory_index: str = "",
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
@@ -101,6 +104,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             *agent.system_prompt,
             session.system_prompt_fragment,
             *workspace_instructions_parts(agent, workspace_instructions),
+            *memory_parts,
         ]
         composite_agent = agent.model_copy(
             update={"system_prompt": composite_system_prompt}, deep=True,
@@ -123,6 +127,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             session_id=session.session_id,
             principal=principal,
             identity=identity,
+            memory_index=memory_index,
         )
         # Trailing :class:`Done.stop_reason` from the most recent
         # :meth:`invoke` call. ``None`` until the first invoke completes.
