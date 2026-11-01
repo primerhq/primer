@@ -678,6 +678,15 @@ class LocalStateRepo:
             return None
         return await asyncio.to_thread(target.read_bytes)
 
+    async def stat_state_file(self, path: str) -> tuple[int, int] | None:
+        """``(size, mtime_ns)`` of a file under ``.state/``, or ``None`` when it is absent: a cheap way to tell that a file read before is unchanged."""
+        _validate_relative_path(path)
+        try:
+            info = await asyncio.to_thread((self._path / path).stat)
+        except FileNotFoundError:
+            return None
+        return info.st_size, info.st_mtime_ns
+
     # ---- internals -------------------------------------------------------
 
     def _repo_relative(self, p: Path) -> str:
