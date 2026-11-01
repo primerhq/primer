@@ -50,7 +50,7 @@ from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.common.context_overflow import is_context_overflow
 from primer.common.log import redact_credentials
 from primer.llm._reasoning import profile_extended, profile_stream
-from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
+from primer.llm._tokenizer.char_fallback import _estimate_part, count_tokens_char_fallback
 from primer.model.chat import (
     CompactionSummary,
     Error,
@@ -724,18 +724,8 @@ class CompactionStrategy:
 
     @staticmethod
     def _estimate_part_tokens(part: Part) -> int:
-        if isinstance(part, TextPart):
-            return -(-len(part.text) // 4)  # ceil division
-        if isinstance(part, ToolCallPart):
-            args_len = len(json.dumps(part.arguments, ensure_ascii=False))
-            return 50 + len(part.name) + -(-args_len // 4)
-        if isinstance(part, ToolResultPart):
-            return 20 + -(-len(part.output) // 4)
-        media = media_tokens(part)
-        if media is not None:
-            return media
-        # Unknown / future part -- be conservative.
-        return 200
+        # The same heuristic as the fallback counter (one definition, so the two cannot drift), memoised per call part.
+        return _estimate_part(part)
 
     # ---- Pruning tier -----------------------------------------------------
 
