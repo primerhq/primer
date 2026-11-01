@@ -91,7 +91,7 @@ from primer.model.turn_log import (
     TurnLogSuperstepStarted,
 )
 from primer.model.workspace_session import SessionStatus
-from primer.model.yield_ import ToolWaitPark, YieldToWorker, gate_id_of
+from primer.model.yield_ import ToolWaitPark, YieldToWorker, gate_id_of, wait_deadline
 from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
@@ -777,6 +777,7 @@ class _BaseGraphExecutor(
                         # the row the node wrote is still the one to answer, under the scoped id its first park stashed
                         scoped_tool_call_id=entry.scoped_tool_call_id,
                         row_call_id=entry.row_call_id,
+                        deadline=wait_deadline(yld.yielded.timeout),
                     )
                 )
                 continue
@@ -1008,6 +1009,7 @@ class _BaseGraphExecutor(
                             # (``_resume_agent_node``): not left to the drain's stash, which runs only with a tap. A new round's are
                             # looked up by that stash (its raw ids can repeat the old round's).
                             remaining_scoped_call_ids=dict(getattr(yld, "remaining_scoped_call_ids", None) or {}),
+                            deadline=wait_deadline(yld.yielded.timeout),
                         )
                     )
                     continue
@@ -1155,6 +1157,7 @@ class _BaseGraphExecutor(
                             ),
                             # Ticket 01a15327: the round the continued turn parked in, as its batch stamped it.
                             **ParkedRound.of_park(yld).stored_fields(),
+                            deadline=wait_deadline(yld.yielded.timeout),
                         )
                     )
                     continue

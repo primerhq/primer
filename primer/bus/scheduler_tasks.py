@@ -186,7 +186,7 @@ class TimerScheduler(_BackgroundTask):
     """Publishes empty events for timer parks whose deadline is due.
 
     Wakes the ``sleep`` tool (and any future timer-style yields) by
-    NOTIFY-ing the bus when the row's ``parked_until`` <= now. The
+    NOTIFY-ing the bus when the key's deadline <= now. The
     bus listener then flips the parked row to resumable; the worker
     pool wakes via ``session_ready`` and resumes the turn.
 
@@ -929,37 +929,37 @@ async def _iter_parks(scheduler: Any, prefix: str):
 
 
 async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
-    """Find ``timer:*`` parked event_keys whose deadline is due (all rows)."""
+    """Find the ``timer:*`` keys of parked sessions whose deadline is due (all rows).
+
+    Every key of a park is judged on its own deadline (GR-4, ``pending_key_deadlines``): a graph park's ``sleep`` that is not its primary key
+    fires too, at its own deadline.
+    """
+    from primer.session.pending_gates import pending_key_deadlines
+
     now = datetime.now(timezone.utc)
     return [
-        sess.parked_event_key
+        key
         async for sess in _iter_parked_sessions(session_storage)
-        if (
-            sess.parked_event_key is not None
-            and sess.parked_event_key.startswith("timer:")
-            and sess.parked_until is not None
-            and sess.parked_until <= now
-        )
+        for key, deadline in pending_key_deadlines(sess).items()
+        if key.startswith("timer:") and deadline <= now
     ]
 
 
 async def _find_expired_non_timer_keys(session_storage: Storage) -> list[str]:
-    """Find non-``timer:`` parked event_keys whose deadline elapsed (all rows).
+    """Find the non-``timer:`` keys of parked sessions whose deadline elapsed (all rows).
 
-    These are the parks whose external event never fired -- the
+    These are the waits whose external event never fired -- the
     sweeper publishes a timeout marker so the resume hook produces
-    a YieldTimeout result.
+    a YieldTimeout result. Each key on its own deadline, as above.
     """
+    from primer.session.pending_gates import pending_key_deadlines
+
     now = datetime.now(timezone.utc)
     return [
-        sess.parked_event_key
+        key
         async for sess in _iter_parked_sessions(session_storage)
-        if (
-            sess.parked_event_key is not None
-            and not sess.parked_event_key.startswith("timer:")
-            and sess.parked_until is not None
-            and sess.parked_until <= now
-        )
+        for key, deadline in pending_key_deadlines(sess).items()
+        if not key.startswith("timer:") and deadline <= now
     ]
 
 

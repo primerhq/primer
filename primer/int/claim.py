@@ -43,6 +43,10 @@ class ParkRequest:
     # Multi-event park: the full set of keys the session waits on (any one
     # firing wakes it). None for the common single-event park.
     parked_event_keys: list[str] | None = None
+    # A graph re-park (GR-3): the ``resume_event_payloads`` keys the resume that built it read from its claim-time row, all drained. The session
+    # adapter carries every OTHER entry whose key the new park still waits on (a reply accepted while the resume ran) and makes the row
+    # ``resumable``. None (every first park): nothing is carried.
+    drained_reply_keys: frozenset[str] | None = None
 
 
 #: Claim priorities (lower is claimed first). Three named values instead of scattered literals: a

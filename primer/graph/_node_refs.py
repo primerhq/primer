@@ -1010,6 +1010,9 @@ class _PendingToolCall:
     resume_metadata: dict[str, Any] = field(default_factory=dict)
     scoped_tool_call_id: str | None = None
     row_call_id: str | None = None
+    # GR-4: when the wait ends (ISO-8601, UTC; ``primer.model.yield_.wait_deadline``), stamped as the node parks. None for an entry
+    # restored from a checkpoint written before entries carried one: the next park stamps the cap from then.
+    deadline: str | None = None
 
 
 @dataclass
@@ -1054,6 +1057,8 @@ class _PendingAgentYield:
     completed_results: list[dict[str, Any]] = field(default_factory=list)
     remaining_calls: list[dict[str, Any]] = field(default_factory=list)
     remaining_scoped_call_ids: dict[str, str] = field(default_factory=dict)
+    # GR-4: when the wait ends, as ``_PendingToolCall.deadline``.
+    deadline: str | None = None
 
     @property
     def is_own_approval_gate(self) -> bool:

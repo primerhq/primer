@@ -1197,6 +1197,8 @@ class WorkerPool:
                 # engine to ever re-claim. Re-arm AFTER the release (once
                 # the old lease is actually gone) so a genuinely queued
                 # turn always gets a fresh claim.
+                if outcome.park is not None:
+                    await self._rearm_carried_reply(sid)
                 await self._maybe_rearm_session(sid)
 
     def _select_resume_handler(
@@ -1339,6 +1341,25 @@ class WorkerPool:
             if isinstance(in_flight, asyncio.CancelledError):
                 raise in_flight   # the cancel goes on: a TimeoutError would replace it, and its task metric label
             raise
+
+    async def _rearm_carried_reply(self, session_id: str) -> None:
+        """Re-arm the lease of a re-park that left the row ``resumable`` (GR-3).
+
+        The session adapter carries a reply accepted while the resume ran onto the new park and makes the row ``resumable``
+        (``SessionClaimAdapter._repark_carrying_replies``), but the release drops the lease that reply's flip armed. Re-armed here,
+        after the release, with the flip's own ``mark_resumable``; a RUNNING or WAITING row only, as ``_maybe_rearm_session``.
+        """
+        if self._storage is None:
+            return
+        try:
+            fresh = await self._storage.get_storage(WorkspaceSession).get(session_id)
+            if (
+                fresh is not None and fresh.parked_status == "resumable"
+                and fresh.status in (SessionStatus.RUNNING, SessionStatus.WAITING)
+            ):
+                await self._engine.mark_resumable(ClaimKind.SESSION, session_id)
+        except Exception:
+            logger.exception("_rearm_carried_reply: re-arming session %s failed", session_id)
 
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Re-arm a fresh SESSION claim lease if a turn is still queued.
