@@ -537,11 +537,13 @@ function KN_GrepBox({ collection, onJump }) {
   const [q, setQ] = React.useState("");
   const [pathPrefix, setPathPrefix] = React.useState("");
   const [res, setRes] = React.useState(null);
+  const [grepError, setGrepError] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
 
   const run = async () => {
     if (!q) return;
     setBusy(true);
+    setGrepError(null);
     try {
       const out = await apiFetch(
         "GET",
@@ -550,6 +552,11 @@ function KN_GrepBox({ collection, onJump }) {
         + (pathPrefix ? `&path_prefix=${encodeURIComponent(pathPrefix)}` : ""),
       );
       setRes(out);
+    } catch (err) {
+      // A 400 (an invalid regex) clears the previous hits and says why,
+      // instead of leaving them up with no error state (UI-L6).
+      setRes(null);
+      setGrepError(window.primerApi.readRefusal(err).message);
     } finally {
       setBusy(false);
     }
@@ -561,6 +568,7 @@ function KN_GrepBox({ collection, onJump }) {
         <input
           className="input mono"
           placeholder="grep (regex)"
+          data-testid="kn-grep-input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") run(); }}
@@ -572,8 +580,14 @@ function KN_GrepBox({ collection, onJump }) {
           value={pathPrefix}
           onChange={(e) => setPathPrefix(e.target.value)}
         />
-        <Btn icon="search" onClick={run} disabled={busy}>Grep</Btn>
+        <Btn icon="search" onClick={run} disabled={busy} data-testid="kn-grep-run">Grep</Btn>
       </div>
+      {grepError ? (
+        <div className="text-sm" data-testid="kn-grep-error"
+             style={{ color: "var(--red)" }}>
+          {grepError}
+        </div>
+      ) : null}
       {res ? (
         <div className="col" style={{ gap: 2 }}>
           {res.hits.length === 0 ? <div className="muted text-sm">No matches.</div> : null}
@@ -581,6 +595,7 @@ function KN_GrepBox({ collection, onJump }) {
             <a
               key={`${h.path}:${h.line}`}
               className="mono text-sm"
+              data-testid="kn-grep-hit"
               onClick={() => onJump(h.path, h.line)}
             >
               {h.path}:{h.line} — {h.excerpt}
