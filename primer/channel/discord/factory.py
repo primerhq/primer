@@ -17,7 +17,7 @@ from primer.channel.discord.views import (
     build_reject_modal,
     decode_custom_id_with_gate,
 )
-from primer.channel.adapter import refusal_notice
+from primer.channel.adapter import BoundedDict, refusal_notice
 from primer.channel.factory import register_adapter_factory
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
@@ -129,6 +129,10 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
     _HANDLERS_INSTALLED.add(provider_id)
+    # The reject modals opened on this connection, by custom id. discord.py hands a modal submit to the modal's on_submit
+    # AND to on_interaction, so the fallback below decides only a modal this connection did not open: one left open
+    # across a restart or a reconnect, which has no on_submit any more (W56c).
+    opened_modals = BoundedDict()
 
     async def _on_interaction(interaction: discord.Interaction):
         data = interaction.data or {}
@@ -238,14 +242,16 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             modal = build_reject_modal(
                 ws=ws, sid=sid, tcid=tcid, on_submit=_on_modal_submit, gate_id=gate_id,
             )
+            opened_modals[modal.custom_id] = True
             await interaction.response.send_modal(modal)
             return
 
-        # Modal-submit interactions arrive here too, but we use
-        # the modal's on_submit closure above to route them — so
-        # this branch only fires if something registers a modal
-        # WITHOUT a closure (shouldn't happen in this codebase).
-        if verb in (REJECT_MODAL_CUSTOM_ID_PREFIX, LEGACY_REJECT_MODAL_CUSTOM_ID_PREFIX) and adapter is not None:
+        # Modal-submit interactions arrive here too. One this connection opened is decided by its on_submit closure
+        # above; this branch decides only a modal with no closure (opened before a restart or a reconnect).
+        if (
+            verb in (REJECT_MODAL_CUSTOM_ID_PREFIX, LEGACY_REJECT_MODAL_CUSTOM_ID_PREFIX)
+            and adapter is not None and custom_id not in opened_modals
+        ):
             # Defensive fallback — pull reason from components.
             comps = interaction.data.get("components") or []
             reason = ""

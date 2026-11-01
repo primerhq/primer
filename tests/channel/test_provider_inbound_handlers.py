@@ -204,3 +204,27 @@ async def test_W56a_a_caption_mention_of_the_bot_counts():
     await tg_factory._route_channel_event(tg._bot_adapter(router), "p", msg)
 
     assert router.events[0].text == "\U0001F44B @MyBot look" and router.events[0].mentions_bot is True
+
+
+# ---- W56c: the Discord reject modal is decided once -------------------------------------------------------------------
+
+
+async def test_W56c_a_discord_reject_modal_submit_is_decided_once(monkeypatch):
+    adapter = dc._mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=True)
+    _, client = dc._install(monkeypatch, dc._FakeEntry({"100": adapter}))
+    click = dc._interaction(custom_id="reject:w:s:t", channel_id=100)
+    click.message = SimpleNamespace(content="gate", edit=AsyncMock())
+    await client.on_interaction(click)
+    modal = click.response.send_modal.await_args.args[0]
+
+    # discord.py hands a modal submit both to the modal it opened and to on_interaction.
+    submit = dc._interaction(custom_id=modal.custom_id, channel_id=100)
+    submit.data["components"] = [{"components": [{"custom_id": "reason", "type": 4, "value": "too risky"}]}]
+    modal.reason._value = "too risky"
+    await modal.on_submit(submit)
+    await client.on_interaction(submit)
+
+    adapter._handle_decision.assert_awaited_once()
+    assert adapter._handle_decision.await_args.kwargs["reason"] == "too risky"
+    click.message.edit.assert_awaited_once()
