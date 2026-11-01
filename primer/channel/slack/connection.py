@@ -42,8 +42,13 @@ class _Conn:
 def _build_app(cfg: SlackChannelProviderConfig) -> Any:
     """A slack_bolt AsyncApp for the bot token. Deferred import so module-import doesn't pay the cost."""
     from slack_bolt.async_app import AsyncApp
+    from slack_sdk.http_retry.builtin_async_handlers import AsyncRateLimitErrorRetryHandler
 
-    return AsyncApp(token=cfg.bot_token.get_secret_value())
+    app = AsyncApp(token=cfg.bot_token.get_secret_value())
+    # A 429 waits out its Retry-After and is sent again, twice at most; the default handlers retry connection errors
+    # only, so a rate-limited post was lost (W38).
+    app.client.retry_handlers.append(AsyncRateLimitErrorRetryHandler(max_retry_count=2))
+    return app
 
 
 def _build_app_and_handler(cfg: SlackChannelProviderConfig) -> Any:

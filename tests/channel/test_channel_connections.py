@@ -402,3 +402,57 @@ async def test_W37_a_slow_update_in_chat_a_does_not_delay_chat_b():
     finally:
         release_a.set()
         await asyncio.wait_for(asyncio.gather(a, b), timeout=5)
+
+
+# ---- W38: a 429 is retried --------------------------------------------------------------------------------------------
+
+
+async def test_W38_a_telegram_post_answered_429_once_is_retried_after_the_capped_delay(monkeypatch):
+    import telegram
+    from telegram.error import RetryAfter
+
+    from primer.channel.telegram import connection as tg_conn
+
+    monkeypatch.setattr(tg_conn, "_RETRY_AFTER_CAP_S", 0.01)
+    calls: list[str] = []
+
+    async def _do_post(self, endpoint, data, **_kw):
+        calls.append(endpoint)
+        if len(calls) == 1:
+            raise RetryAfter(30)
+        return {"message_id": 7, "date": 0, "chat": {"id": 1, "type": "private"}, "text": data.get("text")}
+
+    monkeypatch.setattr(telegram.Bot, "_do_post", _do_post)
+    app = tg_conn._build_application(TelegramChannelProviderConfig(bot_token=SecretStr(_TG_TOKEN)))
+    msg = await asyncio.wait_for(app.bot.send_message(chat_id=1, text="hi"), timeout=5)
+    assert msg.message_id == 7 and calls == ["sendMessage", "sendMessage"]
+
+
+async def test_W38_a_telegram_post_answered_429_twice_raises(monkeypatch):
+    import telegram
+    from telegram.error import RetryAfter
+
+    from primer.channel.telegram import connection as tg_conn
+
+    monkeypatch.setattr(tg_conn, "_RETRY_AFTER_CAP_S", 0.01)
+    calls: list[str] = []
+
+    async def _do_post(self, endpoint, data, **_kw):
+        calls.append(endpoint)
+        raise RetryAfter(1)
+
+    monkeypatch.setattr(telegram.Bot, "_do_post", _do_post)
+    app = tg_conn._build_application(TelegramChannelProviderConfig(bot_token=SecretStr(_TG_TOKEN)))
+    with pytest.raises(RetryAfter):
+        await asyncio.wait_for(app.bot.send_message(chat_id=1, text="hi"), timeout=5)
+    assert calls == ["sendMessage", "sendMessage"]
+
+
+async def test_W38_the_slack_web_client_retries_rate_limited_calls_twice():
+    from slack_sdk.http_retry.builtin_async_handlers import AsyncRateLimitErrorRetryHandler
+
+    from primer.channel.slack.connection import _build_outbound_app
+
+    conn = _build_outbound_app(_slack_provider().config)
+    rate = [h for h in conn.app.client.retry_handlers if isinstance(h, AsyncRateLimitErrorRetryHandler)]
+    assert len(rate) == 1 and rate[0].max_retry_count == 2

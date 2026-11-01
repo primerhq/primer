@@ -10,6 +10,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from primer.model.channel import (
@@ -19,12 +20,16 @@ from primer.model.channel import (
 
 logger = logging.getLogger(__name__)
 
+#: The longest a Telegram request answered 429 (``RetryAfter``) waits before its one retry (W38).
+_RETRY_AFTER_CAP_S = 30.0
+
 
 def _build_application(cfg: TelegramChannelProviderConfig) -> Any:
     """Construct a PTB Application. Deferred import keeps the
     module-import cheap when telegram isn't installed.
     """
-    from telegram.ext import Application, BaseUpdateProcessor
+    from telegram.error import RetryAfter
+    from telegram.ext import Application, BaseRateLimiter, BaseUpdateProcessor
 
     from primer.channel.event_dispatch import _conversation_lock
 
@@ -54,7 +59,32 @@ def _build_application(cfg: TelegramChannelProviderConfig) -> Any:
         async def shutdown(self) -> None:
             pass
 
-    builder = Application.builder().token(cfg.bot_token.get_secret_value()).concurrent_updates(_PerChatOrder())
+    class _RetryAfterOnce(BaseRateLimiter):
+        """A request answered 429 waits the delay Telegram names (capped) and is sent once more (W38).
+
+        PTB raises ``RetryAfter`` and the channel dispatcher logs and drops it, so the post was lost. ``getUpdates``
+        never comes through here (PTB does not rate-limit it).
+        """
+
+        async def initialize(self) -> None:
+            pass
+
+        async def shutdown(self) -> None:
+            pass
+
+        async def process_request(self, callback, args, kwargs, endpoint, data, rate_limit_args):
+            try:
+                return await callback(*args, **kwargs)
+            except RetryAfter as exc:
+                delay = exc.retry_after
+                seconds = delay.total_seconds() if isinstance(delay, timedelta) else float(delay)
+                await asyncio.sleep(min(seconds, _RETRY_AFTER_CAP_S))
+                return await callback(*args, **kwargs)
+
+    builder = (
+        Application.builder().token(cfg.bot_token.get_secret_value())
+        .concurrent_updates(_PerChatOrder()).rate_limiter(_RetryAfterOnce())
+    )
     # PTB's updater handles getUpdates internally; we set the poll
     # timeout on start_polling below.
     return builder.build()
