@@ -145,10 +145,13 @@ async def test_channel_delete_invalidation_closes_adapter(tmp_path: Path):
 
 class _FakeRegistry:
     def __init__(self) -> None:
-        self.calls: list[str | None] = []
+        self.calls: list = []
 
     async def invalidate(self, *, channel_id):
         self.calls.append(channel_id)
+
+    async def invalidate_provider(self, provider_id, *, rewarm):
+        self.calls.append((provider_id, rewarm))
 
 
 class _FakeRequest:
@@ -160,7 +163,8 @@ class _FakeRequest:
 @pytest.mark.asyncio
 async def test_channel_router_hooks_invalidate_the_registry():
     """The on_update / on_delete hooks wired into the channel router target the
-    single edited channel; the provider hook flushes the whole cache."""
+    single edited channel; the provider hook targets that provider's channels
+    and rewarms them only in a process that owns inbound (W34)."""
     from primer.api.routers.channels import (
         _invalidate_channel,
         _invalidate_provider_channels,
@@ -170,7 +174,61 @@ async def test_channel_router_hooks_invalidate_the_registry():
     req = _FakeRequest(reg)
     await _invalidate_channel("ch-1", req)
     await _invalidate_provider_channels("cp-1", req)
-    assert reg.calls == ["ch-1", None]
+    assert reg.calls == ["ch-1", ("cp-1", True)]
+
+    worker = _FakeRegistry()
+    worker_req = _FakeRequest(worker)
+    worker_req.app.state.config = type("_Cfg", (), {"runtime_mode": RuntimeMode.WORKER})()
+    await _invalidate_provider_channels("cp-1", worker_req)
+    assert worker.calls == [("cp-1", False)]
+
+
+async def _seed_two_providers(p: SqliteStorageProvider) -> None:
+    """cp-1 has ch-1 (chats on), ch-2 (chats off) and ch-4 (chats on, never warmed); cp-2 has ch-3 (chats on)."""
+    cp_storage = p.get_storage(ChannelProvider)
+    c_storage = p.get_storage(Channel)
+    for pid in ("cp-1", "cp-2"):
+        await cp_storage.create(ChannelProvider(
+            id=pid, provider=ChannelProviderType.SLACK,
+            config=SlackChannelProviderConfig(app_token=SecretStr("xapp-v1"), bot_token=SecretStr("xoxb-v1")),
+        ))
+    for cid, pid, chats in (("ch-1", "cp-1", True), ("ch-2", "cp-1", False), ("ch-3", "cp-2", True), ("ch-4", "cp-1", True)):
+        await c_storage.create(Channel(
+            id=cid, provider_id=pid, provider=ChannelProviderType.SLACK, external_id=f"C-{cid}",
+            config=SlackChannelConfig(chats=ChatConfig(enabled=chats)),
+        ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [RuntimeMode.API, RuntimeMode.WORKER])
+async def test_W34_a_provider_edit_invalidates_only_its_channels_and_rewarms_the_chat_enabled_ones(tmp_path: Path, mode):
+    """Editing cp-1 closes cp-1's adapters (its channels read from storage), rebuilds the chat-enabled ones when the
+    process owns inbound, and leaves cp-2's adapter alone."""
+    from primer.api.routers.channels import _invalidate_provider_channels
+
+    p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
+    await p.initialize()
+    try:
+        _register_recording_factory()
+        await _seed_two_providers(p)
+        reg = _build_registry(p)
+        try:
+            a1, a2, a3 = [await reg.get_adapter(cid) for cid in ("ch-1", "ch-2", "ch-3")]
+
+            await _invalidate_provider_channels("cp-1", _StubRequest(reg, runtime_mode=mode))
+
+            assert a1._closed and a2._closed
+            assert reg.peek_adapter("ch-2") is None                  # chats off: not rewarmed
+            assert reg.peek_adapter("ch-3") is a3 and not a3._closed  # another provider: untouched
+            if mode == RuntimeMode.API:
+                assert reg.peek_adapter("ch-1") not in (None, a1)     # rebuilt against the edited provider
+                assert reg.peek_adapter("ch-4") is not None           # chats on, read from storage, never warmed before
+            else:
+                assert reg.peek_adapter("ch-1") is None and reg.peek_adapter("ch-4") is None
+        finally:
+            await reg.aclose()
+    finally:
+        await p.aclose()
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from primer.model.channel import (
 )
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
+from primer.storage.q import Q
 
 
 if TYPE_CHECKING:
@@ -294,6 +295,29 @@ class ChannelRegistry:
                     logger.exception(
                         "ChannelRegistry: invalidate aclose for %s", cid,
                     )
+
+    async def invalidate_provider(self, provider_id: str, *, rewarm: bool) -> None:
+        """Close the adapters of ``provider_id``'s channels (read from storage), then, with ``rewarm``, bring its
+        chat-enabled channels back online against the edited provider (W34).
+
+        Every adapter of the provider is closed before any is rebuilt, so the shared connection really closes and the
+        rebuild opens a fresh one (a rotated token is used). Other providers' adapters are untouched. ``rewarm`` is for
+        a process that owns inbound only. No-op without a storage provider.
+        """
+        if self._storage_provider is None:
+            return
+        query = Q(Channel).where("provider_id", provider_id).build()
+        channel_ids: list[str] = []
+        while True:
+            page = await self._channels.find(query, OffsetPage(offset=len(channel_ids), length=200))
+            channel_ids.extend(channel.id for channel in page.items)
+            if len(page.items) < 200:
+                break
+        for channel_id in channel_ids:
+            await self.invalidate(channel_id=channel_id)
+        if rewarm:
+            for channel_id in channel_ids:
+                await self.rewarm_if_chat_enabled(channel_id)
 
     async def aclose(self) -> None:
         await self.invalidate()
