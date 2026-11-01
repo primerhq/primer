@@ -208,6 +208,39 @@ async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_pro
     assert settings.reflections_count == 1, "the budget is spent as the model call is about to happen"
 
 
+class _Recorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type, *, payload=None, **_kw) -> None:
+        self.events.append((event_type, payload or {}))
+
+
+@pytest.mark.parametrize("attempts, retried", [(0, True), (1, True), (2, False)])
+async def test_an_unreachable_model_is_retried_twice_then_skipped(fake_storage_provider, engine, monkeypatch, attempts, retried):
+    from primer.memory.reflect import ReflectionTransient
+
+    await _agent(fake_storage_provider)
+
+    async def worked(job):
+        return [Message(role="user", parts=[TextPart(text="a")]), Message(role="user", parts=[TextPart(text="b")])]
+
+    async def down(*args, **kwargs):
+        raise ReflectionTransient("connection refused")
+
+    monkeypatch.setattr(jobs, "run_reflect", down)
+    deps = _deps(fake_storage_provider, engine, load_messages=worked)
+    deps.recorder = _Recorder()
+    job_id = await _queued(fake_storage_provider, engine)
+    lease = Lease(ClaimKind.MEMORY, job_id, "w1", NOW, NOW + timedelta(minutes=1), attempts, None)
+    out = await run_memory_job(deps, lease)
+    if retried:
+        assert out.success is False and not out.drop_lease and "refused" in out.last_error and deps.recorder.events == []
+    else:
+        assert out.drop_lease and [e[0] for e in deps.recorder.events] == ["memory.reflection.skipped"]
+        assert deps.recorder.events[0][1]["reason"] == "llm_unavailable"
+
+
 async def test_schedule_job_makes_a_curate_or_topics_job_with_its_lease(fake_storage_provider, engine, ran):
     await _agent(fake_storage_provider)
     later = NOW + timedelta(hours=24)
