@@ -2008,6 +2008,9 @@ async def _land_cancelled_turn(
                 ended_reason = "force_deleted"
             else:
                 ended_reason = fresh.ended_reason
+                # The status stays the row's, but the seqs the writer numbered are the turn's: a later reopen or release marker
+                # must start after them (AG-L2).
+                await _persist_last_seq(session_storage, session_id, writer.last_seq)
                 await _mirror_ended_row_onto_slot(session, fresh, executor=executor, workspace_registry=None)
                 await _clear_turn_running(session_storage, session_id)
         else:
