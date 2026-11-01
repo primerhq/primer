@@ -1610,7 +1610,7 @@ class SqliteDocumentContentStore(DocumentContentStore):
         limit: int = 20,
         conn: object | None = None,
     ) -> list[FulltextHit]:
-        fts = self._fts_query(query)
+        fts = self._fts_query(query.replace("\x00", ""))  # a NUL cannot be searched for and used to raise out of the driver (CV-5)
         if not fts:
             return []
         sql = (

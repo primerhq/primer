@@ -1684,6 +1684,7 @@ class PostgresDocumentContentStore(DocumentContentStore):
         limit: int = 20,
         conn: Any | None = None,
     ) -> list[FulltextHit]:
+        query = query.replace("\x00", "")  # Postgres refuses a NUL in a text parameter; it cannot be searched for (CV-5)
         if not query.strip():
             return []
         sql = (
