@@ -956,3 +956,9 @@ def _forget_embedder_dimensions():
     forget_dimensions()
     yield
     forget_dimensions()
+
+
+@pytest.fixture(autouse=True)
+def _verify_session_log_reads(monkeypatch):
+    """Every cached read of a session's messages.jsonl is compared with a full parse (Task 14, stage 1): a mismatch fails the test that caused it."""
+    monkeypatch.setenv("PRIMER_SESSION_LOG_VERIFY_READS", "1")

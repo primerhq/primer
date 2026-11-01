@@ -298,8 +298,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         reserved = await self._event_log.reserve_seq() if self._event_log is not None else None
         async with self._session.messages_lock:
             existing = await self._read_messages_jsonl_text()
-            boundary_seq = _max_event_log_seq(existing)
-            carried = await self._lines_after_snapshot(existing, snapshot)
+            view = await self._log_view()
+            boundary_seq = view.max_seq
+            carried = self._lines_after_snapshot(view.history, snapshot)
             kept_tail = [*kept_tail, *carried]
             now = datetime.now(timezone.utc)
             marker = SessionMessageRecord(
@@ -349,8 +350,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             )
         return carried
 
-    async def _lines_after_snapshot(
-        self, existing: str, snapshot: "list[Message] | None",
+    def _lines_after_snapshot(
+        self, current: "list[Message]", snapshot: "list[Message] | None",
     ) -> list["Message"]:
         """The Message lines in the persisted history that ``snapshot`` does not hold.
 
@@ -360,9 +361,6 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         rather than something wrong."""
         if not snapshot:
             return []
-        from primer.workspace.session import reconstruct_compacted_history
-
-        current = await asyncio.to_thread(reconstruct_compacted_history, existing.splitlines())
         if len(current) <= len(snapshot):
             return []
         if [m.role for m in current[: len(snapshot)]] != [m.role for m in snapshot]:
@@ -387,11 +385,11 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         async with self._session.messages_lock:
             token = self._window_token = self._session._state.begin_compaction(self._session.session_id)
             try:
-                text = await self._read_messages_jsonl_text()
-                if not text:
+                view = await self._log_view()
+                if view.size == 0:
                     self._window_last_compaction = (None, None)
                     return []
-                history, last = await asyncio.to_thread(self._history_and_last_compaction, text)
+                history, last = view.history, view.compaction
             except BaseException:
                 # The callers open the window outside the try that closes it: a read that fails or is cancelled closes
                 # it here, or the flag stays set and the next wake's message is held in memory (AG-M6). No steer can
@@ -587,6 +585,20 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
 
     # ---- Internals -------------------------------------------------------
 
+    async def _log_view(self):
+        """The session's cached view of ``messages.jsonl`` (see :meth:`AgentSession.log_view`); a duck-typed session with no such method
+        (a test double) gets a cache of this executor's own over its ``read_state_file``."""
+        log_view = getattr(self._session, "log_view", None)
+        if log_view is not None:
+            return await log_view()
+        from primer.workspace.message_log import MessageLogCache
+
+        cache = self.__dict__.get("_own_log_cache")
+        if cache is None:
+            cache = self._own_log_cache = MessageLogCache()
+        rel = self._messages_jsonl_rel()
+        return await cache.view(lambda: self._session._state.read_state_file(rel))
+
     def _messages_jsonl_rel(self) -> str:
         """Return the ``messages.jsonl`` path relative to the state repo root.
 
@@ -613,30 +625,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         one synthetic assistant summary (see
         :func:`reconstruct_compacted_history`).
         """
-        raw = await self._session._state.read_state_file(self._messages_jsonl_rel())
-        if not raw:
-            return []
-        text = raw.decode("utf-8")
-
-        def _parse() -> list[Message]:
-            # Deferred import: reconstruct_compacted_history lives in
-            # primer.workspace.session; a module-top import would pull the
-            # primer.workspace package initialisation into primer.agent's
-            # import graph. Imported here (off the event loop, in the thread).
-            from primer.workspace.session import reconstruct_compacted_history
-
-            return reconstruct_compacted_history(text.splitlines())
-
-        return await asyncio.to_thread(_parse)
-
-    @staticmethod
-    def _history_and_last_compaction(text: str):
-        """The marker-aware history and the newest compaction's state, from ONE read of ``messages.jsonl``."""
-        # Deferred import, as in _read_messages_jsonl.
-        from primer.workspace.session import last_compaction_state, reconstruct_compacted_history
-
-        lines = text.splitlines()
-        return reconstruct_compacted_history(lines), last_compaction_state(lines)
+        # The session's cached view of the log (Task 14, stage 1): one read, only the lines appended since the last read are parsed, and the
+        # decode and parse run off the loop.
+        return (await self._log_view()).history
 
     async def _last_compaction(self) -> tuple[int | None, tuple[str, str] | None]:
         """``(tokens_after, noted)`` of the newest compaction: what the window's snapshot read already said when the
@@ -644,13 +635,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         cached, self._window_last_compaction = self._window_last_compaction, None
         if cached is not None:
             return cached
-        text = await self._read_messages_jsonl_text()
-        if not text:
-            return None, None
-        # Deferred import, as in _read_messages_jsonl.
-        from primer.workspace.session import last_compaction_state
-
-        return tuple(await asyncio.to_thread(last_compaction_state, text.splitlines()))  # type: ignore[return-value]
+        state = (await self._log_view()).compaction
+        return state.tokens_after, state.noted
 
     async def _appended_jsonl(self, new_messages: list[Message]) -> str:
         existing = await self._read_messages_jsonl_text()
