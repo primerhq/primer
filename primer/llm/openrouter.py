@@ -153,6 +153,7 @@ class OpenRouterLLM(LLM):
                 api_key=self._config.api_key.get_secret_value(),
                 base_url=OPENROUTER_BASE_URL,
                 default_headers=headers or None,
+                max_retries=0,  # RetryingLLM owns the retry policy (AG-H5)
             )
         return self._client
 

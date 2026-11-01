@@ -790,7 +790,8 @@ class AnthropicLLM(LLM):
                 if self._config.api_key is not None
                 else ""
             )
-            self._client = AsyncAnthropic(api_key=key)
+            # No SDK retries: RetryingLLM owns the policy (AG-H5).
+            self._client = AsyncAnthropic(api_key=key, max_retries=0)
         return self._client
 
     async def aclose(self) -> None:

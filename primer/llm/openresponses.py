@@ -935,6 +935,7 @@ class OpenResponsesLLM(LLM):
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
                 api_key=key,
+                max_retries=0,  # RetryingLLM owns the retry policy (AG-H5)
             )
         return self._client
 

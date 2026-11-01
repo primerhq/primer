@@ -137,6 +137,24 @@ async def stream_with_retry(
         return
 
 
+def _retry_after(cause: Any) -> float | None:
+    """Seconds the provider asked us to wait (``retry-after-ms``, else ``retry-after``) on the SDK response behind ``cause``.
+
+    shortcut: the HTTP-date form of ``retry-after`` is ignored (the jittered backoff applies); parse it if a provider sends it.
+    """
+    headers = getattr(getattr(getattr(cause, "cause", None), "response", None), "headers", None)
+    if headers is None:
+        return None
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        try:
+            seconds = float(headers.get(name)) / scale
+        except (TypeError, ValueError):
+            continue
+        if seconds >= 0:
+            return seconds
+    return None
+
+
 async def _pause(
     cause: Any,
     attempt: int,
@@ -146,7 +164,8 @@ async def _pause(
     cap: float,
     sleep: Callable[[float], Any],
 ) -> None:
-    delay = backoff_delay(attempt, base=base, cap=cap)
+    asked = _retry_after(cause)
+    delay = min(asked, cap) if asked is not None else backoff_delay(attempt, base=base, cap=cap)
     error_type = type(cause).__name__ if isinstance(cause, BaseException) else "Error"
     # The metric is partitioned by provider only; error_type rides on
     # the log line, where unbounded cardinality is free.
