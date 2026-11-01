@@ -14,7 +14,7 @@ from primer.memory.jobs import MemoryDeps
 from primer.memory.reflect import DEFAULT_REFLECTION_PROMPT, reflect, used_entries
 from primer.memory.store import MemoryStore
 from primer.model.agent import Agent, AgentModel
-from primer.model.chat import ExtendedPart, MemoryNotesPart, Message, TextPart, ToolCallPart, ToolResultPart
+from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart
 from primer.model.collection import Collection
 from primer.model.memory import AgentMemory, MemoryAdd, MemoryJob
 from primer.model.model_profile import ModelProfile
@@ -187,10 +187,39 @@ async def test_credit_ignored_for_unused_entries(sp, llm) -> None:
     assert (report.written, report.dropped) == (0, 1)
 
 
+async def _lookup_event(sp, *, turn: int, paths: list[str], trial: str | None = None, session_id: str = "s1") -> None:
+    await recorder_for(sp).emit(
+        "memory.lookup", payload={"session_id": session_id, "turn": turn, "paths": paths, "trial": trial, "scores": [0.9], "mode": "semantic", "injected": len(paths)},
+        actor=f"memory:{AGENT}", entity_kind="agent", entity_id=AGENT, session_id=session_id,
+    )
+
+
+async def test_reflection_credits_an_injected_entry_from_the_lookup_event(sp, llm) -> None:
+    """The notes the per-turn lookup showed are in no log: the ``memory.lookup`` event of the session is the citation."""
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm)
+    await deps.store.approve(AGENT, (await _seed(deps, "Known")).name, actor="user:o")
+    await _lookup_event(sp, turn=2, paths=["active/known"])
+    llm.answers = [_run([{"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}])]
+    report = await reflect(deps, job, agent, mem)
+    assert (await deps.store.get(AGENT, "known")).meta["helpful"] == 1 and (report.written, report.dropped) == (1, 0)
+
+
+async def test_lookups_of_other_sessions_and_other_turns_are_not_citations(sp, llm) -> None:
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm)
+    await deps.store.approve(AGENT, (await _seed(deps, "Known")).name, actor="user:o")
+    await _lookup_event(sp, turn=2, paths=["active/known"], session_id="another")
+    await _lookup_event(sp, turn=3, paths=["active/known"])  # after the reflected range (1..2)
+    llm.answers = [_run([{"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}])]
+    report = await reflect(deps, job, agent, mem)
+    assert (await deps.store.get(AGENT, "known")).meta["helpful"] == 0 and (report.written, report.dropped) == (0, 1)
+
+
 async def test_trial_candidate_promoted_on_helpful_success(sp, llm) -> None:
     agent, mem, job = await _setup(sp)
-    notes = ExtendedPart(extended=MemoryNotesPart(paths=["active/other", "candidates/known"], trial="candidates/known"))
-    deps = _deps(sp, llm, [Message(role="system", parts=[notes]), *_transcript()])
+    deps = _deps(sp, llm)
+    await _lookup_event(sp, turn=2, paths=["active/other", "candidates/known"], trial="candidates/known")
     await _seed(deps, "Known")
     llm.answers = [_run([{"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}], ok=True)]
     await reflect(deps, job, agent, mem)
@@ -271,6 +300,6 @@ def test_used_entries_reads_search_and_read_document_calls_on_this_collection_on
         ]),
     ]
     assert used_entries(messages, CID) == ({"one", "two", "three"}, None)
-    notes = ExtendedPart(extended=MemoryNotesPart(paths=["active/four"], trial="candidates/five"))
-    names, trial = used_entries([Message(role="system", parts=[notes]), *messages], CID)
-    assert names == {"one", "two", "three", "four", "five"} and trial == "five"
+    lookups = [{"paths": ["active/four", "candidates/five"], "trial": "candidates/five"}, {"paths": ["active/six"], "trial": None}]
+    names, trial = used_entries(messages, CID, lookups)
+    assert names == {"one", "two", "three", "four", "five", "six"} and trial == "five"

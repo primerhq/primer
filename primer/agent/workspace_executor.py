@@ -61,6 +61,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _latest_user_text(messages: list[Message]) -> str:
+    """The user's words of the turn being answered: the user messages after the last assistant message (a session run reads the instruction from the
+    log, so it is in the history, not in the turn's new messages)."""
+    texts: list[str] = []
+    for message in reversed(messages):
+        if message.role == "assistant":
+            break
+        if message.role == "user":
+            texts.append("\n".join(p.text for p in message.parts if isinstance(p, TextPart)))
+    return "\n".join(reversed(texts)).strip()
+
+
 class WorkspaceAgentExecutor(_BaseAgentExecutor):
     """Workspace-backed executor.
 
@@ -165,13 +177,13 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
     # ---- Subclass hooks --------------------------------------------------
 
     async def _with_turn_messages(self, history: list[Message], messages: list[Message]) -> list[Message]:
-        """Agent memory's notes: asked once per turn with the user's message. The prompt of THIS turn carries the notes text; the log keeps only the
-        marker (what was shown), placed before the user's message, so later turns neither resend the notes nor lose what the reflection credits.
-        A lookup that answers nothing or fails leaves the turn as it was."""
+        """Agent memory's notes: asked once per turn with the user's message. The prompt of THIS turn carries the notes text and nothing is recorded:
+        the messages come back as they were, so the log, the history and a compaction never see the notes (what was shown is the ``memory.lookup``
+        event, which the reflection reads). A lookup that answers nothing or fails leaves the turn as it was."""
         self._turn_notes = None
         if self._memory_lookup is None:
             return messages
-        text = "\n".join(p.text for m in messages if m.role == "user" for p in m.parts if isinstance(p, TextPart))
+        text = _latest_user_text([*history, *messages])
         try:
             notes = await self._memory_lookup(text)
         except Exception:  # noqa: BLE001 - memory never fails a turn
@@ -179,9 +191,8 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             return messages
         if notes is None:
             return messages
-        self._turn_notes = notes.model_copy(update={"parts": [p for p in notes.parts if isinstance(p, TextPart)]})
-        marker = notes.model_copy(update={"parts": [p for p in notes.parts if not isinstance(p, TextPart)]})
-        return [marker, *messages]
+        self._turn_notes = notes
+        return messages
 
     async def _load_history(self) -> list[Message]:
         """Read every message from the session's ``messages.jsonl``."""

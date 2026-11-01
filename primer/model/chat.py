@@ -508,17 +508,8 @@ class VideoPart(_BinarySourceMixin):
     )
 
 
-class MemoryNotesPart(BaseModel):
-    """A marker, never sent to a model: the notes agent memory showed the agent at the start of a turn (``paths`` of the entries, ``trial`` the
-    candidate that was on trial). It rides in the session log so the reflection can credit what the run used; the prompt builder drops it."""
-
-    type: Literal["memory_notes"] = Field(default="memory_notes", description="Discriminator tag.")
-    paths: list[str] = Field(default_factory=list, description="Collection paths of the entries shown, trial included.")
-    trial: str | None = Field(default=None, description="Collection path of the candidate shown on trial, if one was.")
-
-
 ExtendedInputContent = Annotated[
-    AudioPart | VideoPart | MemoryNotesPart,
+    AudioPart | VideoPart,
     Field(discriminator="type"),
 ]
 """Discriminated union of every extended input part.

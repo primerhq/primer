@@ -25,7 +25,7 @@ from primer.memory.entry import render_body
 from primer.memory.jobs import MemoryDeps
 from primer.memory.store import MemoryEntry, MemoryStore
 from primer.model.agent import Agent
-from primer.model.chat import ExtendedPart, MemoryNotesPart, Message, TextPart
+from primer.model.chat import Message, TextPart
 from primer.model.collection import Collection
 from primer.model.except_ import NotFoundError
 from primer.model.memory import AgentMemory
@@ -131,8 +131,9 @@ async def auto_inject_message(deps: Any, agent: Agent, settings: AgentMemory, se
 
     The user's message is searched in the agent's ``active/`` entries (``inject_top_k`` of them); with ``inject_min_score`` set, only hits scoring at
     or above it count, and none do when the search fell back to full text. One candidate may go in as a trial: the best ``candidates/`` hit that does
-    not wait for the owner's approval, under the same threshold. The message is system-role, starts with the notes heading, carries the bodies, and
-    holds a ``MemoryNotesPart`` naming what was shown (the reflection credits it). A ``memory.lookup`` event records the scores.
+    not wait for the owner's approval, under the same threshold. The message is system-role text: the notes heading, then the bodies. It is for
+    this turn's prompt only and is written nowhere; what was shown is recorded as a ``memory.lookup`` event (session, turn, paths, trial, scores),
+    which the reflection reads to credit the entries the run saw.
     """
     if not settings.auto_inject or not user_text.strip():
         return None
@@ -168,13 +169,13 @@ async def auto_inject_message(deps: Any, agent: Agent, settings: AgentMemory, se
         return None
     await deps.recorder.emit(
         "memory.lookup",
-        payload={"scores": [h.score for h in active], "mode": mode, "injected": len(paths), "trial": trial[0].path if trial else None},
+        payload={
+            "session_id": session.id, "turn": session.turn_no, "paths": paths, "trial": trial[0].path if trial else None,
+            "scores": [h.score for h in active], "mode": mode, "injected": len(paths),
+        },
         actor=f"memory:{agent.id}", entity_kind="agent", entity_id=agent.id, session_id=session.id,
     )
-    return Message(role="system", parts=[
-        TextPart(text=f"{NOTES_HEADING}\n\n" + "\n\n".join(sections)),
-        ExtendedPart(extended=MemoryNotesPart(paths=paths, trial=trial[0].path if trial else None)),
-    ])
+    return Message(role="system", parts=[TextPart(text=f"{NOTES_HEADING}\n\n" + "\n\n".join(sections))])
 
 
 async def memory_lookup_for(

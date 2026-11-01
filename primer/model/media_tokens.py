@@ -18,7 +18,6 @@ from primer.model.chat import (
     DocumentPart,
     ExtendedPart,
     ImagePart,
-    MemoryNotesPart,
     Message,
     Part,
     VideoPart,
@@ -37,8 +36,6 @@ def media_tokens(part: Part) -> int | None:
     if isinstance(part, DocumentPart):
         return DOCUMENT_TOKENS
     if isinstance(part, ExtendedPart):
-        if isinstance(part.extended, MemoryNotesPart):
-            return 0  # a marker in the log: no model ever sees it
         if isinstance(part.extended, (AudioPart, VideoPart)):
             return AUDIO_VIDEO_TOKENS
         return OTHER_EXTENDED_TOKENS

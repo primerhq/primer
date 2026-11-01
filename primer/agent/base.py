@@ -69,8 +69,6 @@ from primer.common.context_overflow import is_context_overflow, output_cap_never
 from primer.model.chat import (
     CompactionSummary,
     ExtendedEvent,
-    ExtendedPart,
-    MemoryNotesPart,
     Message,
     StreamEvent,
     TextPart,
@@ -1097,11 +1095,12 @@ class _BaseAgentExecutor(ABC):
 
     # ---- Prompt building -------------------------------------------------
 
-    #: The notes this turn's prompt carries in front of the user's message (agent memory); set by a surface's ``_with_turn_messages``, never persisted.
+    #: The notes this turn's prompt carries in front of the user's message (agent memory); set by a surface's ``_with_turn_messages``. Prompt only:
+    #: they are written to no log, so no later reader of the history (a compaction, another executor) ever meets them.
     _turn_notes: "Message | None" = None
 
     async def _with_turn_messages(self, history: list[Message], messages: list[Message]) -> list[Message]:
-        """The turn's new messages, plus what the surface puts in front of them (none here). Runs once per invoke, after compaction."""
+        """The turn's new messages as they are recorded (unchanged here). A surface may set ``_turn_notes`` for the prompt. Runs once per invoke, after compaction."""
         return messages
 
     def _build_prompt(
@@ -1118,10 +1117,10 @@ class _BaseAgentExecutor(ABC):
             parts.append(
                 Message(role="system", parts=[TextPart(text=sys_text)])
             )
-        parts.extend(_without_notes_markers(history))
+        parts.extend(history)
         if self._turn_notes is not None:
             parts.append(self._turn_notes)
-        parts.extend(_without_notes_markers(new_messages))
+        parts.extend(new_messages)
         return parts
 
     # ---- Event fan-out ---------------------------------------------------
@@ -1161,19 +1160,6 @@ class _BaseAgentExecutor(ABC):
             "max_tool_turns": self._agent.max_tool_turns,
             "principal": self._principal,
         }
-
-
-def _without_notes_markers(messages: list[Message]) -> list[Message]:
-    """``messages`` as a model may see them: the memory-notes markers of the log (what the reflection reads) are not sent. A message that was only
-    a marker goes; one that also carries content keeps it."""
-    out: list[Message] = []
-    for message in messages:
-        kept = [p for p in message.parts if not (isinstance(p, ExtendedPart) and isinstance(p.extended, MemoryNotesPart))]
-        if len(kept) == len(message.parts):
-            out.append(message)
-        elif kept:
-            out.append(message.model_copy(update={"parts": kept}))
-    return out
 
 
 __all__ = ["_BaseAgentExecutor"]
