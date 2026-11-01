@@ -1,0 +1,71 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: node output"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9c18237ef5c1b790"
+    ]
+   ],
+   "role": "user",
+   "text": "node input"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9d920c0c544e44fc"
+    ]
+   ],
+   "role": "assistant",
+   "text": "node output"
+  }
+ ],
+ "max_event_log_seq": 4,
+ "messages_jsonl": {
+  "bytes": 609,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"seq\":1,\"kind\":\"user_input\",\"payload\":{\"text\":\"node input\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"seq\":2,\"kind\":\"reasoning\",\"payload\":{\"text\":\"thinking\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"seq\":3,\"kind\":\"assistant_token\",\"payload\":{\"text\":\"tok\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"node input\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"node output\"}]}",
+   "{\"seq\":4,\"kind\":\"done\",\"payload\":{},\"created_at\":\"<ts>\",\"node_id\":null}"
+  ],
+  "sha": "d07b8b7e7b8d542a"
+ },
+ "pending": []
+}

@@ -1,0 +1,134 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: assistant turn"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: answered 1"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: answered 2"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0e8d8caf30a22566"
+    ]
+   ],
+   "role": "user",
+   "text": "run two things"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "d646c2c9166325a1"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "273ae5fdb30b5cfd"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "cb850a5e3be79d0b"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 1"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "02a16141dc763837"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "ca9524cc69fee182"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "8bb5dd376cc711e4"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 2"
+  }
+ ],
+ "max_event_log_seq": 0,
+ "messages_jsonl": {
+  "bytes": 725,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"run two things\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call_1\",\"name\":\"exec\",\"arguments\":{\"cmd\":\"echo 1\"}}]}",
+   "{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_result\",\"id\":\"call_1\",\"output\":\"out 1\\n\",\"error\":false,\"media\":null,\"metadata\":null}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"answered 1\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call_2\",\"name\":\"exec\",\"arguments\":{\"cmd\":\"echo 2\"}}]}",
+   "{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_result\",\"id\":\"call_2\",\"output\":\"out 2\\n\",\"error\":false,\"media\":null,\"metadata\":null}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"answered 2\"}]}"
+  ],
+  "sha": "5a083c53f5441a14"
+ },
+ "pending": []
+}

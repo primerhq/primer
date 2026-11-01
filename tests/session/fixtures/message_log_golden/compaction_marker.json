@@ -1,0 +1,104 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: four"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "<sid>: compaction marker"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: noted"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "005865a246816b21"
+    ]
+   ],
+   "role": "assistant",
+   "text": "[earlier conversation compacted]\n\nSUMMARY: one/two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "1c15ac53b297f4e0"
+    ]
+   ],
+   "role": "user",
+   "text": "three"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "3e9b6c84630f8b42"
+    ]
+   ],
+   "role": "assistant",
+   "text": "four"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6337473167b20b40"
+    ]
+   ],
+   "role": "user",
+   "text": "after the marker"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d6c204425fcbff77"
+    ]
+   ],
+   "role": "assistant",
+   "text": "noted"
+  }
+ ],
+ "max_event_log_seq": 1,
+ "messages_jsonl": {
+  "bytes": 974,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"one\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"two\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"three\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"four\"}]}",
+   "{\"seq\":1,\"kind\":\"compaction_marker\",\"payload\":{\"summary\":\"[earlier conversation compacted]\\n\\nSUMMARY: one/two\",\"kept_tail_messages\":[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"three\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"four\"}]}],\"replaced_from_seq\":1,\"replaced_to_seq\":0,\"model\":\"golden-model\",\"tokens_before\":900,\"tokens_after\":100,\"outcome\":\"summarised\",\"unreducible\":null,\"trigger_tokens\":800,\"fixed_overhead_tokens\":0,\"created_at\":\"<ts>\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"after the marker\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"noted\"}]}"
+  ],
+  "sha": "0dfef3ab8ef9def0"
+ },
+ "pending": []
+}

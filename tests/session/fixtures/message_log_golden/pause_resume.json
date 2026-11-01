@@ -1,0 +1,144 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: which one?"
+  },
+  {
+   "files": [
+    "sessions/<sid>/session.json",
+    "sessions/<sid>/waiting.json"
+   ],
+   "subject": "status[<sid12>]: -> waiting"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: the second one"
+  },
+  {
+   "files": [
+    "sessions/<sid>/session.json",
+    "sessions/<sid>/waiting.json"
+   ],
+   "subject": "status[<sid12>]: -> running"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: tool_use: ask_user"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: second it is"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "7482d125daa1d332"
+    ]
+   ],
+   "role": "user",
+   "text": "ask me"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "08edb8642db28a72"
+    ]
+   ],
+   "role": "assistant",
+   "text": "which one?"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "dc243e491a9326d0"
+    ]
+   ],
+   "role": "user",
+   "text": "the second one"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "8af1056cc54676b8"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "56009d9fe5681946"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "3ef2dbb12ff0ee5c"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second it is"
+  }
+ ],
+ "max_event_log_seq": 0,
+ "messages_jsonl": {
+  "bytes": 564,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"ask me\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"which one?\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"the second one\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"park_1\",\"name\":\"ask_user\",\"arguments\":{\"q\":\"which one?\"}}]}",
+   "{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_result\",\"id\":\"park_1\",\"output\":\"the second one\",\"error\":false,\"media\":null,\"metadata\":null}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"second it is\"}]}"
+  ],
+  "sha": "a512af78ed1defaf"
+ },
+ "pending": []
+}
