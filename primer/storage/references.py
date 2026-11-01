@@ -82,7 +82,7 @@ async def first_referencing_row(
     match: Predicate = Predicate(left=FieldRef(name=field), op=op, right=Value(value=parent_id))
     if also is not None:
         match = Predicate(left=match, op=Op.AND, right=also)
-    page = await storage.find(match, OffsetPage(offset=0, length=1))
+    page = await storage.find(match, OffsetPage(offset=0, length=1, want_total=False))
     return page.items[0] if page.items else None
 
 

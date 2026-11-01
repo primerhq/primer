@@ -430,7 +430,7 @@ async def list_sso_providers(
     rows: list[OidcProvider] = []
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         rows.extend(page.items)
         if len(page.items) < _PAGE_SIZE:
             break
@@ -744,7 +744,7 @@ async def list_my_sso_identities(
     rows: list[UserIdentity] = []
     offset = 0
     while True:
-        page = await identity_storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await identity_storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         rows.extend(page.items)
         if len(page.items) < _PAGE_SIZE:
             break

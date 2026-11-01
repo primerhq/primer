@@ -72,7 +72,7 @@ async def _collection_documents(
     out: list[Document] = []
     offset, page = 0, 200
     while True:
-        resp = await docs.find(predicate, OffsetPage(offset=offset, length=page))
+        resp = await docs.find(predicate, OffsetPage(offset=offset, length=page, want_total=False))
         out.extend(resp.items)
         if len(resp.items) < page:
             return out

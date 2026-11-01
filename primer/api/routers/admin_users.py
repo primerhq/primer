@@ -239,7 +239,7 @@ async def _count_protected_admins(storage) -> int:
     count = 0
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         count += sum(1 for u in page.items if _is_protected_admin(u))
         if len(page.items) < _PAGE_SIZE:
             break
@@ -355,7 +355,7 @@ async def list_admin_users(
     rows: list[User] = []
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE, want_total=False))
         rows.extend(page.items)
         if len(page.items) < _PAGE_SIZE:
             break

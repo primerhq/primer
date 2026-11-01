@@ -130,7 +130,7 @@ async def _enrich_with_usage(
     offset = 0
     while True:
         page = await agent_storage.list(
-            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE),
+            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE, want_total=False),
         )
         for agent in page.items:
             agent_counts[agent.model.profile_id] += 1
@@ -142,7 +142,7 @@ async def _enrich_with_usage(
     offset = 0
     while True:
         page = await graph_storage.list(
-            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE),
+            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE, want_total=False),
         )
         for graph in page.items:
             for node in graph.nodes:

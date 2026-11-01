@@ -156,7 +156,7 @@ async def list_tools(
         while True:
             page = await ts_storage.find(
                 access_pred,
-                OffsetPage(offset=offset, length=page_size),
+                OffsetPage(offset=offset, length=page_size, want_total=False),
             )
             onlys = [
                 None if level_of(person, row.access) is not None

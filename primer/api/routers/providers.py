@@ -764,7 +764,7 @@ async def get_llm_provider_models(
     while True:
         page = await profiles.find(
             Q(ModelProfile).where("provider_id", provider_id).build(),
-            OffsetPage(offset=offset, length=200),
+            OffsetPage(offset=offset, length=200, want_total=False),
         )
         names.extend(p.model_name for p in page.items)
         if len(page.items) < 200:
@@ -2168,7 +2168,7 @@ async def list_all_tools(
     while True:
         page = await ts_storage.find(
             access_pred,
-            OffsetPage(offset=offset, length=page_size),
+            OffsetPage(offset=offset, length=page_size, want_total=False),
         )
         out.extend(
             entry

@@ -348,6 +348,28 @@ class Storage(ABC, Generic[ModelT]):
             stored values.
         """
 
+    async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
+        """``{value: number of matching rows}`` for each of ``values`` of a text ``field`` (values with no row are absent), in one grouped query on the
+        SQL backends. This default pages the matching rows (no COUNT per page) for a backend that has no cheaper way."""
+        from collections import Counter
+
+        from primer.model.storage import FieldRef, OffsetPage, Op, Predicate as _Predicate, Value
+
+        if not values:
+            return {}
+        match: _Predicate = _Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
+        if predicate is not None:
+            match = _Predicate(left=match, op=Op.AND, right=predicate)
+        counts: Counter[str] = Counter()
+        offset = 0
+        while True:
+            page = await self.find(match, OffsetPage(offset=offset, length=200, want_total=False))
+            for row in page.items:
+                counts[getattr(row, field)] += 1
+            if len(page.items) < 200:
+                return dict(counts)
+            offset += 200
+
     async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
         """``(id, access)`` of every row matching ``predicate``, ordered by id: the two things a sharing check needs, without decoding the rows.
 
@@ -359,7 +381,7 @@ class Storage(ABC, Generic[ModelT]):
         out: list[tuple[str, dict[str, Any] | None]] = []
         offset = 0
         while True:
-            page = await self.find(predicate, OffsetPage(offset=offset, length=200))
+            page = await self.find(predicate, OffsetPage(offset=offset, length=200, want_total=False))
             for row in page.items:
                 access = getattr(row, "access", None)
                 out.append((row.id, access.model_dump(mode="json") if access is not None else None))

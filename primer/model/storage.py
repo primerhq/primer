@@ -269,6 +269,13 @@ class OffsetPage(BaseModel):
         le=MAX_OFFSET,
         description="Number of items to skip from the start of the result set.",
     )
+    want_total: bool = Field(
+        default=True,
+        description=(
+            "False for a scan loop that never reads ``total``: the backend then skips its COUNT(*) and answers ``total=None``. "
+            "The default keeps the REST page contract."
+        ),
+    )
     length: int = Field(
         ...,
         ge=1,

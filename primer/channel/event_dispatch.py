@@ -713,7 +713,7 @@ class ChannelEventRouter:
         offset = 0
         while offset < 10_000:
             page = await storage.find(
-                q.build(), OffsetPage(offset=offset, length=200),
+                q.build(), OffsetPage(offset=offset, length=200, want_total=False),
             )
             for trigger in page.items:
                 cfg_channel = getattr(trigger.config, "channel_id", None)

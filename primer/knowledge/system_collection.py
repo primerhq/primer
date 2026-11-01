@@ -84,7 +84,7 @@ async def _list_all(storage, model_cls) -> list:
     offset, page = 0, 200
     while True:
         resp = await storage.get_storage(model_cls).list(
-            OffsetPage(offset=offset, length=page)
+            OffsetPage(offset=offset, length=page, want_total=False)
         )
         out.extend(resp.items)
         if len(resp.items) < page:

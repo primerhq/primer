@@ -83,7 +83,7 @@ async def _iter_rows(storage):
     """Page through every row of one table."""
     offset = 0
     while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE, want_total=False))
         if not page.items:
             return
         for row in page.items:

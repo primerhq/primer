@@ -1224,6 +1224,27 @@ class PostgresStorage(Storage[ModelT]):
     #: Rows per query of :meth:`find_ids`.
     _IDS_PAGE = 2000
 
+    async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
+        """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
+        if not values:
+            return {}
+        await self._ensure_table()
+        from primer.model.storage import FieldRef, Op, Value
+
+        match = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
+        if predicate is not None:
+            match = Predicate(left=match, op=Op.AND, right=predicate)
+        translator = _PredicateTranslator(self._model)
+        where_sql, _ = translator.translate(match)
+        expr = _render_field_expr(self._model, field)
+        sql = f"SELECT {expr} AS k, count(*) AS n FROM {self._qualified} WHERE {where_sql} GROUP BY {expr}"
+        try:
+            async with self._provider.pool.acquire() as conn:
+                rows = await conn.fetch(sql, *translator._params)  # noqa: SLF001
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        return {row["k"]: int(row["n"]) for row in rows if row["k"] is not None}
+
     async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
         """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
         await self._ensure_table()
@@ -1312,10 +1333,17 @@ class PostgresStorage(Storage[ModelT]):
             f'SELECT count(*) FROM {self._qualified} WHERE {where_sql}'
         )
 
+        total: int | None = None
         try:
+            # One connection and one snapshot for the page and its count, so ``total`` agrees with the page (SQLite already did this, L1).
             async with self._provider.pool.acquire() as conn:
-                rows = await conn.fetch(select_sql, *params)
-                total = await conn.fetchval(count_sql, *count_params)
+                async with conn.transaction(isolation="repeatable_read", readonly=True):
+                    rows = await conn.fetch(select_sql, *params)
+                    if len(rows) < page.length:
+                        # A short page is the end of the result: the count is the rows before it plus these, no COUNT(*) needed.
+                        total = page.offset + len(rows) if (rows or page.offset == 0) else None
+                    if total is None and page.want_total:
+                        total = await conn.fetchval(count_sql, *count_params)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
