@@ -1157,21 +1157,24 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
     return "";
   };
 
-  // UI-M8: the row this dialog created. A retry (the URL was fixed, or Back then Fetch) removes it first, so the slug is free again; Cancel
-  // removes it too, so a failed attempt does not leave a row behind.
+  // UI-M8: the row this dialog created ({id, slug}). DELETE /harnesses/{id} only enqueues an UNINSTALL (202): the row and its slug stay until a worker
+  // runs it, so a retry cannot delete and re-create. A retry with the SAME slug updates the row and fetches it again; a CHANGED slug enqueues the old
+  // row's uninstall (fire and forget) and creates a new one. Cancel enqueues the uninstall of a row that never reached the install step, and keeps
+  // one whose install failed (the operator needs its last_operation_error, and an uninstall would remove what was partly installed).
   const createdRef = React.useRef(null);
+  const installTriedRef = React.useRef(false);
   const dropCreated = async () => {
-    const id = createdRef.current;
-    if (!id) return;
+    const row = createdRef.current;
+    if (!row) return;
     createdRef.current = null;
     try {
-      await apiFetch("DELETE", "/harnesses/" + encodeURIComponent(id));
+      await apiFetch("DELETE", "/harnesses/" + encodeURIComponent(row.id) + "?cascade=false");
     } catch (_err) {
-      // already gone, or not removable: a slug that is still taken says so on the create
+      // already gone, or not removable: nothing more to do for a row that never installed
     }
   };
   const cancel = async () => {
-    await dropCreated();
+    if (!installTriedRef.current) await dropCreated();
     onClose();
   };
 
@@ -1183,15 +1186,24 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
     setFetchError("");
     setStep1Busy(true);
     try {
-      await dropCreated();
-      if (!mountedRef.current) return;
-      // 1. Create DRAFT
       const body = { name: name || slug, slug, git_url: gitUrl, ref: ref || "main" };
       if (subpath) body.subpath = subpath;
       if (gitToken) body.git_token = gitToken;
-      const created = await apiFetch("POST", "/harnesses", body);
-      createdRef.current = created.id;
-      if (!mountedRef.current) { await dropCreated(); return; }       // closed while the create was in flight
+      let created;
+      if (createdRef.current && createdRef.current.slug === slug) {
+        // 1a. Same slug as the row an earlier press created: update it (the URL may have been fixed) and fetch it again.
+        const update = { name: body.name, git_url: gitUrl, ref: body.ref, subpath: subpath || "" };
+        if (gitToken) update.git_token = gitToken;
+        created = await apiFetch("PUT", "/harnesses/" + encodeURIComponent(createdRef.current.id), update);
+      } else {
+        await dropCreated();                       // a changed slug: the old row goes (fire and forget), a new one is made
+        if (!mountedRef.current) return;
+        // 1b. Create DRAFT
+        created = await apiFetch("POST", "/harnesses", body);
+        createdRef.current = { id: created.id, slug };
+        if (!mountedRef.current) { await dropCreated(); return; }       // closed while the create was in flight
+      }
+      if (!mountedRef.current) return;
 
       // 2. Enqueue FETCH
       await apiFetch("POST", "/harnesses/" + encodeURIComponent(created.id) + "/fetch", {});
@@ -1235,6 +1247,7 @@ function HarnessRegisterDialog({ onClose, onCreated }) {
     setInstallError("");
     setStep2Busy(true);
     try {
+      installTriedRef.current = true;
       // 1. PUT overrides
       await apiFetch("PUT", "/harnesses/" + encodeURIComponent(harness.id) + "/overrides", overrides);
       if (!mountedRef.current) return;

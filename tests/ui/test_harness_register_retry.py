@@ -47,18 +47,24 @@ window.primerApi.apiFetch = function (method, path, body) {
   if (method === "POST" && path === "/harnesses") {
     for (var k in ROWS) if (ROWS[k].slug === body.slug) return refuse(409, "A harness with slug '" + body.slug + "' already exists");
     var id = "h" + (NEXT++);
-    ROWS[id] = { id: id, slug: body.slug, status: "DRAFT", pending_operation: null };
+    ROWS[id] = { id: id, slug: body.slug, git_url: body.git_url, status: "DRAFT", pending_operation: null };
     return Promise.resolve(JSON.parse(JSON.stringify(ROWS[id])));
   }
-  var m = path.match(/^\/harnesses\/([^\/]+)(\/fetch)?$/);
+  var m = path.match(/^\/harnesses\/([^\/?]+)(\/fetch)?(\?.*)?$/);
   if (method === "POST" && m && m[2]) { ROWS[m[1]].pending_operation = "FETCH"; return Promise.resolve({}); }
+  // PUT /harnesses/{id}: a partial update of the row (the real route, update_harness in primer/api/routers/harness.py)
+  if (method === "PUT" && m && !m[2]) {
+    for (var f in body) if (body[f] != null) ROWS[m[1]][f] = body[f];
+    return Promise.resolve(JSON.parse(JSON.stringify(ROWS[m[1]])));
+  }
   if (method === "GET" && m) {
     if (GET_ANSWER) return Promise.resolve(GET_ANSWER(ROWS[m[1]]));
     var r = ROWS[m[1]]; r.pending_operation = null;
     r.status = ERROR_ON_FETCH ? "ERROR" : "READY"; r.last_operation_error = ERROR_ON_FETCH ? "could not clone" : null;
     return Promise.resolve(JSON.parse(JSON.stringify(r)));
   }
-  if (method === "DELETE" && m) { delete ROWS[m[1]]; return Promise.resolve({}); }
+  // DELETE /harnesses/{id} is NOT a delete: it enqueues an UNINSTALL and answers 202; the row and its slug stay until a worker runs it.
+  if (method === "DELETE" && m) { ROWS[m[1]].pending_operation = "UNINSTALL"; return Promise.resolve({}); }
   return Promise.resolve({});
 };
 var CLOSED = 0, CREATED = [];
@@ -92,15 +98,27 @@ def _calls(ctx) -> list[str]:
     return json.loads(ctx.eval("JSON.stringify(CALLS)"))
 
 
-def test_a_failed_fetch_then_a_second_press_makes_a_new_row_after_removing_the_failed_one(ctx) -> None:
+def test_a_failed_fetch_then_a_second_press_with_the_same_slug_updates_and_fetches_the_same_row(ctx) -> None:
     ctx.eval('click("Fetch");')
     _settle(ctx)
-    assert "Fetch failed" in "".join(ctx.eval("banners()")) or ctx.eval("banners().join('|')").startswith("Fetch failed")
-    ctx.eval('click("Fetch");')
+    assert "Fetch failed" in ctx.eval("banners().join('|')")
+    ctx.eval("typeInto('hr-git-url', 'https://example.com/fixed.git'); click('Fetch');")
     _settle(ctx)
     calls = _calls(ctx)
-    assert calls.count("POST /harnesses") == 2 and "DELETE /harnesses/h1" in calls, calls
-    assert calls.index("DELETE /harnesses/h1") < len(calls) - 1 - calls[::-1].index("POST /harnesses")     # removed before the second create
+    assert calls.count("POST /harnesses") == 1 and not any(c.startswith("DELETE") for c in calls), calls
+    assert calls.count("PUT /harnesses/h1") == 1 and calls.count("POST /harnesses/h1/fetch") == 2, calls
+    assert "already exists" not in ctx.eval("banners().join('|')")
+    assert ctx.eval("ROWS.h1.git_url") == "https://example.com/fixed.git"
+
+
+def test_a_changed_slug_enqueues_the_old_rows_uninstall_and_creates_the_new_one(ctx) -> None:
+    ctx.eval('click("Fetch");')
+    _settle(ctx)
+    ctx.eval("typeInto('hr-slug', 'other-slug'); click('Fetch');")
+    _settle(ctx)
+    calls = _calls(ctx)
+    assert calls.count("POST /harnesses") == 2, calls
+    assert [c for c in calls if c.startswith("DELETE")] == ["DELETE /harnesses/h1?cascade=false"], calls
     assert "already exists" not in ctx.eval("banners().join('|')")
 
 
@@ -124,13 +142,23 @@ def test_the_happy_register_flow_makes_the_same_requests_and_deletes_nothing(ctx
     assert ctx.eval("CREATED.length") == 1 and ctx.eval("CLOSED") == 0
 
 
-def test_cancel_removes_the_row_the_dialog_created(ctx) -> None:
+def test_cancel_after_a_failed_fetch_enqueues_the_uninstall_of_the_row_that_never_installed(ctx) -> None:
     ctx.eval('click("Fetch");')
     _settle(ctx)
     ctx.eval('click("Cancel");')
     _settle(ctx)
-    assert "DELETE /harnesses/h1" in _calls(ctx) and ctx.eval("CLOSED") == 1
-    assert ctx.eval("Object.keys(ROWS).length") == 0
+    assert "DELETE /harnesses/h1?cascade=false" in _calls(ctx) and ctx.eval("CLOSED") == 1
+
+
+def test_cancel_after_a_failed_install_keeps_the_row_and_its_error(ctx) -> None:
+    ctx.eval("ERROR_ON_FETCH = false; click('Fetch');")
+    _settle(ctx)
+    ctx.eval("GET_ANSWER = function (row) { return { id: row.id, status: 'ERROR', pending_operation: null, last_operation_error: 'install broke' }; }; click('Create');")
+    _settle(ctx)
+    assert "install broke" in ctx.eval("banners().join('|')")
+    ctx.eval('click("Cancel");')
+    _settle(ctx)
+    assert not any(c.startswith("DELETE") for c in _calls(ctx)) and ctx.eval("CLOSED") == 1
 
 
 def test_closing_the_dialog_stops_the_poll_loop(ctx) -> None:
