@@ -1242,12 +1242,7 @@ function NV_MobileProfileTheme() {
       </div>
       <button type="button" className="nv-btn-secondary nv-mob-logout touch-target"
         data-testid="nv-mob-logout"
-        onClick={function () {
-          fetch("/v1/auth/logout", { method: "POST" }).then(
-            function () { window.location.reload(); },
-            function () { window.location.reload(); }
-          );
-        }}>Log out</button>
+        onClick={function () { NV_signOut(con, "/auth/logout"); }}>Log out</button>
     </div>
   );
 }
