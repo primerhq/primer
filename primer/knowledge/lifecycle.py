@@ -1,13 +1,14 @@
 """Per-collection semantic-search lifecycle: enable/backfill/disable/status."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
 from pydantic import BaseModel
 
 from primer.access.person import Person
-from primer.knowledge.indexing import index_documents
+from primer.knowledge.indexing import forget_dimensions, index_documents
 from primer.knowledge.row_writes import write_collection_fields
 from primer.model.collection import Collection, CollectionSearchConfig, Document
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError, ProviderError
@@ -94,6 +95,7 @@ async def enable_search(storage_provider, provider_registry, ssr, *,
     if collection is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
     await validate_search_config(storage_provider, cfg, person)
+    await _drop_replaced_namespace(ssr, collection, cfg)
     collection = await _write_search(
         storage_provider, collection,
         cfg.model_copy(update={"state": "indexing", "error": None}),
@@ -116,16 +118,67 @@ async def enable_search(storage_provider, provider_registry, ssr, *,
             content_store=content_store,
             storage_provider=storage_provider,
         )
-    except Exception as exc:  # noqa: BLE001 - partial index stays intact
-        logger.exception("backfill failed for collection %s", collection_id)
-        return await _write_search(
-            storage_provider, collection,
-            cfg.model_copy(update={"state": "error", "error": str(exc)}),
-        )
+    except BaseException as exc:  # noqa: BLE001 - a cancel (a client disconnect, a shutdown) leaves the state as stuck as an error does
+        interrupted = not isinstance(exc, Exception)
+        if not interrupted:
+            logger.exception("backfill failed for collection %s", collection_id)
+        message = "indexing was interrupted; re-enable search to resume" if interrupted else str(exc)
+        # Shielded: the write must land even though this task was cancelled, or the collection reads "indexing" for ever (KN-13).
+        written = await asyncio.shield(_write_search(
+            storage_provider, collection, cfg.model_copy(update={"state": "error", "error": message}),
+        ))
+        if interrupted:
+            raise
+        return written
     return await _write_search(
         storage_provider, collection,
         cfg.model_copy(update={"state": "ready", "error": None}),
     )
+
+
+async def _drop_replaced_namespace(ssr, collection: Collection, cfg: CollectionSearchConfig) -> None:
+    """Re-enabling with another embedder (provider or model) or another vector store makes the old vectors wrong or orphaned: drop the OLD namespace
+    before the backfill, best effort as :func:`disable_search` is (KN-7). A first enable, or the same config, drops nothing."""
+    previous = collection.search
+    if previous is None:
+        return
+    same = (
+        previous.embedder.provider_id == cfg.embedder.provider_id
+        and previous.embedder.model == cfg.embedder.model
+        and previous.vector_store_provider_id == cfg.vector_store_provider_id
+    )
+    if same:
+        return
+    forget_dimensions(collection.id)
+    try:
+        store = await ssr.get_store(previous.vector_store_provider_id)
+        await store.drop_collection(collection.id)
+    except PrimerError:
+        pass        # provider gone or namespace absent: the backfill starts from nothing anyway
+    except Exception:  # noqa: BLE001
+        logger.exception("dropping the old vectors of %s failed", collection.id)
+
+
+async def reset_interrupted_indexing(storage_provider) -> list[str]:
+    """Boot: a collection still in ``indexing`` lost its backfill task with the previous process; mark it ``error`` so the console says so and a re-enable
+    resumes (the backfill skips what is already indexed). Returns the collection ids it changed (KN-13).
+
+    A second process starting while the first is mid-backfill would also mark it: a restart of any process during a backfill asks for one re-enable.
+    """
+    colls = storage_provider.get_storage(Collection)
+    changed: list[str] = []
+    offset = 0
+    while True:
+        page = await colls.list(OffsetPage(offset=offset, length=200, want_total=False))
+        for row in page.items:
+            if row.search is not None and row.search.state == "indexing":
+                await _write_search(storage_provider, row, row.search.model_copy(update={
+                    "state": "error", "error": "indexing was interrupted by a restart; re-enable search to resume",
+                }))
+                changed.append(row.id)
+        if len(page.items) < 200:
+            return changed
+        offset += 200
 
 
 async def disable_search(storage_provider, ssr, *, collection_id: str) -> Collection:

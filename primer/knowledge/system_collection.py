@@ -618,6 +618,9 @@ async def _write_tree_page(
                 )
                 if orphan_id is not None:
                     await tree._content.delete(orphan_id)
+                    # Its vectors are orphans too: nothing else will ever remove them (KN-19e).
+                    if tree._unindexer is not None:
+                        await tree._unindexer(document_id=orphan_id, collection_id=SYSTEM_COLLECTION_ID)
                 created = await tree.create(
                     collection_id=SYSTEM_COLLECTION_ID, parent=parent,
                     slug=slug, body=body, title=title,

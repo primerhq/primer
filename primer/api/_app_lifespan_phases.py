@@ -763,6 +763,15 @@ async def recover_webhook_deliveries(
         return None
 
 
+async def recover_interrupted_indexing(storage_provider) -> None:
+    """A collection whose search backfill was running when the previous process ended reads ``indexing`` for ever: mark it ``error`` (KN-13)."""
+    from primer.knowledge.lifecycle import reset_interrupted_indexing
+
+    changed = await reset_interrupted_indexing(storage_provider)
+    if changed:
+        logger.warning("indexing recovery: marked %d interrupted collection(s) as error: %s", len(changed), ", ".join(changed))
+
+
 async def recover_ic_bootstrap(storage_provider) -> None:
     """Internal-collections bootstrap recovery.
 
