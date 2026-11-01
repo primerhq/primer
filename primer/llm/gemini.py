@@ -29,7 +29,7 @@ from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
 from primer.llm._reasoning import gemini_extended
-from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_lazy_with_connect_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini_detailed
 from primer.model.except_ import (
     ConfigError,
@@ -999,7 +999,7 @@ class GeminiLLM(LLM):
                     client = self._get_client()
                     from primer.model.except_ import ProviderTimeoutError
                     try:
-                        sdk_stream = await _open_with_connect_timeout(
+                        sdk_stream = await _open_lazy_with_connect_timeout(
                             lambda: client.aio.models.generate_content_stream(
                                 model=model,
                                 contents=contents,

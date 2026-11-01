@@ -70,6 +70,46 @@ async def _open_with_connect_timeout(
         ) from exc
 
 
+async def _open_lazy_with_connect_timeout(
+    opener: Callable[[], Awaitable[Any]],
+    connect_timeout_seconds: float | None,
+    *,
+    provider_id: str,
+    model: str,
+) -> AsyncIterator[Any]:
+    """:func:`_open_with_connect_timeout` for an SDK whose ``opener`` returns a LAZY iterator (ollama, google-genai).
+
+    Those SDKs send the request on the first ``__anext__``, so that pull (a cold model load included) is what the connect
+    timeout bounds. Any other failure of the first pull is replayed by the returned iterator, so it surfaces where it did
+    before (the adapter's mid-stream branch yields it as a terminal ``Error``).
+    """
+    if connect_timeout_seconds is None:
+        return await opener()
+
+    async def first_pull() -> tuple[AsyncIterator[Any], tuple[Any, ...] | Exception]:
+        it = (await opener()).__aiter__()
+        try:
+            return it, (await it.__anext__(),)
+        except StopAsyncIteration:
+            return it, ()
+        except Exception as exc:  # noqa: BLE001 -- replayed below, where it surfaced before
+            return it, exc
+
+    it, first = await _open_with_connect_timeout(
+        first_pull, connect_timeout_seconds, provider_id=provider_id, model=model,
+    )
+
+    async def replay() -> AsyncIterator[Any]:
+        if isinstance(first, Exception):
+            raise first
+        for item in first:
+            yield item
+        async for item in it:
+            yield item
+
+    return replay()
+
+
 async def _iter_with_timeout(
     aiter: Any,
     timeout_seconds: float | None,
