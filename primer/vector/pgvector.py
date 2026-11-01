@@ -89,6 +89,25 @@ async def probe_postgres_reachable(config: PgVectorConfig) -> None:
         await conn.close()
 
 
+async def catalogue_has_collections(config: PgVectorConfig) -> bool:
+    """Whether ``<config.db_schema>.primer_collections`` exists and lists a collection: whether vector tables live under that schema.
+
+    Bootstrap asks before it moves the reserved pgvector provider to another schema, so a move never orphans vector tables. A bare connection,
+    nothing is created.
+    """
+    schema = _sanitize_schema(config.db_schema)
+    conn = await asyncpg.connect(
+        host=config.hostname, port=config.port, user=config.username, password=config.password.get_secret_value(),
+        database=config.database, timeout=10.0,
+    )
+    try:
+        if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".primer_collections') is None:
+            return False
+        return bool(await conn.fetchval(f'SELECT EXISTS (SELECT 1 FROM "{schema}".primer_collections)'))
+    finally:
+        await conn.close()
+
+
 # ---------- Identifier helpers --------------------------------------------
 
 

@@ -12,11 +12,12 @@ repaired on the next boot.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import logging
 
 from primer.common.toolset_ids import toolset_id_spellings
+from primer.model.common import Identifiable
 from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
@@ -191,18 +192,35 @@ async def ensure_default_workspace(
     return workspace_id
 
 
+ROSTER_MARKER_ID = "agent-roster"
+
+
+class SeedMarker(Identifiable):
+    """A one-row record that an install's seeded agent roster was written once (GI-2): only an install that never was seeded publishes a profile."""
+
+    _id_prefix: ClassVar[str] = "seed-marker"
+
+
 async def default_profile_id(storage_provider) -> str | None:
     """Id of the profile seeded agents bind to, or None when none exists.
 
-    On a wizard-provisioned install exactly one profile exists at seeding
-    time, so the first row is unambiguous.
+    On a fresh install the wizard has made exactly one profile, so the first row is unambiguous. Once a seeded agent exists the profile is the one
+    the install's seeded agents already run on (the ``operator`` agent's, else any seeded agent's): a re-created agent must not land on whichever
+    profile an admin added since, which may list first and be private (GI-2).
     """
+    from primer.bootstrap.defaults import RESERVED_OPERATOR_AGENT
+    from primer.bootstrap.operator_defaults import SEEDED_AGENT_FACTORIES
+    from primer.model.agent import Agent
     from primer.model.model_profile import ModelProfile
     from primer.model.storage import OffsetPage
 
-    page = await storage_provider.get_storage(ModelProfile).list(
-        OffsetPage(offset=0, length=1)
-    )
+    agents = storage_provider.get_storage(Agent)
+    profiles = storage_provider.get_storage(ModelProfile)
+    for agent_id in (RESERVED_OPERATOR_AGENT, *[a for a in SEEDED_AGENT_FACTORIES if a != RESERVED_OPERATOR_AGENT]):
+        agent = await agents.get(agent_id)
+        if agent is not None and agent.model.profile_id and await profiles.get(agent.model.profile_id) is not None:
+            return agent.model.profile_id
+    page = await profiles.list(OffsetPage(offset=0, length=1))
     return page.items[0].id if page.items else None
 
 
@@ -257,10 +275,18 @@ async def ensure_seeded_agents(storage_provider) -> list[str]:
         logger.info("seed: no model profile yet; agent seeding deferred")
         return []
     agents = storage_provider.get_storage(Agent)
-    # Only the install's setup publishes: the pass about to write the whole seeded roster (a fresh install, the wizard's seed). A later
-    # boot or seed re-run publishes nothing, so a private profile an admin adds (which may list first) stays private (security review 1).
-    if all([await agents.get(agent_id) is None for agent_id in SEEDED_AGENT_FACTORIES]):
-        await publish_default_profile(storage_provider, profile_id)
+    # Only the install's setup publishes: the pass about to write the whole seeded roster for the first time (a fresh install, the wizard's
+    # seed), tracked by a marker the first pass writes, so an admin who deletes the roster to start over publishes nothing (GI-2). A later boot or
+    # seed re-run publishes nothing, so a private profile an admin adds (which may list first) stays private (security review 1). An install that
+    # was seeded before the marker existed has agents, so it gets the marker without publishing.
+    markers = storage_provider.get_storage(SeedMarker)
+    if await markers.get(ROSTER_MARKER_ID) is None:
+        if all([await agents.get(agent_id) is None for agent_id in SEEDED_AGENT_FACTORIES]):
+            await publish_default_profile(storage_provider, profile_id)
+        try:
+            await markers.create(SeedMarker(id=ROSTER_MARKER_ID))
+        except ConflictError:
+            pass
     created: list[str] = []
     for agent_id, factory in SEEDED_AGENT_FACTORIES.items():
         if await agents.get(agent_id) is not None:
