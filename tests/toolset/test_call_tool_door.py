@@ -29,6 +29,7 @@ from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.toolset.system import build_system_toolset
+from tests._support.toolset_rows import seed_public_toolset_rows
 from tests.agent.test_inner_dispatch import ADMIN, USER, _Recorder, _Session
 
 from tests.toolset.test_system import _llm, _required_policy
@@ -64,12 +65,13 @@ class _Registry:
 
 
 @pytest.fixture
-def sp(fake_storage_provider):
+async def sp(fake_storage_provider):
     """The conftest's in-memory storage, whose ``find`` honours the predicate (audit G6-12).
 
     The neighbouring ``tests/toolset/test_system.py`` fake answers every ``find`` with every row, so a gate lookup under the WRONG
     ``(toolset_id, tool_name)`` still found the policy there and a test of the key could not fail.
     """
+    await seed_public_toolset_rows(fake_storage_provider, "rec", "remote", "slow")     # test toolsets the registry serves directly: give them stored rows
     return fake_storage_provider
 
 

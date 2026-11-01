@@ -50,6 +50,7 @@ from primer.worker.frames import AgentFrame, AgentResumeContext
 from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
 
+from tests._support.toolset_rows import seed_public_toolset_rows
 from tests.agent.test_inner_dispatch import USER, _Session
 from tests.conftest import _FakeStorageProvider
 from tests.toolset.test_call_tool_door import _Registry as _DoorRegistry
@@ -561,6 +562,7 @@ async def _approve_a_tool_whose_child_run_pauses(monkeypatch, *, through_call_to
         system_toolset = build_system_toolset(storage_provider=storage_provider, provider_registry=registry)  # type: ignore[arg-type]
         real._system_toolset_provider = system_toolset  # type: ignore[attr-defined]
         await storage_provider.get_storage(ToolApprovalPolicy).create(_required_policy("rec", "delegate"))
+        await seed_public_toolset_rows(storage_provider, "rec")      # `rec` is served by the registry directly: give it a stored row
         arguments = {"toolset_id": "rec", "tool_name": "delegate", "arguments": {}}
         ctx = ToolContext(tool_call_id=outer, session_id=sid, workspace_id=f"ws-{sid}", initiated_by=USER)
         with pytest.raises(YieldToWorker) as gate:

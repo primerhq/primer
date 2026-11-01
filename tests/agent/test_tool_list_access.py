@@ -76,11 +76,11 @@ def _manager(sp, providers: dict, who: PrincipalRef | None, **kw) -> ToolExecuti
 
 async def test_unreadable_toolset_is_left_out_and_noticed(sp) -> None:
     private = _Provider("private", "s")
-    manager = _manager(sp, {"shared": _Provider("shared", "a"), "private": private, "builtin": _Provider("builtin", "b")}, USER)
+    manager = _manager(sp, {"shared": _Provider("shared", "a"), "private": private, "misc": _Provider("misc", "b")}, USER)
 
     catalogue = await manager.list_tools()
 
-    assert sorted(t.id for t in catalogue) == ["builtin__b", "shared__a"]
+    assert sorted(t.id for t in catalogue) == ["misc__b", "shared__a"]
     assert manager.unavailable_toolsets() == {"private": tool_listing.NO_ACCESS}
     assert tool_listing.unavailable_toolsets_notice(manager.unavailable_toolsets()) == (
         f"{tool_listing.NOTICE_HEADER}\n- private: not available to you"

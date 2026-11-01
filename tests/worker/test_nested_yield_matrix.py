@@ -81,6 +81,7 @@ from primer.worker.frames import AgentFrame, AgentResumeContext
 from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
 
+from tests._support.toolset_rows import seed_public_toolset_rows
 from tests.conftest import _FakeStorageProvider
 
 # Register the ask_user + sleep resume hooks (module-import side effects).
@@ -1279,6 +1280,7 @@ async def test_subagent_call_tool_gate_approve_reruns_the_inner_tool_and_deliver
     rec = _RoleRecordingToolset()
     llm = _RecordingScriptedLLM(scripts=[_final_text_script("used it")])
     registry = _MappedRegistry(llm=llm, toolsets={"rec": rec})
+    await seed_public_toolset_rows(registry.storage_provider, "rec")      # `rec` is served by the registry directly: give it a stored row
     base = _FakeStorageProvider()
     system_toolset = build_system_toolset(storage_provider=base, provider_registry=registry)  # type: ignore[arg-type]
     registry.toolsets["system"] = system_toolset

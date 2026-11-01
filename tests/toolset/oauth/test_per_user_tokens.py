@@ -17,8 +17,10 @@ import pytest
 from primer.access.person import Person
 from primer.common.secret_box import SecretBox
 from primer.mcp.server import current_actor
+from primer.model.access import Access
 from primer.model.mcp_oauth import McpOAuthClient, McpOAuthPendingSignIn, McpOAuthTokenSet, McpSignInRequiredError
 from primer.model.principal import Principal, PrincipalRef
+from primer.model.provider import Toolset
 from primer.model.storage import OffsetPage
 from primer.model.yield_ import ToolContext
 from primer.storage import raw_generation
@@ -65,8 +67,11 @@ async def svc(fake_storage_provider, clock):
 
 
 @pytest.fixture
-def kb(mock_oauth_mcp):
-    return make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+async def kb(mock_oauth_mcp, fake_storage_provider):
+    toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={})
+    # A sign-in is open to anyone who may use the toolset, and a toolset with no stored row is not available, so store the row (public).
+    await fake_storage_provider.get_storage(Toolset).create(toolset.model_copy(update={"access": Access(public=True)}))
+    return toolset
 
 
 @pytest.fixture

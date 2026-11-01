@@ -30,6 +30,7 @@ from primer.model.chat import ToolCallPart
 from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.toolset.system import build_system_toolset
+from tests._support.toolset_rows import seed_public_toolset_rows
 from tests.agent.test_inner_dispatch import ADMIN, _Session
 from tests.mcp.test_required_role_completeness import reserved_provider_registry  # noqa: F401  (the fixture: a registry with every built-in toolset wired)
 from tests.toolset._scripted_toolset import Registry, Scripted, scripted_tool
@@ -50,7 +51,8 @@ def _spell(spelling: str, alias: str, current: str) -> str:
 
 
 @pytest.fixture
-def sp(fake_storage_provider):
+async def sp(fake_storage_provider):
+    await seed_public_toolset_rows(fake_storage_provider, "search")      # the stored `search` toolset the registry below serves
     return fake_storage_provider
 
 

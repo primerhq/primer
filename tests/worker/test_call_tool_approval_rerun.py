@@ -42,6 +42,7 @@ from tests.toolset.test_call_tool_door import _Registry as _DoorRegistry
 
 # Re-export so pytest resolves the in-memory storage and the real provider registry the neighbouring call_tool tests use.
 from tests.toolset.test_system import _required_policy, pr, sp  # noqa: F401
+from tests._support.toolset_rows import seed_public_toolset_rows
 
 #: The park's call: ``call_tool`` parks the INNER tool's bare name and arguments under the id of the ``call_tool`` call itself.
 CALL = ToolCallPart(id="call-outer", name="user_x", arguments={"a": 1})
@@ -263,6 +264,12 @@ async def test_a_rerun_with_no_registry_or_toolset_fails_closed():
 
 
 # ---- the park the handler writes is the park the re-run reads -------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+async def _test_toolset_rows(sp):  # noqa: F811
+    """``rec``, ``f``, ``y`` and ``n`` are served by the registry directly, so give them the stored rows a real toolset has."""
+    await seed_public_toolset_rows(sp, "rec", "f", "y", "n")
 
 
 @pytest.fixture
