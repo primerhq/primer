@@ -279,10 +279,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                         # The question was replaced since this thread's prompt: the reply answered nothing. Tell the person (best effort).
                         await _tell_the_approval_is_routed_elsewhere(client, channel_id, event.get("user"), refusal_notice(relayed))
                     # One reply answers one question (or finds it replaced): only the gate is cleared, so the thread stays mapped to its
-                    # session and the next reply steers it.
+                    # session and the next reply steers it. Only THAT gate: a newer question asked since is left open (W56h).
                     try:
                         await CorrelationStore(sp).clear_gate(
-                            adapter._channel.id, thread_ts,
+                            adapter._channel.id, thread_ts, rec.tool_call_id,
                         )
                     except Exception:
                         logger.warning("slack: clearing the answered question of thread %s failed", thread_ts, exc_info=True)

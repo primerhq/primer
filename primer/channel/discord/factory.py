@@ -313,10 +313,10 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                         except Exception:
                             logger.exception("discord: could not send the stale-question notice")
                     # One reply answers one question (or finds it replaced): only the gate is cleared, so the thread stays mapped to its
-                    # session and the next reply steers it.
+                    # session and the next reply steers it. Only THAT gate: a newer question asked since is left open (W56h).
                     try:
                         await CorrelationStore(sp).clear_gate(
-                            adapter._channel.id, str(thread_id),
+                            adapter._channel.id, str(thread_id), rec.tool_call_id,
                         )
                     except Exception:
                         logger.warning("discord: clearing the answered question of thread %s failed", thread_id, exc_info=True)
