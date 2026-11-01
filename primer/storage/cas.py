@@ -37,6 +37,25 @@ from primer.storage._patch import WhereKey, document_matches
 logger = logging.getLogger(__name__)
 
 
+async def patch_if_or_current(
+    storage: Storage[Any],
+    id: str,  # noqa: A002
+    patch: Mapping[str, Any] | None = None,
+    *,
+    where: Mapping[WhereKey, Sequence[Any]],
+    set_paths: Mapping[tuple[str, ...], Any] | None = None,
+    conn: Any | None = None,
+) -> tuple[Any | None, Any | None]:
+    """:meth:`Storage.patch_if_or_current`, for a storage that has it, else ``patch_if`` then ``get`` (a duck-typed double)."""
+    method = getattr(storage, "patch_if_or_current", None)
+    if method is not None:
+        return await method(id, patch, where=where, set_paths=set_paths, conn=conn)
+    written = await storage.patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+    if written is not None:
+        return written, None
+    return None, await storage.get(id, conn=conn)
+
+
 async def patch_if_checked(
     storage: Storage[Any],
     id: str,  # noqa: A002

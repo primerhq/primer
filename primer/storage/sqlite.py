@@ -1057,6 +1057,29 @@ class SqliteStorage(Storage[ModelT]):
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: object | None = None,
     ) -> ModelT | None:
+        return (await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=False))[0]
+
+    async def patch_if_or_current(
+        self,
+        id: str,  # noqa: A002
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: object | None = None,
+    ) -> tuple[ModelT | None, ModelT | None]:
+        return await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=True)
+
+    async def _patch_if(
+        self,
+        id: str,  # noqa: A002
+        patch: Mapping[str, Any] | None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None,
+        conn: object | None,
+        want_current: bool,
+    ) -> tuple[ModelT | None, ModelT | None]:
         # SQLite serialises all writes through one shared connection under _write_guard(), so the
         # guard-then-write is atomic by construction, same reasoning as update_unless() above. The
         # statement is one UPDATE whose SET expression and WHERE both read the row's own ``data``.
@@ -1117,10 +1140,15 @@ class SqliteStorage(Storage[ModelT]):
                             payload_json=row[1],
                         )
                     exists = None
+                    current_row = None
                     if row is None:
+                        # The probe reads the row itself when the caller wants it as it now stands (a lost race): no second statement.
+                        columns = "id, data" if want_current else "1"
                         exists = await (await conn_.execute(
-                            f'SELECT 1 FROM "{self._table}" WHERE id = ?', (id,),
+                            f'SELECT {columns} FROM "{self._table}" WHERE id = ?', (id,),
                         )).fetchone()
+                        if want_current:
+                            current_row = exists
                 except BaseException:
                     if savepoint:
                         await conn_.execute("ROLLBACK TO patch_if")
@@ -1144,8 +1172,8 @@ class SqliteStorage(Storage[ModelT]):
                 raise NotFoundError(
                     f"{self._model.__name__} with id {id!r} not found"
                 )
-            return None
-        return entity
+            return None, (self._decode_row(current_row[0], current_row[1]) if current_row is not None else None)
+        return entity, None
 
     async def delete(self, id: str, *, conn: object | None = None) -> None:  # noqa: A002
         # SQLite uses a single shared connection so there is nothing to

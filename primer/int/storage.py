@@ -291,6 +291,27 @@ class Storage(ABC, Generic[ModelT]):
         a number is never a string or a bool, ``None`` matches an absent field or JSON null.
         """
 
+    async def patch_if_or_current(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[str | tuple[str, ...], Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: Any | None = None,
+    ) -> tuple[ModelT | None, ModelT | None]:
+        """:meth:`patch_if`, answering a rejected write with the row as it stands: ``(written, None)`` or ``(None, current)``.
+
+        A caller whose guard was lost wants the row's fresh state (its new ``access.rev``, the value that drifted) to retry or to
+        compare: this hands it back from the same call instead of a second :meth:`get`. Raises exactly what :meth:`patch_if` raises
+        (``NotFoundError`` for a missing row included). This default reads again; the SQLite and Postgres backends answer from the
+        probe they already run on a rejection, so it costs nothing extra there.
+        """
+        written = await self.patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if written is not None:
+            return written, None
+        return None, await self.get(id, conn=conn)
+
     @abstractmethod
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         """Remove the entity with the given id.
