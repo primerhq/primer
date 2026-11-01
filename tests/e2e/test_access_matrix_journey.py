@@ -15,6 +15,10 @@ Then the inherited rows follow their parent (a document its collection, a subscr
 profile is refused for B until the admin grants use), the event attribution (A's create is A's, B reads no event of A's private workspace) and the
 lifecycle (the admin deletes A: A's sole-owned rows are the admin's, B's grants on them survive; the admin demotes B: B reads nothing, promotion restores it).
 Collect-only locally; CI runs it against the live server.
+
+Nothing here depends on what the server happens to hold: the ``infra`` fixture has the admin create (through the public REST API) one row of
+every grantable kind, and publishes the ones a user needs in order to make a row of an owned kind (a model profile and its LLM provider for an
+agent, a local workspace provider and a template for a template and a workspace, a Slack channel provider for a channel).
 """
 
 from __future__ import annotations
@@ -29,6 +33,10 @@ from collections.abc import Callable
 
 import httpx
 import pytest
+import pytest_asyncio
+
+from tests._support.model_profiles import profile_id_for, seed_llm_provider
+from tests.e2e.conftest import pgvector_ssp_body
 
 pytestmark = pytest.mark.asyncio
 
@@ -67,6 +75,82 @@ async def _share(owner: httpx.AsyncClient, plural: str, entity_id: str, owner_id
     return put.json()
 
 
+# ---- the infrastructure the owned kinds are made from ---------------------------------------------------------------------------------------------
+
+
+@dataclass
+class Infra:
+    """The ids of one row of every grantable kind, created by the admin for this test."""
+
+    llm_provider: str
+    profile: str
+    ws_provider: str
+    template: str
+    channel_provider: str
+    embedding: str
+    cross_encoder: str
+    ssp: str
+
+
+async def _publish(admin: httpx.AsyncClient, plural: str, rid: str) -> None:
+    """Make an infrastructure row usable by every full user (a new one is private to admins)."""
+    view = (await admin.get(f"/v1/{plural}/{rid}/access")).json()
+    put = await admin.put(
+        f"/v1/{plural}/{rid}/access",
+        json={"owners": [o["id"] for o in view["owners"]], "grants": {g["user"]["id"]: g["level"] for g in view["grants"]},
+              "public": True, "public_tools": view.get("public_tools", []), "rev": view["rev"]},
+    )
+    assert put.status_code == 200, put.text
+
+
+@pytest_asyncio.fixture
+async def infra(client, mock_llm, unique_suffix, tmp_path_factory) -> AsyncIterator[Infra]:
+    _registry, mock_url = mock_llm
+    s = unique_suffix
+    made: list[tuple[str, str]] = []  # (plural, id), deleted in reverse order
+
+    async def create(plural: str, body: dict) -> str:
+        r = await client.post(f"/v1/{plural}", json=body)
+        assert r.status_code == 201, (plural, r.text)
+        made.append((plural, body["id"]))
+        return body["id"]
+
+    try:
+        llm = f"mx-llm-{s}"
+        seeded = await seed_llm_provider(client, {
+            "id": llm, "provider": "openchat", "models": [{"name": "scripted:default", "context_length": 8192}],
+            "config": {"url": mock_url, "flavor": "lmstudio"}, "limits": {"max_concurrency": 1},
+        })
+        assert seeded.status_code in (200, 201), seeded.text
+        made.append(("llm_providers", llm))
+        profile = profile_id_for(llm, "scripted:default")
+        made.append(("model_profiles", profile))
+        wsp = await create("workspace_providers", {
+            "id": f"mx-wsp-{s}", "provider": "local", "config": {"kind": "local", "root_path": str(tmp_path_factory.mktemp(f"mx-ws-{s}"))},
+        })
+        tpl = await create("workspace_templates", {"id": f"mx-base-tpl-{s}", "description": "matrix base", "provider_id": wsp, "backend": {"kind": "local"}})
+        chp = await create("channel_providers", {
+            "id": f"mx-chp-{s}", "provider": "slack",
+            "config": {"app_token": "xapp-1-matrix", "bot_token": "xoxb-1-matrix", "signing_secret": "matrix-secret"},
+        })
+        emb = await create("embedding_providers", {
+            "id": f"mx-emb-{s}", "provider": "openai", "models": [{"name": "stub-embed"}],
+            "config": {"url": "http://127.0.0.1:1", "api_key": "sk-not-used", "flavor": "other"}, "limits": {"max_concurrency": 1},
+        })
+        ce = await create("cross_encoder_providers", {
+            "id": f"mx-ce-{s}", "provider": "huggingface", "models": [{"name": "BAAI/bge-reranker-v2-m3"}],
+            "config": {"token": None}, "limits": {"max_concurrency": 1},
+        })
+        ssp = await create("ssp", pgvector_ssp_body(f"mx-ssp-{s}"))
+        for plural, rid in (("llm_providers", llm), ("model_profiles", profile), ("workspace_providers", wsp),
+                            ("workspace_templates", tpl), ("channel_providers", chp)):
+            await _publish(client, plural, rid)
+        yield Infra(llm, profile, wsp, tpl, chp, emb, ce, ssp)
+    finally:
+        for plural, rid in reversed(made):
+            await client.delete(f"/v1/{plural}/{rid}")
+
+
 # ---- the kinds -------------------------------------------------------------------------------------------------------------------------------
 
 
@@ -86,16 +170,16 @@ class Kind:
     mcp_writes: bool = True  # False: the writes are approval-gated by the seeded policies, so MCP does not expose them ("not exposed: approval_required")
 
 
-async def _profile(client: httpx.AsyncClient) -> str:
+async def _profile(client: httpx.AsyncClient, ctx: dict) -> str:
+    """The published profile of ``infra``, checked to be one this user may use."""
     items = (await client.get("/v1/model_profiles/choices", params={"limit": 200})).json().get("items", [])
-    if not items:
-        pytest.skip("no model profile this user may use on this server")
-    return items[0]["id"]
+    assert ctx["infra"].profile in [i["id"] for i in items], items
+    return ctx["infra"].profile
 
 
 async def _make_agent(c, suffix, ctx):
     rid = f"mx-agent-{suffix}"
-    made = await c.post("/v1/agents", json={"id": rid, "description": "matrix", "model": {"profile_id": await _profile(c)}})
+    made = await c.post("/v1/agents", json={"id": rid, "description": "matrix", "model": {"profile_id": await _profile(c, ctx)}})
     assert made.status_code == 201, made.text
     return rid
 
@@ -122,22 +206,18 @@ async def _make_collection(c, suffix, ctx):
 
 
 async def _make_template(c, suffix, ctx):
-    templates = (await c.get("/v1/workspace_templates", params={"limit": 200})).json().get("items", [])
-    if not templates:
-        pytest.skip("no workspace template this user may read on this server")
+    infra = ctx["infra"]
     rid = f"mx-tpl-{suffix}"
-    body = {**{k: v for k, v in templates[0].items() if k not in ("id", "access", "your_level")}, "id": rid, "description": "matrix"}
-    made = await c.post("/v1/workspace_templates", json=body)
+    made = await c.post(
+        "/v1/workspace_templates",
+        json={"id": rid, "description": "matrix", "provider_id": infra.ws_provider, "backend": {"kind": "local"}},
+    )
     assert made.status_code == 201, made.text
-    ctx["template_id"] = templates[0]["id"]
     return rid
 
 
 async def _make_workspace(c, suffix, ctx):
-    templates = (await c.get("/v1/workspace_templates", params={"limit": 200})).json().get("items", [])
-    if not templates:
-        pytest.skip("no workspace template this user may read on this server")
-    made = await c.post("/v1/workspaces", json={"template_id": templates[0]["id"]})
+    made = await c.post("/v1/workspaces", json={"template_id": ctx["infra"].template})
     assert made.status_code == 201, made.text
     return made.json()["id"]
 
@@ -150,12 +230,8 @@ async def _make_trigger(c, suffix, ctx):
 
 
 async def _make_channel(c, suffix, ctx):
-    providers = (await c.get("/v1/channel_providers", params={"limit": 200})).json()
-    items = providers.get("items", []) if isinstance(providers, dict) else []
-    if not items:
-        pytest.skip("no channel provider this user may use on this server")
     rid = f"mx-ch-{suffix}"
-    made = await c.post("/v1/channels", json={"id": rid, "provider_id": items[0]["id"], "provider": items[0].get("provider", "slack"), "external_id": f"MX{suffix}"[:30]})
+    made = await c.post("/v1/channels", json={"id": rid, "provider_id": ctx["infra"].channel_provider, "provider": "slack", "external_id": f"MX{suffix}"[:30]})
     assert made.status_code == 201, made.text
     return rid
 
@@ -163,8 +239,6 @@ async def _make_channel(c, suffix, ctx):
 async def _make_harness(c, suffix, ctx):
     # Harness writes are admin-only: the admin creates it, and the owner column is the admin.
     made = await c.post("/v1/harnesses", json={"slug": f"mx-hn-{suffix}", "name": "matrix", "git_url": "https://github.com/example/matrix.git"})
-    if made.status_code in (403, 404):
-        pytest.skip("harness creation is not available to this user on this server")
     assert made.status_code in (200, 201), made.text
     return made.json()["id"]
 
@@ -280,9 +354,9 @@ async def _mcp_door(admin: httpx.AsyncClient, user: httpx.AsyncClient, base_url:
 
 
 @pytest.mark.parametrize("kind", KINDS, ids=lambda k: k.name)
-async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base_url, unique_suffix, kind: Kind) -> None:
+async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base_url, unique_suffix, infra, kind: Kind) -> None:
     all_tools = sorted({t for k in KINDS for t in k.tools})
-    ctx: dict = {}
+    ctx: dict = {"infra": infra}
     maker = client if kind.name == "harness" else None  # a harness is made by the admin; the others by A
     async with (
         _user(client, base_url, f"mx-a-{unique_suffix}") as (a_id, a),
@@ -335,25 +409,24 @@ async def test_every_level_of_every_owned_kind_through_rest_and_mcp(client, base
 
 # ---- 1b. grantable infrastructure: use grants, admin-only edits -------------------------------------------------------------------------------
 
-#: (REST plural, the ``kind`` of ``system__get_entity_access`` / ``system__set_entity_access``). One row of each already exists on a bootstrapped server.
+#: (REST plural, the ``kind`` of ``system__get_entity_access`` / ``system__set_entity_access``, the ``Infra`` field holding the row the admin made).
+#: The semantic search provider's REST plural is ``ssp``.
 GRANTABLE = [
-    ("model_profiles", "model_profile"),
-    ("llm_providers", "llm_provider"),
-    ("embedding_providers", "embedding_provider"),
-    ("cross_encoder_providers", "cross_encoder_provider"),
-    ("semantic_search_providers", "semantic_search_provider"),
-    ("workspace_providers", "workspace_provider"),
-    ("channel_providers", "channel_provider"),
+    ("model_profiles", "model_profile", "profile"),
+    ("llm_providers", "llm_provider", "llm_provider"),
+    ("embedding_providers", "embedding_provider", "embedding"),
+    ("cross_encoder_providers", "cross_encoder_provider", "cross_encoder"),
+    ("ssp", "semantic_search_provider", "ssp"),
+    ("workspace_providers", "workspace_provider", "ws_provider"),
+    ("channel_providers", "channel_provider", "channel_provider"),
 ]
 
 
-@pytest.mark.parametrize(("plural", "kind"), GRANTABLE, ids=[k for _p, k in GRANTABLE])
-async def test_a_use_grant_is_set_by_the_admin_alone_and_read_by_its_grantee(client, base_url, unique_suffix, plural: str, kind: str) -> None:
-    rows = (await client.get(f"/v1/{plural}", params={"limit": 200})).json()
-    items = rows.get("items", []) if isinstance(rows, dict) else []
-    if not items:
-        pytest.skip(f"no {kind} on this server")
-    rid = items[0]["id"]
+@pytest.mark.parametrize(("plural", "kind", "field"), GRANTABLE, ids=[k for _p, k, _f in GRANTABLE])
+async def test_a_use_grant_is_set_by_the_admin_alone_and_read_by_its_grantee(
+    client, base_url, unique_suffix, infra, plural: str, kind: str, field: str,
+) -> None:
+    rid = getattr(infra, field)
     before = (await client.get(f"/v1/{plural}/{rid}/access")).json()
     async with (
         _user(client, base_url, f"mx-g-{unique_suffix}") as (g_id, grantee),
@@ -423,11 +496,8 @@ async def test_inherited_rows_follow_their_parent(client, base_url, unique_suffi
 # ---- 3. infrastructure ------------------------------------------------------------------------------------------------------------------------
 
 
-async def test_an_agent_on_a_private_profile_is_refused_until_the_admin_grants_use(client, base_url, unique_suffix) -> None:
-    profiles = (await client.get("/v1/model_profiles", params={"limit": 200})).json().get("items", [])
-    if not profiles:
-        pytest.skip("no model profile on this server")
-    private = profiles[0]["id"]
+async def test_an_agent_on_a_private_profile_is_refused_until_the_admin_grants_use(client, base_url, unique_suffix, infra) -> None:
+    private = infra.profile
     async with _user(client, base_url, f"mx-b3-{unique_suffix}") as (b_id, b):
         await _share(client, "model_profiles", private, "", {}, owners=[], public=False)
         refused = await b.post("/v1/agents", json={"id": f"mx-prof-{unique_suffix}", "description": "x", "model": {"profile_id": private}})
@@ -444,13 +514,13 @@ async def test_an_agent_on_a_private_profile_is_refused_until_the_admin_grants_u
 # ---- 5. events --------------------------------------------------------------------------------------------------------------------------------
 
 
-async def test_events_are_attributed_and_scoped(client, base_url, unique_suffix) -> None:
+async def test_events_are_attributed_and_scoped(client, base_url, unique_suffix, infra) -> None:
     async with (
         _user(client, base_url, f"mx-a5-{unique_suffix}") as (a_id, a),
         _user(client, base_url, f"mx-b5-{unique_suffix}") as (_b_id, b),
     ):
-        wid = await _make_workspace(a, unique_suffix, {})
-        rid = await _make_agent(a, unique_suffix, {})
+        wid = await _make_workspace(a, unique_suffix, {"infra": infra})
+        rid = await _make_agent(a, unique_suffix, {"infra": infra})
         try:
             events = (await client.get("/v1/events", params={"event_type": "agent.created", "limit": 200})).json().get("items", [])
             mine = [e for e in events if e.get("entity_id") == rid]
