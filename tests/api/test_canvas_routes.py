@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -94,6 +94,15 @@ async def _draw(c: httpx.AsyncClient, sid: str = "s1", source: str = PLAYLIST) -
 
 async def _canvas(sp, sid: str = "s1") -> SessionCanvas | None:
     return await sp.get_storage(SessionCanvas).get(sid)
+
+
+async def _age_event(sp, seconds: float, sid: str = "s1") -> None:
+    """Move the stored session's newest event ``seconds`` into the past: the wall clock the route's redelivery
+    grace reads is not injectable, so the event's own timestamp is what a test moves."""
+    row = await _canvas(sp, sid)
+    assert row is not None and row.events
+    row.events[-1].at = datetime.now(UTC) - timedelta(seconds=seconds)
+    await sp.get_storage(SessionCanvas).update(row)
 
 
 async def _platform(sp, event_type: str) -> list:
@@ -237,7 +246,9 @@ async def test_a_retried_post_records_and_delivers_once(client, fake_storage_pro
 
 async def test_a_retry_whose_first_delivery_raised_delivers_the_click(client, fake_storage_provider, ws, monkeypatch):
     """Review of #908, round 2: the click was recorded but its delivery raised, so the client retries with the same key. The event is
-    still unread and nothing queued it: the retry delivers it, once, and records nothing more."""
+    still unread and nothing queued it: the retry delivers it, once, and records nothing more. The retry is older than the redelivery
+    grace (W57c), so the route takes it for a failed first delivery; a younger one lands while the first is still delivering and is not
+    redelivered (the next test)."""
     import primer.canvas.delivery as delivery
 
     await _seed(fake_storage_provider)
@@ -255,12 +266,46 @@ async def test_a_retry_whose_first_delivery_raised_delivers_the_click(client, fa
     with pytest.raises(RuntimeError):
         await client.post(_url(tail="/events"), json=body)
     assert "s1" not in ws.slots and (await _canvas(fake_storage_provider)).event_seq == 1
+    await _age_event(fake_storage_provider, 31)
 
     r = await client.post(_url(tail="/events"), json=body)
     assert r.status_code == 202 and r.json() == {"event_id": "e1", "rev": 1, "event_seq": 1, "delivery": "woken"}
     assert calls == ["e1", "e1"] and len(ws.slots["s1"].appended) == 1
     third = await client.post(_url(tail="/events"), json=body)
     assert third.json()["delivery"] == "recorded" and len(ws.slots["s1"].appended) == 1, "a delivered (read) click is not delivered twice"
+    assert len(await _platform(fake_storage_provider, "canvas.event")) == 1
+
+
+async def test_a_retry_landing_while_the_first_post_is_still_delivering_is_not_delivered_twice(client, fake_storage_provider, ws, monkeypatch):
+    """W57c: the first POST recorded the click and its delivery is still running when the retry lands (the wake is issued, the agent
+    has not read it, nothing queued it). Inside the redelivery grace the route must not redeliver, or the click reaches the agent
+    twice: it answers ``recorded`` and nothing is appended. Once the event is older than the grace the next retry delivers the click,
+    once - so the grace delays a lost delivery, it does not lose one."""
+    import primer.canvas.delivery as delivery
+
+    await _seed(fake_storage_provider)
+    await _draw(client)
+    real, calls = delivery.deliver_canvas_event, []
+
+    async def flaky(**kwargs):
+        calls.append(kwargs["event"].id)
+        if len(calls) == 1:
+            raise RuntimeError("the wake could not be written")
+        return await real(**kwargs)
+
+    monkeypatch.setattr(delivery, "deliver_canvas_event", flaky)
+    body = {"element": "play", "kind": "click", "client_event_id": "c-1"}
+    with pytest.raises(RuntimeError):
+        await client.post(_url(tail="/events"), json=body)
+
+    retry = await client.post(_url(tail="/events"), json=body)
+    assert retry.status_code == 202 and retry.json()["delivery"] == "recorded"
+    assert calls == ["e1"] and "s1" not in ws.slots, "a retry inside the grace redelivers nothing"
+
+    await _age_event(fake_storage_provider, 31)
+    again = await client.post(_url(tail="/events"), json=body)
+    assert again.status_code == 202 and again.json()["delivery"] == "woken"
+    assert calls == ["e1", "e1"] and len(ws.slots["s1"].appended) == 1, "the click is delivered once, not twice"
     assert len(await _platform(fake_storage_provider, "canvas.event")) == 1
 
 

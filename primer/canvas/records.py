@@ -9,7 +9,9 @@ session, and who that is depends on whether a turn is running:
 * **Outside a turn** (an operator's batch, a clear, a user's click) the record RESERVES the next seq on the session row first
   (``primer.session.seq_reservation.reserve_seq``), guarded on the turn not running, and is then appended at that seq. The
   guard is the point: a turn's writer writes ``last_seq`` back only at its exits, so a seq reserved while a turn is running would be
-  one the turn has already numbered (the documented gap of the PAUSE_SUPERSEDED records).
+  one the turn has already numbered (the documented gap of the PAUSE_SUPERSEDED records). The reservation and the append are ONE
+  section under the session's lifecycle lock (W57d), so two concurrent records land in the file in the order their reservations
+  took their seqs: a record that landed after a later one would be skipped by the tap's seq filter.
 * **While a turn is running and the caller is not the turn** nothing is written. The batch or the event is still in the canvas row
   and in the platform event log, and a silent event reaches the agent in the next digest, so only the transcript line is skipped.
 
@@ -26,6 +28,7 @@ from typing import Any
 from primer.model.except_ import NotFoundError
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord, WorkspaceSession
 from primer.session.delegation import current_delegation_sink
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.seq_reservation import reserve_seq
 
@@ -81,31 +84,37 @@ async def _append_outside_a_turn(
     sessions = storage_provider.get_storage(WorkspaceSession)
     # The workspace first: a reservation whose record is never appended leaves a gap in the seqs.
     workspace = await workspace_registry.get_workspace(workspace_id)
-    reserved: int | None = None
-    for _ in range(_RESERVE_ATTEMPTS):
-        row = await sessions.get(session_id)
-        if row is None:
+    # W57d: reserve and append are one section under the session's lifecycle lock, so two concurrent records land in the file in
+    # the order their reservations took their seqs. The lock is the one ``reserve_seq`` documents its callers to hold: the
+    # append's own messages lock is taken by the backend inside it and is non-reentrant, so it cannot be the holder, and a
+    # steer's reserve+write is serialized on the same lock (``enqueue``), so a record and a steer keep their reservation order.
+    # The in-lock wait is bounded by the writer's own write bound, as in the steer's own in-lock append.
+    async with session_lifecycle_lock().acquire(session_id):
+        reserved: int | None = None
+        for _ in range(_RESERVE_ATTEMPTS):
+            row = await sessions.get(session_id)
+            if row is None:
+                return None
+            if row.turn_status == "running":
+                logger.debug("session %s: a turn is running; the canvas record is skipped", session_id)
+                return None
+            try:
+                reserved = await reserve_seq(sessions, session_id, last_seq=row.last_seq, where={"turn_status": _NO_TURN_RUNNING})
+            except NotFoundError:
+                return None                  # the session was deleted between the read and the reservation
+            if reserved is not None:
+                break
+        if reserved is None:
+            logger.warning("session %s: no seq could be reserved for a canvas record after %d attempts", session_id, _RESERVE_ATTEMPTS)
             return None
-        if row.turn_status == "running":
-            logger.debug("session %s: a turn is running; the canvas record is skipped", session_id)
-            return None
-        try:
-            reserved = await reserve_seq(sessions, session_id, last_seq=row.last_seq, where={"turn_status": _NO_TURN_RUNNING})
-        except NotFoundError:
-            return None                      # the session was deleted between the read and the reservation
-        if reserved is not None:
-            break
-    if reserved is None:
-        logger.warning("session %s: no seq could be reserved for a canvas record after %d attempts", session_id, _RESERVE_ATTEMPTS)
-        return None
-    writer = WorkspaceMessageWriter(workspace_io=workspace, session_id=session_id, start_seq=reserved - 1)
-    seq = await writer.append(SessionMessageRecord(
-        seq=1,  # overwritten by the writer's monotonic counter
-        kind=kind,
-        payload=payload,
-        created_at=datetime.now(UTC),
-    ))
-    await writer.flush()
+        writer = WorkspaceMessageWriter(workspace_io=workspace, session_id=session_id, start_seq=reserved - 1)
+        seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=kind,
+            payload=payload,
+            created_at=datetime.now(UTC),
+        ))
+        await writer.flush()
     if event_bus is not None:
         try:
             await event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
