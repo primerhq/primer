@@ -725,6 +725,17 @@ def build_system_toolset(
         "collection": _collection_pre_delete,
         "toolset": _toolset_pre_delete,
     }
+    async def _agent_post_delete(agent_id: str) -> None:
+        """The agent's memory goes with it, as on the REST route. The row is already gone, so a failure is logged, not answered. No claim engine
+        here (a tool may run in a worker): a lease left for a removed job is dropped by the job runner."""
+        from primer.memory.settings import delete_agent_memory
+
+        try:
+            await delete_agent_memory(storage_provider, semantic_search_registry, None, agent_id)
+        except Exception:  # noqa: BLE001 - see above
+            logging.getLogger(__name__).warning("agent %s: could not remove its memory", agent_id, exc_info=True)
+
+    post_deletes_by_label: dict[str, Any] = {"agent": _agent_post_delete}
     # A document inherits its collection's access (P3 Decision 6): get needs read on its collection, a write full, and the
     # lists only reach the collections the caller can read. The create/update/delete tools are replaced further down.
     from primer.toolset._collection_access import collection_for, readable_documents
@@ -795,6 +806,7 @@ def build_system_toolset(
                 delete_note=delete_notes_by_label.get(label),
                 write_note=write_notes_by_label.get(label),
                 pre_delete=pre_deletes_by_label.get(label),
+                post_delete=post_deletes_by_label.get(label),
                 row_guard=row_guard,
                 list_filter=list_filter,
             )
