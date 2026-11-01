@@ -55,15 +55,23 @@ async def run_on_seed(path: Path, seed: Step, views: tuple[type, ...], *steps: S
         await sp.aclose()
 
 
-async def assert_golden(tmp_path: Path, seed: Step, views: tuple[type, ...], old: Step, new: Step) -> None:
-    """The new step leaves every row as the old one did on the same seed, changes something, and a second run changes nothing."""
+async def assert_golden(
+    tmp_path: Path, seed: Step, views: tuple[type, ...], old: Step, new: Step, *, expect_change: bool = True,
+) -> None:
+    """The new step leaves every row as the old one did on the same seed, changes something (unless the seed pins a no-op), and a second
+    run changes nothing."""
     before = await run_on_seed(tmp_path / "before.sqlite", seed, views)
     by_old = await run_on_seed(tmp_path / "old.sqlite", seed, views, old)
     by_new = await run_on_seed(tmp_path / "new.sqlite", seed, views, new)
     twice = await run_on_seed(tmp_path / "twice.sqlite", seed, views, new, new)
-    assert by_old != before, "the seed has nothing for the step to change"
+    assert (by_old != before) is expect_change, "the seed does not exercise what it says"
     assert by_new == by_old
     assert twice == by_new
 
 
-__all__ = ["assert_golden", "insert_raw", "run_on_seed", "snapshot"]
+def bulk(prefix: str, n: int, doc: Callable[[int], dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """``n`` documents ``{prefix}{i:03d}``: enough rows to cross the 200-row page boundary while the step writes or deletes the rows it pages."""
+    return {f"{prefix}{i:03d}": doc(i) for i in range(n)}
+
+
+__all__ = ["assert_golden", "bulk", "insert_raw", "run_on_seed", "snapshot"]
