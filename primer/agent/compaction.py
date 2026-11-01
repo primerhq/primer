@@ -50,7 +50,7 @@ from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.common.context_overflow import is_context_overflow
 from primer.common.log import redact_credentials
 from primer.llm._reasoning import profile_extended, profile_stream
-from primer.llm._tokenizer.char_fallback import _estimate_part, count_tokens_char_fallback
+from primer.llm._tokenizer.char_fallback import _estimate_part, count_tokens_char_fallback, text_tokens
 from primer.model.chat import (
     CompactionSummary,
     Error,
@@ -707,7 +707,7 @@ class CompactionStrategy:
 
         Per :class:`Part` type:
 
-        * :class:`TextPart` -- ``ceil(len(text) / 4)``.
+        * :class:`TextPart` -- ``ceil(len(text) / 4)``, except that each CJK ideograph, kana or hangul character counts one token (GI-19).
         * :class:`ToolCallPart` -- ``50 + len(name) + ceil(len(json.dumps(arguments)) / 4)``.
         * :class:`ToolResultPart` -- ``20 + ceil(len(output) / 4)``.
         * :class:`ImagePart` -- 1000 tokens (Anthropic / OpenAI ballpark).
@@ -741,7 +741,7 @@ class CompactionStrategy:
         for mi, msg in enumerate(history):
             for pi, part in enumerate(msg.parts):
                 if isinstance(part, ToolResultPart):
-                    tokens = 20 + -(-len(part.output) // 4)
+                    tokens = 20 + text_tokens(part.output)
                     result_token_estimates.append((mi, pi, tokens))
 
         total_tokens = sum(t for _, _, t in result_token_estimates)

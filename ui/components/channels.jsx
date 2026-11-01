@@ -247,6 +247,8 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
     return seeded;
   });
   const [fieldErrors, setFieldErrors] = React.useState({});
+  // Secret fields the operator ticked "Clear" on: blank keeps a stored secret, only this sends null (GU-20).
+  const [cleared, setCleared] = React.useState({});
   // ACL-P4-T7: the create form's Public switch (off by default); the POST
   // cannot set the access, so save follows it with the access PUT.
   const [pub, setPub] = React.useState(false);
@@ -274,6 +276,10 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
     const out = {};
     for (const f of fields) {
       const v = values[f.key];
+      if (isEdit && f.secret && cleared[f.key]) {
+        out[f.key] = null;
+        continue;
+      }
       if (v === undefined || v === null || v === "") {
         if (isEdit && f.secret && existing?.config?.[f.key] !== undefined) {
           out[f.key] = existing.config[f.key];
@@ -426,10 +432,18 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
                   aria-required={f.required ? "true" : undefined}
                   placeholder={isEdit && f.secret ? "Leave blank to keep the stored secret" : f.placeholder}
                   value={values[f.key] ?? ""}
+                  disabled={!!cleared[f.key]}
                   onChange={(e) => { const v = e.target.value; setValues((prev) => ({ ...prev, [f.key]: v })); }}
                   style={{ width: "100%" }}
                 />
               )}
+              {isEdit && f.secret && !f.required && existing?.config?.[f.key] ? (
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, marginTop: 6 }}>
+                  <input type="checkbox" data-testid={"ch-clear-" + f.key} checked={!!cleared[f.key]}
+                    onChange={(e) => { const c = e.target.checked; setCleared((prev) => ({ ...prev, [f.key]: c })); }} />
+                  <span>Clear the stored value</span>
+                </label>
+              ) : null}
             </FormField>
           );
         })}

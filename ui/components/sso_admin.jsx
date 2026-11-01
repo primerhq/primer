@@ -252,7 +252,7 @@ function SSO_ProviderFields({
   name, onName,
   discoveryUrl, onDiscoveryUrl,
   clientId, onClientId,
-  clientSecret, onClientSecret, secretHint,
+  clientSecret, onClientSecret, clearSecret, onClearSecret, secretHint,
   scopes, onScopes,
   enabled, onEnabled,
   fieldErrors,
@@ -324,6 +324,13 @@ function SSO_ProviderFields({
           placeholder={secretHint}
           style={{ width: "100%" }}
         />
+        {onClearSecret && (
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, marginTop: 6 }}>
+            <input type="checkbox" data-testid="sso-clear-secret" checked={!!clearSecret} disabled={!!clientSecret}
+              onChange={(e) => onClearSecret(e.target.checked)} />
+            <span>Remove the stored secret (a public client)</span>
+          </label>
+        )}
         {fieldErrors["body.client_secret"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.client_secret"]}</div>}
       </div>
       <div className="field">
@@ -464,6 +471,7 @@ function SSO_EditProviderDialog({ provider, onClose, onSaved }) {
   const [discoveryUrl, setDiscoveryUrl] = React.useState(provider.discovery_url || "");
   const [clientId, setClientId] = React.useState(provider.client_id || "");
   const [clientSecret, setClientSecret] = React.useState("");
+  const [clearSecret, setClearSecret] = React.useState(false);
   const [scopes, setScopes] = React.useState((provider.scopes || []).join(", "));
   const [enabled, setEnabled] = React.useState(!!provider.enabled);
   const [busy, setBusy] = React.useState(false);
@@ -489,11 +497,13 @@ function SSO_EditProviderDialog({ provider, onClose, onSaved }) {
         discovery_url: discoveryUrl.trim(),
         client_id: clientId.trim(),
         // Blank == "leave unchanged" (see comment above the component).
-        ...(clientSecret ? { client_secret: clientSecret } : {}),
+        ...(clientSecret && !clearSecret ? { client_secret: clientSecret } : {}),
         scopes: SSO_parseScopes(scopes),
         enabled,
       };
-      await apiFetch("PUT", "/admin/oidc-providers/" + encodeURIComponent(provider.id), body);
+      // Only the explicit flag removes the stored secret (GU-20); blank keeps it.
+      const clearing = clearSecret && !clientSecret;
+      await apiFetch("PUT", "/admin/oidc-providers/" + encodeURIComponent(provider.id) + (clearing ? "?clear_client_secret=true" : ""), body);
       if (!mountedRef.current) return;
       onSaved && onSaved();
     } catch (err) {
@@ -537,6 +547,7 @@ function SSO_EditProviderDialog({ provider, onClose, onSaved }) {
           discoveryUrl={discoveryUrl} onDiscoveryUrl={setDiscoveryUrl}
           clientId={clientId} onClientId={setClientId}
           clientSecret={clientSecret} onClientSecret={setClientSecret}
+          clearSecret={clearSecret} onClearSecret={provider.client_secret ? setClearSecret : undefined}
           secretHint="leave blank to keep the current secret"
           scopes={scopes} onScopes={setScopes}
           enabled={enabled} onEnabled={setEnabled}
