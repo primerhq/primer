@@ -99,6 +99,9 @@ class LocalStateRepo:
     snapshots.
     """
 
+    #: ``commit(appends=...)`` extends a file by appending (Task 14 stage 2); a repo without this attribute is committed whole-file.
+    supports_append = True
+
     def __init__(
         self,
         path: Path,
@@ -279,8 +282,13 @@ class LocalStateRepo:
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
         delete_files: list[str] | None = None,
+        appends: dict[str, bytes] | None = None,
     ) -> str:
         """Stage files under sessions/<session_id>/, commit with trailers.
+
+        ``appends`` adds bytes to the end of a file instead of replacing it (Task 14 stage 2): the file is extended by an O_APPEND write (a
+        missing final newline is supplied first, as the whole-file writers do) and staged, so a commit that only adds lines to
+        ``messages.jsonl`` rewrites none of it. The caller holds the file's lock (the session's messages lock) across the append.
 
         ``files`` keys are paths relative to the session slot
         (e.g. ``"messages.jsonl"`` or ``"memory/note.md"``); values are
@@ -325,6 +333,13 @@ class LocalStateRepo:
                     target.parent.mkdir, parents=True, exist_ok=True
                 )
                 await asyncio.to_thread(_write_atomic, target, content)
+                staged_paths.append(self._repo_relative(target))
+
+            for rel, data in (appends or {}).items():
+                _validate_relative_path(rel)
+                target = slot / rel
+                await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(_append_bytes, target, data)
                 staged_paths.append(self._repo_relative(target))
 
             # Stage them.
@@ -810,6 +825,21 @@ class LocalStateRepo:
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+
+def _append_bytes(target: Path, data: bytes) -> None:
+    """Add ``data`` to the end of ``target`` (created if absent) in one O_APPEND write, after a newline if the file does not end in one."""
+    lead = b""
+    try:
+        with open(target, "rb") as existing:
+            existing.seek(0, os.SEEK_END)
+            if existing.tell() > 0:
+                existing.seek(-1, os.SEEK_END)
+                lead = b"" if existing.read(1) == b"\n" else b"\n"
+    except FileNotFoundError:
+        pass
+    with open(target, "ab") as out:
+        out.write(lead + data)
 
 
 # How long a git that timed out gets to clean up after SIGTERM before SIGKILL.

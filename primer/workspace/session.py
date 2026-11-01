@@ -412,6 +412,8 @@ class AgentSession:
         self._binding = agent_binding
         self._state = state_repo
         self._log_cache = None  # the session's MessageLogCache, made on first use (see ``log_view``)
+        #: Task 14 stage 2: write this session's log by appending the new lines. ``None`` follows ``WorkerConfig.session_log_append_only``.
+        self.session_log_append_only: bool | None = None
         self._cache = truncation_store
         self._tools: list["WorkspaceTool"] = list(workspace_tools)
         self._lock = asyncio.Lock()
@@ -540,6 +542,13 @@ class AgentSession:
 
     # ---- Runtime-facing per-turn surface ---------------------------------
 
+    def append_only(self) -> bool:
+        """Whether the log is written by appending (the flag is on and the state repo can append)."""
+        from primer.workspace.message_log import append_only_default
+
+        on = append_only_default() if self.session_log_append_only is None else self.session_log_append_only
+        return bool(on and getattr(self._state, "supports_append", False))
+
     async def commit_state(
         self,
         *,
@@ -548,8 +557,12 @@ class AgentSession:
         tool: str | None = None,
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
+        appends: dict[str, bytes] | None = None,
     ) -> str:
-        """Commit one turn's writes to this session's slot. Returns SHA."""
+        """Commit one turn's writes to this session's slot. Returns SHA.
+
+        ``appends`` (only when :meth:`append_only` is true) adds bytes to the end of a file instead of rewriting it.
+        """
         if self._info.status == SessionStatus.ENDED:
             raise ConflictError(
                 f"cannot commit state on ENDED session {self.session_id!r}"
@@ -561,6 +574,7 @@ class AgentSession:
             tool=tool,
             call_id=call_id,
             files=files,
+            **({"appends": appends} if appends else {}),
         )
         self._touch_last_activity()
         return sha
@@ -712,16 +726,22 @@ class AgentSession:
                     )
                     self._info = updated_info
                     return instruction
-                new_messages_jsonl = await self._appended_messages_jsonl(message)
-                await self._state.commit(
-                    self.session_id,
-                    summary=f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction",
-                    op="user_instruction",
-                    files={
-                        "messages.jsonl": new_messages_jsonl,
-                        "session.json": updated_info.model_dump_json(indent=2),
-                    },
-                )
+                summary = f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction"
+                if self.append_only():
+                    await self._state.commit(
+                        self.session_id, summary=summary, op="user_instruction",
+                        files={"session.json": updated_info.model_dump_json(indent=2)},
+                        appends={"messages.jsonl": (message.model_dump_json() + "\n").encode()},
+                    )
+                else:
+                    new_messages_jsonl = await self._appended_messages_jsonl(message)
+                    await self._state.commit(
+                        self.session_id, summary=summary, op="user_instruction",
+                        files={
+                            "messages.jsonl": new_messages_jsonl,
+                            "session.json": updated_info.model_dump_json(indent=2),
+                        },
+                    )
             self._info = updated_info
             return instruction
 

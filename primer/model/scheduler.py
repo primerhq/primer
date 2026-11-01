@@ -81,6 +81,15 @@ class WorkerConfig(BaseModel):
             "Used only to build the stable metric label."
         ),
     )
+    session_log_append_only: bool = Field(
+        default=False,
+        description=(
+            "Task 14 stage 2. Write a session's messages.jsonl by appending only the new lines (an O_APPEND write under the session's messages "
+            "lock, staged and committed as that file's delta) instead of reading the whole file and writing it back for every turn, steer and "
+            "compaction marker. The file's bytes and the commit history (count, subjects, files per commit) are identical either way; "
+            "only the I/O differs. A state repo that cannot append (a sandbox) keeps writing the whole file. Default OFF until it has soaked."
+        ),
+    )
     session_log_verify_reads: bool = Field(
         default=False,
         description=(

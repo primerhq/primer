@@ -54,11 +54,11 @@ class Env:
 
     def __init__(self, workspace, session, llm, append_only: bool):
         self.workspace, self.session, self.llm, self.append_only = workspace, session, llm, append_only
+        session.session_log_append_only = append_only
         self.ex = self.executor()
 
     def executor(self):
-        # The flag is read off the executor; a build without it simply ignores the attribute.
-        return make_executor(self.session, self.llm, configure=lambda e: setattr(e, "session_log_append_only", self.append_only))
+        return make_executor(self.session, self.llm)
 
     @property
     def messages_path(self) -> Path:
