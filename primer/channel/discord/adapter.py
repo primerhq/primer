@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from primer.channel.adapter import (
     BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header, format_tool_args, session_thread_label,
+    attribution_header, format_tool_args, session_thread_label, split_text,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import ApprovalView
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 # Discord message content caps at 2000 chars; keep args well under it.
 _DISCORD_ARGS_MAX = 1700
+# A message's content is at most 2000 characters (discord.com/developers/docs/resources/message#create-message).
+_DISCORD_MESSAGE_MAX = 2000
 
 
 def format_approval_content(envelope: PromptEnvelope) -> str:
@@ -67,7 +70,10 @@ class DiscordChannelAdapter(ChannelAdapter):
         return "discord_user_id"
 
     async def initialize(self) -> None:
-        self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
+        if self.owns_inbound:
+            self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
+        else:  # posting only (W7)
+            self._client = await DISCORD_CONNECTIONS.acquire(self._provider, inbound=False)
         entry = DISCORD_CONNECTIONS.entry(self._provider.id)
         if entry is not None:
             entry.adapters_by_channel_id[str(self._channel.external_id)] = self
@@ -116,6 +122,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         thread = await self._session_thread(
             channel, envelope.session_id,
             getattr(envelope, "thread_anchor", None),
+            workspace_id=envelope.workspace_id,
         )
         await self._post_thread_media(thread, envelope)
         header = attribution_header(envelope)
@@ -151,13 +158,13 @@ class DiscordChannelAdapter(ChannelAdapter):
                     )
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "inform":
-            msg = await thread.send(content=header + envelope.prompt)
-            return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
+            msgs = [await thread.send(content=part) for part in split_text(header + envelope.prompt, _DISCORD_MESSAGE_MAX)]
+            return {"message_id": getattr(msgs[0], "id", 0), "thread_id": thread.id}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 
     async def _session_thread(
-        self, channel: Any, session_id: str, anchor: str | None = None,
+        self, channel: Any, session_id: str, anchor: str | None = None, *, workspace_id: str = "",
     ) -> Any:
         """Get-or-create the one conversation thread for this session.
 
@@ -201,6 +208,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             name=label[:100], auto_archive_duration=60,
         )
         self._session_threads[session_id] = thread.id
+        await self._map_session_thread(str(thread.id), workspace_id=workspace_id, session_id=session_id)
         return thread
 
 
@@ -321,23 +329,36 @@ class DiscordChannelAdapter(ChannelAdapter):
         except Exception:
             logger.exception("discord: artifact store unavailable; skipping media")
             return [], text
-        parts: list = []
-        for att in attachments:
+        from primer.channel.media import ATTACHMENT_CONCURRENCY, declared_size_refused
+
+        gate = asyncio.Semaphore(ATTACHMENT_CONCURRENCY)
+
+        async def ingest(att) -> tuple[str, Any]:
+            if declared_size_refused(getattr(att, "size", None)):   # Discord declares the size: do not read what would be refused
+                return "too_large", None
             try:
-                data = await att.read()
+                async with gate:
+                    data = await att.read()
                 part = await store_inbound_media(
                     store, data=data,
                     mime_type=getattr(att, "content_type", None),
                     filename=getattr(att, "filename", None),
                 )
             except MediaError:
-                text = (text or "") + " [attachment skipped: too large]"
-                continue
+                return "too_large", None
             except Exception:
                 logger.exception("discord: failed to ingest attachment; skipping")
+                return "failed", None
+            return "part", part
+
+        parts: list = []
+        for kind, part in await asyncio.gather(*(ingest(att) for att in attachments)):   # results keep the attachments' order
+            if kind == "too_large":
+                text = (text or "") + " [attachment skipped: too large]"
+            elif kind == "failed":
                 text = (text or "") + " [attachment skipped]"
-                continue
-            parts.append(part)
+            else:
+                parts.append(part)
         return parts, text
 
 

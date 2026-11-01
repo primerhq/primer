@@ -316,7 +316,9 @@ async def test_a_remaining_call_that_fails_is_answered_with_an_error_and_the_rou
     events, results = await _finish(parked_round, [_answer("call-g")], _manager(rec, z=_Raising()))
 
     assert [(p.id, p.error) for p in results] == [("call-g", False), ("call-u", True), ("call-s", True), ("call-x", True), ("call-b", False)]
-    assert "rec__gone" in results[1].output and "sign in to z first" in results[2].output and "the tool has a bug" in results[3].output
+    assert "rec__gone" in results[1].output and "sign in to z first" in results[2].output
+    # The manager answers a raising tool with a fixed text naming it; the exception's own goes to the server log (W16, ruling D1).
+    assert "z__bug" in results[3].output and "the tool has a bug" not in results[3].output
     assert _shown(events) == [("tool_result", "call-u"), ("tool_result", "call-s"), ("tool_result", "call-x"), ("tool_result", "call-b")]
     assert _ran(rec) == ["call-b"]
 

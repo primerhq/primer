@@ -46,7 +46,7 @@ class CoordinatorFactory:
             PostgresRateLimiter,
         )
         return Coordinator(
-            rate_limiter=PostgresRateLimiter(storage_provider, owner_id),
+            rate_limiter=PostgresRateLimiter(storage_provider, owner_id, event_bus),
             invalidation_bus=PostgresInvalidationBus(event_bus),
             leader_elector=PostgresLeaderElector(storage_provider, owner_id),
         )

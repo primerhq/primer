@@ -37,6 +37,7 @@ from primer.access.policy import level_of
 from primer.access.workspaces import workspace_level
 from primer.model.access import LEVEL_RANK, AccessLevel
 from primer.model.principal import PrincipalRef
+from primer.model.storage import OffsetPage
 from primer.model.trigger import Trigger
 from primer.model.trigger import (
     AgentFreshSubConfig,
@@ -45,12 +46,17 @@ from primer.model.trigger import (
     SessionAppendSubConfig,
     Subscription,
 )
+from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
+from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
 
 #: The ``error_code`` of a fire refused because its target is outside the reach recorded on its subscription.
 TARGET_OUT_OF_REACH = "target_out_of_reach"
+
+# The most rows one storage query can return (OffsetPage.length is capped at 200); a longer list is read in chunks.
+_PAGE = 200
 
 
 def _full(level: AccessLevel | None) -> bool:
@@ -101,6 +107,73 @@ async def subscription_in_reach(storage_provider: Any, reach: Person | None, sub
     list and answered exactly as an unknown subscription id. ``reach`` ``None`` (an admin) sees every subscription.
     """
     return reach is None or await _target_refusal(storage_provider, reach, sub.config) is None
+
+
+async def subscriptions_in_reach(
+    storage_provider: Any, reach: Person | None, subs: list[Subscription],
+) -> list[Subscription]:
+    """The ``subs`` the caller ``reach`` may see or act on (ticket 01a16c22), the target reads batched.
+
+    ``[sub for sub in subs if await subscription_in_reach(storage_provider, reach, sub)]`` at the
+    cost of ONE read per DISTINCT target session and per DISTINCT target workspace, not one per
+    row: a page of a trigger's rows usually points at a handful of targets. The answer is the
+    one-row version's, in the same order: a target the caller holds no full on is left out, and
+    a kind with no rule in :func:`_target_refusal` stays out (fail closed). ``reach`` ``None``
+    (an admin) sees every subscription without a read.
+    """
+    if reach is None or not subs:
+        return list(subs)
+    session_ids = sorted(
+        {
+            c.session_id
+            for c in (s.config for s in subs)
+            if isinstance(c, SessionAppendSubConfig | ParkedSessionSubConfig)
+        }
+    )
+    session_rows: dict[str, WorkspaceSession] = {}
+    if session_ids:
+        for start in range(0, len(session_ids), _PAGE):
+            chunk = session_ids[start : start + _PAGE]
+            page = await storage_provider.get_storage(WorkspaceSession).find(
+                Q(WorkspaceSession).where_in("id", chunk).build(),
+                OffsetPage(offset=0, length=len(chunk)),
+            )
+            session_rows.update({row.id: row for row in page.items})
+    ws_ids = sorted(
+        {
+            c.workspace_id
+            for c in (s.config for s in subs)
+            if isinstance(c, AgentFreshSubConfig | GraphFreshSubConfig)
+        }
+        | {row.workspace_id for row in session_rows.values()}
+    )
+    ws_rows: dict[str, Workspace] = {}
+    if ws_ids:
+        for start in range(0, len(ws_ids), _PAGE):
+            chunk = ws_ids[start : start + _PAGE]
+            page = await storage_provider.get_storage(Workspace).find(
+                Q(Workspace).where_in("id", chunk).build(),
+                OffsetPage(offset=0, length=len(chunk)),
+            )
+            ws_rows.update({row.id: row for row in page.items})
+
+    def _full_on(ws_id: str) -> bool:
+        row = ws_rows.get(ws_id)
+        return row is not None and _full(level_of(reach, row.access))
+
+    out: list[Subscription] = []
+    for sub in subs:
+        c = sub.config
+        if isinstance(c, AgentFreshSubConfig | GraphFreshSubConfig):
+            keep = _full_on(c.workspace_id)
+        elif isinstance(c, SessionAppendSubConfig | ParkedSessionSubConfig):
+            row = session_rows.get(c.session_id)
+            keep = row is not None and _full_on(row.workspace_id)
+        else:
+            keep = False  # a kind with no rule is refused, as the one-row version fails closed
+        if keep:
+            out.append(sub)
+    return out
 
 
 #: What a caller reads about the tools that name one subscription (ticket 01a16c22).

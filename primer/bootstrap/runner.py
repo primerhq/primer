@@ -181,6 +181,7 @@ class BootstrapRunner:
             # Retrieve all four as skipped so callers see a consistent result.
             result = BootstrapResult()
             await self._skip_all_present(result)
+            await self._follow_app_settings()
             return result
 
         result = BootstrapResult()
@@ -190,6 +191,7 @@ class BootstrapRunner:
         await self._ensure_pgvector_ssp(result)
         await self._ensure_lance_ssp(result)
         await self._ensure_huggingface_cross_encoder(result)
+        await self._follow_app_settings()
 
         if not result.errors:
             await self._storage.set_bootstrap_completed(datetime.now(UTC))
@@ -377,6 +379,8 @@ class BootstrapRunner:
                 database=pg.database,
                 username=pg.username,
                 password=pg.password,
+                db_schema=pg.db_schema,      # two installs on one database keep to a schema each (GI-1)
+                pool=pg.pool,
             )
             source = "the app's Postgres storage settings"
         else:
@@ -429,6 +433,63 @@ class BootstrapRunner:
                 "block from your config.",
                 reserved_id,
             )
+
+    async def _follow_app_settings(self) -> None:
+        """Every boot, marker or not: bring the reserved pgvector provider's connection in step with the app's Postgres settings (GI-1).
+
+        Nothing here may fail the boot: a row that cannot be converged stays as it was.
+        """
+        db = self._db_config
+        if self._legacy_vector_store is not None or db is None or db.provider != StorageProviderType.POSTGRES or not isinstance(db.config, PostgresConfig):
+            return
+        pg = db.config
+        app_cfg = PgVectorConfig(
+            hostname=pg.hostname, port=pg.port, database=pg.database, username=pg.username, password=pg.password,
+            db_schema=pg.db_schema, pool=pg.pool,
+        )
+        try:
+            existing = await self._ssp_storage.get(RESERVED_PGVECTOR_SSP)
+            if existing is not None:
+                await self._converge_pgvector_ssp(existing, app_cfg)
+        except Exception:  # noqa: BLE001 - a failed convergence leaves the row as it was
+            logger.warning("bootstrap: could not bring the reserved pgvector provider in step with the app", exc_info=True)
+
+    async def _converge_pgvector_ssp(self, existing: Any, app_cfg: PgVectorConfig) -> None:
+        """Keep the reserved row's connection in step with the app's Postgres settings (GI-1).
+
+        A row created at first boot is a snapshot: a rotated app password, new pool settings or a schema the first boot did not copy never reached it. While
+        the row still points at the app's own server (host, port, database and user the same: an operator who pointed it elsewhere is left alone) its
+        password and pool follow the app, and so does its schema, but only while the schema it is on holds no vector collections, so a move never orphans a
+        vector table. The operator's tuning (distance metric, HNSW and the rest) is never touched.
+        """
+        old = existing.config
+        if not isinstance(old, PgVectorConfig) or (old.hostname, old.port, old.database, old.username) != (
+            app_cfg.hostname, app_cfg.port, app_cfg.database, app_cfg.username,
+        ):
+            return
+        changes: dict[str, Any] = {}
+        if old.password.get_secret_value() != app_cfg.password.get_secret_value():
+            changes["password"] = app_cfg.password
+        if old.pool != app_cfg.pool:
+            changes["pool"] = app_cfg.pool
+        if old.db_schema != app_cfg.db_schema:
+            from primer.vector import pgvector
+
+            try:
+                occupied = await pgvector.catalogue_has_collections(old)
+            except Exception as exc:  # noqa: BLE001 - cannot tell: keep the schema the tables may be in
+                logger.warning("bootstrap: could not read the vector catalogue of schema %r (%s); the pgvector provider keeps it", old.db_schema, exc)
+                occupied = True
+            if occupied:
+                logger.warning(
+                    "bootstrap: the app's database schema is %r but the reserved pgvector provider is on %r, which holds vector collections; it is left "
+                    "there (move the collections or edit the provider to change it)", app_cfg.db_schema, old.db_schema,
+                )
+            else:
+                changes["db_schema"] = app_cfg.db_schema
+        if changes:
+            await self._ssp_storage.update(existing.model_copy(update={"config": old.model_copy(update=changes)}))
+            logger.info("bootstrap: reserved pgvector provider follows the app's settings (%s)", ", ".join(sorted(changes)))
 
     async def _ensure_lance_ssp(
         self, result: BootstrapResult

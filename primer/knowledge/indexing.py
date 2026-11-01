@@ -18,8 +18,12 @@ document until indexing succeeds on a later update.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re as _re
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from primer.int.document_content import DocumentContentStore
 from primer.model.chat import TextPart
@@ -37,6 +41,90 @@ logger = logging.getLogger(__name__)
 # the previous ingester's default so user-collection ingestion and
 # the internal-collection catalog batch identically.
 _EMBED_BATCH_SIZE = 32
+
+# The width of an embedder's vectors, per (collection, embedder, model): every write to a collection used to spend an embedder call
+# asking. The key names the embedder, so a collection moved to another one asks again; the ttl bounds a provider whose width was edited
+# in place (M5).
+_DIMENSIONS_TTL_SECONDS = 600.0
+_dimensions: dict[tuple[str, str, str], tuple[float, int]] = {}
+
+
+def forget_dimensions(collection_id: str | None = None) -> None:
+    """Drop the cached embedder widths (of one collection, or all): call when a collection is recreated or its embedder is edited."""
+    if collection_id is None:
+        _dimensions.clear()
+        return
+    for key in [k for k in _dimensions if k[0] == collection_id]:
+        del _dimensions[key]
+
+
+def _dimensions_key(collection: Collection) -> tuple[str, str, str]:
+    embedder = collection.search.embedder  # type: ignore[union-attr]
+    return (collection.id, embedder.provider_id, embedder.model)
+
+
+# One lock per (collection, document) in this process (KN-9): the read-embed-replace of an index write and the delete of a removal are not atomic
+# on the vector store, so two indexers of one document (or an index and a delete) could interleave and leave the OLDER body's chunks, or chunks of a
+# document that is gone. Process-local: another process is a peer writer the post-embed re-read still catches.
+_doc_locks: dict[tuple[str, str], list] = {}
+
+
+@asynccontextmanager
+async def _document_lock(collection_id: str, document_id: str) -> AsyncIterator[None]:
+    entry = _doc_locks.setdefault((collection_id, document_id), [asyncio.Lock(), 0])
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] == 0:
+            _doc_locks.pop((collection_id, document_id), None)
+
+
+async def _put_all(store, records) -> None:
+    """One write when the store offers it (``put_many``), else one ``put`` per record."""
+    put_many = getattr(store, "put_many", None)
+    if put_many is not None:
+        await put_many(records)
+        return
+    for record in records:
+        await store.put(record)
+
+
+def embedder_fingerprint(collection: Collection) -> str:
+    """Who embedded a chunk: the embedding provider and model of the collection. The documents are embedded as plain passages with no
+    per-collection prompt setting, so those two are all there is to tell one embedding from another. Stored in each chunk's meta."""
+    embedder = collection.search.embedder  # type: ignore[union-attr]
+    return f"{embedder.provider_id}|{embedder.model}"
+
+
+async def _stored_chunk_texts(
+    store, collection_id: str, document_id: str | None = None,
+) -> dict[str, dict[str, tuple[str, str | None]]]:
+    """``{document_id: {chunk_id: (text, embedder fingerprint)}}`` of what the index holds, without decoding vectors where the store can avoid
+    it. A chunk with no fingerprint (written before there was one) carries ``None``. A collection the store does not know reads as empty."""
+    out: dict[str, dict[str, tuple[str, str | None]]] = {}
+    try:
+        lister = getattr(store, "list_chunk_texts", None)
+        if lister is not None:
+            rows = await lister(collection_id, document_id)
+        elif document_id is not None:
+            rows = [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in await store.get(collection_id, document_id)]
+        else:
+            rows = [(r.document_id, r.chunk_id, r.text, (r.meta or {}).get("embedder")) for r in await store.search_by_meta(collection_id, {})]
+    except Exception:  # noqa: BLE001 - absent index reads as empty
+        return {}
+    for row in rows:
+        doc_id, chunk_id, text = row[:3]
+        out.setdefault(doc_id, {})[chunk_id] = (text, row[3] if len(row) > 3 else None)
+    return out
+
+
+def _is_current(stored: dict[str, tuple[str, str | None]] | None, chunks: list[str], fingerprint: str) -> bool:
+    """Whether the stored chunks are exactly these texts, embedded by this embedder. A chunk with no fingerprint is NOT current: it is
+    re-embedded once, the safe side when the model it came from is unknown."""
+    return stored == {str(i): (c, fingerprint) for i, c in enumerate(chunks)}
 
 
 def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
@@ -90,6 +178,9 @@ async def _refuse_unless_an_owner_may_use(storage_provider, collection: Collecti
         )
 
 
+_REINDEX_ATTEMPTS = 5
+
+
 async def index_document(
     *,
     document: Document,
@@ -99,7 +190,36 @@ async def index_document(
     content_store: DocumentContentStore,
     dimensions: int | None = None,
     storage_provider=None,
+    force: bool = False,
 ) -> int:
+    """Chunk, embed and upsert ``document`` (see :func:`_index_document_once`), serialised per document in this process and re-run when the body
+    changed while it was being embedded, so the index ends up holding the LATEST body whichever indexers raced (KN-9)."""
+    if collection.search is None:
+        return 0
+    async with _document_lock(collection.id, document.id):
+        count = 0
+        for _ in range(_REINDEX_ATTEMPTS):
+            count, again = await _index_document_once(
+                document=document, collection=collection, provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry, content_store=content_store, dimensions=dimensions,
+                storage_provider=storage_provider, force=force,
+            )
+            if not again:
+                break
+        return count
+
+
+async def _index_document_once(
+    *,
+    document: Document,
+    collection: Collection,
+    provider_registry,
+    semantic_search_registry,
+    content_store: DocumentContentStore,
+    dimensions: int | None = None,
+    storage_provider=None,
+    force: bool = False,
+) -> tuple[int, bool]:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
     chunks FIRST and only then replaces the document's existing chunks, so a
@@ -122,17 +242,19 @@ async def index_document(
     ``dimensions`` skips the per-document probe when the caller already
     knows the embedder's width (see :func:`probe_dimensions`).
 
+    A document whose stored chunks are the same texts, embedded by the same embedder (provider and model), is not re-embedded. ``force``
+    (an explicit reindex) never skips.
+
     On embedder/store failure it raises; the caller treats indexing as
     best-effort and swallows it.
     """
     if collection.search is None:
-        return 0
+        return 0, False
     await _refuse_unless_an_owner_may_use(storage_provider, collection)
     cfg = collection.search
 
-    text = await content_store.get(document.id)
-    if text is None:
-        text = ""
+    body = await content_store.get(document.id)
+    text = "" if body is None else body
     from primer.knowledge.splitter import split_text
 
     chunks = split_text(
@@ -154,7 +276,12 @@ async def index_document(
     # -- without wasting a full embedding pass on a batch that cannot be
     # stored. We register (or validate) the collection in the store now so
     # that a ConflictError (dim mismatch) surfaces here, not after work.
-    if dimensions is None:
+    probe_dim = dimensions
+    if probe_dim is None:
+        cached = _dimensions.get(_dimensions_key(collection))
+        if cached is not None and cached[0] > time.monotonic():
+            probe_dim = cached[1]
+    if probe_dim is None:
         probe_response = await embedder.embed(
             model=cfg.embedder.model,
             inputs=[TextPart(text="dimensionality probe")],
@@ -165,8 +292,7 @@ async def index_document(
                 f"(collection {collection.id!r})"
             )
         probe_dim = len(probe_response.embeddings[0].vector)
-    else:
-        probe_dim = dimensions
+        _dimensions[_dimensions_key(collection)] = (time.monotonic() + _DIMENSIONS_TTL_SECONDS, probe_dim)
     try:
         await store.create_collection(collection.id, dimensions=probe_dim)
     except ConflictError as exc:
@@ -186,6 +312,12 @@ async def index_document(
             collection_id=collection.id,
             cause=exc,
         ) from exc
+
+    # A document whose chunks are exactly what is stored has nothing to do (the rule ``index_documents`` applies): no embedding, no write.
+    # It must have been embedded by this collection's embedder too: after a model change the same text is stale (an explicit reindex never skips).
+    fingerprint = embedder_fingerprint(collection)
+    if chunks and not force and _is_current((await _stored_chunk_texts(store, collection.id, document.id)).get(document.id), chunks, fingerprint):
+        return len(chunks), False
 
     # Embed FIRST, before touching the existing chunks. If the embedder
     # fails (transient error, missing key), we must not have already
@@ -224,9 +356,21 @@ async def index_document(
                     chunk_id=str(idx),
                     text=chunk,
                     vector=list(emb.vector),
-                    meta={"path": document.path},
+                    meta={"path": document.path, "embedder": fingerprint},
                 )
             )
+
+    # The body may have moved while the embedder worked (a peer wrote v2, or the document was deleted): re-read it. A changed body is embedded again
+    # by the caller's loop; a deleted one leaves no chunks (KN-9).
+    now = await content_store.get(document.id)
+    if now != body:
+        if now is None:
+            try:
+                await store.delete(collection.id, document.id)
+            except PrimerError:
+                pass
+            return 0, False
+        return 0, True
 
     # Now that embedding succeeded, atomically-ish replace the document's
     # chunks: drop the prior set, then upsert the new one. The vector store
@@ -246,21 +390,20 @@ async def index_document(
     if not chunks:
         # An empty body produces no records: the delete above already
         # cleared any prior chunks, which is the intended replace-with-empty.
-        return 0
+        return 0, False
 
     # Idempotent: the probe already registered the collection above.
     # Calling again is a no-op for all compliant backends.
     await store.create_collection(
         collection.id, dimensions=len(records[0].vector)
     )
-    for record in records:
-        await store.put(record)
+    await _put_all(store, records)
 
     logger.info(
         "indexed document %s into collection %s (%d chunks)",
         document.id, collection.id, len(records),
     )
-    return len(records)
+    return len(records), False
 
 
 async def index_documents(
@@ -271,6 +414,7 @@ async def index_documents(
     semantic_search_registry,
     content_store: DocumentContentStore,
     storage_provider=None,
+    force: bool = False,
 ) -> int:
     """Index many documents in one pass.
 
@@ -292,14 +436,16 @@ async def index_documents(
     every time and one that costs only the drift. Documents that are
     absent from the index, or whose text has moved on, are re-embedded.
 
-    Embeds everything before touching the index, so a failure part-way
-    leaves the prior vectors intact exactly as the single-document path
-    does.
+    A document's chunks are replaced as soon as ALL of its vectors are in hand (not after the whole pass), so a failure part-way leaves the prior
+    vectors of the documents not reached intact and keeps the documents already done: the re-run embeds only the rest (KN-13). The pass also
+    removes the chunks of every document the index holds that is not in ``documents`` (it is given the whole collection): a document deleted while
+    its unindex failed, or while search was off, would otherwise stay searchable for ever (KN-8).
     """
     if collection.search is None:
         return 0
     await _refuse_unless_an_owner_may_use(storage_provider, collection)
     cfg = collection.search
+    fingerprint = embedder_fingerprint(collection)
     from primer.knowledge.splitter import split_text
 
     embedder = await provider_registry.get_embedder(cfg.embedder.provider_id)
@@ -309,30 +455,36 @@ async def index_documents(
 
     # What the index already holds, read once for the whole pass. An
     # unregistered collection means "nothing", which is the first run.
-    existing: dict[str, dict[str, str]] = {}
-    try:
-        for record in await store.search_by_meta(collection.id, {}):
-            existing.setdefault(record.document_id, {})[
-                record.chunk_id
-            ] = record.text
-    except Exception:  # noqa: BLE001 - absent index reads as empty
-        existing = {}
+    existing = await _stored_chunk_texts(store, collection.id)
 
     # (document, chunk_index, text) flattened across the documents that
     # actually need work.
     flat: list[tuple[str, int, str]] = []
     stale: list[str] = []
+    bodies: dict[str, str | None] = {}
+    expected: dict[str, int] = {}
     for doc in documents:
+        body = await content_store.get(doc.id)
+        bodies[doc.id] = body
         chunks = split_text(
-            await content_store.get(doc.id) or "",
+            body or "",
             max_chars=cfg.chunking.max_chars,
             overlap=cfg.chunking.overlap,
         )
-        current = existing.get(doc.id, {})
-        if current == {str(i): c for i, c in enumerate(chunks)}:
+        if not force and _is_current(existing.get(doc.id, {}), chunks, fingerprint):
             continue
         stale.append(doc.id)
+        expected[doc.id] = len(chunks)
         flat.extend((doc.id, idx, chunk) for idx, chunk in enumerate(chunks))
+
+    # The chunks of documents that are no longer in the collection (KN-8).
+    present = {doc.id for doc in documents}
+    for gone in [doc_id for doc_id in existing if doc_id not in present]:
+        async with _document_lock(collection.id, gone):
+            try:
+                await store.delete(collection.id, gone)
+            except PrimerError:
+                pass
 
     if not stale:
         logger.info(
@@ -364,7 +516,32 @@ async def index_documents(
     # carry the Document objects around.
     paths = {doc.id: doc.path for doc in documents}
 
-    records: list[EmbeddingRecord] = []
+    pending: dict[str, list[EmbeddingRecord]] = {}
+    flushed = 0
+
+    async def flush(doc_id: str) -> None:
+        """Replace one document's chunks now that all its vectors are in hand, unless its body moved on (its own write path indexes it)."""
+        nonlocal flushed
+        async with _document_lock(collection.id, doc_id):
+            now = await content_store.get(doc_id)
+            if now != bodies[doc_id]:
+                if now is None:
+                    try:
+                        await store.delete(collection.id, doc_id)
+                    except PrimerError:
+                        pass
+                return
+            try:
+                await store.delete(collection.id, doc_id)
+            except PrimerError:
+                pass
+            if pending.get(doc_id):
+                await _put_all(store, pending[doc_id])
+            flushed += 1
+
+    for doc_id in [d for d in stale if expected[d] == 0]:       # an empty body replaces the old chunks with nothing
+        await flush(doc_id)
+    total_chunks = 0
     for start in range(0, len(flat), _EMBED_BATCH_SIZE):
         batch = flat[start : start + _EMBED_BATCH_SIZE]
         response = await embedder.embed(
@@ -376,32 +553,29 @@ async def index_documents(
                 f"embedder returned {len(response.embeddings)} embeddings "
                 f"for {len(batch)} chunk(s) of collection {collection.id!r}"
             )
+        finished: list[str] = []
         for (doc_id, idx, chunk), emb in zip(
             batch, response.embeddings, strict=True
         ):
-            records.append(EmbeddingRecord(
+            pending.setdefault(doc_id, []).append(EmbeddingRecord(
                 collection_id=collection.id,
                 document_id=doc_id,
                 chunk_id=str(idx),
                 text=chunk,
                 vector=list(emb.vector),
-                meta={"path": paths.get(doc_id, "")},
+                meta={"path": paths.get(doc_id, ""), "embedder": fingerprint},
             ))
-
-    # Every vector is in hand: only now replace what is stored.
-    for doc_id in stale:
-        try:
-            await store.delete(collection.id, doc_id)
-        except PrimerError:
-            pass
-    for record in records:
-        await store.put(record)
+            total_chunks += 1
+            if len(pending[doc_id]) == expected[doc_id]:
+                finished.append(doc_id)
+        for doc_id in finished:
+            await flush(doc_id)
 
     logger.info(
         "indexed %d document(s) into collection %s (%d chunks)",
-        len(stale), collection.id, len(records),
+        flushed, collection.id, total_chunks,
     )
-    return len(stale)
+    return flushed
 
 
 async def remove_document_index(
@@ -416,10 +590,11 @@ async def remove_document_index(
     store = await semantic_search_registry.get_store(
         collection.search.vector_store_provider_id
     )
-    try:
-        await store.delete(collection.id, document_id)
-    except PrimerError:
-        pass
+    async with _document_lock(collection.id, document_id):
+        try:
+            await store.delete(collection.id, document_id)
+        except PrimerError:
+            pass
 
 
 # ---------------------------------------------------------------------------

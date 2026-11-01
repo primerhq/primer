@@ -32,7 +32,7 @@ from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 
 
 def test_registry_declares_the_hot_tables():
-    """token_hash / session status / channel routing / useridentity
+    """token_hash / unique username / session status / channel routing / useridentity
     uniqueness / webhook recovery / tool-approval-record gate key /
     artifact-location routing / document collection reads / the eight
     access-members GIN indexes are all registered."""
@@ -41,6 +41,7 @@ def test_registry_declares_the_hot_tables():
         "webhookdelivery", "toolapprovalrecord", "artifactlocation", "document",
         "agent", "graph", "toolset", "workspacetemplate", "workspace", "externaltoolcall", "collection", "trigger", "harness",
         "modelprofile", "workspaceprovider", "channelprovider", "semanticsearchprovider", "embeddingprovider", "crossencoderprovider", "llmprovider",
+        "serviceversion", "user", "service", "subscription",
     }
 
 
@@ -132,7 +133,10 @@ def test_session_model_maps_to_the_sessions_table():
     ("table", "expected_names"),
     [
         ("apitoken", ["apitoken_token_hash_uniq"]),
-        ("sessions", ["sessions_status", "sessions_workspace_id"]),
+        ("sessions", [
+            "sessions_status", "sessions_workspace_id", "sessions_parent_session_id", "sessions_last_worker_id", "sessions_binding_agent_id",
+            "sessions_binding_graph_id", "sessions_turn_status", "sessions_parked_status", "sessions_created_at_desc",
+        ]),
         ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
         ("document", ["document_collection_id"]),

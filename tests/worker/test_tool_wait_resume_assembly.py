@@ -252,3 +252,65 @@ async def test_every_synthesised_part_pairs_with_a_tool_use_in_the_parks_own_mes
     tool_use_ids = {p.id for m in messages if m.role == "assistant" for p in m.parts if isinstance(p, ToolCallPart)}
     result_ids = {p.id for p in messages[-1].parts}
     assert result_ids <= tool_use_ids, f"results {result_ids} do not pair with tool_use {tool_use_ids}"
+
+
+async def _async_return(value):
+    return value
+
+
+class _RacingWorkspace:
+    """Workspace IO whose first append lets a concurrent Cancel + steer commit
+    (as another API process would): the record writer reads the row before the
+    append and must not write those fields back to their old values (GR-5)."""
+
+    def __init__(self, sessions, sid):
+        self._sessions, self._sid, self.raced = sessions, sid, False
+
+    async def append_message_line(self, session_id, line):
+        if not self.raced:
+            self.raced = True
+            await self._sessions.patch_if(
+                self._sid,
+                {"cancel_requested": True, "turn_status": "claimable", "last_seq": 50},
+                where={"workspace_id": ["ws-1"]},
+            )
+
+
+@pytest.mark.asyncio
+async def test_record_write_keeps_a_concurrent_cancel_and_steer():
+    """GR-5: the tool_wait record writer reads the row, appends through the
+    workspace runtime (a round trip), and must not write the WHOLE row back
+    from the pre-append read: a Cancel and a steer that committed during the
+    append keep their values, and last_seq never regresses below the steer's
+    reserved seq. The write is field-scoped (advance_last_seq, like the
+    agent-path sibling)."""
+    from types import SimpleNamespace
+
+    sid = "sess-g5-tw"
+    provider = _FakeStorageProvider()
+    sessions = provider.get_storage(WorkspaceSession)
+    await sessions.create(WorkspaceSession(
+        id=sid, workspace_id="ws-1", binding=AgentSessionBinding(kind="agent", agent_id="ag"),
+        status=SessionStatus.RUNNING, created_at=datetime.now(timezone.utc),
+        last_seq=10, turn_status="idle",
+    ))
+    ws = _RacingWorkspace(sessions, sid)
+    pool = SimpleNamespace(
+        _storage=provider, _event_bus=None,
+        _load_workspace_for_persist=lambda _wid: _async_return(ws),
+    )
+    task = ToolCallTask(
+        id=f"{sid}/x:tool:0:1", session_id=sid, turn_no=0, tool_name="t",
+        state=ToolCallTaskState.DONE, record_seq=3, call_id="call_1",
+        result_state={"id": "call_1", "output": "ok", "error": False},
+        created_at=datetime.now(timezone.utc),
+    )
+
+    await coordinator.persist_resume_tool_result_records(pool, await sessions.get(sid), [task])
+
+    after = await sessions.get(sid)
+    assert ws.raced
+    # the Cancel and the steer committed during the append survive; last_seq never regressed below 50.
+    assert after.cancel_requested is True
+    assert after.turn_status == "claimable"
+    assert after.last_seq == 50

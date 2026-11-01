@@ -35,8 +35,9 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
+from primer.model.storage import MAX_OFFSET
 from primer.access.person import person_from_request
-from primer.access.policy import readable_ids, require
+from primer.access.policy import readable_parent_filter, require
 from primer.api.deps import (
     get_collection_storage,
     get_document_service,
@@ -52,6 +53,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.routers.access import make_access_router
 from primer.model.access import AccessLevel
 from primer.model.chat import TextPart
+from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.storage import Predicate
 from primer.model.collection import (
     ChunkingConfig,
@@ -79,6 +81,7 @@ from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
 from primer.knowledge import importer
 from primer.knowledge.importer import import_zip
+from primer.knowledge.tree import BODY_CAP_MESSAGE, DOCUMENT_BODY_CAP, check_body_size
 from primer.knowledge.lifecycle import (
     disable_search,
     enable_search,
@@ -86,7 +89,6 @@ from primer.knowledge.lifecycle import (
     search_status,
 )
 from primer.search.run import run_collection_search
-from primer.storage.q import Q
 
 
 logger = logging.getLogger(__name__)
@@ -227,7 +229,6 @@ collection_router = make_crud_router(
 )
 
 
-_BODY_CAP = 1024 * 1024  # 1 MiB, enforced at the API edge (spec section 3)
 
 
 class _DocCreateBody(BaseModel):
@@ -275,10 +276,10 @@ async def _require_collection(
 
 
 def _check_body_cap(body: str) -> None:
-    if len(body.encode("utf-8")) > _BODY_CAP:
+    if len(body.encode("utf-8")) > DOCUMENT_BODY_CAP:
         raise RequestValidationError(errors=[{
             "type": "value_error", "loc": ("body", "body"),
-            "msg": "document body exceeds the 1 MiB cap", "input": "<omitted>",
+            "msg": BODY_CAP_MESSAGE, "input": "<omitted>",
         }])
 
 
@@ -480,7 +481,7 @@ async def get_or_list_collection_documents(
 @collection_router.put(
     "/collections/{collection_id}/documents",
     summary="Create or replace a document at a path",
-    responses=common_responses(403, 404, 422, 500),
+    responses=common_responses(403, 404, 413, 422, 500),
 )
 async def put_collection_document(
     request: Request,
@@ -497,6 +498,7 @@ async def put_collection_document(
     stored document metadata.
     """
     await _require_collection(request, collections, collection_id, AccessLevel.FULL)
+    check_body_size(body.content)  # 413, the cap POST/PATCH /docs answer 422 for (KN-12, D5)
 
     doc = await service.upsert(
         collection_id=collection_id,
@@ -728,6 +730,7 @@ async def search_collection(
     response = await embedder.embed(
         model=coll.search.embedder.model,
         inputs=[TextPart(text=body.query)],
+        config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
     )
     vector = list(response.embeddings[0].vector)
 
@@ -782,7 +785,7 @@ async def list_indexed_documents(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
     limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     document_id: str | None = Query(
         default=None,
         description=(
@@ -967,8 +970,7 @@ async def _document_row_guard(row: Document, request: Request, write: bool) -> N
 async def _readable_documents(request: Request) -> Predicate | None:
     """list_filter: ``collection_id IN <collections the caller can read>`` (``None`` for admins)."""
     sp = request.app.state.storage_provider
-    ids = await readable_ids(sp.get_storage(Collection), person_from_request(request))
-    return None if ids is None else Q(Document).where_in("collection_id", ids).build()
+    return await readable_parent_filter(sp.get_storage(Collection), Collection, person_from_request(request), "collection_id")
 
 
 async def _document_pre_create(entity: Document, request: Request) -> None:

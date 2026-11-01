@@ -9,7 +9,8 @@ key is unreadable until this step removes it, the way ``m003`` removed
 the retired agent fields from the same block.
 
 Get-then-write, and a row with no ``relay_mode`` is left alone, so
-re-running converges. The view declared here addresses the same
+re-running converges. Rows are paged by id (keyset, PERF-T16); an update
+never changes a row's id, so the next page seeks past the row just written. The view declared here addresses the same
 ``channel`` table (the storage layer derives the table name from
 ``model_class.__name__.lower()``), and ``extra="allow"`` carries every
 other field through the read-modify-write untouched; ``config`` is read
@@ -25,11 +26,9 @@ from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
-from primer.model.storage import OffsetPage
+from primer.storage.migrations._rows import iter_rows
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 #: The key this step removes from ``config.chats``.
 _RETIRED_KEY = "relay_mode"
@@ -56,17 +55,7 @@ class M019DropChatRelayMode:
     async def apply(self, sp: StorageProvider) -> None:
         channels = sp.get_storage(Channel)
         stripped = 0
-        offset = 0
-        rows: list[Channel] = []
-        # Read every row before writing any: an update can move a row within the list order, and paging while writing could
-        # skip one.
-        while True:
-            page = await channels.list(OffsetPage(offset=offset, length=_PAGE))
-            rows.extend(page.items)
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
-        for row in rows:
+        async for row in iter_rows(channels):
             chats = (row.config or {}).get("chats")
             if not isinstance(chats, dict) or _RETIRED_KEY not in chats:
                 continue  # nothing to drop, or already migrated

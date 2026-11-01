@@ -18,6 +18,7 @@ trigger's ``owner`` (its last saver) and each subscription's owner (:mod:`primer
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ from primer.trigger.reach import (
     refuse_target_out_of_access,
     subscription_in_reach,
     subscription_reaches_outside,
+    subscriptions_in_reach,
 )
 from primer.trigger.cron import (
     CronInvalid,
@@ -75,6 +77,13 @@ class ParkedSessionOnlyFromYield(Exception):
     """A subscription with ``kind='parked_session'`` was supplied through the
     public create path. Those are only created via the ``subscribe_to_trigger``
     yielding tool."""
+
+
+class WebhookTokenInvalid(ValueError):
+    """A caller-chosen webhook token that is not 32 lowercase hex characters (the shape the server mints)."""
+
+
+_WEBHOOK_TOKEN_SHAPE = re.compile(r"[0-9a-f]{32}")
 
 
 class TriggerSlugConflict(Exception):
@@ -154,6 +163,11 @@ class ServiceDeps:
     event_bus: Any | None = None
     scheduler: Any | None = None
     workspace_registry: Any | None = None
+
+
+# A fire's bookkeeping (``fire_trigger`` writes them field by field): an update or a rotate read before the fire landed must not put the old
+# values back (W49), or a redelivery of the fire's claim would fire again the ticks ``_not_fired_yet`` skips.
+_FIRE_FIELDS = ("last_fired_at", "last_fired_id", "last_fire_error")
 
 
 def _now() -> datetime:
@@ -449,6 +463,11 @@ async def update_trigger(
         ):
             config = config.model_copy(update={"token": trigger.config.token})
         elif config.kind == "webhook":
+            # A token nobody but the caller knows must still be unguessable and unique-looking: only the shape the server mints is kept (GI-24).
+            if not _WEBHOOK_TOKEN_SHAPE.fullmatch(config.token):
+                raise WebhookTokenInvalid(
+                    "a webhook token is 32 lowercase hex characters; leave it empty to keep the stored one, or rotate it for a new one"
+                )
             adopted = False
         # The hmac_secret mask (a SecretStr serialised by a read) round-trips
         # to the stored secret, never to the literal mask.
@@ -474,7 +493,7 @@ async def update_trigger(
         if trigger.enabled else None
     )
     # Every field but the sharing, guarded on its rev (P3 Decision 8): a sharing change made meanwhile is a conflict, never undone.
-    trigger = await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}")
+    trigger = await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}", keep=_FIRE_FIELDS)
     if trigger.enabled:
         await _upsert_claim_if_eligible(trigger, deps=deps)
     else:
@@ -763,7 +782,7 @@ async def rotate_webhook_token(
     new_token = _mint_webhook_token()
     trigger.config = trigger.config.model_copy(update={"token": new_token})
     trigger.owner = owner
-    return await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}")
+    return await update_keeping_access(storage, trigger, trigger, what=f"Trigger {trigger_id!r}", keep=_FIRE_FIELDS)
 
 
 async def get_subscription(
@@ -855,7 +874,9 @@ async def list_subscriptions(
     rows = await _drain_list(subs_storage, predicate=q.build())
     if reach is None:
         return rows
-    return [sub for sub in rows if await subscription_in_reach(deps.storage_provider, reach, sub)]
+    # Batch the reach reads: one read per DISTINCT target session/workspace,
+    # not one per row (M9). The answer is the one-row filter's, same order.
+    return await subscriptions_in_reach(deps.storage_provider, reach, rows)
 
 
 __all__ = [

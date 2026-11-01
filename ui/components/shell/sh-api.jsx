@@ -283,10 +283,11 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // Every decision, every page of 200 (the route pages with offset and length; GU-8 read only the first page and counted that).
   approvalRecords: function (signal) {
-    return window.primerApi.apiFetch(
-      "GET", "/tool_approval/records?status=all&offset=0&length=200",
-      null, { signal: signal });
+    return window.PR_fetchAllPages("/tool_approval/records?status=all", {
+      signal: signal, lengthParam: "length", apiFetch: window.primerApi.apiFetch,
+    });
   },
 
   // uiv2 Wave 3: the session-detail transcript's resolved-decision
@@ -544,3 +545,58 @@ var SH_api = {
 };
 
 window.SH_api = SH_api;
+
+// The one read of the cross-workspace attention aggregate (UI-L11): the rail's Inbox, the phone's tabs and both System attention panels share this key, so the
+// endpoint is read once per poll however many of them are mounted. A server predating the aggregate 404s: that falls back to the per-workspace reads of
+// `workspaces` (the rows a caller needs from the answer are mapped by the caller). Every row names its workspace as `workspace_id`.
+// The key holds no workspace ids: a new key is a new cache entry, so the workspace list landing after a failed read used to drop the phone Inbox's
+// error to "Loading" and read again (Try again detached, ui_e2e mobile inbox journey). A changed list is read again IN PLACE once an answer is shown
+// (a new workspace's sessions may be waiting, and the fallback reads per workspace); not while the first read has failed, where a re-read would
+// show "Loading" over the error.
+function SH_useAttention(workspaces, opts) {
+  var list = workspaces || [];
+  var ids = list.map(function (w) { return w.id; });
+  var idsKey = ids.join(",");
+  var res = window.primerApi.useResource(
+    "nv-rail-inbox",
+    function (signal) {
+      return SH_api.pendingAttention(signal)
+        .then(function (out) {
+          var items = (out && out.items) || [];
+          return Object.assign({}, out, { items: items.map(function (it) {
+            return it.workspace_id ? it : Object.assign({}, it, { workspace_id: it.wid || null });
+          }) });
+        })
+        .catch(function (err) {
+          if (err && err.status !== 404) throw err;
+          return Promise.all(ids.map(function (wid) {
+            return SH_api.pendingYields(wid, signal).then(function (out) {
+              return ((out && out.items) || []).map(function (it) {
+                return Object.assign({}, it, { workspace_id: wid });
+              });
+            });
+          })).then(function (perWs) {
+            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []) };
+          });
+        });
+    },
+    Object.assign({ pollMs: 10000 }, opts || {})
+  );
+  var seenIdsRef = React.useRef(idsKey);
+  var refetch = res.refetch;
+  var shown = res.data !== undefined && res.data !== null;
+  React.useEffect(function () {
+    if (seenIdsRef.current === idsKey) return;
+    seenIdsRef.current = idsKey;
+    if (shown) refetch();
+  }, [idsKey]);
+  return res;
+}
+window.SH_useAttention = SH_useAttention;
+
+// How many sessions need a person: the server's `total` (the aggregate answers its newest 100 and counts them all, GU-8), never fewer than the rows in hand.
+function SH_attentionTotal(data) {
+  var rows = (data && data.items) ? data.items.length : 0;
+  return data && typeof data.total === "number" && data.total > rows ? data.total : rows;
+}
+window.SH_attentionTotal = SH_attentionTotal;

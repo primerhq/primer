@@ -8,7 +8,7 @@ use it without duplication.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -99,6 +99,15 @@ class _InMemoryStorage(Generic[_T]):
         self._raw[id] = (updated, produced)
         return updated
 
+    async def patch_if_or_current(
+        self, id: str, patch=None, *, where, set_paths=None, conn=None,
+    ) -> tuple[_T | None, _T | None]:
+        """``patch_if``, answering a rejection with the row as it stands (``Storage.patch_if_or_current``)."""
+        written = await self.patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+        if written is not None:
+            return written, None
+        return None, self._data.get(id)
+
     def _raw_doc(self, id: str, current: _T) -> dict[str, Any]:
         """What a backend would hold for this row: the raw document if a patch or a seed wrote one, else the
         model's own dump (which is what ``create`` and ``update`` store)."""
@@ -153,6 +162,23 @@ class _InMemoryStorage(Generic[_T]):
         if offset + page.length < len(items):
             next_cursor = str(offset + page.length)
         return CursorPageResponse(next_cursor=next_cursor, items=sliced)
+
+    async def count_by(self, field, values, predicate=None):
+        """``Storage.count_by`` over the stored rows."""
+        wanted = set(values)
+        counts: dict[str, int] = {}
+        for e in self._data.values():
+            key = getattr(e, field, None)
+            if key in wanted and (predicate is None or _eval_predicate(e, predicate)):
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    async def find_ids(self, predicate):
+        """``(id, access)`` of every match, ordered by id (the ``Storage.find_ids`` contract)."""
+        rows = [e for e in self._data.values() if predicate is None or _eval_predicate(e, predicate)]
+        return sorted(
+            ((e.id, e.access.model_dump(mode="json") if getattr(e, "access", None) is not None else None) for e in rows), key=lambda pair: pair[0],
+        )
 
     async def find(self, predicate, page, *, order_by=None):
         if predicate is None:
@@ -544,14 +570,19 @@ class _FakeStorageProvider:
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         self._bootstrap_completed_at = ts
 
+    @asynccontextmanager
+    async def migration_lock(self):
+        yield
+
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
     ) -> None:
-        self._schema_version = version
+        self._schema_version = max(self._schema_version, version)
         self._last_migration_at = migrated_at or datetime.now(UTC)
 
     async def set_session_secret(self, secret: str) -> None:
-        self._session_secret = secret
+        if getattr(self, "_session_secret", None) is None:
+            self._session_secret = secret
 
     async def set_sso_jit_enabled(self, enabled: bool) -> None:
         self._sso_jit_enabled = enabled
@@ -735,6 +766,21 @@ async def async_closers():
 
 
 @pytest.fixture(autouse=True)
+def _forget_routed_channel_events():
+    """Clear the channel router's process-wide set of routed events (W33) after each test.
+
+    Production never sees one provider message id twice except as a redelivery; tests reuse ids like ``ev-1`` across
+    tests, so a test must not inherit what an earlier one routed.
+    """
+    yield
+    import sys
+
+    module = sys.modules.get("primer.channel.event_dispatch")
+    if module is not None:
+        module._SEEN_EVENTS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _no_unclosed_sqlite_providers(request: pytest.FixtureRequest):
     """Fail the test that leaves a ``SqliteStorageProvider`` open, and close it.
 
@@ -909,3 +955,19 @@ __all__ = [
     "_FakeLLM",
     "_InMemoryStorage",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _forget_embedder_dimensions():
+    """The indexing code caches an embedder's vector width per (collection, embedder, model); tests reuse those names with different widths."""
+    from primer.knowledge.indexing import forget_dimensions
+
+    forget_dimensions()
+    yield
+    forget_dimensions()
+
+
+@pytest.fixture(autouse=True)
+def _verify_session_log_reads(monkeypatch):
+    """Every cached read of a session's messages.jsonl is compared with a full parse (Task 14, stage 1): a mismatch fails the test that caused it."""
+    monkeypatch.setenv("PRIMER_SESSION_LOG_VERIFY_READS", "1")

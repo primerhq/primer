@@ -36,11 +36,13 @@ read-only — controls (interrupt/approve/cancel) stay on their REST endpoints.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from datetime import datetime, timezone
 import base64
 import binascii
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.responses import StreamingResponse
@@ -48,23 +50,22 @@ from starlette.responses import StreamingResponse
 from primer.access.person import person_from_request
 from primer.access.workspaces import WorkspaceAccessWatch, require_workspace
 from primer.model.access import AccessLevel
-from primer.model.except_ import AccessDeniedError, NotFoundError
+from primer.model.except_ import AccessDeniedError, BadRequestError, NotFoundError
 from primer.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
-from primer.tap.cursor import TapCursor
-from primer.tap.event import TapEvent
-from primer.tap.reader import read_session_since
+from primer.tap.cursor import _EPOCH, TapCursor
+from primer.tap.event import TapEvent, TapEventClass
+from primer.tap.reader import agent_graph_ids, read_session_since
+from primer.tap.router import WorkspaceTapRouter, WorkspaceTick
 from primer.tap.selector import (
     TapSelector,
     TapSelectorError,
     TapSelectorTimeout,
     check_selector,
+    pinned_session_ids,
     session_predicate_for_storage,
 )
-
-if TYPE_CHECKING:
-    from primer.tap.router import WorkspaceTapRouter
 
 logger = logging.getLogger(__name__)
 
@@ -233,9 +234,92 @@ def _delta_frame(frame: dict) -> str:
     return f"data: {json.dumps(frame)}\n\n"
 
 
+#: How many undelivered delta frames one SSE stream may hold. Deltas are ephemeral (the durable log is the record), so a slow client loses the OLDEST
+#: first; ticks are never dropped (they are pointers into that log).
+MAX_PENDING_DELTAS = 1000
+
+
+class _TapInbox:
+    """What the SSE loop waits on: arrival-ordered ticks and deltas, ticks coalesced per session, deltas bounded.
+
+    A tick only says "read this session's log up to the end", so a tick already waiting for a session is replaced IN PLACE by its newer tick (one read
+    covers both). Past :data:`MAX_PENDING_DELTAS` waiting deltas the oldest delta is dropped. Memory is therefore bounded by the sessions of the
+    workspace plus the delta bound, whatever the client does.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[str, Any]] = {}  # insertion-ordered: arrival order
+        self._tick_slot: dict[str, int] = {}  # session id -> key of its waiting tick
+        self._delta_keys: deque[int] = deque()
+        self._next = 0
+        self._wake = asyncio.Event()
+
+    def pending(self) -> int:
+        return len(self._entries)
+
+    def put_tick(self, tick: Any) -> None:
+        slot = self._tick_slot.get(tick.session_id)
+        if slot is not None and slot in self._entries:
+            self._entries[slot] = ("tick", tick)
+        else:
+            self._tick_slot[tick.session_id] = self._add(("tick", tick))
+        self._wake.set()
+
+    def put_delta(self, frame: dict) -> None:
+        self._delta_keys.append(self._add(("delta", frame)))
+        while len(self._delta_keys) > MAX_PENDING_DELTAS:
+            self._entries.pop(self._delta_keys.popleft(), None)
+        self._wake.set()
+
+    def _add(self, entry: tuple[str, Any]) -> int:
+        key = self._next
+        self._next += 1
+        self._entries[key] = entry
+        return key
+
+    async def get(self) -> tuple[str, Any]:
+        while not self._entries:
+            self._wake.clear()
+            await self._wake.wait()
+        key = next(iter(self._entries))
+        tag, item = self._entries.pop(key)
+        if tag == "tick":
+            if self._tick_slot.get(item.session_id) == key:
+                del self._tick_slot[item.session_id]
+        elif self._delta_keys and self._delta_keys[0] == key:
+            self._delta_keys.popleft()
+        else:
+            try:
+                self._delta_keys.remove(key)
+            except ValueError:
+                pass
+        return tag, item
+
+
+def _aware(moment: datetime) -> datetime:
+    """``moment`` as a timezone-aware UTC time (a client-built cursor may carry a naive one)."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _needs_catch_up(row: WorkspaceSession, cursor: TapCursor, baseline: dict[str, int], since: datetime | None) -> bool:
+    """Whether a reconnecting stream must read ``row``'s log once before any tick: it gained records while the client was away, or its turn is running.
+
+    A session the cursor never named is only read when it had activity since the cursor's ``known_as_of``, so a workspace of idle sessions costs no reads.
+    """
+    if getattr(row, "turn_status", None) == "running":
+        return True
+    resume = cursor.seqs[row.id] if row.id in cursor.seqs else baseline.get(row.id, 0)
+    if row.last_seq <= resume:
+        return False
+    if since is not None and row.id not in cursor.seqs:
+        active = getattr(row, "last_activity_at", None)
+        return active is None or _aware(active) > since
+    return True
+
+
 async def _stream_tap(
     *,
-    router: "WorkspaceTapRouter",
+    router: WorkspaceTapRouter,
     sessions_storage: Any,
     workspace_io: Any,
     workspace_id: str,
@@ -243,6 +327,7 @@ async def _stream_tap(
     cursor: TapCursor,
     had_cursor: bool,
     watch: WorkspaceAccessWatch | None = None,
+    initial_rows: list[WorkspaceSession] | None = None,
 ):
     """Async generator yielding SSE frames for a workspace tap.
 
@@ -262,59 +347,84 @@ async def _stream_tap(
     # sid -> (row, byte_offset); only positive entries — no negative cache.
     in_scope: dict[str, tuple[WorkspaceSession, int]] = {}
 
-    initial = await _resolve_in_scope(
-        sessions_storage, workspace_id=workspace_id, selector=selector
-    )
-    for row in initial:
-        in_scope[row.id] = (row, 0)
-        if not had_cursor:
-            # Live-from-connect: jump each in-scope session to its current
-            # high-water mark so pre-existing history is NOT replayed.
-            cursor.advance(row.id, row.last_seq)
-
+    # Subscribe BEFORE the rows are read: a tick landing while they load waits in the inbox instead of vanishing (W27).
     tick_sub = router.subscribe(workspace_id)
     delta_sub = router.subscribe_delta(workspace_id)
-    combined: asyncio.Queue = asyncio.Queue()
+    inbox = _TapInbox()
 
-    async def _pump(sub, tag):
+    async def _pump(sub, put):
         try:
             async for item in sub:
-                await combined.put((tag, item))
+                put(item)
         except asyncio.CancelledError:
             pass
         except StopAsyncIteration:
             pass
         except Exception:
-            logger.exception("workspace tap: %s pump failed", tag)
+            logger.exception("workspace tap: pump failed")
 
-    pump_tick = asyncio.create_task(_pump(tick_sub, "tick"))
-    pump_delta = asyncio.create_task(_pump(delta_sub, "delta"))
+    pump_tick = asyncio.create_task(_pump(tick_sub, inbox.put_tick))
+    pump_delta = asyncio.create_task(_pump(delta_sub, inbox.put_delta))
     loop = asyncio.get_running_loop()
     checked_at = float("-inf")
+    pinned = pinned_session_ids(selector)
+
+    async def _denied() -> str | None:
+        """The refusal frame once the person's level no longer holds, else ``None`` (F8: checked before every batch that yields)."""
+        if watch is None:
+            return None
+        try:
+            await watch.check()
+        except AccessDeniedError as exc:
+            return _error_frame("/errors/forbidden", str(exc))
+        except NotFoundError as exc:
+            return _error_frame("/errors/not-found", str(exc))
+        return None
+
     try:
+        # A reconnect re-reads the rows now that the subscription is live; a fresh connect can use the ones the route resolved to validate the predicate.
+        rows = initial_rows if initial_rows is not None and not had_cursor else await _resolve_in_scope(
+            sessions_storage, workspace_id=workspace_id, selector=selector
+        )
+        connected_at = datetime.now(timezone.utc)
+        # What a session absent from the cursor resumes after: nothing for a cursor this server issued (its ``known_as_of`` gates the records, W28),
+        # the row's own high-water mark for a fresh connect or a cursor built by a client (live-from-now; such a cursor names only what it observed).
+        since: datetime | None = None
+        baseline: dict[str, int] = {}
+        if had_cursor and _aware(cursor.known_as_of) > _aware(_EPOCH):
+            since = _aware(cursor.known_as_of)
+        else:
+            baseline = {row.id: row.last_seq for row in rows if row.id not in cursor.seqs}
+            cursor.known_as_of = connected_at
+        for row in rows:
+            in_scope[row.id] = (row, 0)
+            if had_cursor and _needs_catch_up(row, cursor, baseline, since):
+                inbox.put_tick(WorkspaceTick(session_id=row.id, seq=row.last_seq))
+
         while True:
             try:
                 tag, item = await asyncio.wait_for(
-                    combined.get(), timeout=_KEEPALIVE_INTERVAL_S
+                    inbox.get(), timeout=_KEEPALIVE_INTERVAL_S
                 )
             except TimeoutError:
                 tag, item = "keepalive", None
-            if watch is not None and (tag != "delta" or loop.time() - checked_at >= 1.0):
-                checked_at = loop.time()
-                try:
-                    await watch.check()
-                except AccessDeniedError as exc:
-                    yield _error_frame("/errors/forbidden", str(exc))
-                    return
-                except NotFoundError as exc:
-                    yield _error_frame("/errors/not-found", str(exc))
-                    return
             if tag == "keepalive":
+                if (refusal := await _denied()) is not None:
+                    yield refusal
+                    return
                 # Idle: emit a keepalive comment so proxies do not reap us.
                 yield ": keepalive\n\n"
                 continue
 
             if tag == "delta":
+                # A stream scoped by a sessions predicate shows only the deltas of the sessions it resolved (W57b).
+                if selector.sessions is not None and item.get("session_id") not in in_scope:
+                    continue
+                if watch is not None and loop.time() - checked_at >= 1.0:
+                    checked_at = loop.time()
+                    if (refusal := await _denied()) is not None:
+                        yield refusal
+                        return
                 yield _delta_frame(item)
                 continue
 
@@ -322,6 +432,8 @@ async def _stream_tap(
             sid = wtick.session_id
             entry = in_scope.get(sid)
             if entry is None:
+                if pinned is not None and sid not in pinned:
+                    continue  # the predicate pins other ids: no query can put this session in scope (W30)
                 row = await _resolve_single_in_scope(
                     sessions_storage,
                     workspace_id=workspace_id,
@@ -339,7 +451,7 @@ async def _stream_tap(
                     workspace_io,
                     workspace_id=workspace_id,
                     session=row,
-                    after_seq=cursor.resume_seq(sid),
+                    after_seq=cursor.seqs[sid] if sid in cursor.seqs else baseline.get(sid, 0),
                     selector=selector,
                     from_offset=byte_offset,
                 )
@@ -350,8 +462,27 @@ async def _stream_tap(
                 yield _error_frame("/errors/selector-timeout", str(exc))
                 return
             in_scope[sid] = (row, next_offset)
+            if since is not None and sid not in cursor.seqs:
+                events = [ev for ev in events if _aware(ev.ts) > since]
 
+            if events and (refusal := await _denied()) is not None:
+                yield refusal
+                return
+            rebound: tuple[str | None, str | None] | None = None
             for ev in events:
+                if ev.class_ is TapEventClass.AGENT_MARKER:
+                    # A binding switch: the row held since connect names the old agent, so frames from here on carry the fresh one (W57e).
+                    try:
+                        fresh = await sessions_storage.get(sid)
+                    except Exception:  # noqa: BLE001 - a frame with the old binding beats a dead stream
+                        logger.exception("workspace tap: re-reading session %s after its agent marker failed", sid)
+                        fresh = None
+                    if fresh is not None:
+                        row = fresh
+                        in_scope[sid] = (row, next_offset)
+                        rebound = agent_graph_ids(row)
+                if rebound is not None:
+                    ev.agent_id, ev.graph_id = rebound
                 cursor.advance(sid, ev.seq)
                 ev.cursor = cursor.encode()
                 yield _frame(ev)
@@ -377,7 +508,11 @@ def build_usage_frame(raw_lines: list[str]) -> dict:
     """Token totals, turns and model calls for what the session currently shows (see ``SessionUsage``)."""
     from primer.session.usage import session_usage
 
-    usage = session_usage(raw_lines)
+    return usage_frame(session_usage(raw_lines))
+
+
+def usage_frame(usage) -> dict:
+    """The usage frame of a ``SessionUsage``."""
     return {
         "turns": usage.turns,
         "model_calls": usage.model_calls,
@@ -467,9 +602,20 @@ async def workspace_tap(
     # empty, OR garbage tokens all decode to no seqs and are treated as a fresh
     # connect (live-from-now), so a corrupted Last-Event-ID never dumps full
     # history.
-    had_cursor = bool(tap_cursor.seqs)
+    had_cursor = bool(tap_cursor.seqs) or _aware(tap_cursor.known_as_of) > _aware(_EPOCH)
+
+    # The sessions predicate is resolved BEFORE the response starts: a predicate the store refuses is a 400 the client can read, not a stream that
+    # dies after its 200 and is reopened every few seconds (W26).
+    try:
+        initial = await _resolve_in_scope(sessions_storage, workspace_id=workspace_id, selector=parsed_selector)
+    except BadRequestError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"type": "/errors/invalid-selector", "title": "Unusable tap selector", "detail": str(exc)},
+        ) from None
 
     generator = _stream_tap(
+        initial_rows=initial,
         router=router,
         sessions_storage=sessions_storage,
         workspace_io=workspace_io,

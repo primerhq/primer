@@ -251,17 +251,14 @@ Four rules make that safe:
   Known and ticketed, not covered here: a wake that carries per-turn tools or
   attachment parts (the queue cannot hold them), and `restart_session`'s wake
   (no receipt), still write their USER_INPUT whatever the turn's state, and one
-  that lands WHILE a turn runs reserves its seq from a row the running turn has
-  not yet advanced (the turn's writer reserves nothing per record), so it can
-  repeat a seq of that turn; a deferred message waits for the sweep (up to
+  that lands WHILE a turn runs reserves its seq from the row, which the turn's
+  writer keeps ahead of its own seqs (a lease, see below); a deferred message waits for the sweep (up to
   30 s) when the turn that would drain it already ran its drain; a realize whose
   slot append landed and whose log write failed appends the message to the slot
   again at the next realize; the dispatch safety net flips idle without writing
   `last_seq` first, and a cancellation inside the streaming phase's `finally`
   can still leave a row `running`. From the second review round, ticketed under
-  01a16c3a: an advisory record (a PAUSE_SUPERSEDED note, a cap drop's record)
-  reserved while a turn runs can take a seq the running turn also writes (N6);
-  a turn that exits ENDED with its flag still `running` and its lease held, and
+  01a16c3a: a turn that exits ENDED with its flag still `running` and its lease held, and
   never drains, leaves a message queued behind its row (N7); a wake without a
   receipt writes `claimable` over another wake's `arming` (N8); N10 and N11 of
   that review; and the remaining whole-row writers of the session row
@@ -593,6 +590,8 @@ The per-turn structured log is `turns.jsonl` under `.state/sessions/<sid>/` (gra
 
 The scheduler-visible `WorkspaceSession` row holds only lifecycle and claim state; it survives process restart and is re-armed into the claim engine by the lifespan recovery loop. `WorkspaceSession.last_seq` is the high-water mark the tap starts a cursor-less stream from; a client that sends a cursor catches up from it gap-free.
 
+**Deleting a session (GR-6, GS-21).** `primer/session/purge.py` holds the one cleanup: `delete_session_rows` reaps the slot `.state/sessions/<sid>/` in the live workspace, the thread mappings, the peer-message ledger rows and the `SessionCanvas`, then deletes the row (each step but the row is best effort; `ToolApprovalRecord` audit rows stay). The `DELETE /v1/workspaces/{id}/sessions/{sid}` route decides under `session_lifecycle_lock` on a row read INSIDE it, so a steer that made a WAITING session RUNNING in the gap gets `409` and the worker's lease is left alone (GS-21), then calls the helper. A workspace destroy ends its open sessions as `workspace_lost` and then deletes every session of that workspace through the same helper (they were orphans their owner could never reach). `session_retention_days` (default unset: nothing is deleted by age; env `PRIMER_SESSION_RETENTION_DAYS`) starts a leader-elected `SessionRetentionSweeper` that deletes ENDED sessions whose `ended_at` is older than the window, oldest first, at most 100 per tick (the next tick follows in 30 s while a tick fills its batch, else hourly).
+
 Compaction of session history retains the prefix-string convention: a synthetic assistant message in `messages.jsonl` carries `[earlier conversation compacted on <ts>]`. Workspace sessions auto-compact through the `compaction_mixin.should_compact` pre-turn pass in the executor.
 
 ## 8. Public surfaces
@@ -780,3 +779,27 @@ calls: `tool_results` in the body resolves pending external calls
 (409-atomic), message content cancels them with a synthetic result, and
 `external_tools` registers the next turn's defs; see
 [external-tools](external-tools.md).
+
+### Seq lease of a running turn (ticket 01a16c3a N6)
+
+The writer of a running turn (`WorkspaceMessageWriter(..., lease=session_storage)`, built by `run_one_session_turn`) holds a
+lease on the row's `last_seq`: before it numbers a record past the end of its block it takes the next 64 seqs with one
+field-scoped `patch_if` fenced on `last_seq`, so any other writer that reserves from the row meanwhile (`reserve_next_seq`: a
+PAUSE_SUPERSEDED record, a cap drop's record; `reserve_seq` for an attachment steer) takes a seq past the lease and cannot repeat
+one of the turn's. A reservation that moves the row between two blocks makes the writer's counter jump over it. The turn's exit
+(`_persist_last_seq`) calls `settle()`: the row goes back to the writer's last seq when nobody took a seq past the lease, so a
+turn with no concurrent writer numbers and leaves the row exactly as before; a crash leaves a gap, which readers tolerate.
+
+### Reads by range (PERF-T14 stage 3)
+
+The readers that look at the end of `messages.jsonl` no longer read all of it. `primer/workspace/tail_read.py` reads the last N bytes
+(`read_file_tail` on the local workspace, `file_info`/`stat` plus the ranged `read_file_from` on the sandbox and runtime ones) and
+widens the tail (x4 from 64 KiB) until a reader's test holds or the whole file has been read; a workspace that cannot read a range is
+read whole, as before. `read_session_final_text` widens until the tail holds three session terminals. The open-turn check
+(`_read_message_lines`, then `count_turn_state` / `has_open_turn`) widens until the tail holds a record 128 seqs below the drain cursor
+(`turns.window_lines`; the margin covers a record reserved inside a running turn's seq lease). The session detail's usage totals keep a
+continuable fold per session (`usage.UsageFold`, in `UsageCache`) with the byte it reached and the 256 bytes before it: a later read
+starts there, folds the complete new lines and, if those bytes changed (a rewrite or trim), a rewind marker is met, or the workspace has
+no ranged read, folds the whole log (`session_usage`) as before. A compaction marker restarts the fold. The turn timeline route keeps the
+parsed windows and envelopes per log identity (`timeline.TimelineSources`, size and mtime of both files, `last_seq`, `turn_no`; 8
+sessions) so the next turn of the same session reads and parses nothing. The default of `session_log_append_only` is unchanged.

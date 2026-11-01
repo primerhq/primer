@@ -374,3 +374,27 @@ async def test_a_run_of_another_graph_is_not_served_under_this_graph(
         assert wrong.status_code == 404, (path, wrong.text)
         right = await client.get(f"/v1/graphs/g-theirs/runs/gt-theirs-1/{path}")
         assert right.status_code == 200, (path, right.text)
+
+
+@pytest.mark.asyncio
+async def test_graph_run_turn_log_is_ordered_by_seq(
+    client: httpx.AsyncClient, fake_storage_provider,
+):
+    """GS-30: seq 2 comes before seq 10, whatever order the rows were stored in."""
+    from primer.model.graph import Graph, GraphThread
+
+    await fake_storage_provider.get_storage(Graph).create(Graph(id="g-ord", description="d"))
+    await fake_storage_provider.get_storage(GraphThread).create(
+        GraphThread(id="gt-ord", graph_id="g-ord", title="t", created_at=_now(), last_activity_at=_now()),
+    )
+    log_storage = fake_storage_provider.get_storage(TurnLogRecord)
+    for row_id, seq in (("tlr-a", 10), ("tlr-b", 2), ("tlr-c", 1)):
+        await log_storage.create(TurnLogRecord(
+            id=row_id, run_id="gt-ord", node_id=None, seq=seq, kind=TurnLogKind.SUPERSTEP_STARTED,
+            iteration=0, superstep_id="ss", payload={"ready_node_ids": []}, created_at=_now(),
+        ))
+
+    r = await client.get("/v1/graphs/g-ord/runs/gt-ord/turn_log")
+
+    assert r.status_code == 200, r.text
+    assert [item["seq"] for item in r.json()["items"]] == [1, 2, 10]

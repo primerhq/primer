@@ -108,6 +108,36 @@ async def test_state_repo_git_timeout_raises(tmp_path: Path, monkeypatch):
             await repo._run_git_bytes("init", "--initial-branch=main")
 
     assert "timed out" in str(exc_info.value).lower()
+    # SIGTERM first (git removes its own index.lock on it); a git that exits on it is not killed (W14).
+    mock_proc.terminate.assert_called_once()
+    mock_proc.kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_state_repo_git_that_ignores_sigterm_is_killed(tmp_path: Path, monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    import primer.workspace.local.state as state_mod
+
+    monkeypatch.setattr(state_mod, "_TERMINATE_GRACE_SECONDS", 0.05)
+    exited = asyncio.Event()
+
+    async def _slow_communicate():
+        await asyncio.sleep(60)
+
+    async def _wait():
+        await exited.wait()
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = _slow_communicate
+    mock_proc.wait = _wait
+    mock_proc.kill = MagicMock(side_effect=exited.set)
+    repo = LocalStateRepo(tmp_path / ".state", workspace_id="ws-test", subprocess_timeout_seconds=0.05)
+    with patch("primer.workspace.local.state.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with pytest.raises(SubprocessTimeoutError):
+            await repo._run_git_bytes("init")
+    mock_proc.terminate.assert_called_once()
     mock_proc.kill.assert_called_once()
 
 

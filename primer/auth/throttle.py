@@ -142,6 +142,21 @@ class LoginThrottle:
         """Forget ``(username, client)``: the next failures start counting from zero."""
         self._entries.pop((username[:_USERNAME_KEY_LIMIT], client), None)
 
+    def refund(self, username: str, client: str) -> None:
+        """Give back the attempt :meth:`reserve` counted for ``(username, client)``: it turned out fine, so it must not count as a failure.
+
+        For a budget that should count FAILURES only (the per-address one: people behind one office address who sign in correctly never use it
+        up) while still counting at the START of an attempt, which is what keeps a burst of parallel guesses from all passing the check. A wait
+        the refunded attempt had just set is lifted when the count falls back below the free attempts.
+        """
+        entry = self._entries.get((username[:_USERNAME_KEY_LIMIT], client))
+        if entry is None or entry.attempts <= 0:
+            return
+        entry.attempts -= 1
+        if entry.attempts < self._free_attempts:
+            entry.blocked_until = 0.0
+            entry.announced = False
+
     def __len__(self) -> int:
         return len(self._entries)
 

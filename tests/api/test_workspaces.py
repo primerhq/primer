@@ -19,6 +19,7 @@ import pytest
 from httpx import ASGITransport
 
 from primer.api.app import create_test_app
+from tests._support.keep_destroyed_sessions import keep_destroyed_sessions  # noqa: F401  (the fixture)
 from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 from primer.api.registries import (
     ProviderRegistry,
@@ -96,6 +97,16 @@ class _Storage:
             return None
         self._data[e.id] = e
         return e
+
+    async def count_by(self, field, values, predicate=None):
+        """``Storage.count_by`` over the stored rows."""
+        wanted = set(values)
+        counts: dict[str, int] = {}
+        for e in self._data.values():
+            key = getattr(e, field, None)
+            if key in wanted and (predicate is None or True):
+                counts[key] = counts.get(key, 0) + 1
+        return counts
 
     async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
         """``Storage.patch_if`` over the stored model, by the pure-Python reference statement (the guarded
@@ -245,7 +256,7 @@ class _FakeWorkspace:
     def runtime_meta(self) -> WorkspaceRuntimeMeta:
         return self._runtime_meta
 
-    async def list_files(self, path=".", *, recursive=False, max_entries=None):
+    async def list_files(self, path=".", *, recursive=False, max_entries=None, skip_reserved=False):
         out: list[FileEntry] = []
         prefix = "" if path in (".", "") else path.rstrip("/") + "/"
         now = datetime.now(timezone.utc)
@@ -878,6 +889,7 @@ class TestWorkspaceRouter:
         assert get2.status_code == 404
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("keep_destroyed_sessions")
     async def test_destroy_reconciles_open_sessions_to_workspace_lost(
         self, client, sp
     ) -> None:
@@ -1793,6 +1805,7 @@ class TestSessionsSubResource:
         return wid
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("keep_destroyed_sessions")
     async def test_a_steer_racing_a_workspace_delete_that_has_finished_answers_not_found(
         self, client, wsr, sp, monkeypatch
     ) -> None:

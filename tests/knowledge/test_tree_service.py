@@ -128,3 +128,51 @@ async def test_delete_calls_unindexer_per_document(tree):
     await tree.create(collection_id="c1", parent="a", slug="b", body="")
     deleted = await tree.delete(collection_id="c1", path="a", recursive=True)
     assert sorted(seen) == sorted(deleted)
+
+
+async def test_update_keeps_place_fields_and_hands_the_indexer_the_stored_row(tree):
+    """Characterization: an uncontended update writes title, meta, updated_at and the body; the place in the tree is untouched."""
+    seen: list = []
+
+    async def idx(*, document, content):
+        seen.append((document, content))
+
+    await tree.create(collection_id="c1", parent="", slug="g", body="")
+    before = await tree.create(collection_id="c1", parent="g", slug="a", body="v1", title="A", meta={"k": 1})
+    tree._indexer = idx
+    out = await tree.update(collection_id="c1", path="g/a", body="v2", title="Ay", meta={"k": 2})
+    res = await tree.read(collection_id="c1", path="g/a")
+    assert (res.body, res.document.title, res.document.meta) == ("v2", "Ay", {"k": 2})
+    assert (res.document.parent_id, res.document.slug, res.document.path) == (before.parent_id, "a", "g/a")
+    assert res.document.updated_at >= before.updated_at
+    assert out.title == "Ay" and seen == [(out, "v2")]
+
+
+def _move_after_first_resolve(tree, **move):
+    """Run ``tree.move(**move)`` right after update's first resolve, before it writes: a move committing in that window."""
+    original = tree.resolve
+    fired = False
+
+    async def resolve(**kw):
+        nonlocal fired
+        doc = await original(**kw)
+        if not fired:
+            fired = True
+            await tree.move(**move)
+        return doc
+
+    tree.resolve = resolve
+
+
+@pytest.mark.parametrize("body", [None, "v2"])
+async def test_update_racing_a_move_keeps_the_moved_path(tree, body):
+    """KN-19f: update used to write back the whole row it read, reverting the move's path and slug (and, with a body, the content row's path)."""
+    doc = await tree.create(collection_id="c1", parent="", slug="a", body="v1")
+    _move_after_first_resolve(tree, collection_id="c1", path="a", new_parent="", new_slug="b")
+
+    with pytest.raises(NotFoundError):  # as if the move ran first: nothing lives at "a" any more
+        await tree.update(collection_id="c1", path="a", body=body, title="T")
+
+    res = await tree.read(collection_id="c1", path="b")
+    assert res.document.id == doc.id and (res.document.path, res.document.slug) == ("b", "b")
+    assert res.body == "v1" and res.document.title is None

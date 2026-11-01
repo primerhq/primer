@@ -189,6 +189,22 @@ function NV_menuFocusLeft(ev, triggerTestId) {
   return !(next.getAttribute && next.getAttribute("data-testid") === triggerTestId);
 }
 
+
+// GU-12: sign out through apiFetch. The page reloads to the sign-in screen only when the server ended the session (or answered 401: there is none
+// to end); any other answer (a 5xx because the epoch write failed, a network error) is toasted and the page stays, so "Sign out everywhere" never
+// looks done when no session was ended.
+async function NV_signOut(con, path) {
+  try {
+    await window.primerApi.apiFetch("POST", path);
+  } catch (err) {
+    if (!(err && err.status === 401)) {
+      con.toast("Couldn't sign out: " + window.primerApi.readRefusal(err, "the server did not answer").message);
+      return;
+    }
+  }
+  window.location.reload();
+}
+
 function NV_ProfileMenu() {
   var con = NV_useConsole();
   var choice = NV_themeChoice(con.username);
@@ -244,12 +260,7 @@ function NV_ProfileMenu() {
           }}>System settings</button>
       ) : null}
       <button type="button" className="nv-menu-row" data-testid="nv-logout"
-        onClick={function () {
-          fetch("/v1/auth/logout", { method: "POST" }).then(
-            function () { window.location.reload(); },
-            function () { window.location.reload(); }
-          );
-        }}>Log out</button>
+        onClick={function () { NV_signOut(con, "/auth/logout"); }}>Log out</button>
       <button type="button" className="nv-menu-row" data-testid="nv-logout-all"
         title="End every session of this account, on every device"
         onClick={async function () {
@@ -261,10 +272,7 @@ function NV_ProfileMenu() {
             confirmLabel: "Sign out everywhere", danger: true,
           });
           if (!ok) return;
-          fetch("/v1/auth/logout-all", { method: "POST" }).then(
-            function () { window.location.reload(); },
-            function () { window.location.reload(); }
-          );
+          NV_signOut(con, "/auth/logout-all");
         }}>Sign out everywhere</button>
     </div>
   );

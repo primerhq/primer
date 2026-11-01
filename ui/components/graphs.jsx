@@ -262,13 +262,12 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
   React.useEffect(() => {
     if (items.length === 0) return undefined;
     const ctrl = new AbortController();
-    Promise.all(
-      items.map((g) =>
-        apiFetch("GET", "/graphs/" + encodeURIComponent(g.id) + "/status", null, { signal: ctrl.signal })
-          .then((r) => [g.id, r])
-          .catch((e) => [g.id, { ok: null, error: e.title || e.message }]),
-      ),
-    ).then((entries) => setPerRowStatus(Object.fromEntries(entries)));
+    // At most four reads in flight until a batch endpoint exists (UI-L15).
+    PR_mapLimit(items, 4, (g) =>
+      apiFetch("GET", "/graphs/" + encodeURIComponent(g.id) + "/status", null, { signal: ctrl.signal })
+        .then((r) => [g.id, r])
+        .catch((e) => [g.id, { ok: null, error: e.title || e.message }]),
+    ctrl.signal).then((entries) => setPerRowStatus(Object.fromEntries(entries.filter(Boolean))));
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.data]);
@@ -451,7 +450,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
 // ============================================================================
 
 function GraphDetail({ graphId, pushToast }) {
-  const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
+  const { apiFetch, useResource, useMutation, useRouter, _resource } = window.primerApi;
   const { navigate } = useRouter();
   const id = graphId;
   const graph = useResource(
@@ -464,6 +463,17 @@ function GraphDetail({ graphId, pushToast }) {
     (s) => apiFetch("GET", "/graphs/" + encodeURIComponent(id) + "/status", null, { signal: s }),
     { pollMs: 30000, deps: [id] },
   );
+
+  // The panel's Refresh button and the builder's post-run refresh both go
+  // through here. The builder reads the server issues under its own key
+  // (`graph:status:<id>`, distinct from the `graph-status:<id>` above: same
+  // endpoint, two cache keys - UI-L13), so refresh that shared entry too or
+  // the readiness chip keeps the pre-refresh issues.
+  const refreshDetail = () => {
+    graph.refetch();
+    status.refetch();
+    if (_resource) _resource.refetchKey("graph:status:" + id);
+  };
 
   const delMut = useMutation(
     () => apiFetch("DELETE", "/graphs/" + encodeURIComponent(id)),
@@ -525,7 +535,7 @@ function GraphDetail({ graphId, pushToast }) {
       <GR_GraphStatusPanel
         id={id}
         status={status}
-        onRefresh={() => { graph.refetch(); status.refetch(); }}
+        onRefresh={refreshDetail}
         onDelete={() => setConfirmDelete(true)}
         harnessId={graph.data?.harness_id}
         onOpenHarness={() => navigate("/harnesses/" + encodeURIComponent(graph.data.harness_id))}
@@ -540,7 +550,7 @@ function GraphDetail({ graphId, pushToast }) {
         graphId={id}
         loaded={graph.data}
         onSaved={() => { graph.refetch(); status.refetch(); }}
-        onRefresh={() => { graph.refetch(); status.refetch(); }}
+        onRefresh={refreshDetail}
         pushToast={pushToast}
       />
       {confirmDelete && (
@@ -735,6 +745,12 @@ function GR_JsonField({ value, onChange, onError, help, errorKey, ariaLabel }) {
     if (onError && errorKey) onError(errorKey, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
+  // The parent gates Save on the keys it was told about: when this field goes
+  // away (its step is deleted) the key must clear too, or the error outlives
+  // the field and Save stays disabled for the rest of the draft.
+  const clearRef = React.useRef(() => {});
+  clearRef.current = () => { if (onError && errorKey) onError(errorKey, null); };
+  React.useEffect(() => () => { clearRef.current(); }, []);
   function commit() {
     if (text.trim() === "") {
       onChange(null);

@@ -76,3 +76,66 @@ async def test_the_migration_is_idempotent(sp) -> None:
 def test_the_migration_is_registered_after_23() -> None:
     versions = [m.version for m in MIGRATIONS]
     assert versions[versions.index(23):versions.index(24) + 1] == [23, 24]
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from primer.storage.migrations._rows import read_all  # noqa: E402
+from primer.storage.migrations.m024_cross_workspace_list_field import (  # noqa: E402
+    ExternalToolCall as CallView,
+    ToolApprovalRecord as RecordView,
+    WorkspaceSession as SessionView,
+)
+from tests.storage._migration_golden import assert_golden, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 24 as it was before PERF-T16, frozen: read every row, ``update`` each one that needs a workspace."""
+    sessions = sp.get_storage(SessionView)
+    workspace_of: dict[str, str | None] = {}
+    for model in (CallView, RecordView):
+        store = sp.get_storage(model)
+        for row in await read_all(store):
+            if row.workspace_id is not None or row.session_id is None:
+                continue
+            if row.session_id not in workspace_of:
+                session = await sessions.get(row.session_id)
+                workspace_of[row.session_id] = session.workspace_id if session is not None else None
+            workspace_id = workspace_of[row.session_id]
+            if workspace_id is None:
+                continue
+            await store.update(row.model_copy(update={"workspace_id": workspace_id}))
+
+
+async def _golden_seed(sp) -> None:
+    await insert_raw(sp, SessionView, {
+        "s1": {"workspace_id": "ws-1", "status": "waiting"},
+        "s2": {"workspace_id": "ws-2"},
+        "s-null": {"workspace_id": None},
+        "s-nokey": {"status": "waiting"},
+    })
+    await insert_raw(sp, CallView, {
+        "c01": {"tool_name": "x", "session_id": "s1", "n": 1.5, "nested": {"a": [1, None, {"b": False}]}},
+        "c02": {"session_id": "s1", "workspace_id": None, "tool_name": "x"},
+        "c03": {"session_id": "s2", "workspace_id": "ws-keep"},
+        "c04": {"session_id": None, "tool_name": "x"},
+        "c05": {"chat_id": "ch", "tool_name": "x"},
+        "c06": {"session_id": "s-gone"},
+        "c07": {"session_id": "s-null"},
+        "c08": {"session_id": "s-nokey"},
+        "c09": {"session_id": ""},
+        "c10": {"big": 12345678901234567890, "flag": True, "text": "naïve ✓", "session_id": "s2", "e": 1e-7},
+        "c11": {"session_id": "s1", "workspace_id": ""},
+        "c12": {},
+    })
+    await insert_raw(sp, RecordView, {
+        "r1": {"session_id": "s1", "decision": "approved"},
+        "r2": {"session_id": "s2", "workspace_id": None},
+        "r3": {"chat_id": "ch"},
+        "r4": {"session_id": "s1", "workspace_id": "ws-x"},
+        "r5": {"session_id": "s-gone", "workspace_id": None},
+    })
+
+
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path) -> None:
+    await assert_golden(tmp_path, _golden_seed, (CallView, RecordView, SessionView), _old_apply, M024CrossWorkspaceListField().apply)

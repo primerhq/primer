@@ -58,10 +58,13 @@ function HOB_autoTemplateName(str) {
     .slice(0, 63);
 }
 
-async function HOB_pollUntilDone(apiFetch, id, predicate, { maxMs = 120000, intervalMs = 1000 } = {}) {
+// ``isActive`` is false once the dialog has closed: the loop stops there (and answers null), it does not poll for two minutes.
+async function HOB_pollUntilDone(apiFetch, id, predicate, { maxMs = 120000, intervalMs = 1000, isActive = () => true } = {}) {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
+    if (!isActive()) return null;
     const row = await apiFetch("GET", "/harnesses/" + encodeURIComponent(id));
+    if (!isActive()) return null;
     if (predicate(row)) return row;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
@@ -162,15 +165,18 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
     setCreateError("");
     try {
       let created;
-      if (initialHarness?.id) {
+      // UI-M8: a harness this dialog already created (an earlier press ended in an error) is edited and built again, not created a second time:
+      // its slug is taken, and a second POST answers 409.
+      const existing = initialHarness || createdHarness;
+      if (existing?.id) {
         // Edit path — PUT /v1/harnesses/{id}/tracked_entities
         await apiFetch(
           "PUT",
-          "/harnesses/" + encodeURIComponent(initialHarness.id) + "/tracked_entities",
+          "/harnesses/" + encodeURIComponent(existing.id) + "/tracked_entities",
           { tracked_entities: tracked },
         );
         if (!mountedRef.current) return;
-        created = await apiFetch("GET", "/harnesses/" + encodeURIComponent(initialHarness.id));
+        created = await apiFetch("GET", "/harnesses/" + encodeURIComponent(existing.id));
       } else {
         const body = {
           name: name || slug,
@@ -194,7 +200,7 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
       if (!mountedRef.current) return;
 
       // Poll until BUILD is no longer pending
-      let polled = await HOB_pollUntilDone(apiFetch, created.id, (row) => row.pending_operation == null);
+      let polled = await HOB_pollUntilDone(apiFetch, created.id, (row) => row.pending_operation == null, { isActive: () => mountedRef.current });
       if (!mountedRef.current) return;
 
       if (polled.status === "ERROR" || polled.last_operation_error) {
@@ -207,7 +213,7 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
       if (pushNow && gitUrl) {
         await apiFetch("POST", "/harnesses/" + encodeURIComponent(created.id) + "/push", {});
         if (!mountedRef.current) return;
-        polled = await HOB_pollUntilDone(apiFetch, created.id, (row) => row.pending_operation == null);
+        polled = await HOB_pollUntilDone(apiFetch, created.id, (row) => row.pending_operation == null, { isActive: () => mountedRef.current });
         if (!mountedRef.current) return;
         if (polled.status === "ERROR" || polled.last_operation_error) {
           const err = polled.last_operation_error;

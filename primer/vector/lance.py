@@ -49,6 +49,7 @@ from primer.model.except_ import (
 )
 from primer.model.provider import LanceConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.vector.names import table_name_for_collection
 
 
 logger = logging.getLogger(__name__)
@@ -60,32 +61,18 @@ logger = logging.getLogger(__name__)
 
 
 def _similarity(distance_metric: str, raw_distance: float) -> float:
-    """Map LanceDB's distance value to a similarity score per the
-    VectorStore convention (higher = more similar).
+    """Map LanceDB's ``_distance`` to a similarity (higher = more similar), for a query made WITH the collection's own distance type (KN-11, D4).
 
-    LanceDB's ``vector_search()`` returns the **squared L2 distance**
-    by default, regardless of the distance label stored in our
-    catalogue, because ``create_table()`` doesn't propagate a distance
-    metric to the underlying Lance schema. Since the IC ingest path
-    L2-normalises every vector (in ``HuggingFaceEmbedder._encode_sync``
-    and the OpenAI embedder's response handler), the squared chord
-    length equals ``2 * (1 - cos)`` — that's the raw distance we
-    receive here. So to recover cosine similarity:
-
-        cos = 1 - raw / 2
-
-    The ranking is identical to true cosine because L2 and cosine
-    rank unit-norm vectors equivalently; the score is what the bug
-    fix corrects. See ``scripts/diag_lance_distance.py`` for the
-    isolation test that pinned this empirically.
+    Every query names the catalogue's metric (``distance_type``), so the raw value is that metric's distance whatever the vectors' norm and whether or
+    not the index exists: ``cosine`` returns ``1 - cos`` (similarity ``cos``), ``l2`` the squared L2 distance (similarity ``1 / (1 + d)``), ``dot``
+    ``1 - <a, b>`` (similarity the inner product). The score of the same pair therefore does not change when the index is built.
     """
     if distance_metric == "cosine":
-        return 1.0 - (float(raw_distance) / 2.0)
+        return 1.0 - float(raw_distance)
     if distance_metric == "l2":
         return 1.0 / (1.0 + float(raw_distance))
     if distance_metric == "dot":
-        # dot returns the negated inner product (lower = better).
-        return -float(raw_distance)
+        return 1.0 - float(raw_distance)
     return float(raw_distance)
 
 
@@ -156,7 +143,6 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
-_COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CATALOGUE_TABLE = "_primer_collections"
 
 # Map the VectorStore ABC's distance vocabulary to LanceDB's.
@@ -168,13 +154,8 @@ _DISTANCE_LANCE: dict[str, str] = {
 
 
 def _table_name_for_collection(collection_id: str) -> str:
-    """Map a collection id to a Lance table name. Same convention as pgvector."""
-    if not _COLLECTION_ID_RE.match(collection_id):
-        raise BadRequestError(
-            f"collection_id {collection_id!r} must match "
-            f"{_COLLECTION_ID_RE.pattern} (alphanumeric / underscore / hyphen)"
-        )
-    return "embeddings_" + collection_id.replace("-", "_")
+    """The Lance table name of a NEW collection (:func:`primer.vector.names.table_name_for_collection`); an existing one keeps its stored name."""
+    return table_name_for_collection(collection_id)
 
 
 def _catalogue_schema() -> pa.Schema:
@@ -510,7 +491,9 @@ class LanceVectorStore(VectorStore):
         # materialises an empty dataset; rows arrive via put().
         schema = _record_schema(dimensions)
         try:
-            await self._provider.db.create_table(table_name, schema=schema)
+            # No catalogue row says this collection does not exist, so a table of that name is an orphan of a crash between the create and the catalogue
+            # insert: replace it (an empty one holds nothing, and rows of a collection nobody can reach are lost anyway) instead of failing forever (KN-14).
+            await self._provider.db.create_table(table_name, schema=schema, mode="overwrite")
         except Exception as exc:
             raise ProviderError(
                 f"failed to create Lance table {table_name!r}: {exc}",
@@ -571,6 +554,68 @@ class LanceVectorStore(VectorStore):
                     distance_metric=cat["distance"],
                 )
 
+    async def put_many(self, records: list[EmbeddingRecord]) -> None:
+        """One ``merge_insert`` per collection: one table version for the whole batch, not one per chunk (KN-15)."""
+        by_collection: dict[str, list[EmbeddingRecord]] = {}
+        for record in records:
+            by_collection.setdefault(record.collection_id, []).append(record)
+        for collection_id, batch in by_collection.items():
+            table = await self._open_table(collection_id)
+            cat = await self._provider._catalogue_get(collection_id)
+            assert cat is not None  # _open_table would have raised
+            expected_dim = int(cat["dimensions"])
+            rows = []
+            for record in batch:
+                if len(record.vector) != expected_dim:
+                    raise BadRequestError(
+                        f"vector length {len(record.vector)} does not match "
+                        f"collection {collection_id!r} dimensions={expected_dim}"
+                    )
+                rows.append({
+                    "document_id": record.document_id,
+                    "chunk_id": record.chunk_id,
+                    "text": record.text,
+                    "vector": [float(x) for x in record.vector],
+                    "meta": json.dumps(record.meta or {}, sort_keys=True),
+                })
+            try:
+                await (
+                    table.merge_insert(["document_id", "chunk_id"])
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .execute(rows)
+                )
+            except Exception as exc:
+                raise ProviderError(f"LanceDB put_many failed for {collection_id}: {exc}", cause=exc) from exc
+            if not cat.get("indexed", False):
+                try:
+                    row_count = await table.count_rows()
+                except Exception:
+                    row_count = 0
+                if row_count >= int(self._provider.config.index_min_rows):
+                    await self._build_index(table=table, collection_id=collection_id, distance_metric=cat["distance"])
+
+    async def list_chunk_texts(
+        self, collection_id: str, document_id: str | None = None,
+    ) -> list[tuple[str, str, str, str | None]]:
+        table = await self._open_table(collection_id)
+        query = table.query().select(["document_id", "chunk_id", "text", "meta"])
+        if document_id is not None:
+            query = query.where(f"document_id = '{_escape_sql_string(document_id)}'")
+        try:
+            rows = await query.to_list()
+        except Exception as exc:
+            raise ProviderError(f"LanceDB list_chunk_texts failed in {collection_id}: {exc}", cause=exc) from exc
+        rows.sort(key=lambda r: (r["document_id"], r["chunk_id"]))
+        def embedder_of(raw: Any) -> str | None:
+            try:
+                value = json.loads(raw or "{}").get("embedder")
+            except (TypeError, ValueError):
+                return None
+            return value if isinstance(value, str) else None
+
+        return [(r["document_id"], r["chunk_id"], r["text"], embedder_of(r.get("meta"))) for r in rows]
+
     async def get(
         self,
         collection_id: str,
@@ -620,6 +665,7 @@ class LanceVectorStore(VectorStore):
             # directly. Use vector_search() to avoid needing two awaits.
             rows = await (
                 table.vector_search([float(x) for x in vector])
+                .distance_type(cat["distance"])      # the collection's metric, not Lance's default L2 (KN-11)
                 .limit(int(k))
                 .ef(int(self._provider.config.hnsw_ef_search))
                 .to_list()

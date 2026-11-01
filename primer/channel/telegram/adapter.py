@@ -7,10 +7,11 @@ from typing import Any
 
 from primer.channel.adapter import (
     DEFAULT_CACHE_MAXSIZE, BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header,
+    attribution_header, split_text,
 )
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 from primer.channel.telegram.render import (
+    _esc,
     build_ask_user_message,
     build_tool_approval_message,
     compute_tag,
@@ -29,6 +30,10 @@ _BoundedDict = BoundedDict
 
 # Agents shown per page in the /agent inline-keyboard picker.
 _AGENTS_PER_PAGE = 8
+
+# A message's text is 1-4096 characters after entities parsing, counted in UTF-16 code units
+# (core.telegram.org/bots/api#sendmessage).
+_TELEGRAM_TEXT_MAX = 4096
 
 
 class TelegramChannelAdapter(ChannelAdapter):
@@ -85,7 +90,10 @@ class TelegramChannelAdapter(ChannelAdapter):
         return self._reply_targets.get(message_id)
 
     async def initialize(self) -> None:
-        self._app = await TELEGRAM_CONNECTIONS.acquire(self._provider)
+        if self.owns_inbound:
+            self._app = await TELEGRAM_CONNECTIONS.acquire(self._provider)
+        else:  # posting only (W7)
+            self._app = await TELEGRAM_CONNECTIONS.acquire(self._provider, inbound=False)
         entry = TELEGRAM_CONNECTIONS.entry(self._provider.id)
         if entry is not None:
             entry.adapters_by_chat_id[str(self._channel.external_id)] = self
@@ -123,11 +131,11 @@ class TelegramChannelAdapter(ChannelAdapter):
         await self._post_envelope_media(envelope)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
-            msg = await self._app.bot.send_message(
-                chat_id=self._channel.external_id,
-                text=header + envelope.prompt,
-            )
-            return {"message_id": getattr(msg, "message_id", 0)}
+            msgs = [
+                await self._app.bot.send_message(chat_id=self._channel.external_id, text=part)
+                for part in split_text(header + envelope.prompt, _TELEGRAM_TEXT_MAX, utf16=True)
+            ]
+            return {"message_id": getattr(msgs[0], "message_id", 0)}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
                 chat_id=self._channel.external_id, envelope=envelope,
@@ -139,7 +147,7 @@ class TelegramChannelAdapter(ChannelAdapter):
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
         if header:
-            body["text"] = header + body["text"]
+            body["text"] = _esc(header) + body["text"]   # these bodies are Telegram HTML
         tag = compute_tag(
             workspace_id=envelope.workspace_id,
             session_id=envelope.session_id,

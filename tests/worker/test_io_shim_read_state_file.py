@@ -118,3 +118,30 @@ async def test_transient_read_failure_does_not_write_seq_1_over_existing_log() -
 
     assert await writer.append(event) == 6
     assert json.loads(ws.appended[0][1].decode())["seq"] == 6
+
+
+class _TailWorkspace(_Workspace):
+    """A backend with a size and a ranged read, but no tail read of its own (the sandbox shape)."""
+
+    async def stat(self, path: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(size_bytes=len(self.files[path])) if path in self.files else None
+
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        return self.files[path][offset:]
+
+
+@pytest.mark.asyncio
+async def test_read_state_tail_reads_the_end_of_a_long_file_and_the_whole_of_a_short_one() -> None:
+    ws = _TailWorkspace({".state/" + REL: b"abcdefghij"})
+    shim = _WorkspaceIOShim(_Registry(ws))
+    assert await shim.read_state_tail("w1", REL, 4) == (b"ghij", False)
+    assert await shim.read_state_tail("w1", REL, 10) == (b"abcdefghij", True)
+
+
+@pytest.mark.asyncio
+async def test_read_state_tail_absent_file_raises_and_a_backend_without_ranges_answers_none() -> None:
+    shim = _WorkspaceIOShim(_Registry(_TailWorkspace()))
+    with pytest.raises(NotFoundError):
+        await shim.read_state_tail("w1", REL, 4)
+    assert await _WorkspaceIOShim(_Registry(_Workspace({".state/" + REL: b"x"}))).read_state_tail("w1", REL, 4) is None

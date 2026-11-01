@@ -79,7 +79,9 @@ record. The rule of where a record lands (Decision 2) depends on whether a turn 
   contextvar), so it takes the next seq of the turn's counter and lands in order.
 - Outside a turn (an operator's batch, a clear, a user's click) the record reserves the next seq
   on the session row, guarded on the turn not running (`idle` or `claimable`), and is appended at
-  that seq.
+  that seq. The reservation and the append are one section under the session's lifecycle lock, so
+  two concurrent records land in the file in the order their reservations took their seqs (the
+  tap's seq filter skips a record that lands after a later one).
 - While a turn is running and the caller is not the turn, nothing is written. The batch or the
   event is still in the canvas row and in the platform event log, and a silent event reaches the
   agent in the next digest, so only the transcript line is skipped.
@@ -100,6 +102,12 @@ to the agent, by the state of the session, read fresh:
 | a waking event the agent has already read (the canvas was read again) | `recorded`, and nothing is written; it was delivered |
 | a waking event while a turn is open, or while the session is parked on anything else | `queued`, as a steer whose text is the `<canvas_event>` block; the park is untouched, so a click never answers a gate |
 | else | `woken`, the block as the session's next instruction (a click is a person) |
+
+A retried POST (its `client_event_id` already recorded) records nothing and redelivers only when
+the event wakes the agent, the agent has not read it, no queued steer carries it, and the stored
+event is older than the redelivery grace (30 s): inside the grace the first POST's delivery may
+still be running, so the retry answers `recorded`; older than it, the first delivery failed and
+the click must not be lost.
 
 **canvas_wait.** `canvas_wait` parks the turn until the user acts, and returns the matching events
 with the current values, or `{timeout: true}`. An event matches when its element is in `ids` (or
@@ -334,3 +342,12 @@ Accepted residuals (documented, accepted):
   script during another element's real activation can own that activation if its message arrives
   first; both frames are the same canvas's agent code, so this grants no gesture the agent could
   not already get on that click.
+
+## Renderer and console bridge fixes (T129)
+
+- **Busy Buttons (GU-2).** A clicked Button is `aria-disabled` plus `aria-busy` (not natively disabled, so a keyboard user keeps focus) and refuses a second click. `NV_CanvasFrame` remembers the `(rev, event_seq)` each click was sent at (`NV_canvasBusyCleared`) and posts `{type: "busy", element, on: false}` to the port when a snapshot moves either, or when the event POST fails. The renderer's 30 s timer is the last resort.
+- **State size (GU-3).** The renderer's `MAX_STATE_BYTES` is 6 MiB: the settings ceiling for a canvas (4 MiB) plus the values, file URLs and theme. A `state` message the renderer refuses is reported through `reportError`, not dropped.
+- **place() (GU-21).** Stale children are removed before survivors are moved, so removing an earlier sibling no longer re-inserts an Html frame.
+- **Disabled containers (GU-22).** An ancestor's `disabled` propagates like `hidden`: the renderer disables the controls under it and `CanvasService._is_unavailable` refuses their events (`element_disabled`). This reverses the earlier ruling that `disabled` was only a flag on its own element.
+- **Script check cap (GU-23).** `check_html_scripts_many` compiles at most `MAX_SCRIPTS_CHECKED` (200) inline scripts per batch and adds one "N more scripts were not checked" warning for a body with more.
+- **Error toasts (GU-24).** The console toasts the first of each distinct canvas error message, at most 5 per frame (`NV_canvasErrorIsNew`).

@@ -13,6 +13,9 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from pydantic_core import to_jsonable_python
 
+from primer.model.workspace import Workspace
+from primer.storage.q import Q
+from primer.model.storage import MAX_OFFSET
 from primer.model.external_tool import (
     ExternalToolDef,
     validate_external_tool_defs,
@@ -34,7 +37,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, empty_page, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
-from primer.session.timeline import build_turn_timeline
+from primer.session.timeline import TimelineSources, build_turn_timeline_from, parse_sources
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -44,7 +47,7 @@ from primer.model.except_ import (
 )
 from primer.session.default_binding import resolve_initial_binding
 from primer.model.problem_details import record_without_traceback
-from primer.session.usage_cache import UsageCache
+from primer.session.usage_cache import UsageCache, fold_usage
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -455,156 +458,91 @@ async def delete_session(
         session_id=session_id,
         reason="session deleted",
     )
-    if s.status == SessionStatus.RUNNING and not force:
-        raise ConflictError(
-            f"Session {session_id!r} is running; cancel it first "
-            "(POST /cancel) before deleting, or pass ?force=true to "
-            "evict an orphaned row"
-        )
-    if s.status == SessionStatus.RUNNING and force:
-        # Under the per-session lifecycle lock, like the Cancel route, and on the row read INSIDE it:
-        # the row read above is a snapshot from before the cancel_pending_external awaits, and writing it
-        # back whole (twice) would overwrite whatever the worker changed in the meantime.
-        async with session_lifecycle_lock().acquire(session_id):
-            fresh = await sessions.get(session_id)
-            if fresh is None:
-                # Deleted by someone else while this request waited for the lock: there is nothing to
-                # force, and writing the snapshot read before the wait back would re-create it.
-                raise NotFoundError(
-                    f"Session {session_id!r} does not exist on workspace "
-                    f"{workspace_id!r}"
-                )
-            s = fresh
-            # A session that stopped running since the first read is not forced: it takes the ordinary
-            # path for its status below. Forcing it would write ENDED/force_deleted over a row no worker
-            # holds and signal a cancel nobody is running.
-            if s.status == SessionStatus.RUNNING:
-                # Flag the row BEFORE the key goes out: the worker's cancel arm tells a
-                # Stop from a Cancel by cancel_requested alone (not set means a Stop, which
-                # lands the row WAITING), and it re-reads the row when the signal arrives.
-                # Without the flag this delete preempted the turn as a Stop and WAITING was
-                # written over ENDED/force_deleted until the row delete landed.
-                s.cancel_requested = True
-                s.cancel_requested_at = datetime.now(timezone.utc)
-                await sessions.update(s)
-                # Publish cancel so any worker actually holding the lease
-                # preempts cleanly before its complete_turn CAS. Best-effort -
-                # if the bus publish fails we still proceed with the delete
-                # (force semantics).
-                if event_bus is not None:
-                    try:
-                        await event_bus.publish(f"session:{session_id}:cancel", {})
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "delete_session(force): event_bus.publish failed",
-                            extra={
-                                "session_id": session_id,
-                                "exception": type(exc).__name__,
-                            },
-                        )
-                s.status = SessionStatus.ENDED
-                s.ended_reason = "force_deleted"
-                s.ended_at = datetime.now(timezone.utc)
-                await sessions.update(s)
-                if engine is not None:
-                    from primer.int.claim import ClaimKind
-                    await engine.delete_lease(ClaimKind.SESSION, session_id)
-
-    # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
-    # transition to ENDED inline. Drop any stale lease and signal the
-    # scheduler - symmetric with cancel_session's CREATED/WAITING/PAUSED
-    # branch, then the row gets removed below.
-    if s.status in {
-        SessionStatus.CREATED,
-        SessionStatus.WAITING,
-        SessionStatus.PAUSED,
-    }:
-        s.status = SessionStatus.ENDED
-        s.ended_reason = "cancelled"
-        s.ended_at = datetime.now(timezone.utc)
-        await sessions.update(s)
-        if engine is not None:
-            from primer.int.claim import ClaimKind
-            await engine.delete_lease(ClaimKind.SESSION, session_id)
-        # Best-effort scheduler notification so any in-flight bookkeeping
-        # can react. Don't fail the delete if it raises.
-        try:
-            await scheduler.signal_cancel(session_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "delete_session: scheduler.signal_cancel failed",
-                extra={
-                    "session_id": session_id,
-                    "exception": type(exc).__name__,
-                },
+    # The decision is made under the per-session lifecycle lock, like the Cancel route, on the row read INSIDE it: the row read above is a snapshot
+    # from before the cancel_pending_external awaits, and a steer that flipped WAITING to RUNNING in that gap (and was claimed) would otherwise
+    # be ended and have its lease deleted from under the worker (GS-21).
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh = await sessions.get(session_id)
+        if fresh is None:
+            # Deleted by someone else while this request waited for the lock: there is nothing to do, and writing the snapshot back would re-create it.
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
             )
+        s = fresh
+        if s.status == SessionStatus.RUNNING and not force:
+            raise ConflictError(
+                f"Session {session_id!r} is running; cancel it first "
+                "(POST /cancel) before deleting, or pass ?force=true to "
+                "evict an orphaned row"
+            )
+        if s.status == SessionStatus.RUNNING and force:
+            # Flag the row BEFORE the key goes out: the worker's cancel arm tells a
+            # Stop from a Cancel by cancel_requested alone (not set means a Stop, which
+            # lands the row WAITING), and it re-reads the row when the signal arrives.
+            # Without the flag this delete preempted the turn as a Stop and WAITING was
+            # written over ENDED/force_deleted until the row delete landed.
+            s.cancel_requested = True
+            s.cancel_requested_at = datetime.now(timezone.utc)
+            await sessions.update(s)
+            # Publish cancel so any worker actually holding the lease
+            # preempts cleanly before its complete_turn CAS. Best-effort -
+            # if the bus publish fails we still proceed with the delete
+            # (force semantics).
+            if event_bus is not None:
+                try:
+                    await event_bus.publish(f"session:{session_id}:cancel", {})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "delete_session(force): event_bus.publish failed",
+                        extra={
+                            "session_id": session_id,
+                            "exception": type(exc).__name__,
+                        },
+                    )
+            s.status = SessionStatus.ENDED
+            s.ended_reason = "force_deleted"
+            s.ended_at = datetime.now(timezone.utc)
+            await sessions.update(s)
+            if engine is not None:
+                from primer.int.claim import ClaimKind
+                await engine.delete_lease(ClaimKind.SESSION, session_id)
 
-    # Best-effort: drop the in-memory session handle AND reap the persisted
-    # on-disk slot so list_sessions() stops returning it. Each backend reaps
-    # its OWN slot inside remove_session (LocalWorkspace rmtrees
-    # .state/sessions/<sid>/; SandboxWorkspace git-rm's the slot in the pod's
-    # runtime state repo). The previous local-only host rmtree here silently
-    # skipped the sandbox backend -- which keeps its slot via _state_repo,
-    # not _state -- so the pod slot survived and rehydrated the "deleted"
-    # session on the next list.
-    try:
-        live_workspace = await workspace_registry.get_workspace(workspace_id)
-        await live_workspace.remove_session(session_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "delete_session: session-slot cleanup failed (row still removed)",
-            extra={
-                "session_id": session_id,
-                "workspace_id": workspace_id,
-                "exception": type(exc).__name__,
-                # NB: not "message" -- that is a reserved LogRecord attribute
-                # and makeRecord() would raise KeyError, turning this
-                # best-effort log into a 500 that skips the row delete below.
-                "error": str(exc),
-            },
-        )
+        # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
+        # transition to ENDED inline. Drop any stale lease and signal the
+        # scheduler - symmetric with cancel_session's CREATED/WAITING/PAUSED
+        # branch, then the row gets removed below.
+        if s.status in {
+            SessionStatus.CREATED,
+            SessionStatus.WAITING,
+            SessionStatus.PAUSED,
+        }:
+            s.status = SessionStatus.ENDED
+            s.ended_reason = "cancelled"
+            s.ended_at = datetime.now(timezone.utc)
+            await sessions.update(s)
+            if engine is not None:
+                from primer.int.claim import ClaimKind
+                await engine.delete_lease(ClaimKind.SESSION, session_id)
+            # Best-effort scheduler notification so any in-flight bookkeeping
+            # can react. Don't fail the delete if it raises.
+            try:
+                await scheduler.signal_cancel(session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "delete_session: scheduler.signal_cancel failed",
+                    extra={
+                        "session_id": session_id,
+                        "exception": type(exc).__name__,
+                    },
+                )
 
-    # Drop the thread mappings that pointed here. Best-effort: the row must
-    # still be deleted if the correlation table is unreachable, but a leaked
-    # mapping would steer a session that no longer exists (S6 section 9).
-    try:
-        from primer.channel.correlation import CorrelationStore
+    # The slot, the thread mappings, the peer ledger and the canvas go with the row: the one cleanup the retention sweep and a workspace destroy share.
+    from primer.session.purge import delete_session_rows
 
-        await CorrelationStore(storage_provider).clear_for_session(session_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "delete_session: correlation cleanup failed (row still removed)",
-            extra={"session_id": session_id, "error": str(exc)},
-        )
-
-    # The peer-message ledger rows of the messages this session sent are its rate allowance, which nothing will ask about again: they go with
-    # it (audit G7-15; the TTL sweep takes any that a failure here leaves). Best-effort, like the cleanups above: the row is still deleted.
-    try:
-        from primer.session.peer_messages import delete_peer_ledger_of
-
-        await delete_peer_ledger_of(storage_provider, session_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "delete_session: peer-ledger cleanup failed (row still removed)",
-            extra={"session_id": session_id, "error": str(exc)},
-        )
-
-    # The session's canvas (pivot P5, plan Decision 3: one SessionCanvas row per session, id = session id) goes with it. Best-effort, like
-    # the cleanups above: a session that never drew has no row (NotFoundError is no failure), and a failure is logged and never blocks the
-    # delete (the lead's ruling 7 on S6). A row left behind holds no session and serves nothing: every canvas route reads the session first.
-    try:
-        from primer.model.canvas import SessionCanvas
-
-        await storage_provider.get_storage(SessionCanvas).delete(session_id)
-    except NotFoundError:
-        pass
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "delete_session: canvas cleanup failed (row still removed)",
-            extra={"session_id": session_id, "error": str(exc)},
-        )
-
-    await sessions.delete(session_id)
+    await delete_session_rows(
+        storage_provider, session_id, workspace_registry=workspace_registry, workspace_id=workspace_id,
+    )
 
 
 def _and(predicates: list[Predicate]) -> Predicate:
@@ -862,16 +800,6 @@ async def recent_sessions(
     client-side normalisation already did (SH_api.allSessions), just
     moved server-side where the workspace join can happen too.
     """
-    live_workspaces: dict[str, str] = {}
-    offset = 0
-    while True:
-        page = await workspaces.list(OffsetPage(offset=offset, length=200))
-        for ws in page.items:
-            live_workspaces[ws.id] = ws.name or ws.id
-        if len(page.items) < 200:
-            break
-        offset += 200
-
     # Access (P2 Task 5): the readable workspaces filter the candidate query itself, BEFORE the window: filtering the window afterwards would let
     # 200 newer sessions of other users push a person's own out of it and leave their feed empty.
     nothing, scoped = await scope_to_readable_workspaces(storage_provider, person_from_request(request))
@@ -882,6 +810,15 @@ async def recent_sessions(
     candidates = (
         await sessions.find(scoped, window, order_by=order) if scoped is not None else await sessions.list(window, order_by=order)
     )
+
+    # Only the workspaces of the candidate sessions are read (at most the window's worth), never the whole table (M1).
+    live_workspaces: dict[str, str] = {}
+    wanted = sorted({session.workspace_id for session in candidates.items})
+    if wanted:
+        found = await workspaces.find(
+            Q(Workspace).where_in("id", wanted).build(), OffsetPage(offset=0, length=200, want_total=False),
+        )
+        live_workspaces = {ws.id: ws.name or ws.id for ws in found.items}
 
     rows: list[RecentSessionRow] = []
     for session in candidates.items:
@@ -959,6 +896,9 @@ _PENDING_PAGE = 100
 # The session detail's usage totals, kept per log identity (see ``_session_usage_totals``; architecture review A-05).
 USAGE_CACHE = UsageCache()
 
+# The parsed sources of a turn's timeline, per log identity (see ``get_session_turn_timeline``).
+TIMELINE_CACHE = TimelineSources()
+
 
 async def _session_usage_totals(
     session: WorkspaceSession, workspace_registry,
@@ -968,7 +908,7 @@ async def _session_usage_totals(
     messages.jsonl), or ``None`` if the log is otherwise unreadable -
     mirrors build_usage_frame's own shape (tap.py), the only other place
     session_usage() is assembled into a response."""
-    from primer.api.routers.tap import build_usage_frame
+    from primer.api.routers.tap import build_usage_frame, usage_frame
 
     workspace = await workspace_registry.get_workspace(session.workspace_id)
     if workspace is None:
@@ -992,15 +932,14 @@ async def _session_usage_totals(
         if cached is not None:
             return cached
     try:
-        raw = await workspace.read_file(rel)
+        # Folds only what the log gained since the last read of this session when the workspace can read a range (usage_cache.fold_usage).
+        usage = usage_frame(await fold_usage(workspace, rel, USAGE_CACHE, (session.workspace_id, session.id)))
     except NotFoundError:  # a session that never ran a turn wrote no log: empty, not an error
         logger.debug(
             "session %s has no messages log yet; serving the empty usage frame",
             session.id,
         )
         return build_usage_frame([])
-    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-    usage = build_usage_frame(text.splitlines())
     if key is not None:
         USAGE_CACHE.put(key, usage)
     return usage
@@ -1130,7 +1069,7 @@ async def get_session_turn_log(
     request: Request,
     session_id: str = Path(..., description="Session id"),
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     since_seq: int | None = Query(default=None, ge=0),
     sessions=Depends(get_session_storage),
     storage_provider=Depends(get_storage_provider),
@@ -1490,7 +1429,7 @@ async def get_session_messages(
     request: Request,
     session_id: str = Path(..., description="Session id"),
     limit: int = Query(default=200, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=MAX_OFFSET),
     after_seq: int | None = Query(default=None, ge=0),
     visible: bool = Query(
         False,
@@ -1593,11 +1532,20 @@ async def get_session_turn_timeline(
         )
         return raw.decode("utf-8", errors="replace").splitlines()
 
-    timeline = build_turn_timeline(
-        message_lines=await _lines("messages.jsonl"),
-        turn_log_lines=await _lines("turns.jsonl"),
-        turn_no=turn_no,
-    )
+    # The parsed windows and envelopes are kept per log identity (the key of the usage totals, over both files), so the next turn of the same
+    # session reads and parses nothing. A workspace that cannot stat a file is never cached.
+    key = None
+    try:
+        infos = [await workspace.file_info(f"{state_path}/sessions/{session_id}/{name}") for name in ("messages.jsonl", "turns.jsonl")]
+        key = (sess.workspace_id, session_id, sess.last_seq, sess.turn_no, *((i.size_bytes, i.modified_at) for i in infos))
+    except Exception:  # noqa: BLE001 - no identity, no cache (a missing turns.jsonl lands here too: read below, uncached)
+        key = None
+    sources = TIMELINE_CACHE.get(key) if key is not None else None
+    if sources is None:
+        sources = parse_sources(await _lines("messages.jsonl"), await _lines("turns.jsonl"))
+        if key is not None:
+            TIMELINE_CACHE.put(key, sources)
+    timeline = build_turn_timeline_from(sources, turn_no)
     if timeline is None:
         raise NotFoundError(
             f"Session {session_id!r} has no turn {turn_no}"

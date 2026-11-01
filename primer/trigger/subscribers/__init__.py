@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
-from primer.model.storage import Op, OffsetPage
+from primer.model.storage import CursorPage, Op
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.storage.q import Q
@@ -187,21 +187,28 @@ async def check_subscription_busy(
     if fire_context is not None and fire_context.get("event") is not None:
         return None
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
+    # Only the live candidates, all of them (W3): an ended run never holds the gate, and a subscription's ended runs pile up past any one
+    # page, with its live run's random id sorting anywhere among them.
     predicate = (
         Q(WorkspaceSession)
         .where_op("metadata.subscription_id", Op.EQ, sub.id)
+        .where_op("status", Op.NE, SessionStatus.ENDED.value)
         .build()
     )
-    page = await sessions.find(predicate, OffsetPage(offset=0, length=200))
-    for s in page.items:
-        if session_holds_skip_gate(s):
-            return SubscriptionDispatchResult(
-                ok=True,
-                skipped=True,
-                error_code="skipped_subscription_busy",
-                error_message=f"session {s.id!r} still in-flight",
-            )
-    return None
+    cursor: str | None = None
+    while True:
+        page = await sessions.find(predicate, CursorPage(cursor=cursor, length=200))
+        for s in page.items:
+            if session_holds_skip_gate(s):
+                return SubscriptionDispatchResult(
+                    ok=True,
+                    skipped=True,
+                    error_code="skipped_subscription_busy",
+                    error_message=f"session {s.id!r} still in-flight",
+                )
+        if page.next_cursor is None or page.next_cursor == cursor:
+            return None
+        cursor = page.next_cursor
 
 
 __all__ = [

@@ -10,7 +10,7 @@ tools are derived from it by AST; calls execute out of process.
 The source is untrusted by construction: agents can reach
 `create_python_toolset`, so an agent can author a tool. Everything here
 follows from that. The host reads the module structurally and never
-imports it; the sandbox runs it in a fresh process it cannot escape; and
+imports it; the sandbox runs it in a fresh process whose syscalls, resources and (under Landlock, see `docs/dev/architecture/python-tool-isolation.md`) files are bounded to its scratch dir; and
 the two sides talk over one JSON round trip whose shape the host
 validates.
 
@@ -38,7 +38,7 @@ registration never ran it.
 | File | Responsibility |
 | --- | --- |
 | `docstring.py` | Google docstring to the purpose/when/args anatomy `make_tool` enforces. Pure. |
-| `schema.py` | Function signature to a self-contained JSON Schema. Pure, AST-based. |
+| `schema.py` | Function signature to a self-contained JSON Schema. Pure, AST-based; a parameter default must be a literal (read with `ast.literal_eval`), anything else is a `SchemaError` naming the parameter. `X | None` maps to `{"type": [X, "null"]}` (a wider union to an `anyOf` with `{"type": "null"}`), never OpenAPI's `nullable`, which Draft 2020-12 ignores. |
 | `registration.py` | Collects `@primer_tool` / `@resumes` and builds `Tool` descriptors. |
 | `protocol.py` | The host side of the shim wire format. |
 | `_shim.py` | The in-sandbox runner, shipped as a source string. |
@@ -243,3 +243,10 @@ static test passes either way and only the e2e suite can tell them apart.
   recorded.
 - **The editor degrades to a textarea.** Why: a failed bundle load should
   cost syntax highlighting, not the ability to edit a tool.
+
+### Watch parks (GS-12)
+
+A python tool's `watch_files(paths)` parks on `watch:{session}[:{graph node}]:{tool_call}` (the node only inside a graph, as for `ask_user` and
+timers). `to_yielded` writes `paths`, `batch_window_ms` (default 250, 0 to 5000) and `workspace_id` at the TOP of `resume_metadata`, where the
+`WatcherManager` and the write wake read them, after the built-in tool's checks: no absolute path, no `..` segment, 1 to 200 paths, and a
+workspace (all `YieldKindError`, answered to the tool as an error result). The original `params` stay beside them.

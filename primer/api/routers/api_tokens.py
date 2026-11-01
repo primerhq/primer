@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._api_tokens_shared import (
@@ -49,6 +49,7 @@ from primer.api.routers._api_tokens_shared import (
     revoke_token,
     to_summary,
 )
+from primer.model.trigger import _read_as_utc
 from primer.auth.api_tokens import (
     extract_prefix,
     hash_token,
@@ -81,6 +82,12 @@ class ApiTokenCreateBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     scopes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _expires_at_as_utc(cls, value: datetime | None) -> datetime | None:
+        """A time with no zone is read as UTC, as a trigger's times are: comparing a naive value with the aware clock raised ``TypeError`` (500)."""
+        return _read_as_utc(value)
 
 
 class ApiTokenRenameBody(BaseModel):
@@ -295,6 +302,12 @@ async def revoke_api_token(
 # ---------------------------------------------------------------------------
 
 
+async def rename_token_row(storage, row: ApiToken, new_name: str) -> ApiToken | None:
+    """Write the token's ``name`` and nothing else (a whole-row write of the row read earlier would undo a revoke that landed since);
+    ``None`` when the token is gone."""
+    return await storage.patch_if(row.id, {"name": new_name}, where={"user_id": [row.user_id]})
+
+
 @api_tokens_router.put(
     "/{token_id}",
     response_model=ApiTokenSummary,
@@ -343,8 +356,12 @@ async def rename_api_token(
                 },
             )
 
-    updated = row.model_copy(update={"name": new_name})
-    saved = await storage.update(updated)
+    saved = await rename_token_row(storage, row, new_name)
+    if saved is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "token_not_found", "message": f"api token {token_id!r} does not exist"},
+        )
     return to_summary(saved)
 
 

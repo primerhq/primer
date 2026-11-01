@@ -7,7 +7,7 @@
 //
 // It also shows the isolation level this deployment ENFORCES. "rlimit-only"
 // bounds CPU and memory but stops neither filesystem reads nor egress, and an
-// operator deciding whether to trust a tool needs to know which of the four
+// operator deciding whether to trust a tool needs to know which of the
 // levels they are on - a generic "sandboxed" badge would be a lie on one of
 // them.
 
@@ -16,6 +16,11 @@ var PY_ISOLATION_COPY = {
     tone: "--green",
     label: "container",
     detail: "Kernel-enforced: namespaces and cgroups.",
+  },
+  landlock: {
+    tone: "--green",
+    label: "landlock",
+    detail: "Kernel-enforced: the tool reads only the interpreter, TLS and DNS files, and writes only its own scratch folder.",
   },
   seccomp: {
     tone: "--green",
@@ -325,6 +330,16 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
   var source = draft == null ? stored : draft;
   var dirty = draft != null && draft !== stored;
 
+  // Clear the draft only once the refetched stored source catches up to it.
+  // A save resolves before its invalidation refetch lands; clearing the draft
+  // on success would throw away keystrokes typed while the PUT was out and
+  // briefly show the stale stored source (UI-M10). When the operator typed
+  // nothing more, stored catches up to the draft and this clears it; when
+  // they did, the draft stays dirty.
+  React.useEffect(function () {
+    if (draft != null && draft === stored) setDraft(null);
+  }, [draft, stored]);
+
   // Handle on the CodeMirror view, so the outline can jump and "Add function"
   // can insert at the end without routing text through React state.
   var viewRef = React.useRef(null);
@@ -390,7 +405,6 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
       ],
       onSuccess: function () {
         setRegError(null);
-        setDraft(null);
         if (pushToast) pushToast({ kind: "success", title: "Toolset saved", detail: toolsetId });
       },
       onError: function (err) {

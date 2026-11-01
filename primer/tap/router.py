@@ -31,8 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -53,6 +54,9 @@ _QUEUE_MAXSIZE = 1024
 _TICK_PREFIX = "session:"
 _TICK_SUFFIX = ":tick"
 _DELTA_SUFFIX = ":delta"
+
+#: How long a tick for a session with no row is dropped without asking storage again.
+_UNKNOWN_SESSION_MEMORY_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -106,9 +110,14 @@ class WorkspaceTapRouter:
         self,
         event_bus: "EventBus",
         session_storage: "Storage[WorkspaceSession]",
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._bus = event_bus
         self._sessions = session_storage
+        self._clock = clock
+        # sid -> when its "no such session" answer stops being trusted: a tick for a session with no row used to cost a storage read EVERY time.
+        self._unknown_until: dict[str, float] = {}
         # workspace_id -> set of subscriber queues
         self._subs: dict[str, set[asyncio.Queue[WorkspaceTick]]] = {}
         self._delta_subs: dict[str, set[asyncio.Queue]] = {}
@@ -127,6 +136,7 @@ class WorkspaceTapRouter:
         if self._task is not None:
             return
         self._sub = self._bus.subscribe()
+        await self._sub.ready()
         self._task = asyncio.create_task(
             self._consume(), name="workspace-tap-router"
         )
@@ -247,8 +257,13 @@ class WorkspaceTapRouter:
         if cached is not None:
             self._wid_by_sid.move_to_end(sid)  # LRU: mark recently used
             return cached
+        if self._unknown_until.get(sid, 0.0) > self._clock():
+            return None
         session = await self._sessions.get(sid)
         if session is None:
+            self._unknown_until[sid] = self._clock() + _UNKNOWN_SESSION_MEMORY_S
+            if len(self._unknown_until) > self._WID_CACHE_MAX:
+                self._unknown_until.pop(next(iter(self._unknown_until)))
             logger.debug(
                 "workspace tap router: no session row for sid %r; skipping tick",
                 sid,

@@ -256,3 +256,16 @@ async def test_default_resolver_discriminates(tmp_path):
     session = await _default_resolve_pty(wsx, cols=100, rows=30)
     assert isinstance(session, _RuntimePtyAdapter)
     assert wsx.sandbox.calls == [{"cols": 100, "rows": 30}]
+
+
+@pytest.mark.asyncio
+async def test_runtime_stdin_refusal_drops_the_input_and_keeps_the_terminal():
+    """A runtime error answer to stdin (queue full while the program is not reading) drops the input, never raises."""
+    from primer.api.routers.terminal import _RuntimePtyAdapter
+    from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
+
+    class _RefusingHandle:
+        async def stdin(self, data: bytes) -> None:
+            raise RuntimeOpError("EPROTOCOL", "pty_stdin: stdin refused")
+
+    await _RuntimePtyAdapter(_RefusingHandle()).write(b"x" * 10)

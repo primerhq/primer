@@ -14,6 +14,7 @@ mapping details.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from collections.abc import Iterable
@@ -29,7 +30,7 @@ from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
 from primer.llm._reasoning import gemini_extended
-from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_lazy_with_connect_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini_detailed
 from primer.model.except_ import (
     ConfigError,
@@ -252,7 +253,10 @@ def _part_to_gemini(part: Part, name_lookup: dict[str, str]) -> gtypes.Part:
                 id=part.id,
                 name=part.name,
                 args=part.arguments,
-            )
+            ),
+            thought_signature=(
+                base64.b64decode(part.thought_signature) if part.thought_signature is not None else None
+            ),
         )
 
     if isinstance(part, ToolResultPart):
@@ -560,13 +564,16 @@ class _StreamState:
     last_usage_metadata: Any = None
     emitted_stream_start: bool = False
     last_text_index: int = 0
+    # (thought?, index) of the text part still open: consecutive text chunks of one kind continue it (AG-L8).
+    open_text: tuple[bool, int] | None = None
     server_tool_index: dict[str, int] = field(default_factory=dict)
 
 
 def _next_index(state: _StreamState) -> int:
-    """Allocate and return the next flat block index."""
+    """Allocate and return the next flat block index (a new block closes the open text part)."""
     idx = state.next_index
     state.next_index += 1
+    state.open_text = None
     return idx
 
 
@@ -617,8 +624,12 @@ def _part_to_events(
 
     text = getattr(part, "text", None)
     if text:
-        thought = getattr(part, "thought", None)
-        idx = _next_index(state)
+        thought = bool(getattr(part, "thought", None))
+        if state.open_text is not None and state.open_text[0] == thought:
+            idx = state.open_text[1]
+        else:
+            idx = _next_index(state)
+            state.open_text = (thought, idx)
         state.last_text_index = idx
         if thought:
             out.append(ReasoningDelta(text=text, index=idx))
@@ -637,7 +648,11 @@ def _part_to_events(
         out.append(
             ToolCallDelta(id=call_id, arguments_delta=json.dumps(args), index=idx)
         )
-        out.append(ToolCallEnd(id=call_id, arguments=args, index=idx))
+        signature = getattr(part, "thought_signature", None)
+        out.append(ToolCallEnd(
+            id=call_id, arguments=args, index=idx,
+            thought_signature=base64.b64encode(signature).decode("ascii") if isinstance(signature, bytes) else None,
+        ))
         return out
 
     inline = getattr(part, "inline_data", None)
@@ -801,6 +816,19 @@ def _translate_chunk(
     usage_metadata = getattr(chunk, "usage_metadata", None)
     if usage_metadata is not None:
         state.last_usage_metadata = usage_metadata
+
+    block_reason = getattr(getattr(chunk, "prompt_feedback", None), "block_reason", None)
+    if candidate is None and block_reason is not None:
+        # The prompt itself was blocked: no candidate will ever come, so end the turn as a content filter.
+        usage_event = _build_usage(state.last_usage_metadata)
+        prompt_tokens = getattr(state.last_usage_metadata, "prompt_token_count", None)
+        if usage_event is None and prompt_tokens is not None:
+            usage_event = Usage(input_tokens=prompt_tokens, output_tokens=0, cumulative=True)
+        if usage_event is not None:
+            out.append(usage_event)
+        reason_str = getattr(block_reason, "name", None) or str(block_reason)
+        out.append(Done(stop_reason="content_filter", raw_reason=f"prompt_blocked:{reason_str}"))
+        return out
 
     finish_reason = getattr(candidate, "finish_reason", None) if candidate else None
     if finish_reason is not None:
@@ -999,7 +1027,7 @@ class GeminiLLM(LLM):
                     client = self._get_client()
                     from primer.model.except_ import ProviderTimeoutError
                     try:
-                        sdk_stream = await _open_with_connect_timeout(
+                        sdk_stream = await _open_lazy_with_connect_timeout(
                             lambda: client.aio.models.generate_content_stream(
                                 model=model,
                                 contents=contents,

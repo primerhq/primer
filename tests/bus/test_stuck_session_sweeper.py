@@ -514,3 +514,88 @@ async def test_a_failure_stamped_between_the_read_and_the_write_is_not_overwritt
     assert reaped == 0
     row = await storage.get("se-racing")
     assert row.status == SessionStatus.RUNNING and row.ended_reason is None
+
+
+# --------------------------------------------------------------------------- #
+# CORE-14: the candidate predicate must exclude ended rows                     #
+# --------------------------------------------------------------------------- #
+
+
+def _predicate_excludes_ended(predicate) -> bool:
+    """Whether *predicate* carries a ``status != 'ended'`` leaf, at any depth."""
+    from primer.model.storage import FieldRef, Op, Predicate
+
+    if not isinstance(predicate, Predicate):
+        return False
+    return (
+        predicate.op == Op.NE
+        and isinstance(predicate.left, FieldRef)
+        and predicate.left.name == "status"
+        and getattr(predicate.right, "value", None) == "ended"
+    ) or (
+        _predicate_excludes_ended(predicate.left)
+        or _predicate_excludes_ended(predicate.right)
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_candidate_query_excludes_ended_sessions(fake_storage_provider, monkeypatch):
+    """CORE-14: an ended turn-0 row matches the old predicate forever, so
+    every 30 s tick pages and decodes the ever-growing ended set. The
+    storage query must exclude ended rows (the Python filter rejects
+    them either way, so the selection is unchanged)."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(
+        _session("se-done", status=SessionStatus.ENDED, ended_reason="completed")
+    )
+    await storage.create(_session("se-stuck"))
+
+    captured: list = []
+    real_find = storage.find
+
+    async def spy_find(predicate, page, *, order_by=None):
+        captured.append(predicate)
+        return await real_find(predicate, page, order_by=order_by)
+
+    monkeypatch.setattr(storage, "find", spy_find)
+    await _sweeper(storage)._tick()
+
+    assert captured, "the sweeper must read its candidates through find"
+    assert all(_predicate_excludes_ended(p) for p in captured)
+
+
+@pytest.mark.asyncio
+async def test_the_sweeper_selects_exactly_the_stuck_rows(fake_storage_provider):
+    """Characterization over a mixed seed: an ended turn-0 row, a parked
+    first turn, a failed-and-resting first turn and a live first turn are
+    all left alone; only the stuck one is ended (identical selection
+    before and after the predicate change)."""
+    from primer.model.workspace_session import LastTurnError
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(
+        _session("se-done", status=SessionStatus.ENDED, ended_reason="completed")
+    )
+    await storage.create(_parked("se-parked"))
+    await storage.create(
+        _session(
+            "se-rests", status=SessionStatus.WAITING,
+            last_turn_error=LastTurnError(
+                code="server_error",
+                at=datetime.now(timezone.utc) - timedelta(minutes=20),
+            ),
+        )
+    )
+    await storage.create(_session("se-running"))
+    await storage.create(_session("se-stuck"))
+
+    reaped = await _sweeper(storage, leased={"se-running"})._tick()
+
+    assert reaped == 1
+    assert (await storage.get("se-done")).status == SessionStatus.ENDED
+    assert (await storage.get("se-parked")).status == SessionStatus.RUNNING
+    assert (await storage.get("se-rests")).status == SessionStatus.WAITING
+    assert (await storage.get("se-running")).status == SessionStatus.RUNNING
+    stuck = await storage.get("se-stuck")
+    assert stuck.status == SessionStatus.ENDED
+    assert stuck.ended_detail == "never_started"

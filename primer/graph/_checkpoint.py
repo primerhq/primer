@@ -9,7 +9,7 @@ state to a JSON-able dict), and ``restore_state`` (the inverse).
 It is a mixin, not a standalone class: the methods read and write the
 executor's mid-flight attributes (``_context``, ``_ready_set``,
 ``_node_states``, ``_fanout_instances``, ``_fanout_target_expected_count``,
-``_instance_to_spec``, ``_fanout_drain_state``, ``_pending_toolcalls``,
+``_instance_to_spec``, ``_fanout_drain_state``, ``_max_iter_routed``, ``_pending_toolcalls``,
 ``_pending_agent_yields``, ``_admitted``, ``_graph``), all of which are
 initialised by ``_BaseGraphExecutor.__init__``. Keeping them here keeps
 base.py focused on the superstep control flow.
@@ -17,6 +17,8 @@ base.py focused on the superstep control flow.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
 from primer.graph._node_refs import (
@@ -33,7 +35,7 @@ from primer.model.graph import (
     NodeOutput,
     NodeRuntimeState,
 )
-from primer.model.yield_ import GATE_ID_KEY, ToolWaitPark, Yielded, YieldToWorker, gate_id_of
+from primer.model.yield_ import GATE_ID_KEY, ToolWaitPark, Yielded, YieldToWorker, gate_id_of, parse_wait_deadline, wait_deadline
 
 
 # The keys of a gate's own metadata that its projection carries besides the call itself and the card's allowlist: why it gated, who may decide it and how an inner ``call_tool`` call is dispatched.
@@ -121,11 +123,26 @@ class _CheckpointMixin:
                 event_key=primary_event_key,
                 resume_metadata=resume_meta,
                 event_keys=all_keys,
+                timeout=self._seconds_to_earliest_deadline(),
             ),
             tool_call_id=primary_tcid,
         )
         yld.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
         return yld
+
+    def _seconds_to_earliest_deadline(self) -> float:
+        """How long the park on the pending human-interaction set lasts: until the earliest entry's own deadline (GR-4).
+
+        Each entry carries the deadline its node's wait stamped as it parked, so a re-park on the remaining entries keeps their clocks. An
+        entry without one (restored from a checkpoint written before entries carried it, or unreadable) is given the cap from now, stored on
+        the entry so the snapshot carries it: such a park lasts the 3600 s it always did.
+        """
+        now = datetime.now(timezone.utc)
+        cap = wait_deadline(None, now)
+        self._pending_toolcalls = [p if parse_wait_deadline(p.deadline) else replace(p, deadline=cap) for p in self._pending_toolcalls]
+        self._pending_agent_yields = [p if parse_wait_deadline(p.deadline) else replace(p, deadline=cap) for p in self._pending_agent_yields]
+        earliest = min(parse_wait_deadline(p.deadline) for p in [*self._pending_toolcalls, *self._pending_agent_yields])
+        return max(0.0, (earliest - now).total_seconds())
 
     def _build_pending_tool_wait_park(self) -> "ToolWaitPark":
         """Build the flattened ``ToolWaitPark`` for the current pending
@@ -209,6 +226,7 @@ class _CheckpointMixin:
           ``{"fanout_node_id": ..., "spec": <FanOutSpec.model_dump>}``.
         * ``fanout_drain_state`` — drain_key → drain_state dict.
         * ``pending_toolcalls`` — list of pending ToolCall dicts.
+        * ``max_iter_routed`` - the ``on_max_iterations`` reroute already fired.
         * ``pending_ended_reason`` / ``pending_ended_detail`` (01a0812c) —
           a sticky, un-suppressed node failure discovered before a park,
           so the eventual terminal outcome doesn't silently downgrade to
@@ -223,6 +241,8 @@ class _CheckpointMixin:
             "ready_set": sorted(self._ready_set),
             "pending_ended_reason": self._pending_ended_reason,
             "pending_ended_detail": self._pending_ended_detail,
+            # The one-shot on_max_iterations reroute already happened: without it a landing node that parks re-trips the cap on resume (AG-H3).
+            "max_iter_routed": self._max_iter_routed,
             "node_states": {
                 nid: ns.model_dump(mode="json")
                 for nid, ns in self._node_states.items()
@@ -285,6 +305,8 @@ class _CheckpointMixin:
                     "scoped_tool_call_id": p.scoped_tool_call_id,
                     # 01a11faa: the id of the call row the node wrote -- see _PendingToolCall's docstring.
                     "row_call_id": p.row_call_id,
+                    # GR-4: when this wait ends (see _PendingToolCall).
+                    "deadline": p.deadline,
                 }
                 for p in self._pending_toolcalls
             ],
@@ -308,6 +330,7 @@ class _CheckpointMixin:
                     "completed_results": list(p.completed_results),
                     "remaining_calls": list(p.remaining_calls),
                     "remaining_scoped_call_ids": dict(p.remaining_scoped_call_ids),
+                    "deadline": p.deadline,
                 }
                 for p in self._pending_agent_yields
             ],
@@ -396,6 +419,8 @@ class _CheckpointMixin:
         # this field didn't exist yet to record).
         self._pending_ended_reason = payload.get("pending_ended_reason")
         self._pending_ended_detail = payload.get("pending_ended_detail")
+        # Absent in a checkpoint written before it was carried: not rerouted, as such a resume always read it.
+        self._max_iter_routed = bool(payload.get("max_iter_routed", False))
         # Re-seed the admitted-set used by the FanIn callable-router gate.
         # The restored ready-set is the in-flight frontier; completed nodes
         # already have output (so they never block). This keeps a resumed
@@ -457,6 +482,8 @@ class _CheckpointMixin:
                 scoped_tool_call_id=raw.get("scoped_tool_call_id"),
                 # 01a11faa: None for a checkpoint written before nodes wrote a call row -- no row to answer.
                 row_call_id=raw.get("row_call_id"),
+                # GR-4: None for a checkpoint written before entries carried one (the next park stamps the cap).
+                deadline=raw.get("deadline"),
             )
             for raw in (payload.get("pending_toolcalls") or [])
         ]
@@ -477,6 +504,7 @@ class _CheckpointMixin:
                 completed_results=_list_or_empty(raw.get("completed_results")),
                 remaining_calls=_list_or_empty(raw.get("remaining_calls")),
                 remaining_scoped_call_ids=_dict_or_empty(raw.get("remaining_scoped_call_ids")),
+                deadline=raw.get("deadline"),
             )
             for raw in (payload.get("pending_agent_yields") or [])
         ]

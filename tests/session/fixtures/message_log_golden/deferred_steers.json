@@ -1,0 +1,99 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: on it"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "<sid>: compaction marker"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "<sid>: apply 2 deferred steer(s)"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: continued"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "d2364db2664d2818"
+    ]
+   ],
+   "role": "assistant",
+   "text": "[earlier conversation compacted]\n\nSUMMARY: long task"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "905c3a55b80468cd"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred one"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "162ce3c412a204ce"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "42f649bdb6e3ecd5"
+    ]
+   ],
+   "role": "assistant",
+   "text": "continued"
+  }
+ ],
+ "max_event_log_seq": 1,
+ "messages_jsonl": {
+  "bytes": 788,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"long task\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"on it\"}]}",
+   "{\"seq\":1,\"kind\":\"compaction_marker\",\"payload\":{\"summary\":\"[earlier conversation compacted]\\n\\nSUMMARY: long task\",\"replaced_from_seq\":1,\"replaced_to_seq\":0,\"model\":\"golden-model\",\"tokens_before\":500,\"tokens_after\":50,\"outcome\":\"summarised\",\"unreducible\":null,\"trigger_tokens\":400,\"fixed_overhead_tokens\":0,\"created_at\":\"<ts>\"},\"created_at\":\"<ts>\",\"node_id\":null}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"deferred one\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"deferred two\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"continued\"}]}"
+  ],
+  "sha": "25ad17e37df83fc3"
+ },
+ "pending": []
+}

@@ -27,6 +27,7 @@ that to decide whether ``status.authenticated`` is True.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import uuid
@@ -39,7 +40,7 @@ from pydantic import BaseModel, Field
 from primer.api.deps import get_storage_provider, require_auth
 from primer.api.errors import common_responses
 from primer.api.user_default import ensure_default_for_request
-from primer.auth.passwords import hash_password, verify_password
+from primer.auth.passwords import HashBusy, HashGate, hash_password, verify_password
 from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
 from primer.auth.user_writes import stamp_login, write_user_fields
@@ -64,14 +65,19 @@ _MIN_PASSWORD_LEN = 8
 # ---------------------------------------------------------------------------
 
 
+#: The longest password any door takes (login, register, change-password): argon2 hashes whatever it is given, so the length is the only bound on the
+#: work one request can ask for besides the body limit, and no stored password is longer than a login accepts.
+_MAX_PASSWORD_LEN = 4096
+
+
 class RegisterBody(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=_MIN_PASSWORD_LEN)
+    password: str = Field(..., min_length=_MIN_PASSWORD_LEN, max_length=_MAX_PASSWORD_LEN)
 
 
 class LoginBody(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=1)  # not enforcing min on login
+    password: str = Field(..., min_length=1, max_length=_MAX_PASSWORD_LEN)  # not enforcing min on login
     remember: bool = Field(
         default=True,
         description=(
@@ -210,11 +216,75 @@ def _login_throttle(request: Request) -> LoginThrottle:
     return throttle
 
 
+#: Failed sign-ins one client address may make across ALL usernames before it backs off (the per-address budget; successes give theirs back).
+LOGIN_ADDRESS_FREE_ATTEMPTS = 30
+
+
+def _login_address_throttle(request: Request) -> LoginThrottle:
+    """The per-address budget: failed logins of one address across usernames, which the per-(username, address) key never sees (a client that varies
+    the username was never refused)."""
+    state = request.app.state
+    throttle = getattr(state, "login_address_throttle", None)
+    if throttle is None:
+        throttle = state.login_address_throttle = LoginThrottle(free_attempts=LOGIN_ADDRESS_FREE_ATTEMPTS)
+    return throttle
+
+
+def _password_change_throttle(request: Request) -> LoginThrottle:
+    """The throttle of ``current_password`` checks in change-password, keyed on the user id (a stolen session or token was an unthrottled oracle)."""
+    state = request.app.state
+    throttle = getattr(state, "password_change_throttle", None)
+    if throttle is None:
+        throttle = state.password_change_throttle = LoginThrottle()
+    return throttle
+
+
+def _hash_gate(request: Request) -> HashGate:
+    """The app's gate on password hashing and verification (``HASH_CONCURRENCY`` at once, a bounded queue behind them)."""
+    state = request.app.state
+    gate = getattr(state, "hash_gate", None)
+    if gate is None:
+        gate = state.hash_gate = HashGate()
+    return gate
+
+
+def _busy() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"error": "busy", "message": "too many sign-ins are being checked right now; try again in a moment"},
+        headers={"Retry-After": "1"},
+    )
+
+
+def _too_many(wait: int, what: str) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={
+            "error": "too_many_attempts",
+            "message": f"too many {what}; try again in {wait} seconds",
+            "retry_after_seconds": wait,
+        },
+        headers={"Retry-After": str(wait)},
+    )
+
+
 def _client_address(request: Request) -> str:
-    """The peer address the server sees. Deliberately NOT ``X-Forwarded-For``: a client writes that header, so keying on it
+    """The peer address the server sees, as a throttle key. Deliberately NOT ``X-Forwarded-For``: a client writes that header, so keying on it
     would let an attacker pick a fresh key per attempt. Behind a proxy this is the real client only when uvicorn trusts the
-    proxy (``FORWARDED_ALLOW_IPS``)."""
-    return request.client.host if request.client else "unknown"
+    proxy (``FORWARDED_ALLOW_IPS``).
+
+    An IPv6 client is keyed on its /64 (a host owns a whole /64 and can rotate addresses inside it for free); an IPv4-mapped IPv6 address is
+    the IPv4 address (review of gaps-security, GS-40)."""
+    host = request.client.host if request.client else "unknown"
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return host
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return host
 
 
 def _set_session_cookie(
@@ -368,26 +438,40 @@ async def login(
     client = _client_address(request)
     throttle = _login_throttle(request)
 
+    # The address budget first (failures across every username); the attempt it lets through is counted now and given back on a success or when
+    # the (username, address) key refuses it.
+    address_throttle = _login_address_throttle(request)
+    address_wait = address_throttle.reserve("", client)
+    if address_wait:
+        if address_throttle.first_refusal("", client):
+            logger.info("auth.login throttled address=%s retry_after=%ss", client, address_wait)
+        raise _too_many(address_wait, "failed sign-in attempts from this address")
+
     wait = throttle.reserve(username, client)
     if wait:
+        address_throttle.refund("", client)  # refused unexamined: not a failure of this address
         # One line per wait, not per refused request: a client hammering a locked key must not fill the log.
         if throttle.first_refusal(username, client):
             logger.info("auth.login throttled username=%s retry_after=%ss", username, wait)
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "too_many_attempts",
-                "message": f"too many sign-in attempts for this username; try again in {wait} seconds",
-                "retry_after_seconds": wait,
-            },
-            headers={"Retry-After": str(wait)},
-        )
+        raise _too_many(wait, "sign-in attempts for this username")
+
+    gate = _hash_gate(request)
+
+    async def gated(work, *args):
+        """``work(*args)`` (a hash or a verify) in one of the gate's slots; a full queue answers 503 and counts as no attempt at all."""
+        try:
+            async with gate.slot():
+                return await work(*args)
+        except HashBusy:
+            throttle.refund(username, client)
+            address_throttle.refund("", client)
+            raise _busy() from None
 
     user = await _find_user_by_username(request, username)
     if user is None:
         # Hash a throwaway value to keep timing consistent with the
         # happy path (defence against username-enumeration via timing).
-        await hash_password(body.password)
+        await gated(hash_password, body.password)
         logger.info("auth.login fail (unknown user) username=%s", username)
         raise HTTPException(
             status_code=401,
@@ -398,7 +482,7 @@ async def login(
         # SSO-only account (no local password). Hash a throwaway value to
         # keep timing consistent with the happy path, then reject
         # indistinguishably from an unknown user.
-        await hash_password(body.password)
+        await gated(hash_password, body.password)
         logger.info("auth.login fail (no local password) username=%s", username)
         raise HTTPException(
             status_code=401,
@@ -408,14 +492,14 @@ async def login(
     if user.disabled:
         # Disabled account. Hash a throwaway value to keep timing
         # consistent, then reject indistinguishably from bad creds.
-        await hash_password(body.password)
+        await gated(hash_password, body.password)
         logger.info("auth.login fail (disabled) username=%s", username)
         raise HTTPException(
             status_code=401,
             detail={"error": "invalid_credentials"},
         )
 
-    if not await verify_password(body.password, user.password_hash):
+    if not await gated(verify_password, body.password, user.password_hash):
         logger.info("auth.login fail (bad password) username=%s", username)
         raise HTTPException(
             status_code=401,
@@ -423,6 +507,7 @@ async def login(
         )
 
     throttle.succeeded(username, client)
+    address_throttle.refund("", client)  # a success is not a failure of this address
 
     # Stamp ONLY last_login_at (SEC-05 review): a whole-document write of the row read before the
     # slow password check would put back the session_epoch a concurrent sign-out-everywhere or
@@ -487,8 +572,8 @@ async def logout_all(
 
 
 class ChangePasswordArgs(BaseModel):
-    current_password: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=_MIN_PASSWORD_LEN)
+    current_password: str = Field(..., min_length=1, max_length=_MAX_PASSWORD_LEN)
+    new_password: str = Field(..., min_length=_MIN_PASSWORD_LEN, max_length=_MAX_PASSWORD_LEN)
 
 
 @auth_router.post("/change-password", response_model=AuthOk)
@@ -511,7 +596,21 @@ async def change_password(
     including any stolen copy, stop working, and the caller is handed a
     fresh cookie of the new epoch so it stays signed in.
     """
-    if not await verify_password(body.current_password, user.password_hash):
+    # ``current_password`` is a password oracle for whoever holds the session or token: throttled per user (not per address: the holder can change it).
+    change_throttle = _password_change_throttle(request)
+    wait = change_throttle.reserve(user.id, "")
+    if wait:
+        if change_throttle.first_refusal(user.id, ""):
+            logger.info("auth.change_password throttled username=%s retry_after=%ss", user.username, wait)
+        raise _too_many(wait, "password change attempts")
+    gate = _hash_gate(request)
+    try:
+        async with gate.slot():
+            verified = await verify_password(body.current_password, user.password_hash)
+    except HashBusy:
+        change_throttle.refund(user.id, "")
+        raise _busy() from None
+    if not verified:
         logger.info(
             "auth.change_password fail (bad current) username=%s",
             user.username,
@@ -520,8 +619,13 @@ async def change_password(
             status_code=401,
             detail={"error": "invalid_credentials"},
         )
+    change_throttle.succeeded(user.id, "")
     verified_hash = user.password_hash
-    new_hash = await hash_password(body.new_password)
+    try:
+        async with gate.slot():
+            new_hash = await hash_password(body.new_password)
+    except HashBusy:
+        raise _busy() from None
 
     def _still_verified(current: User) -> None:
         # The password the caller proved is no longer the stored one: another change won the race.

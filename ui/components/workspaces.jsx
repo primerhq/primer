@@ -335,6 +335,10 @@ function WS_FilesTab({ wid, pushToast }) {
   // can do something useful (today: .md). For everything else the
   // toggle isn't shown and this stays at "raw".
   const [viewMode, setViewMode] = React.useState("raw");
+  // A save 412'd (the file moved on disk since the read, e.g. an agent's
+  // write): keep the draft and offer the console editor's choice - Reload
+  // takes the disk version, Overwrite re-PUTs without the etag.
+  const [saveConflict, setSaveConflict] = React.useState(false);
   // Reset to "rendered" whenever a fresh markdown file is selected —
   // that's the natural default for .md (the operator can flip to raw
   // if they want the source). For non-md files force "raw" so the
@@ -382,9 +386,13 @@ function WS_FilesTab({ wid, pushToast }) {
   }, [fileContent.data, editing]);
 
   const saveFile = useMutation(
-    ({ content, encoding }) => apiFetch(
+    ({ content, encoding, force }) => apiFetch(
       "PUT",
-      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`,
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`
+      // The read's etag makes a write that lost a race to the disk 412
+      // instead of replacing the disk's bytes. A forced overwrite (the
+      // operator's explicit choice after a 412) goes out without it.
+      + (force || !fileContent.data?.etag ? "" : `&etag=${encodeURIComponent(fileContent.data.etag)}`),
       { content, encoding }
     ),
     {
@@ -394,11 +402,20 @@ function WS_FilesTab({ wid, pushToast }) {
       ],
       onSuccess: () => {
         setEditing(false);
+        setSaveConflict(false);
         if (typeof pushToast === "function") {
           pushToast({ kind: "success", title: "File saved", detail: selected });
         }
       },
-      onError: _wsToastErr(pushToast, "Save failed"),
+      onError: (err) => {
+        if (err && err.status === 412) {
+          // The file changed on disk while the operator edited: keep the
+          // draft and let them choose between Reload and Overwrite.
+          setSaveConflict(true);
+          return;
+        }
+        _wsToastErr(pushToast, "Save failed")(err);
+      },
     }
   );
 
@@ -478,6 +495,7 @@ function WS_FilesTab({ wid, pushToast }) {
   const selectFile = (path) => {
     setSelected(path);
     setEditing(false);
+    setSaveConflict(false);
   };
 
   const requestDelete = (path, isDir) => setPendingDelete({ path, isDir });
@@ -488,19 +506,51 @@ function WS_FilesTab({ wid, pushToast }) {
     setCreateContent("");
   };
 
-  const onSubmitCreate = () => {
+  const onSubmitCreate = async () => {
     const path = createPath.trim().replace(/^\/+/, "");
     if (!path) return;
     if (createMode === "dir") {
       makeDirMut.mutate({ path });
-    } else {
-      createFileMut.mutate({ path, content: createContent });
+      return;
     }
+    // A PUT to an existing path replaces the file: read it first, and when
+    // a file is there, ask before the overwrite goes out. A 404 read means
+    // the path is free and the create goes out directly.
+    let exists = true;
+    try {
+      await apiFetch(
+        "GET",
+        `/workspaces/${encodeURIComponent(wid)}/files/read?path=${encodeURIComponent(path)}&encoding=text`
+      );
+    } catch (err) {
+      // A 404 read means the path is free; any other refusal (a binary
+      // that is not UTF-8, a refused read) still means a file sits at
+      // that path: confirm too.
+      exists = !(err && err.status === 404);
+    }
+    if (exists) {
+      const ok = await window.confirmDialog({
+        title: "File exists",
+        message: `${path} already exists. Overwrite it?`,
+        confirmLabel: "Overwrite",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    createFileMut.mutate({ path, content: createContent });
   };
 
-  const onSave = () => {
+  const onSave = (force) => {
     if (!selected) return;
-    saveFile.mutate({ content: draft, encoding: "text" });
+    saveFile.mutate({ content: draft, encoding: "text", force: !!force });
+  };
+
+  // Reload after a 412: discard the draft and take whatever is on disk now.
+  const onReload = () => {
+    setSaveConflict(false);
+    setEditing(false);
+    setDraft(fileContent.data?.content || "");
+    fileContent.refetch();
   };
 
   return (
@@ -561,8 +611,8 @@ function WS_FilesTab({ wid, pushToast }) {
               <>
                 {editing ? (
                   <>
-                    <Btn size="sm" kind="ghost" onClick={() => { setEditing(false); setDraft(fileContent.data?.content || ""); }}>Discard</Btn>
-                    <Btn size="sm" kind="primary" icon="check" disabled={saveFile.loading} onClick={onSave}>Save</Btn>
+                    <Btn size="sm" kind="ghost" onClick={() => { setEditing(false); setDraft(fileContent.data?.content || ""); setSaveConflict(false); }}>Discard</Btn>
+                    <Btn size="sm" kind="primary" icon="check" data-testid="ws-file-edit-save" disabled={saveFile.loading} onClick={() => onSave(false)}>Save</Btn>
                   </>
                 ) : (
                   <>
@@ -584,7 +634,7 @@ function WS_FilesTab({ wid, pushToast }) {
                     >
                       <Btn size="sm" kind="ghost" icon="external">Download</Btn>
                     </a>
-                    <Btn size="sm" kind="ghost" icon="copy" onClick={() => setEditing(true)}>Edit</Btn>
+                    <Btn size="sm" kind="ghost" icon="copy" data-testid="ws-file-edit-edit" onClick={() => setEditing(true)}>Edit</Btn>
                     <Btn
                       size="sm"
                       kind="danger"
@@ -636,6 +686,7 @@ function WS_FilesTab({ wid, pushToast }) {
                 <Btn
                   kind="primary"
                   icon="check"
+                  data-testid="ws-create-submit"
                   disabled={!createPath.trim() || createFileMut.loading || makeDirMut.loading}
                   onClick={onSubmitCreate}
                 >
@@ -676,6 +727,22 @@ function WS_FilesTab({ wid, pushToast }) {
             </p>
           </Modal>
         )}
+        {saveConflict && selected && (
+          <div
+            className="row"
+            data-testid="ws-file-conflict"
+            style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", gap: 8, alignItems: "center" }}
+          >
+            <span className="muted text-sm">
+              This file changed on disk while you edited it. Reload takes
+              the new version (your draft is lost); Overwrite keeps yours.
+            </span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              <Btn size="sm" kind="ghost" data-testid="ws-file-conflict-reload" onClick={onReload}>Reload</Btn>
+              <Btn size="sm" kind="primary" data-testid="ws-file-conflict-overwrite" busy={saveFile.loading} onClick={() => onSave(true)}>Overwrite</Btn>
+            </div>
+          </div>
+        )}
         <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
           {!selected ? (
             <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
@@ -691,6 +758,7 @@ function WS_FilesTab({ wid, pushToast }) {
           ) : editing ? (
             <textarea
               className="textarea mono"
+              data-testid="ws-file-edit"
               style={{ width: "100%", border: 0, borderRadius: 0, height: "100%", minHeight: 400, background: "var(--bg)", fontSize: 12, lineHeight: 1.55, padding: 14 }}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -812,6 +880,7 @@ function WS_FileRow({ path, name, depth, isDir, open, isSelected, system, onClic
   return (
     <div
       onClick={onClick}
+      data-testid={`ws-file-row:${path}`}
       style={{
         display: "flex",
         alignItems: "center",
@@ -884,29 +953,21 @@ function _wsGuessLang(path) {
 }
 
 function WS_CodeHighlight({ code, lang }) {
-  const lines = (code || "").split("\n");
-  const isPy = lang === "python";
-  const kw = /\b(import|from|def|class|return|if|else|elif|async|await|yield|in|not|and|or|with|as|for|while|try|except|finally|raise|pass|None|True|False)\b/g;
+  // The single-pass vendor highlighter (ui/vendor/highlight-python.js):
+  // keyword colouring only when lang is "python", comment/string/number
+  // otherwise; plain escaped lines when the vendor file is not loaded.
+  const hl = window.primerVendor?.highlightPython;
+  const lines = hl
+    ? hl(code || "", lang)
+    : (code || "").split("\n").map((line) => line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
   return (
     <>
-      {lines.map((line, i) => {
-        let html = line
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-        html = html.replace(/(#.*$)/g, '<span style="color:var(--text-4);font-style:italic">$1</span>');
-        html = html.replace(/(""".*?"""|".*?"|'.*?')/g, '<span style="color:var(--green)">$1</span>');
-        html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span style="color:var(--amber)">$1</span>');
-        if (isPy) {
-          html = html.replace(kw, '<span style="color:var(--violet)">$1</span>');
-        }
-        return (
-          <div key={i} style={{ display: "flex" }}>
-            <span style={{ width: 36, color: "var(--text-4)", textAlign: "right", paddingRight: 12, userSelect: "none", flexShrink: 0 }}>{i + 1}</span>
-            <span dangerouslySetInnerHTML={{ __html: html || "&nbsp;" }} />
-          </div>
-        );
-      })}
+      {lines.map((line, i) => (
+        <div key={i} style={{ display: "flex" }}>
+          <span style={{ width: 36, color: "var(--text-4)", textAlign: "right", paddingRight: 12, userSelect: "none", flexShrink: 0 }}>{i + 1}</span>
+          <span dangerouslySetInnerHTML={{ __html: line || "&nbsp;" }} />
+        </div>
+      ))}
     </>
   );
 }
@@ -1578,6 +1639,9 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
 
   const items = sessionsForBadge?.data?.items ?? [];
   const active = items.filter((s) => !WS_TERMINAL.has(s.status));
+  // UI-L9e: while the badge read is out, the cells printed a 0 that reads as
+  // "nothing to cancel" before the destroy confirm; a loading state until it lands.
+  const counting = !sessionsForBadge || sessionsForBadge.data == null;
 
   const destroy = useMutation(
     () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}`),
@@ -1632,8 +1696,8 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
       )}
       <div className="kv mt-3" style={{ gridTemplateColumns: "160px 1fr" }}>
         <dt>workspace</dt><dd className="mono">{wid}</dd>
-        <dt>active sessions</dt><dd className="mono">{active.length} {active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
-        <dt>total sessions</dt><dd className="mono">{items.length}</dd>
+        <dt>active sessions</dt><dd className="mono" data-testid="ws-destroy-active">{counting ? "…" : active.length} {!counting && active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
+        <dt>total sessions</dt><dd className="mono" data-testid="ws-destroy-total">{counting ? "…" : items.length}</dd>
       </div>
       <div className="mt-4">
         <Btn kind="danger" icon="trash" busy={destroy.loading} onClick={() => setShowConfirm(true)}>Destroy workspace</Btn>

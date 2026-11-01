@@ -27,7 +27,7 @@ async def test_create_returns_plaintext_once(client):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["plaintext"].startswith("primer_pat_")
-    assert body["prefix"] == body["plaintext"][:8]
+    assert body["prefix"] == body["plaintext"][len("primer_pat_"):][:8], "the display prefix is the random part's first 8 characters (GS-43)"
     assert body["name"] == "claude-desktop"
     assert body["scopes"] == ["mcp"]
     assert body["id"].startswith("at-")

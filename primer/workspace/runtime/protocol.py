@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION: str = "1.4"
+PROTOCOL_VERSION: str = "1.5"
 
 
 class OpName(StrEnum):

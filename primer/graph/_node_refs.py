@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -120,13 +121,14 @@ async def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOu
     * JSON parse failure when output_schema is set → ``end_output_invalid``
     * :class:`jsonschema.ValidationError` → ``end_output_invalid``
     """
+    from primer.common.bounded_template import off_loop
     from primer.graph.template import render_template_safely
 
     if not end.output_template:
         return _EndOutputResult(text="", parsed=None, error_code=None)
 
     try:
-        text = render_template_safely(end.output_template, context)
+        text = await off_loop(render_template_safely, end.output_template, context)
     except Exception as exc:  # noqa: BLE001 -- UndefinedError, TemplateSyntaxError, ...
         return _EndOutputResult(
             text="",
@@ -189,13 +191,14 @@ async def _render_fanin_output(
     * JSON parse failure when output_schema is set → ``end_output_invalid``
     * :class:`jsonschema.ValidationError` → ``end_output_invalid``
     """
+    from primer.common.bounded_template import off_loop
     from primer.graph.template import render_template_safely
 
     if not fanin.aggregate_template:
         return _FanInOutputResult(text="", parsed=None, error_code=None)
 
     try:
-        text = render_template_safely(fanin.aggregate_template, context)
+        text = await off_loop(render_template_safely, fanin.aggregate_template, context)
     except Exception as exc:  # noqa: BLE001 — UndefinedError, TemplateSyntaxError, ...
         return _FanInOutputResult(
             text="",
@@ -678,6 +681,15 @@ class _FanoutDrainState:
     first_failure: tuple[str, str] | None = None  # (synthesized_id, ended_detail)
 
 
+# AG-M24 (lead ruling D7): the most copies one fan-out spec may start; a wider broadcast or map fails ``fanout_source_invalid``
+# before any copy runs. Set by PRIMER_MAX_FANOUT_INSTANCES (read at import, like PRIMER_MAX_INVOCATION_DEPTH).
+MAX_FANOUT_INSTANCES = int(os.environ.get("PRIMER_MAX_FANOUT_INSTANCES", "1000"))
+
+
+def _over_cap(n: int) -> str | None:
+    return f"{n} copies exceed the fan-out cap of {MAX_FANOUT_INSTANCES}" if n > MAX_FANOUT_INSTANCES else None
+
+
 def _resolve_fanout_spec(
     spec: "FanOutSpec",
     context: "GraphContext",
@@ -699,6 +711,8 @@ def _resolve_fanout_spec(
     if spec.kind == "broadcast":
         target = spec.target_node_id or ""
         n = spec.count or 0
+        if (why := _over_cap(n)) is not None:
+            raise _FanoutSourceInvalid(target, "count", why)
         return [
             _FanoutInstance(
                 synthesized_id=f"{target}[{i}]",
@@ -744,6 +758,8 @@ def _resolve_fanout_spec(
             source_node_id, source_path,
             f"resolved to non-list value (type={type(value).__name__})",
         )
+    if (why := _over_cap(len(value))) is not None:
+        raise _FanoutSourceInvalid(source_node_id, source_path, why)
     target = spec.target_node_id or ""
     return [
         _FanoutInstance(
@@ -994,6 +1010,9 @@ class _PendingToolCall:
     resume_metadata: dict[str, Any] = field(default_factory=dict)
     scoped_tool_call_id: str | None = None
     row_call_id: str | None = None
+    # GR-4: when the wait ends (ISO-8601, UTC; ``primer.model.yield_.wait_deadline``), stamped as the node parks. None for an entry
+    # restored from a checkpoint written before entries carried one: the next park stamps the cap from then.
+    deadline: str | None = None
 
 
 @dataclass
@@ -1038,6 +1057,8 @@ class _PendingAgentYield:
     completed_results: list[dict[str, Any]] = field(default_factory=list)
     remaining_calls: list[dict[str, Any]] = field(default_factory=list)
     remaining_scoped_call_ids: dict[str, str] = field(default_factory=dict)
+    # GR-4: when the wait ends, as ``_PendingToolCall.deadline``.
+    deadline: str | None = None
 
     @property
     def is_own_approval_gate(self) -> bool:

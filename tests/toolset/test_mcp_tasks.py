@@ -36,6 +36,7 @@ from primer.model.yield_ import (
     Yielded,
 )
 from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from tests.conftest import _FakeStorageProvider
 from primer.toolset.mcp import (
     McpToolsetProvider,
     is_mcp_task_tool,
@@ -405,7 +406,7 @@ class TestMcpTaskBridge:
     async def test_bridge_polls_and_publishes_on_completion(self):
         bus = InMemoryEventBus()
         await bus.initialize()
-        scheduler = InMemoryScheduler()
+        scheduler = InMemoryScheduler(storage_provider=_FakeStorageProvider())
         await scheduler.initialize()
         await scheduler.register_worker(
             worker_id="wrk", host="h", pid=1, capacity=1,
@@ -417,7 +418,7 @@ class TestMcpTaskBridge:
             toolset_id="srv-1",
             task_id="t-abc",
         )
-        scheduler._sessions["sess-1"] = sess
+        await scheduler._storage.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
         scheduler._leases["sess-1"] = _LeaseState(
             worker_id=None, expires_at=None, runnable=False,
             next_attempt_at=datetime.now(timezone.utc),
@@ -460,7 +461,7 @@ class TestMcpTaskBridge:
     async def test_bridge_ignores_non_mcp_task_parks(self):
         bus = InMemoryEventBus()
         await bus.initialize()
-        scheduler = InMemoryScheduler()
+        scheduler = InMemoryScheduler(storage_provider=_FakeStorageProvider())
         await scheduler.initialize()
         await scheduler.register_worker(
             worker_id="w", host="h", pid=1, capacity=1,
@@ -491,7 +492,7 @@ class TestMcpTaskBridge:
             "started_at": datetime.now(timezone.utc).isoformat(),
             "resume_event_payload": None,
         }
-        scheduler._sessions["sess-A"] = sess
+        await scheduler._storage.get_storage(WorkspaceSession).create(sess)
         scheduler._leases["sess-A"] = _LeaseState(
             worker_id=None, expires_at=None, runnable=False,
             next_attempt_at=datetime.now(timezone.utc),

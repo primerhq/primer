@@ -167,10 +167,14 @@ class Write(WorkspaceTool):
         # the read-before-write rule.
         ctx.session.mark_read(args.path)
         size = len(content_bytes)
-        metadata = _diff_stat(old_lines, args.content.splitlines())
+        # Off the loop: SequenceMatcher(autojunk=False) is quadratic on repeated lines (W4).
+        metadata = await asyncio.to_thread(_diff_stat, old_lines, args.content.splitlines())
         return ToolResult(
             output=f"wrote {size} bytes to {args.path}", metadata=metadata
         )
+
+
+_DIFF_STAT_MAX_PAIRS = 4_000_000
 
 
 def _diff_stat(
@@ -182,10 +186,14 @@ def _diff_stat(
     is the same algorithm edit.py's own diff already relies on, just
     summed instead of rendered. Unreadable old content returns {}
     (falsy, matches ToolResult.metadata's own empty-dict default) rather
-    than a misleading all-additions stat.
+    than a misleading all-additions stat. Past ``_DIFF_STAT_MAX_PAIRS``
+    line pairs the stat is skipped and says so (W4, ruling D11): the
+    matcher's cost there runs to minutes.
     """
     if old_lines is None:
         return {}
+    if len(old_lines) * len(new_lines) > _DIFF_STAT_MAX_PAIRS:
+        return {"diff_stat_skipped": True}
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     additions = 0
     deletions = 0

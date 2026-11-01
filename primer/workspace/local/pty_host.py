@@ -45,6 +45,11 @@ _READ_CHUNK = 65536
 # degradation. Mirrors ``primer_runtime.pty_op``.
 _OUTPUT_QUEUE_MAX_CHUNKS = 256
 
+# Cap on stdin bytes queued for a program that is not reading them (P3-N1). The master fd is non-blocking, so a paste
+# the pty cannot take yet waits here and the loop's writer callback drains it; a paste that would push the queue past
+# the cap is dropped whole with a warning. Mirrors ``primer_runtime.pty_op``, which refuses it instead.
+_STDIN_PENDING_MAX = 1024 * 1024
+
 
 def _enqueue_output(queue: "asyncio.Queue[bytes]", data: bytes) -> bool:
     """Put *data* on the bounded output *queue*, dropping the OLDEST buffered
@@ -70,6 +75,19 @@ def _enqueue_output(queue: "asyncio.Queue[bytes]", data: bytes) -> bool:
         except asyncio.QueueFull:
             pass
         return dropped
+
+
+#: What the shell keeps of the API server's environment (review W43, lead ruling D9); every other server variable (database
+#: URLs, secret and provider keys) stays out. The workspace's own env is added on top.
+_SHELL_ENV_KEPT = frozenset({"PATH", "HOME", "LANG", "TERM", "USER", "SHELL", "TZ"})
+
+
+def _shell_env(workspace_env: dict[str, str]) -> dict[str, str]:
+    """The terminal shell's environment: the kept server variables (``LC_*`` included), the workspace env, a default TERM."""
+    env = {k: v for k, v in os.environ.items() if k in _SHELL_ENV_KEPT or k.startswith("LC_")}
+    env.update(workspace_env)
+    env.setdefault("TERM", "xterm-256color")
+    return env
 
 
 def _default_shell() -> list[str]:
@@ -134,6 +152,7 @@ class LocalPtySession:
             maxsize=_OUTPUT_QUEUE_MAX_CHUNKS
         )
         self._dropped_chunks = 0
+        self._pending = bytearray()  # stdin the pty could not take yet, drained by the loop's writer callback
         self._exit_code: int | None = None
         self._started = False
         self._finalized = False
@@ -149,11 +168,10 @@ class LocalPtySession:
             return
         self._started = True
 
-        proc_env = dict(os.environ)
-        proc_env.update(self._env)
-        proc_env.setdefault("TERM", "xterm-256color")
+        proc_env = _shell_env(self._env)
 
         master_fd, slave_fd = pty.openpty()
+        os.set_blocking(master_fd, False)  # a write the pty cannot take must never block the API loop (P3-N1)
         self._master_fd = master_fd
 
         def _child_preexec() -> None:
@@ -182,6 +200,8 @@ class LocalPtySession:
         def _on_readable() -> None:
             try:
                 data = os.read(master_fd, _READ_CHUNK)
+            except BlockingIOError:
+                return  # nothing to read after all; not EOF
             except OSError:
                 data = b""  # EIO on Linux after the child exits == EOF
             if _enqueue_output(self._queue, data):
@@ -207,28 +227,52 @@ class LocalPtySession:
             yield chunk
 
     async def write(self, data: bytes) -> None:
-        """Write *data* (browser stdin) to the pty master.
+        """Write *data* (browser stdin) to the pty master without ever blocking the event loop.
 
-        ``os.write`` can accept fewer bytes than supplied when the pty input
-        buffer is full (a large paste), so loop over the remainder — the old
-        single call silently lost the tail. ``BlockingIOError`` (only on a
-        non-blocking fd) means "buffer full, retry"; ``OSError`` means the pty
-        is gone (child exited) so we drop the write.
+        The master fd is non-blocking: what the pty takes now is written (looping over short writes), and the rest
+        waits in ``_pending`` for the writer callback, so input stays in order and a program that is not reading
+        holds up only its own terminal (P3-N1). Input that would push the queue past ``_STDIN_PENDING_MAX`` is
+        dropped whole with a warning. ``OSError`` means the pty is gone (child exited), so the write is dropped.
         """
         if self._master_fd is None or self._finalized:
+            return
+        if len(self._pending) + len(data) > _STDIN_PENDING_MAX:
+            logger.warning(
+                "local pty dropped %d stdin bytes: %d are already waiting for the program to read them (cap %d)",
+                len(data), len(self._pending), _STDIN_PENDING_MAX,
+            )
+            return
+        if self._pending:
+            self._pending += data  # behind what is already queued
             return
         mv = memoryview(data)
         while mv:
             try:
                 written = os.write(self._master_fd, mv)
             except BlockingIOError:
-                await asyncio.sleep(0)
-                continue
+                self._pending += mv
+                asyncio.get_running_loop().add_writer(self._master_fd, self._drain_stdin)
+                return
             except OSError:
                 return
             if written <= 0:
                 return
             mv = mv[written:]
+
+    def _drain_stdin(self) -> None:
+        """Writer callback: hand the pty what it takes of the queued input; stop watching once it is all written."""
+        master_fd = self._master_fd
+        if master_fd is None:
+            return
+        try:
+            written = os.write(master_fd, self._pending)
+        except BlockingIOError:
+            return
+        except OSError:
+            written = len(self._pending)  # pty gone: drop the rest
+        del self._pending[:written]
+        if not self._pending:
+            asyncio.get_running_loop().remove_writer(master_fd)
 
     async def resize(self, cols: int, rows: int) -> None:
         """Change the terminal window size."""
@@ -256,8 +300,10 @@ class LocalPtySession:
         if master_fd is not None:
             try:
                 loop.remove_reader(master_fd)
+                loop.remove_writer(master_fd)
             except (ValueError, OSError):
                 pass
+            self._pending.clear()
 
         proc = self._proc
         if proc is not None:

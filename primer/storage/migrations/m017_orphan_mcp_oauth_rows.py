@@ -12,8 +12,8 @@ the toolset in ``toolset_id``). A toolset created again under the same id came b
 
 What the step reads is frozen here, as it was when it shipped: the four table names (each view's class name selects its table) and where each OAuth
 row names its toolset. The views keep every stored field (``extra="allow"``), so a row the live models may reject is still read, and only ids and
-``toolset_id`` are looked at: no sealed value is opened, logged or rewritten. Every row is read before any is deleted, so the paging never skips a
-row, and a row already gone is skipped (``NotFoundError``): a second run, or a run that died half way, deletes nothing more than the first would.
+``toolset_id`` are looked at: no sealed value is opened, logged or rewritten. Rows are paged by id (keyset, PERF-T16): a delete removes the row
+just read, behind the cursor, so the next page neither skips nor repeats one; a row already gone is skipped (``NotFoundError``): a second run, or a run that died half way, deletes nothing more than the first would.
 The toolset is looked up right before each delete. The step runs at boot, before this process serves, but in a rolling deploy a pod still on the
 old build may create a toolset meanwhile: only a sign-in made in the gap between that read and the delete could go, and it would need an admin to
 connect it again, which is what a toolset created under a deleted one's id needs anyway.
@@ -27,13 +27,11 @@ from collections.abc import Callable
 from pydantic import ConfigDict
 
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows
 from primer.model.common import Identifiable
 from primer.model.except_ import NotFoundError
-from primer.model.storage import CursorPage
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 
 class Toolset(Identifiable):  # noqa: N801 - the class name selects the table
@@ -70,17 +68,6 @@ _OAUTH_TABLES: tuple[tuple[type[Identifiable], Callable[[Identifiable], object]]
 )
 
 
-async def _all_rows(store) -> list[Identifiable]:
-    rows: list[Identifiable] = []
-    cursor: str | None = None
-    while True:
-        page = await store.list(CursorPage(cursor=cursor, length=_PAGE))
-        rows.extend(page.items)
-        cursor = page.next_cursor
-        if cursor is None:
-            return rows
-
-
 class M017OrphanMcpOAuthRows:
     """Delete the MCP OAuth tokens, registered clients and pending sign-ins whose toolset no longer exists."""
 
@@ -93,7 +80,7 @@ class M017OrphanMcpOAuthRows:
         for view, owner in _OAUTH_TABLES:
             store = sp.get_storage(view)
             count = 0
-            for row in await _all_rows(store):
+            async for row in iter_rows(store):
                 toolset_id = owner(row)
                 if not isinstance(toolset_id, str) or not toolset_id:
                     continue

@@ -175,6 +175,29 @@ async def test_update_unless_rejects_when_current_field_matches(
 
 
 @pytest.mark.asyncio
+async def test_patch_if_or_current_answers_a_win_with_the_row_and_a_loss_with_the_row_as_it_stands(
+    provider: StorageProvider,
+) -> None:
+    """PERF-T17 L2: the same answers as ``patch_if``, plus the current row on a rejection (no second read)."""
+    s = provider.get_storage(_Thing)
+    await s.create(_Thing(id="poc-1", name="a", status="created"))
+    written, current = await s.patch_if_or_current("poc-1", {"name": "b"}, where={"status": ["created"]})
+    assert written is not None and written.name == "b" and current is None
+    written, current = await s.patch_if_or_current("poc-1", {"name": "c"}, where={"status": ["running"]})
+    assert written is None and current is not None
+    assert current.name == "b" and current.status == "created", "the row as it now stands; nothing was written"
+    assert (await s.get("poc-1")).name == "b"
+
+
+@pytest.mark.asyncio
+async def test_patch_if_or_current_raises_not_found_for_a_missing_id(provider: StorageProvider) -> None:
+    from primer.model.except_ import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        await provider.get_storage(_Thing).patch_if_or_current("poc-missing", {"name": "x"}, where={"status": ["created"]})
+
+
+@pytest.mark.asyncio
 async def test_update_unless_raises_not_found_for_a_missing_id(
     provider: StorageProvider,
 ) -> None:

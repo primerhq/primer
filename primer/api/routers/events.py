@@ -39,6 +39,11 @@ from primer.model.except_ import (
 
 events_router = APIRouter(tags=["events"])
 
+# How many rows one GET /v1/events may scan while filling the page past the
+# Python-side filters (the glob tail, the non-admin visibility): the house
+# defensive walk cap.
+_SCAN_CAP = 10_000
+
 # What a non-admin may see of the log (their workspace's operational
 # lifecycle, never entity CRUD) is ``user_safe``, checked against the
 # redacted stream, and a canvas.event reaches them without what the user
@@ -101,26 +106,42 @@ async def list_events(
             default=len(event_type),
         )
         prefix = event_type[:head] or None
-    items = await store.read_after(
-        after_id, limit=limit, event_type_prefix=prefix,
-        entity_kind=entity_kind, entity_id=entity_id,
-        workspace_id=workspace_id, since=since,
-    )
-    # A non-admin's head is the newest event of the readable workspace they named, never the global log's (which counts unreadable workspaces).
-    max_id = await store.max_id() if is_admin else max((e.id for e in items), default=after_id)
-    if event_type:
-        items = [e for e in items if fnmatchcase(e.event_type, event_type)]
-    if not is_admin:
-        # The feed is scoped to a workspace the caller can read (above), whose
-        # sessions they may all open, so it does not scope events to sessions;
-        # it drops the INPUT of a canvas interaction, which never leaves its
-        # session (audit G8-08).
-        # An admin reads the full event: the one door to another session's
-        # input.
-        items = [without_input(e) for e in items if user_safe(e.event_type)]
+    # Read until the page has ``limit`` rows that pass the Python-side filters
+    # (the glob tail, the non-admin visibility) or the log runs out: a page
+    # whose first rows are all filtered must not starve the reader. Bounded
+    # defensively at _SCAN_CAP rows scanned.
+    kept: list[Event] = []
+    after = after_id
+    seen = after_id
+    scanned = 0
+    while len(kept) < limit and scanned < _SCAN_CAP:
+        page = await store.read_after(
+            after, limit=limit, event_type_prefix=prefix,
+            entity_kind=entity_kind, entity_id=entity_id,
+            workspace_id=workspace_id, since=since,
+        )
+        if not page:
+            break
+        after = seen = max(seen, page[-1].id)
+        scanned += len(page)
+        if is_admin:
+            kept.extend(e for e in page if not event_type or fnmatchcase(e.event_type, event_type))
+        else:
+            # The feed is scoped to a workspace the caller can read (above), whose
+            # sessions they may all open, so it does not scope events to sessions;
+            # it drops the INPUT of a canvas interaction, which never leaves its
+            # session (audit G8-08). An admin reads the full event: the one door
+            # to another session's input.
+            kept.extend(without_input(e) for e in page if user_safe(e.event_type))
+        if len(page) < limit:
+            break
+    # A non-admin's head is the newest event of the readable workspace they
+    # named (the rows read above), never the global log's (which counts
+    # unreadable workspaces).
+    max_id = await store.max_id() if is_admin else (seen if scanned else after_id)
     # EVERY read is redacted, the admin's included: the gate is access
     # control, not an excuse to ship stored secrets to a browser.
-    items = [redact_event(e) for e in items]
+    items = [redact_event(e) for e in kept[:limit]]
     return EventListResponse(items=items, max_id=max_id)
 
 

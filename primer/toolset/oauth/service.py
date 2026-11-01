@@ -376,9 +376,10 @@ class ToolsetOAuthService:
         """Start a browser sign-in of ``target``: the authorize URL to open, valid for :data:`PENDING_TTL`.
 
         ``may_reregister`` says the caller may replace the toolset's client registration (FULL on the toolset, or an admin). A new registration
-        replaces the one every person's tokens name, so their next refresh fails and signs them out (review finding 1). Without it, and without
-        ``PRIMER_PUBLIC_URL`` (the redirect URI then comes from the request), a start that would replace an existing registration raises
-        :class:`~primer.model.except_.ConflictError` naming the registered origin; the first registration of a toolset is anyone's.
+        replaces the one every person's tokens name, so their next refresh fails and signs them out (review finding 1). Without it, a start that
+        would replace an existing registration raises :class:`~primer.model.except_.ConflictError` (naming the registered origin when the redirect
+        URI differs); the first registration of a toolset is anyone's. With ``PRIMER_PUBLIC_URL`` set the redirect URI is the deployment's, so only
+        a moved public URL re-registers for anyone; an unreadable registration or a changed issuer is refused all the same (GX-13).
 
         ``browser_binding`` is a nonce only the browser that starts the sign-in holds (the route sets it as an HttpOnly cookie on the start answer);
         the pending sign-in keeps its digest, and :meth:`complete_sign_in` takes it back only with the same nonce (audit G4-01). The ``state`` in the
@@ -999,7 +1000,9 @@ class ToolsetOAuthService:
                 logger.warning("MCP toolset %s: its client registration cannot be read with the current encryption key; registering again", target.toolset_id)
             else:
                 return protocol.client_auth_for(metadata, registered.client_id, secret), "registered"
-        if registered is not None and not may_reregister and self._public_url is None:
+        # With PRIMER_PUBLIC_URL the redirect is the deployment's, so a moved one is the operator's and re-registers; an unreadable client (a
+        # process with another key) or a changed issuer still needs someone who may sign everyone out (GX-13).
+        if registered is not None and not may_reregister and (self._public_url is None or registered.redirect_uri == redirect_uri):
             if registered.redirect_uri != redirect_uri:
                 parts = urlsplit(registered.redirect_uri)
                 raise ConflictError(

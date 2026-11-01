@@ -3828,6 +3828,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-tg-tab-glyph { flex-shrink: 0; }
 .nv-tg-glyph-diff { font-family: var(--font-mono, monospace); font-size: 10.5px; color: var(--green); }
 .nv-tg-tab-label { overflow: hidden; text-overflow: ellipsis; }
+.nv-tg-tab-dirty { color: var(--amber); font-size: 9px; line-height: 1; flex-shrink: 0; }
 .nv-tg-tab-close {
   /* US-011b touch-target guard: was a raw 16px, well under the floor.
      Full var(--hit) (36px/32px) would overflow the 34px tab bar, so

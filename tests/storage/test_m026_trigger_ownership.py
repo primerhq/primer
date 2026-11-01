@@ -178,3 +178,111 @@ async def test_an_adopted_subscription_stays_disabled_on_a_rerun_and_a_re_enable
     assert reenabled.enabled is True and reenabled.owner == alice
     await M026TriggerOwnership().apply(sp)
     assert (await subs.get("s-legacy")).enabled is True
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from typing import Any  # noqa: E402
+
+from primer.storage.migrations._rows import read_all  # noqa: E402
+from primer.storage.migrations.m026_trigger_ownership import (  # noqa: E402
+    ApiToken as TokenView,
+    Subscription as SubView,
+    Trigger as TriggerView,
+    User as UserView,
+    _owned_by,
+    _unset,
+)
+from tests.storage._migration_golden import assert_golden, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 26 as it was before PERF-T16, frozen: read every trigger and subscription, ``update`` each one that needs an owner."""
+    users = {u.id: u for u in await read_all(sp.get_storage(UserView))}
+    admins = [u for u in users.values() if u.role == "admin" and not u.disabled and u.created_at is not None]
+    first_admin = min(admins, key=lambda u: u.created_at) if admins else None
+    tokens = sp.get_storage(TokenView)
+
+    async def user_of(owner: dict[str, Any] | None) -> str | None:
+        if not owner:
+            return None
+        if owner.get("type") == "user":
+            user_id = owner.get("user_id") or owner.get("id")
+        elif owner.get("type") == "api_token":
+            token = await tokens.get(owner.get("id") or "")
+            user_id = token.user_id if token is not None else None
+        else:
+            return None
+        user = users.get(user_id) if user_id else None
+        return user_id if user is not None and not user.disabled else None
+
+    triggers = sp.get_storage(TriggerView)
+    rows = await read_all(triggers)
+    for row in rows:
+        if not _unset(row.access):
+            continue
+        owner_id = await user_of(row.owner) or (first_admin.id if first_admin is not None else None)
+        if owner_id is None:
+            continue
+        await triggers.update(row.model_copy(update={"access": _owned_by(owner_id)}))
+
+    run_as = {row.id: row.owner for row in rows}
+    admin_ref = (
+        {"type": "user", "id": first_admin.id, "display": first_admin.username or first_admin.id, "role": "admin",
+         "source": "local", "user_id": first_admin.id}
+        if first_admin is not None else None
+    )
+    subs = sp.get_storage(SubView)
+    for sub in await read_all(subs):
+        if sub.owner is not None:
+            continue
+        owner = run_as.get(sub.trigger_id) or admin_ref
+        if owner is None:
+            continue
+        await subs.update(sub.model_copy(update={"owner": owner, "enabled": False}))
+
+
+def _golden_seed(with_admin: bool):
+    async def seed(sp) -> None:
+        users = {
+            "u1": {"username": "alice", "role": "user", "created_at": "2025-03-01T00:00:00Z"},
+            "u-off": {"role": "user", "disabled": True, "created_at": "2025-03-02T00:00:00Z"},
+        }
+        if with_admin:
+            users |= {
+                "admin-old": {"role": "admin", "created_at": "2025-01-01T00:00:00Z"},
+                "admin-new": {"username": "newer", "role": "admin", "created_at": "2025-06-01T00:00:00Z"},
+                "admin-off": {"role": "admin", "disabled": True, "created_at": "2024-01-01T00:00:00Z"},
+            }
+        await insert_raw(sp, UserView, users)
+        await insert_raw(sp, TokenView, {"tok1": {"user_id": "u1"}, "tok-orphan": {"user_id": "nobody"}})
+        alice = {"type": "user", "id": "u1", "display": "alice", "role": "user", "source": "local", "user_id": "u1"}
+        await insert_raw(sp, TriggerView, {
+            "t-user": {"slug": "a", "owner": alice, "n": 2.5},
+            "t-token": {"owner": {"type": "api_token", "id": "tok1"}},
+            "t-orphan-token": {"owner": {"type": "api_token", "id": "tok-orphan"}},
+            "t-system": {"owner": {"type": "system", "id": "system"}},
+            "t-none": {"slug": "no-owner-key"},
+            "t-null": {"owner": None, "access": None},
+            "t-empty": {"owner": alice, "access": {}},
+            "t-owned": {"owner": alice, "access": {"owners": ["u1"], "grants": {}, "public": False}},
+            "t-public": {"access": {"owners": [], "public": True}},
+            "t-off": {"owner": {"type": "user", "id": "u-off"}},
+        })
+        await insert_raw(sp, SubView, {
+            "s-user": {"trigger_id": "t-user", "config": {"kind": "agent_fresh", "x": [1, {"y": None}]}},
+            "s-none": {"trigger_id": "t-none", "enabled": True},
+            "s-null": {"trigger_id": "t-system", "owner": None},
+            "s-owned": {"trigger_id": "t-user", "owner": {"type": "user", "id": "u1"}, "enabled": True},
+            "s-empty-owner": {"trigger_id": "t-user", "owner": {}},
+            "s-gone": {"trigger_id": "t-gone"},
+            "s-token": {"trigger_id": "t-token", "enabled": False},
+            "s-off": {"trigger_id": "t-off", "big": 12345678901234567890},
+        })
+    return seed
+
+
+@pytest.mark.parametrize("with_admin", [True, False])
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path, with_admin) -> None:
+    views = (TriggerView, SubView, UserView, TokenView)
+    await assert_golden(tmp_path, _golden_seed(with_admin), views, _old_apply, M026TriggerOwnership().apply)

@@ -100,3 +100,23 @@ async def test_fulltext_indexes_rows_that_predate_the_index(sp):
     await store.ensure_schema()
     assert [h.path for h in await store.search_fulltext("kb", "courier")] \
         == ["guides/shipping"]
+
+
+async def test_fulltext_path_prefix_wildcards_are_literal_like_the_listing(sp):
+    """CV-4: ``list(prefix=)`` escapes the LIKE metacharacters; the search scope must too, or ``my_dir`` also reaches ``myXdir`` and ``100%`` reaches ``1000``."""
+    store = sp.get_content_store()
+    for i, path in enumerate(("my_dir/a", "myXdir/a", "100%/a", "1000/a")):
+        await store.upsert(document_id=f"p{i}", collection_id="c", path=path, content="needle")
+    assert sorted(h.path for h in await store.search_fulltext("c", "needle", path_prefix="my_dir")) == ["my_dir/a"]
+    assert sorted(h.path for h in await store.search_fulltext("c", "needle", path_prefix="100%")) == ["100%/a"]
+    assert sorted(h.path for h in await store.search_fulltext("c", "needle", path_prefix="my")) == ["myXdir/a", "my_dir/a"], "a plain prefix still matches"
+
+
+
+async def test_fulltext_nul_in_the_query_never_raises(sp):
+    """CV-5: the contract says user text cannot raise; a NUL byte used to reach the driver (a 500 from the search route)."""
+    store = sp.get_content_store()
+    await store.upsert(document_id="n1", collection_id="c", path="a", content="hello world foo bar")
+    assert await store.search_fulltext("c", "\x00") == []
+    assert await store.search_fulltext("c", "hel\x00lo")  == await store.search_fulltext("c", "hello"), "the NUL is dropped, the rest searches"
+    assert [h.path for h in await store.search_fulltext("c", "wor\x00ld foo")] == ["a"]

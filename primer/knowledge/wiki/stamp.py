@@ -62,8 +62,14 @@ def _compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
     return (left > right) - (left < right)
 
 
-def decide(stored: WikiStamp | None, *, app_version: str, content_hash: str) -> Decision:
-    """May a build with this app version and content hash write the wiki over the stored stamp?"""
+def decide(stored: WikiStamp | None, *, app_version: str, content_hash: str, source_hash: str | None = None) -> Decision:
+    """May a build with this app version and content hash write the wiki over the stored stamp?
+
+    A hash the stamp replaced (``superseded``) is refused, because a pod of a replaced build must not flip the pages back; EXCEPT when the stored stamp
+    carries this build's own app version string and source hash: nothing but the live toolset set differs, so it is a config change within one build (the
+    canvas tools switched off and on), not a rolling deploy, and the build writes. The source hash is what tells the two apart where every deploy carries
+    one app version; a stamp from before the field (``source_hash`` None) keeps the old refusal.
+    """
     if stored is None:
         return "write"
     order = _compare(version_key(app_version), version_key(stored.app_version))
@@ -74,7 +80,8 @@ def decide(stored: WikiStamp | None, *, app_version: str, content_hash: str) -> 
     if content_hash == stored.content_hash:
         return "same"
     if content_hash in stored.superseded:
-        return "superseded"
+        same_build = source_hash is not None and stored.source_hash == source_hash and stored.app_version == app_version
+        return "write" if same_build else "superseded"
     return "write"
 
 
@@ -90,7 +97,7 @@ def _replaced_by(stored: WikiStamp, content_hash: str) -> list[str]:
     return [*replaced, *older][:SUPERSEDED_KEEP]
 
 
-async def claim(storage_provider, *, app_version: str, content_hash: str) -> bool:
+async def claim(storage_provider, *, app_version: str, content_hash: str, source_hash: str | None = None) -> bool:
     """Make this build the stored one. True when it did; False when it may not or lost the race.
 
     No stamp yet: ``create`` it; a ``ConflictError`` means a peer created it first, so the stamp
@@ -103,7 +110,7 @@ async def claim(storage_provider, *, app_version: str, content_hash: str) -> boo
     stamps = storage_provider.get_storage(WikiStamp)
     for _ in range(_CLAIM_ATTEMPTS):
         stored = await stamps.get(WIKI_STAMP_ID)
-        if decide(stored, app_version=app_version, content_hash=content_hash) != "write":
+        if decide(stored, app_version=app_version, content_hash=content_hash, source_hash=source_hash) != "write":
             return False
         superseded = [] if stored is None else _replaced_by(stored, content_hash)
         new = WikiStamp(
@@ -111,6 +118,7 @@ async def claim(storage_provider, *, app_version: str, content_hash: str) -> boo
             app_version=app_version,
             content_hash=content_hash,
             superseded=superseded,
+            source_hash=source_hash,
             written_at=datetime.now(UTC),
         )
         if stored is None:
@@ -119,7 +127,7 @@ async def claim(storage_provider, *, app_version: str, content_hash: str) -> boo
             except ConflictError:
                 continue
             return True
-        patch = new.model_dump(mode="json", include={"app_version", "content_hash", "superseded", "written_at"})
+        patch = new.model_dump(mode="json", include={"app_version", "content_hash", "superseded", "source_hash", "written_at"})
         try:
             written = await stamps.patch_if(
                 WIKI_STAMP_ID, patch,

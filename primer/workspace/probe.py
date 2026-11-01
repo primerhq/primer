@@ -2,7 +2,8 @@
 
 Lives in the API process, ticks every ~30s, pings each ``pending`` /
 ``running`` / ``failed`` workspace's runtime (a ``terminating`` one is
-being deleted and is skipped), and moves ``phase``: the first good ping
+being deleted and is skipped, unless its mark has gone stale: see
+``_fail_a_stale_mark``), and moves ``phase``: the first good ping
 promotes a new workspace (``pending`` -> ``running``; every create door
 writes ``pending``), three misses in a row fail a ``pending`` or a
 ``running`` one (-> ``failed``, its open sessions ended
@@ -23,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from pydantic_core import to_jsonable_python
@@ -49,6 +50,17 @@ logger = logging.getLogger(__name__)
 _FAILS_BEFORE_FAILED = 3
 _HITS_BEFORE_RUNNING = 3
 _LIST_PAGE_SIZE = 200
+#: The least time one workspace's ping gets, whatever the interval (the bound is the interval, at least this): a test-sized
+#: interval must not turn a real answer into a miss.
+_MIN_PING_TIMEOUT_S = 5.0
+#: How long a destroy's ``terminating`` mark may stand before the probe takes it for a destroy that died with its process
+#: (review W52). Far above any real teardown, which is a few API calls or one directory removal.
+_TERMINATING_STALE_AFTER = timedelta(minutes=15)
+
+
+def unfinished_delete_reason(cause: str) -> str:
+    """The ``failure_reason`` of a workspace whose delete did not finish: a destroy that failed, or one whose mark went stale."""
+    return f"the delete did not finish ({cause}); the runtime may be partly torn down: delete it again"
 
 
 class WorkspaceProbeTask:
@@ -127,7 +139,7 @@ class WorkspaceProbeTask:
         """One probe pass: ping every pending / running / failed workspace.
 
         Iterates pages of :class:`Workspace` rows, skips terminating
-        rows (which are being destroyed), pings the rest via the
+        rows (which are being destroyed; a stale mark is failed), pings the rest via the
         registry, updates streak counters, and writes the new state
         back to storage.
         """
@@ -144,6 +156,9 @@ class WorkspaceProbeTask:
             for ws in items:
                 if local_provider_ids is not None and ws.provider_id in local_provider_ids:
                     local_count += 1
+                if ws.phase == "terminating":
+                    await self._fail_a_stale_mark(storage, ws)
+                    continue
                 if ws.phase not in ("pending", "running", "failed"):
                     continue
                 await self._probe_one(storage, ws)
@@ -172,19 +187,49 @@ class WorkspaceProbeTask:
             logger.warning("workspace probe: could not list the workspace providers for the census", exc_info=True)
             return None
 
+    async def _fail_a_stale_mark(self, storage: Any, ws: Any) -> None:
+        """Fail a ``terminating`` row whose mark is older than :data:`_TERMINATING_STALE_AFTER` (review W52).
+
+        A destroy whose process died left the mark, which nothing else ever moves. The row is failed with the words a failed
+        destroy uses and its open sessions are ended, as on every move to ``failed``; asking for the delete again finishes it.
+        A mark with no time (written before the field existed) or a fresh one is left alone. The write is fenced on the mark
+        as read, so a destroy that marked the row again since is not touched.
+        """
+        since = getattr(ws, "terminating_since", None)
+        if since is None or datetime.now(timezone.utc) - since < _TERMINATING_STALE_AFTER:
+            return
+        reason = unfinished_delete_reason(f"terminating since {since.isoformat()}; the process running it may have stopped")
+        try:
+            where = {field: [raw_generation(ws, field)] for field in ("phase", "terminating_since")}
+            written = await patch_if_checked(storage, ws.id, {"phase": "failed", "failure_reason": reason}, where=where)
+        except NotFoundError:
+            return      # the destroy finished after all
+        except Exception:  # noqa: BLE001 -- log and continue
+            logger.exception("workspace probe: could not fail the stale terminating mark of %s", ws.id)
+            return
+        if written is not None:
+            logger.warning("workspace probe: %s was terminating since %s; failed it so it can be deleted again", ws.id, since)
+            await reconcile_sessions_to_workspace_lost(self._sp, ws.id)
+
     async def _probe_one(self, storage: Any, ws: Any) -> None:
         """Ping one workspace and update its row with the result."""
         ok = False
         fail_reason: str | None = None
+        # Each ping is bounded (review W1): a runtime that cannot be reached kept ``ping`` waiting for a reconnect that never came, and
+        # with it the whole tick, so no other workspace was probed again. The bound covers resolving the handle too (a re-attach).
+        timeout = max(self._interval, _MIN_PING_TIMEOUT_S)
         try:
-            handle = await self._registry.get_workspace(ws.id)
-            ok = bool(await handle.ping())
+            async with asyncio.timeout(timeout):
+                handle = await self._registry.get_workspace(ws.id)
+                ok = bool(await handle.ping())
         except WorkspaceRefusedError:
             # The deployment refuses this workspace's provider (a local one where the topology forbids it,
             # ticket 01a1072f). The workspace is intact, so this is neither a hit nor a miss: counting it would
             # flip the row to failed and end every open session on it workspace_lost, which is permanent.
             # Leave the row and its streaks exactly as they are.
             return
+        except TimeoutError:
+            fail_reason = f"the runtime did not answer within {timeout:g}s"
         except Exception as exc:  # noqa: BLE001 -- treat as a miss
             fail_reason = f"{type(exc).__name__}: {exc}"
 
@@ -249,4 +294,4 @@ class WorkspaceProbeTask:
             await reconcile_sessions_to_workspace_lost(self._sp, ws.id)
 
 
-__all__ = ["WorkspaceProbeTask"]
+__all__ = ["WorkspaceProbeTask", "unfinished_delete_reason"]

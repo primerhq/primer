@@ -33,7 +33,7 @@ BOOTSTRAP = UI / "canvas" / "html-bootstrap.js"
 SAME_ORIGIN_EXEMPT = {"docs-embed-directive-test.html": 'sandbox="allow-scripts allow-same-origin"'}
 
 #: The attributes the renderer may write.
-ALLOWED_ATTRIBUTES = {"type", "data-cv-id", "data-cv", "sandbox", "title", "aria-busy", "aria-label", "inert"}
+ALLOWED_ATTRIBUTES = {"type", "data-cv-id", "data-cv", "sandbox", "title", "aria-busy", "aria-disabled", "aria-label", "inert"}
 
 
 def _code(path: Path) -> str:

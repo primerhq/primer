@@ -542,11 +542,15 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         ``docker inspect`` (``Config.Env``) and reconnect the
         :class:`RuntimeClient` against the same URL the create path built.
 
+        A stopped container (``exited``, or ``created`` and never started:
+        after a dockerd restart or a host reboot, as no restart policy is
+        set) is started first, then reconnected (review W21).
+
         Returns ``None`` when:
 
         * the container does not exist (``404``);
-        * the container is not ``running`` (a stopped/exited container has
-          no runtime listening to reconnect to);
+        * the container is in a state a start cannot fix (``paused``,
+          ``dead``, ``removing``, ``restarting``), or will not start;
         * the token cannot be recovered from the container env.
 
         This mirrors how :class:`KubernetesWorkspaceBackend` recovers the
@@ -561,7 +565,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             raise
         info = await container.show()
         state = info.get("State", {}).get("Status")
-        if state != "running":
+        if state not in ("running", "exited", "created"):
             logger.warning(
                 "get_sandbox(%s): container is %s; cannot reconnect runtime "
                 "to a non-running container. Returning None.",
@@ -578,6 +582,13 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             )
             return None
         reachability = self._reachability_for_reattach()
+        if state != "running":
+            try:
+                await container.start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("get_sandbox(%s): could not start the %s container: %s", name, state, exc)
+                return None
+            logger.info("get_sandbox(%s): started the %s container", name, state)
         try:
             sandbox = await _make_ws_sandbox(
                 self._docker, container, name, token,
@@ -618,6 +629,22 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             for raw in c._container.get("Names", []) or []:
                 names.append(raw.lstrip("/"))
         return names
+
+    async def remove_by_name(self, name: str, volume_name: str) -> bool:
+        """Remove the container and the volume by name (the container in any state). True when either existed; a failure
+        other than a 404 raises, so a destroy that could not remove them fails instead of dropping the row over them."""
+        assert self._docker is not None
+        container_existed = True
+        try:
+            await self._docker.containers.container(name).delete(force=True, v=False)
+        except Exception as exc:  # noqa: BLE001 -- a 404 is "not there"; anything else is raised
+            if not _is_not_found(exc):
+                raise
+            container_existed = False
+        volume_existed = await self._volume_exists(volume_name)
+        if volume_existed:
+            await self.remove_volume(volume_name)
+        return container_existed or volume_existed
 
     async def remove_volume(self, name: str) -> None:
         assert self._docker is not None

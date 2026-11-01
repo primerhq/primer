@@ -1,6 +1,6 @@
 """pgvector-backed :class:`VectorStoreProvider` and :class:`VectorStore`.
 
-One vector table per collection (``<schema>.embeddings_<sanitised>``)
+One vector table per collection (``<schema>.embeddings_<slug>_<hash>``)
 with an HNSW index on the vector column (default) and a GIN index on
 the ``meta`` JSONB column for fast metadata-containment queries. The
 collection catalogue (``<schema>.primer_collections``) records the
@@ -26,6 +26,7 @@ run non-blocking to readers and writers.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -52,10 +53,14 @@ from primer.model.except_ import (
 )
 from primer.model.provider import PgVectorConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.vector.names import table_name_for_collection
 from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
 
 
 logger = logging.getLogger(__name__)
+
+# A maintenance statement (VACUUM, a concurrent REINDEX) on a large table outlives the pool's 30 s command_timeout by far.
+_MAINTENANCE_TIMEOUT_SECONDS = 6 * 3600.0
 
 
 # ---------- Reachability probe --------------------------------------------
@@ -85,11 +90,29 @@ async def probe_postgres_reachable(config: PgVectorConfig) -> None:
         await conn.close()
 
 
+async def catalogue_has_collections(config: PgVectorConfig) -> bool:
+    """Whether ``<config.db_schema>.primer_collections`` exists and lists a collection: whether vector tables live under that schema.
+
+    Bootstrap asks before it moves the reserved pgvector provider to another schema, so a move never orphans vector tables. A bare connection,
+    nothing is created.
+    """
+    schema = _sanitize_schema(config.db_schema)
+    conn = await asyncpg.connect(
+        host=config.hostname, port=config.port, user=config.username, password=config.password.get_secret_value(),
+        database=config.database, timeout=10.0,
+    )
+    try:
+        if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".primer_collections') is None:
+            return False
+        return bool(await conn.fetchval(f'SELECT EXISTS (SELECT 1 FROM "{schema}".primer_collections)'))
+    finally:
+        await conn.close()
+
+
 # ---------- Identifier helpers --------------------------------------------
 
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _sanitize_schema(name: str) -> str:
@@ -101,17 +124,8 @@ def _sanitize_schema(name: str) -> str:
 
 
 def _table_name_for_collection(collection_id: str) -> str:
-    """Map a collection id to a vector table name.
-
-    Allows ``[A-Za-z0-9_-]``; hyphens are translated to underscores
-    so the result is a bare SQL identifier without quoting concerns.
-    """
-    if not _COLLECTION_ID_RE.match(collection_id):
-        raise BadRequestError(
-            f"collection_id {collection_id!r} must match "
-            f"{_COLLECTION_ID_RE.pattern} (alphanumeric / underscore / hyphen)"
-        )
-    return "embeddings_" + collection_id.replace("-", "_")
+    """The table name of a NEW collection (:func:`primer.vector.names.table_name_for_collection`); an existing one keeps its stored name."""
+    return table_name_for_collection(collection_id)
 
 
 _DISTANCE_OPCLASS: dict[str, str] = {
@@ -265,6 +279,9 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # Re-register the vector codec on the pooled connection
             # (the extension may not have existed when init ran).
             await register_vector(conn)
+            # The connections the pool opened before the extension existed could not register the codec, so they skipped the search GUC too and would
+            # search at pgvector's default for their whole life: set it here, then recycle them (GI-29).
+            await self._apply_search_guc(conn)
             await conn.execute(
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}".primer_collections ('
                 'collection_id text PRIMARY KEY, '
@@ -284,6 +301,10 @@ class PgVectorStoreProvider(VectorStoreProvider):
                 "ADD COLUMN IF NOT EXISTS vector_type text NOT NULL "
                 "DEFAULT 'vector'"
             )
+
+        expire = getattr(self._pool, "expire_connections", None)
+        if expire is not None:
+            await expire()
 
         logger.info(
             "%s initialised (schema=%r, host=%s:%d, exts=%s)",
@@ -308,6 +329,14 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # ``initialize`` body re-registers explicitly.
             return
         await self._apply_search_guc(conn)
+
+    def candidate_list_sql(self, k: int) -> str | None:
+        """The statement that lets one query return ``k`` rows from the HNSW index (``SET LOCAL``, so it ends with the query's transaction), or ``None``
+        when ``k`` is within the configured ``hnsw.ef_search``. Capped at pgvector's 1000. A provider on another index type overrides this."""
+        configured = int(self._config.hnsw_ef_search)
+        if k <= configured:
+            return None
+        return f"SET LOCAL hnsw.ef_search = {min(int(k), 1000)}"
 
     async def _apply_search_guc(self, conn: asyncpg.Connection) -> None:
         """Set the query-time index search-list size GUC for this session.
@@ -506,21 +535,80 @@ class PgVectorStoreProvider(VectorStoreProvider):
         qualified_index = f'"{self._schema}"."{index_name}"'
 
         async with self._pool.acquire() as conn:
+            # The pool's command_timeout is the 30 s ``acquire_timeout``; a VACUUM or a concurrent REINDEX of a large table takes far longer, and a
+            # reindex cancelled part way leaves an INVALID ``_ccnew`` index behind that still slows every write (GI-28). So these statements get
+            # their own, generous, limit.
+            timeout = _MAINTENANCE_TIMEOUT_SECONDS
             if action == "analyze":
-                await conn.execute(f"ANALYZE {qualified_table}")
+                await conn.execute(f"ANALYZE {qualified_table}", timeout=timeout)
             elif action == "vacuum_analyze":
-                await conn.execute(f"VACUUM ANALYZE {qualified_table}")
+                await conn.execute(f"VACUUM ANALYZE {qualified_table}", timeout=timeout)
             elif action == "reindex":
-                await conn.execute(
-                    f"REINDEX INDEX CONCURRENTLY {qualified_index}"
-                )
+                try:
+                    await conn.execute(f"REINDEX INDEX CONCURRENTLY {qualified_index}", timeout=timeout)
+                except BaseException:
+                    await self._drop_invalid_reindex_leftovers(index_name)
+                    raise
             else:  # pragma: no cover - exhaustive
                 raise ConfigError(f"unknown maintenance action {action!r}")
+
+    async def _drop_invalid_reindex_leftovers(self, index_name: str) -> None:
+        """Drop the INVALID ``<index>_ccnew*`` indexes a failed ``REINDEX ... CONCURRENTLY`` leaves (they are maintained on every write and never used)."""
+        try:
+            async with self._pool.acquire() as conn:
+                leftovers = await conn.fetch(
+                    "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = $1 AND NOT i.indisvalid AND c.relname LIKE $2",
+                    self._schema, index_name.replace("_", "\\_") + "\\_ccnew%",
+                )
+                for row in leftovers:
+                    await conn.execute(f'DROP INDEX CONCURRENTLY IF EXISTS "{self._schema}"."{row["relname"]}"', timeout=_MAINTENANCE_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - best effort; the next maintenance run tries again
+            logger.warning("could not drop leftover %s_ccnew indexes", index_name, exc_info=True)
 
 
 # ===========================================================================
 # VectorStore
 # ===========================================================================
+
+
+class _DimensionMismatch(BadRequestError):
+    """A vector's width differs from the (cached) collection's: either the caller is wrong, or another process re-created the collection at another width."""
+
+
+def _collection_ids(args: tuple[Any, ...], kwargs: dict[str, Any]) -> set[str]:
+    """The collection ids a store call names: a record's, a batch's, or the first argument."""
+    first = args[0] if args else kwargs.get("record") or kwargs.get("records") or kwargs.get("collection_id")
+    if isinstance(first, str):
+        return {first}
+    if isinstance(first, list):
+        return {r.collection_id for r in first}
+    cid = getattr(first, "collection_id", None)
+    return {cid} if isinstance(cid, str) else set()
+
+
+def _recreated_elsewhere(method: Any) -> Any:
+    """Run a store call; if it fails because this process's cached catalogue entry is stale, evict it and run the call once more (KN-18).
+
+    Another process may drop and re-create a collection (here the table name is a function of the id, so it comes back under the same name, perhaps at
+    another width). This process then holds the old width, or the table is briefly missing: ``_DimensionMismatch`` or an undefined-table error. One
+    re-resolve against the catalogue row decides it; a caller that is really wrong gets the same error the second time.
+    """
+
+    @functools.wraps(method)
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await method(self, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            cause = getattr(exc, "cause", None) or exc.__cause__
+            if not (isinstance(exc, _DimensionMismatch) or isinstance(cause, asyncpg.UndefinedTableError)):
+                raise
+            for collection_id in _collection_ids(args, kwargs):
+                self._collections.pop(collection_id, None)
+            return await method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class PgVectorStore(VectorStore):
@@ -597,30 +685,13 @@ class PgVectorStore(VectorStore):
                 # provider's current use_halfvec flag, so dimension validation
                 # (which depends on that flag) only applies to NEW collections.
                 existing = await conn.fetchrow(
-                    f'SELECT dimensions, distance, vector_type FROM '
+                    f'SELECT table_name, index_name, dimensions, distance, vector_type FROM '
                     f'"{self._schema}".primer_collections '
                     f'WHERE collection_id = $1',
                     collection_id,
                 )
                 if existing is not None:
-                    if (
-                        int(existing["dimensions"]) != dimensions
-                        or existing["distance"] != distance
-                    ):
-                        raise ConflictError(
-                            f"collection {collection_id!r} already exists with "
-                            f"dimensions={existing['dimensions']}, "
-                            f"distance={existing['distance']!r}; "
-                            f"requested dimensions={dimensions}, "
-                            f"distance={distance!r}"
-                        )
-                    self._collections[collection_id] = _CollectionMeta(
-                        table_name=table_name,
-                        index_name=index_name,
-                        dimensions=dimensions,
-                        distance=distance,
-                        vector_type=existing["vector_type"] or "vector",
-                    )
+                    self._adopt(collection_id, existing, dimensions, distance)
                     return
 
                 use_halfvec = bool(self._provider.config.use_halfvec)
@@ -654,24 +725,37 @@ class PgVectorStore(VectorStore):
                     opclass=opclass,
                 )
 
-                async with conn.transaction():
-                    await conn.execute(ddl_table)
-                    await conn.execute(ddl_doc_index)
-                    await conn.execute(ddl_meta_index)
-                    await conn.execute(ddl_ann)
-                    await conn.execute(
-                        f'INSERT INTO "{self._schema}".primer_collections '
-                        f'(collection_id, table_name, index_name, '
-                        f'index_kind, dimensions, distance, vector_type) '
-                        f'VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                try:
+                    async with conn.transaction():
+                        await conn.execute(ddl_table)
+                        await conn.execute(ddl_doc_index)
+                        await conn.execute(ddl_meta_index)
+                        await conn.execute(ddl_ann)
+                        await conn.execute(
+                            f'INSERT INTO "{self._schema}".primer_collections '
+                            f'(collection_id, table_name, index_name, '
+                            f'index_kind, dimensions, distance, vector_type) '
+                            f'VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                            collection_id,
+                            table_name,
+                            index_name,
+                            self._index_kind(),
+                            dimensions,
+                            distance,
+                            vector_type,
+                        )
+                except (asyncpg.UniqueViolationError, asyncpg.DuplicateTableError):
+                    # A peer creating the same new collection committed first (the concurrent-DDL race, or the catalogue's primary key): read its row
+                    # and use it. Only a row of ANOTHER shape is a conflict; with no row behind the violation it is a real failure (GI-27).
+                    peer = await conn.fetchrow(
+                        f'SELECT table_name, index_name, dimensions, distance, vector_type FROM '
+                        f'"{self._schema}".primer_collections WHERE collection_id = $1',
                         collection_id,
-                        table_name,
-                        index_name,
-                        self._index_kind(),
-                        dimensions,
-                        distance,
-                        vector_type,
                     )
+                    if peer is None:
+                        raise
+                    self._adopt(collection_id, peer, dimensions, distance)
+                    return
         except (ConflictError, BadRequestError):
             raise
         except Exception as exc:
@@ -695,6 +779,25 @@ class PgVectorStore(VectorStore):
             distance,
             self._index_kind(),
             table_name,
+        )
+
+    def _adopt(self, collection_id: str, row: Any, dimensions: int, distance: str) -> None:
+        """Use the catalogue row of a collection that already exists: ``ConflictError`` when it is another shape than the one asked for."""
+        if int(row["dimensions"]) != dimensions or row["distance"] != distance:
+            raise ConflictError(
+                f"collection {collection_id!r} already exists with "
+                f"dimensions={row['dimensions']}, "
+                f"distance={row['distance']!r}; "
+                f"requested dimensions={dimensions}, "
+                f"distance={distance!r}"
+            )
+        # The names the catalogue STORED, not freshly computed ones: a collection made under an older naming keeps its table.
+        self._collections[collection_id] = _CollectionMeta(
+            table_name=row["table_name"],
+            index_name=row["index_name"],
+            dimensions=dimensions,
+            distance=distance,
+            vector_type=row["vector_type"] or "vector",
         )
 
     async def _resolve(self, collection_id: str) -> _CollectionMeta:
@@ -724,10 +827,11 @@ class PgVectorStore(VectorStore):
 
     # ---------- put / search / search_by_meta / get / delete --------------
 
+    @_recreated_elsewhere
     async def put(self, record: EmbeddingRecord) -> None:
         meta = await self._resolve(record.collection_id)
         if len(record.vector) != meta.dimensions:
-            raise BadRequestError(
+            raise _DimensionMismatch(
                 f"vector dimensionality {len(record.vector)} does not match "
                 f"collection {record.collection_id!r} dimensions={meta.dimensions}"
             )
@@ -760,6 +864,57 @@ class PgVectorStore(VectorStore):
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
+    @_recreated_elsewhere
+    async def put_many(self, records: list[EmbeddingRecord]) -> None:
+        """One transaction and one ``executemany`` per collection (validated first, so a bad row writes nothing)."""
+        by_collection: dict[str, list[EmbeddingRecord]] = {}
+        for record in records:
+            by_collection.setdefault(record.collection_id, []).append(record)
+        for collection_id, batch in by_collection.items():
+            meta = await self._resolve(collection_id)
+            for record in batch:
+                if len(record.vector) != meta.dimensions:
+                    raise _DimensionMismatch(
+                        f"vector dimensionality {len(record.vector)} does not match "
+                        f"collection {collection_id!r} dimensions={meta.dimensions}"
+                    )
+            sql = (
+                f'INSERT INTO "{self._schema}"."{meta.table_name}" '
+                f'(document_id, chunk_id, text, vector, meta) '
+                f'VALUES ($1, $2, $3, $4, $5::jsonb) '
+                f'ON CONFLICT (document_id, chunk_id) DO UPDATE SET '
+                f'text = EXCLUDED.text, vector = EXCLUDED.vector, meta = EXCLUDED.meta'
+            )
+            args = [
+                (
+                    r.document_id, r.chunk_id, r.text,
+                    HalfVector(r.vector) if meta.vector_type == "halfvec" else r.vector,
+                    json.dumps(r.meta),
+                )
+                for r in batch
+            ]
+            try:
+                async with self._provider.pool.acquire() as conn:
+                    async with conn.transaction():
+                        await conn.executemany(sql, args)
+            except Exception as exc:
+                raise self._wrap_db_error(exc) from exc
+
+    @_recreated_elsewhere
+    async def list_chunk_texts(
+        self, collection_id: str, document_id: str | None = None,
+    ) -> list[tuple[str, str, str, str | None]]:
+        meta = await self._resolve(collection_id)
+        where, args = ("", []) if document_id is None else (" WHERE document_id = $1", [document_id])
+        sql = f'SELECT document_id, chunk_id, text, meta::jsonb->>\'embedder\' AS embedder FROM "{self._schema}"."{meta.table_name}"{where} ORDER BY document_id, chunk_id'
+        try:
+            async with self._provider.pool.acquire() as conn:
+                rows = await conn.fetch(sql, *args)
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        return [(r["document_id"], r["chunk_id"], r["text"], r["embedder"]) for r in rows]
+
+    @_recreated_elsewhere
     async def search(
         self,
         collection_id: str,
@@ -771,7 +926,7 @@ class PgVectorStore(VectorStore):
 
         meta = await self._resolve(collection_id)
         if len(vector) != meta.dimensions:
-            raise BadRequestError(
+            raise _DimensionMismatch(
                 f"query vector dimensionality {len(vector)} does not match "
                 f"collection {collection_id!r} dimensions={meta.dimensions}"
             )
@@ -800,7 +955,14 @@ class PgVectorStore(VectorStore):
 
         try:
             async with self._provider.pool.acquire() as conn:
-                rows = await conn.fetch(sql, qvector, k)
+                guc = self._provider.candidate_list_sql(k)
+                if guc is None:
+                    rows = await conn.fetch(sql, qvector, k)
+                else:
+                    # HNSW returns at most hnsw.ef_search rows: a search for more raises it for this transaction only (GI-29).
+                    async with conn.transaction():
+                        await conn.execute(guc)
+                        rows = await conn.fetch(sql, qvector, k)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
@@ -819,6 +981,7 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    @_recreated_elsewhere
     async def search_by_meta(
         self,
         collection_id: str,
@@ -852,6 +1015,7 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    @_recreated_elsewhere
     async def count_documents(self, collection_id: str) -> int:
         col = await self._resolve(collection_id)
         # Distinct-document count over the whole namespace: the same row
@@ -869,6 +1033,7 @@ class PgVectorStore(VectorStore):
 
         return int(row["count"])
 
+    @_recreated_elsewhere
     async def get(
         self,
         collection_id: str,
@@ -898,6 +1063,7 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    @_recreated_elsewhere
     async def delete(
         self,
         collection_id: str,

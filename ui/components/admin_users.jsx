@@ -219,6 +219,17 @@ function ADM_toggleStep(user) {
   return prompt ? { kind: "ask", prompt: prompt } : { kind: "send" };
 }
 
+// The prompt Force rotation asks with. Pure, like ADM_toggleConfirm.
+function ADM_rotationConfirm(user) {
+  return {
+    title: "Force a password rotation for " + user.username + "?",
+    message: "A new temporary password is minted and shown once, the account must change it at its next sign-in, and every session "
+      + "of " + user.username + " is signed out, open terminals included. They cannot sign in until you give them the temporary password.",
+    confirmLabel: "Force rotation",
+    danger: true,
+  };
+}
+
 function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
   const { apiFetch } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
@@ -246,6 +257,8 @@ function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
   };
 
   const forceRotation = async () => {
+    // It signs the user out everywhere and they cannot sign in until given the temporary password: ask, as Disable does (GU-13).
+    if (!(await confirmDialog(ADM_rotationConfirm(user)))) return;
     setBusy(true);
     setError(null);
     try {
@@ -628,9 +641,9 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
 // ============================================================================
 // ADM_EditUserDialog — PATCH /v1/admin/users/{id}
 //
-// Sends ONLY the mutable fields {email, role, disabled} plus password
-// when the admin typed a new one — never the full user object (no id /
-// created_at / password_hash on the wire). An optional new password
+// Sends ONLY the fields the admin changed ({email, role, disabled}, against the row
+// the dialog opened with) plus password when one was typed, never the full user
+// object (no id / created_at / password_hash on the wire). An optional new password
 // re-flags must_change_password server-side. Anti-lockout violations
 // (demoting / disabling the last admin) come back as a 4xx envelope and
 // render in the banner.
@@ -657,12 +670,18 @@ function ADM_EditUserDialog({ user, onClose, onSaved }) {
     setSubmitError(null);
     setBusy(true);
     try {
-      const body = {
-        email: email.trim() || null,
-        role,
-        disabled,
-      };
+      // Only what this admin changed, against the row the dialog OPENED with: the dialog holds a snapshot, and a field it did not touch
+      // (disabled, role) must not overwrite what another admin changed since (GU-4).
+      const body = {};
+      const nextEmail = email.trim() || null;
+      if (nextEmail !== (user.email || null)) body.email = nextEmail;
+      if (role !== (user.role || "user")) body.role = role;
+      if (disabled !== !!user.disabled) body.disabled = disabled;
       if (password) body.password = password;
+      if (Object.keys(body).length === 0) {
+        onSaved && onSaved();
+        return;
+      }
       await apiFetch("PATCH", "/admin/users/" + encodeURIComponent(user.id), body);
       if (!mountedRef.current) return;
       onSaved && onSaved();

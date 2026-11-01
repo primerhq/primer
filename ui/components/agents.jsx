@@ -125,13 +125,12 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
       return undefined;
     }
     const ctrl = new AbortController();
-    Promise.all(
-      items.map((a) =>
-        apiFetch("GET", `/agents/${encodeURIComponent(a.id)}/status`, null, { signal: ctrl.signal })
-          .then((r) => [a.id, r])
-          .catch((e) => [a.id, { ok: null, error: e?.title || e?.message }])
-      )
-    ).then((entries) => setPerRowStatus(Object.fromEntries(entries)));
+    // At most four reads in flight until a batch endpoint exists (UI-L15).
+    PR_mapLimit(items, 4, (a) =>
+      apiFetch("GET", `/agents/${encodeURIComponent(a.id)}/status`, null, { signal: ctrl.signal })
+        .then((r) => [a.id, r])
+        .catch((e) => [a.id, { ok: null, error: e?.title || e?.message }]),
+    ctrl.signal).then((entries) => setPerRowStatus(Object.fromEntries(entries.filter(Boolean))));
     return () => ctrl.abort();
   }, [list.data]);
 
@@ -143,13 +142,11 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
       return undefined;
     }
     const ctrl = new AbortController();
-    Promise.all(
-      items.map((a) =>
-        apiFetch("GET", `/sessions?agent_id=${encodeURIComponent(a.id)}&limit=1`, null, { signal: ctrl.signal })
-          .then((r) => [a.id, r.total ?? (r.items?.length ?? 0)])
-          .catch(() => [a.id, null])
-      )
-    ).then((entries) => setPerRowSessions(Object.fromEntries(entries)));
+    PR_mapLimit(items, 4, (a) =>
+      apiFetch("GET", `/sessions?agent_id=${encodeURIComponent(a.id)}&limit=1`, null, { signal: ctrl.signal })
+        .then((r) => [a.id, r.total ?? (r.items?.length ?? 0)])
+        .catch(() => [a.id, null]),
+    ctrl.signal).then((entries) => setPerRowSessions(Object.fromEntries(entries.filter(Boolean))));
     return () => ctrl.abort();
   }, [list.data]);
 
@@ -405,14 +402,14 @@ function AG_SessionsPanel({ agentId }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [open, setOpen] = React.useState(false);
-  // Every session of the agent, newest first (the panel lists the first ten, and the page cap keeps the newest), every page (PR_fetchAllPages),
-  // polled every 5 s per page read while open (PR_usePagedResource).
-  const sessions = PR_usePagedResource(
+  // The ten newest sessions of the agent and the count from the answer's `total`: one request, not every page (UI-L15). Polled only while open.
+  const sessions = useResource(
     `agent-sessions:${agentId}`,
-    (signal) => PR_fetchAllPages("/sessions?agent_id=" + encodeURIComponent(agentId) + "&order_by=created_at:desc", { signal, apiFetch }),
+    (signal) => apiFetch("GET", "/sessions?agent_id=" + encodeURIComponent(agentId) + "&order_by=created_at:desc&limit=10", null, { signal }),
     { pollMs: open ? 5000 : 0, deps: [agentId] }
   );
   const items = sessions.data?.items ?? [];
+  const total = sessions.data?.total ?? items.length;
   return (
     <div className="panel" data-testid="agent-sessions-panel">
       <button type="button" onClick={() => setOpen((v) => !v)}
@@ -422,11 +419,13 @@ function AG_SessionsPanel({ agentId }) {
           color: "var(--text-2)", fontSize: 12,
         }}>
         <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
-        Sessions{items.length ? ` (${items.length})` : ""}
+        Sessions{total ? ` (${total})` : ""}
       </button>
       {open && (
         <div style={{ padding: "0 10px 10px" }}>
-          <PR_PagedNote list={sessions.data} noun="sessions" testid="agent-sessions-note" />
+          {total > items.length ? (
+            <div className="pr-paged-note" role="note" data-testid="agent-sessions-note">Showing the {items.length} newest of {total} sessions.</div>
+          ) : null}
           {sessions.loading && items.length === 0 ? (
             <div className="muted text-sm" style={{ padding: 10 }}>Loading…</div>
           ) : items.length === 0 ? (

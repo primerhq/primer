@@ -48,6 +48,7 @@ from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
+from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.api.routers.providers import _make_invalidator
 from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
@@ -129,7 +130,7 @@ async def _enrich_with_usage(
     offset = 0
     while True:
         page = await agent_storage.list(
-            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE),
+            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE, want_total=False),
         )
         for agent in page.items:
             agent_counts[agent.model.profile_id] += 1
@@ -141,7 +142,7 @@ async def _enrich_with_usage(
     offset = 0
     while True:
         page = await graph_storage.list(
-            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE),
+            OffsetPage(offset=offset, length=_REF_COUNT_PAGE_SIZE, want_total=False),
         )
         for graph in page.items:
             for node in graph.nodes:
@@ -271,6 +272,7 @@ model_profile_router = make_crud_router(
             op=Op.CONTAINS,
             error_code="in_use_by",
         ),
+        ReferenceCheck.from_spec(MODEL_PROFILE_GRAPH_REFERENCE),
     ],
     enrich_list=_enrich_with_usage,
 )

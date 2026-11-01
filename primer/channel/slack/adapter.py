@@ -8,6 +8,7 @@ share one Socket Mode connection.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,7 +16,7 @@ import httpx
 
 from primer.channel.adapter import (
     BoundedDict, ChannelAdapter, PromptEnvelope,
-    attribution_header, session_thread_label,
+    attribution_header, session_thread_label, split_text,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.channel.slack.render import (
@@ -29,6 +30,9 @@ from primer.model.except_ import ProviderError
 
 
 logger = logging.getLogger(__name__)
+
+# Slack truncates message text after 40,000 characters (api.slack.com/methods/chat.postMessage, "Truncating content").
+_SLACK_TEXT_MAX = 40_000
 
 
 def _get_web_client(conn: Any) -> Any:
@@ -59,6 +63,7 @@ class SlackChannelAdapter(ChannelAdapter):
         self._provider = provider
         self._channel = channel
         self._inbox = inbox
+        self._http_client: httpx.AsyncClient | None = None
         # Chat-surface wiring. Optional so existing callers (session/workspace
         # channels) keep working; the chat dispatch path stays inactive when
         # _sp is None.
@@ -85,7 +90,10 @@ class SlackChannelAdapter(ChannelAdapter):
         return ""
 
     async def initialize(self) -> None:
-        self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
+        if self.owns_inbound:
+            self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
+        else:  # posting only (W7)
+            self._conn = await SLACK_CONNECTIONS.acquire(self._provider, inbound=False)
         # Register this adapter on the shared connection so inbound
         # handlers can dispatch by channel_id.
         entry = SLACK_CONNECTIONS.entry(self._provider.id)
@@ -94,6 +102,9 @@ class SlackChannelAdapter(ChannelAdapter):
         # Handlers are registered once-per-connection in Task 6 (factory).
 
     async def aclose(self) -> None:
+        client, self._http_client = self._http_client, None
+        if client is not None and hasattr(client, "aclose"):
+            await client.aclose()
         entry = SLACK_CONNECTIONS.entry(self._provider.id)
         if entry is not None:
             entry.adapters_by_channel_id.pop(self._channel.external_id, None)
@@ -144,6 +155,7 @@ class SlackChannelAdapter(ChannelAdapter):
         root_ts = await self._session_root_ts(
             client, envelope.session_id,
             getattr(envelope, "thread_anchor", None),
+            workspace_id=envelope.workspace_id,
         )
         media = getattr(envelope, "media", None)
         if media and self._artifacts is not None:
@@ -153,11 +165,12 @@ class SlackChannelAdapter(ChannelAdapter):
                 await self.post_thread_media(parts, thread_ts=root_ts)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
-            await client.chat_postMessage(
-                channel=self._channel.external_id,
-                thread_ts=root_ts,
-                text=header + envelope.prompt,
-            )
+            for part in split_text(header + envelope.prompt, _SLACK_TEXT_MAX):
+                await client.chat_postMessage(
+                    channel=self._channel.external_id,
+                    thread_ts=root_ts,
+                    text=part,
+                )
             return {"ts": "", "channel": self._channel.external_id, "thread_ts": root_ts}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
@@ -236,7 +249,7 @@ class SlackChannelAdapter(ChannelAdapter):
         await client.files_upload_v2(**kwargs)
 
     async def _session_root_ts(
-        self, client: Any, session_id: str, anchor: str | None = None,
+        self, client: Any, session_id: str, anchor: str | None = None, *, workspace_id: str = "",
     ) -> str:
         """Get-or-create the root message ts for this session's thread.
 
@@ -258,6 +271,7 @@ class SlackChannelAdapter(ChannelAdapter):
         )
         ts = resp.get("ts", "")
         self._session_threads[session_id] = ts
+        await self._map_session_thread(ts, workspace_id=workspace_id, session_id=session_id)
         return ts
 
     # ----- inbound helpers (called from handlers in factory.py) -----------
@@ -285,37 +299,50 @@ class SlackChannelAdapter(ChannelAdapter):
             return text, []
         if self._artifacts is None or self._sp is None:
             return text, []
-        from primer.channel.media import MediaError, store_inbound_media
+        from primer.channel.media import ATTACHMENT_CONCURRENCY, MediaError, declared_size_refused, store_inbound_media
         store = await self._artifacts.get_default()
         token = self._provider.config.bot_token.get_secret_value()
-        parts: list = []
-        for f in files:
+        gate = asyncio.Semaphore(ATTACHMENT_CONCURRENCY)
+
+        async def fetch(f: dict) -> tuple[str, Any]:
+            """``("part", part)``, ``("skipped", None)`` (over the cap) or ``("none", None)`` for one file; never raises."""
             url = f.get("url_private_download") or f.get("url_private")
             if not url:
-                continue
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(
-                        url, headers={"Authorization": f"Bearer {token}"})
-            except Exception:  # noqa: BLE001 — download is best-effort
-                logger.warning("slack: media download raised for %s", url,
-                               exc_info=True)
-                continue
+                return "none", None
+            if not url.startswith("https://files.slack.com/"):   # the bot token goes to Slack's file host only
+                logger.warning("slack: not fetching a file outside https://files.slack.com: %s", url)
+                return "none", None
+            if declared_size_refused(f.get("size")):             # Slack says how big it is: do not download what would be refused
+                return "skipped", None
+            async with gate:
+                try:
+                    resp = await self._http().get(url, headers={"Authorization": f"Bearer {token}"})
+                except Exception:  # noqa: BLE001 - download is best-effort
+                    logger.warning("slack: media download raised for %s", url, exc_info=True)
+                    return "none", None
             if getattr(resp, "status_code", 0) != 200:
-                logger.warning(
-                    "slack: media download for %s returned %s", url,
-                    getattr(resp, "status_code", "?"))
-                continue
+                logger.warning("slack: media download for %s returned %s", url, getattr(resp, "status_code", "?"))
+                return "none", None
             try:
                 part = await store_inbound_media(
-                    store, data=resp.content,
-                    mime_type=f.get("mimetype"),
-                    filename=f.get("name") or f.get("title"))
+                    store, data=resp.content, mime_type=f.get("mimetype"), filename=f.get("name") or f.get("title"))
             except MediaError:
+                return "skipped", None
+            return "part", part
+
+        parts: list = []
+        for kind, part in await asyncio.gather(*(fetch(f) for f in files)):   # results keep the files' order
+            if kind == "skipped":
                 text = (text or "") + " [attachment skipped: too large]"
-                continue
-            parts.append(part)
+            elif kind == "part":
+                parts.append(part)
         return text, parts
+
+    def _http(self) -> httpx.AsyncClient:
+        """The adapter's one HTTP client (not one per file)."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient()
+        return self._http_client
 
 
 

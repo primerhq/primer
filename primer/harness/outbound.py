@@ -26,12 +26,42 @@ from typing import Any
 import yaml
 
 from primer.harness.templatize import (
+    _JINJA_DELIMITER_ESCAPES,
     _resolve_pointer,
     apply_override_mappings,
     compose_overrides_schema_from_mappings,
+    escape_jinja_delimiters,
+    escape_template_literals,
 )
 from primer.int.storage_provider import StorageProvider
 from primer.model.harness import Harness, OverrideMapping
+
+
+# Strings carrying the KN-17 escape must not be dumped in YAML's
+# single-quoted style: the quote-doubling (``'{{'`` -> ``''{{''``) breaks
+# the escape's own Jinja string literal and the inbound render then fails
+# to parse the template. A literal block (``|``) writes the text as-is;
+# where a literal block is impossible (a tab, a trailing space, ...) the
+# emitter falls back to double-quoted style, which leaves the escape's
+# single quotes untouched. Strings without an escape keep the default
+# style, so unescaped templates are unchanged.
+_ESCAPED_MARKERS: tuple[str, ...] = tuple(
+    escaped for _, escaped in _JINJA_DELIMITER_ESCAPES
+)
+_SAFE_REPRESENT_STR = yaml.SafeDumper.represent_str
+
+
+def _represent_outbound_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+    if any(marker in data for marker in _ESCAPED_MARKERS):
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return _SAFE_REPRESENT_STR(dumper, data)
+
+
+class _OutboundTemplateDumper(yaml.SafeDumper):
+    """SafeDumper that emits escape-bearing strings in a Jinja-safe style."""
+
+
+_OutboundTemplateDumper.add_representer(str, _represent_outbound_str)
 
 
 class OutboundBuildError(Exception):
@@ -193,6 +223,14 @@ async def build_outbound(
                     template_name=te.template_name,
                 ) from exc
 
+        # Escape literal Jinja delimiters in every spec string before the
+        # override tokens are inserted (KN-17): the inbound install renders
+        # this file as a Jinja template, so a tracked string containing
+        # ``{{ }}``, ``{% %}`` or ``{# #}`` would break the install (or be
+        # silently eaten, in the comment case); the escape ships them
+        # literally. The ``{{ overrides.* }}`` tokens are inserted after
+        # the escape, so they stay live.
+        payload = escape_template_literals(payload)
         templated = apply_override_mappings(payload, te.overrides)
         all_mappings.extend(te.overrides)
 
@@ -208,8 +246,10 @@ async def build_outbound(
         if te.kind == "document":
             body = await storage_provider.get_content_store().get(te.source_id)
             if body is not None:
-                template_body["content_inline"] = body
-        text = yaml.safe_dump(template_body, sort_keys=True)
+                # The body rides the same inbound Jinja render as the spec,
+                # so it needs the same delimiter escape (KN-17).
+                template_body["content_inline"] = escape_jinja_delimiters(body)
+        text = yaml.dump(template_body, sort_keys=True, Dumper=_OutboundTemplateDumper)
         template_files.append(
             OutboundFile(
                 template_path=f"templates/{te.template_name}.yaml",

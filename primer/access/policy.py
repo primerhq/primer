@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from primer.access.person import Person
 from primer.model.access import Access, AccessLevel, LEVEL_RANK, TOOLS_PUBLIC_TOKEN
 from primer.model.except_ import AccessDeniedError, NotFoundError
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import FieldRef, IdsOf, OffsetPage, Op, Predicate, Value
 
 if TYPE_CHECKING:
     from primer.int.storage import Storage
@@ -110,23 +110,54 @@ async def readable_ids(
 
     ``None`` for admins (they see everything: no filter). Otherwise the ids
     from a ``visible_predicate`` find, kept only while the held level reaches
-    ``need`` (public rows count as read). The id set an inherited kind's
-    lists filter on (``<parent>_id IN <ids>``).
+    ``need`` (public rows count as read). For a caller that needs the ids;
+    an inherited kind's read-level list filters with
+    :func:`readable_parent_filter`, which keeps them in the database.
     """
     if person.is_admin:
         return None
     predicate = visible_predicate(person)
+    need_rank = LEVEL_RANK[need]
+    finder = getattr(storage, "find_ids", None)
+    if finder is None:  # a storage double without find_ids: read full pages, as every storage did before
+        return await _readable_ids_by_pages(storage, person, predicate, need_rank)
+    ids: list[str] = []
+    for row_id, raw in await finder(predicate):
+        held = level_of(person, Access.model_validate(raw or {}))
+        if held is not None and LEVEL_RANK[held] >= need_rank:
+            ids.append(row_id)
+    return ids
+
+
+async def _readable_ids_by_pages(storage: "Storage[Any]", person: Person, predicate: Predicate | None, need_rank: int) -> list[str]:
     ids: list[str] = []
     offset = 0
     while True:
         items = (await storage.find(predicate, OffsetPage(offset=offset, length=_PAGE_SIZE))).items
         for row in items:
             held = level_of(person, row.access)
-            if held is not None and LEVEL_RANK[held] >= LEVEL_RANK[need]:
+            if held is not None and LEVEL_RANK[held] >= need_rank:
                 ids.append(row.id)
         if len(items) < _PAGE_SIZE:
             return ids
         offset += _PAGE_SIZE
+
+
+async def readable_parent_filter(parents: "Storage[Any]", model: type, person: Person, field: str) -> Predicate | None:
+    """``field IN <ids of the parents person reads>``: the list filter of a kind that inherits its access from its parent row. ``None`` for admins.
+
+    Read level only. On a backend that renders a subquery (``Storage.supports_ids_of``) it is the semi-join
+    ``field IN (SELECT id FROM <parents> WHERE <visible_predicate>)``, so the id set never leaves the database; ``visible_predicate`` is exactly
+    the rows a person reads (the owned kinds' own lists filter on it alone), since ``members`` is derived from owners, grants and ``public``.
+    Elsewhere the ids are read first (:func:`readable_ids`). A level above read needs :func:`readable_ids`.
+    """
+    if person.is_admin:
+        return None
+    if getattr(parents, "supports_ids_of", False) is True:
+        right: Value = IdsOf(model=model, where=visible_predicate(person))
+    else:
+        right = Value(value=await readable_ids(parents, person))
+    return Predicate(left=FieldRef(name=field), op=Op.IN, right=right)
 
 
 def may_use_tool(person: Person, access: Access, tool_name: str) -> bool:

@@ -107,6 +107,16 @@ class ApproverSpec(BaseModel):
         description="Admitted usernames when kind='users'.",
     )
 
+    @field_validator("users")
+    @classmethod
+    def _usernames_as_stored(cls, users: list[str]) -> list[str]:
+        """Usernames are stored ``strip().lower()`` (admin_users, auth), so a spec naming ``Alice`` must match the account ``alice`` (GI-21).
+
+        Applied on read as well as on save, so a spec stored before this still matches. Role names are checked at the save doors, not here:
+        a stored spec with a role this model does not know must still load.
+        """
+        return [name.strip().lower() for name in users]
+
     def allows(self, *, username: str, role: str) -> bool:
         if role == "admin":
             return True
@@ -114,7 +124,8 @@ class ApproverSpec(BaseModel):
             return True
         if self.kind == "roles":
             return role in self.roles
-        return username in self.users
+        wanted = username.strip().lower()
+        return any(wanted == name.strip().lower() for name in self.users)
 
 
 class ToolApprovalPolicy(Identifiable):

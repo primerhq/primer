@@ -108,6 +108,12 @@ class AuthConfig(BaseModel):
     )
 
 
+#: Seconds uvicorn waits for open connections (the console's SSE taps among them) after SIGTERM before it cancels them and lets the lifespan shutdown
+#: run (worker drain, lease release, deferred flushes). Short of the default lease TTL (30 s) and of systemd's default TimeoutStopSec (90 s), so the
+#: lifespan still has the rest of the orchestrator's grace period. Shared by `python -m primer.api` and `primer api` / `primer worker`.
+UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 10
+
+
 class RequestLimitsConfig(BaseModel):
     """Request-body size caps enforced app-wide by ``BodySizeLimitMiddleware`` (FS-05).
 
@@ -131,6 +137,19 @@ class RequestLimitsConfig(BaseModel):
             "Cap for PUT /v1/workspaces/{id}/files (default 128 MiB). The body is JSON, and a base64 "
             "file grows by a third on the wire, so this admits a file of roughly 96 MiB."
         ),
+    )
+    gateway_max_concurrent: int = Field(
+        default=32,
+        gt=0,
+        description=(
+            "Most service gateway function calls (POST /svc/{name}/_gateway/functions/{fn}) that run at once, process-wide (default 32). "
+            "Each is a python process; a call over the cap answers 503 at once."
+        ),
+    )
+    gateway_max_per_service: int | None = Field(
+        default=None,
+        gt=0,
+        description="Optional cap on the calls one service runs at once, so one busy service cannot take every slot (default: none).",
     )
     service_publish_max_body_bytes: int = Field(
         default=128 * 1024 * 1024,
@@ -301,13 +320,15 @@ class AppConfig(BaseSettings):
     workspace_allow_private_url_sources: bool = Field(
         default=False,
         description=(
-            "Let a workspace template's kind=url file source fetch from private, loopback, link-local and other "
-            "non-global addresses (refused by default: the platform fetches the URL, so any template author could "
-            "otherwise read an internal endpoint such as the cloud metadata service). Turn it on only when every "
+            "Let a workspace template's kind=url file source fetch from private and loopback addresses (refused by "
+            "default, with link-local and the other non-global ranges: the platform fetches the URL, so any template author could "
+            "otherwise read an internal endpoint). Link-local and cloud-metadata addresses (169.254.0.0/16, fe80::/10, "
+            "169.254.169.254, fd00:ec2::254) stay refused even when this is on. Turn it on only when every "
             "template author is trusted with the platform's network position, e.g. a deployment seeding workspaces "
             "from an internal file server, or the e2e suite. The same switch covers the OAuth endpoints an MCP server names on "
             "another host than its own (its protected-resource and authorization-server metadata, token, registration and revocation "
-            "URLs): refused on such addresses by default, allowed when this is on. Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
+            "URLs): refused on such addresses by default, private and loopback ones allowed when this is on (never link-local or metadata). "
+            "Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
         ),
     )
 
@@ -418,6 +439,16 @@ class AppConfig(BaseSettings):
             "Days of platform event-log history the retention pruner "
             "keeps. Rows behind every active subscription cursor AND "
             "older than this are deleted daily."
+        ),
+    )
+
+    session_retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Days an ENDED session is kept after it ended; a leader-elected sweeper then deletes it (its slot, canvas, thread mappings and "
+            "peer-message ledger with it) in bounded batches. Unset (the default): no session is ever deleted by age. Env: "
+            "PRIMER_SESSION_RETENTION_DAYS."
         ),
     )
 

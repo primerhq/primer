@@ -16,11 +16,6 @@ from typing import Any
 
 _SECTIONS = ("args:", "arguments:", "when:", "examples:", "returns:", "raises:")
 
-# An arg description continued on the next line is indented past the name.
-# Google style puts names at 4 and continuations at 8 relative to the block,
-# which after dedent lands at 8 and 12 respectively.
-_CONTINUATION_INDENT = 12
-
 
 class DocstringError(ValueError):
     """A docstring that cannot produce a usable tool description.
@@ -63,17 +58,21 @@ def _split_sections(body: str) -> tuple[str, dict[str, list[str]]]:
 def _parse_args(lines: list[str]) -> dict[str, str]:
     """Parse an ``Args:`` block into {name: description}.
 
-    A line indented past the name continues the previous description, which is
-    how Google style wraps a long one.
+    A line indented past the names continues the previous description, which is
+    how Google style wraps a long one. The names' indent is the first line's: a
+    docstring cleaned by ``ast.get_docstring`` puts them at 4, a raw one at 8 (GX-11).
     """
     out: dict[str, str] = {}
     name: str | None = None
+    name_indent: int | None = None
     for raw in lines:
         stripped = raw.strip()
         if not stripped:
             continue
         indent = len(raw) - len(raw.lstrip())
-        is_continuation = name is not None and indent >= _CONTINUATION_INDENT
+        if name_indent is None:
+            name_indent = indent
+        is_continuation = name is not None and indent > name_indent
         if ":" in stripped and not is_continuation:
             key, _, desc = stripped.partition(":")
             # "name (str)" -> "name"; the type comes from the annotation, not

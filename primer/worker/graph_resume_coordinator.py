@@ -615,6 +615,11 @@ async def resume_graph_continuation(
     )
 
 
+def _drained_reply_keys(session) -> frozenset[str]:
+    """The ``resume_event_payloads`` keys of the resume's claim-time row (``session``): read and drained, so never carried onto its re-park (GR-3)."""
+    return frozenset((getattr(session, "parked_state", None) or {}).get("resume_event_payloads") or {})
+
+
 def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, ay, outcome):
     """Re-park a GRAPH SESSION whose node's nested subagent re-yielded.
 
@@ -627,9 +632,11 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
     from copy import deepcopy
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
+    from primer.model.yield_ import wait_deadline
     from primer.worker.frames import frames_to_jsonable
 
     leaf = outcome.leaf
+    now = datetime.now(timezone.utc)
     new_ck = deepcopy(checkpoint)
     for e in new_ck.get("pending_agent_yields") or []:
         # The entry the reply resolved: its node and its event key. The raw tool_call_id is not unique (two fan-out siblings parked inside a nested
@@ -645,9 +652,10 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
             e["resume_metadata"] = dict(leaf.resume_metadata or {})
             if outcome.tool_call_id is not None:
                 e["tool_call_id"] = outcome.tool_call_id
+            # ... and its deadline is the new leaf's wait, which the park below waits on (GR-4).
+            e["deadline"] = wait_deadline(leaf.timeout, now)
             break
 
-    now = datetime.now(timezone.utc)
     timeout = leaf.timeout if leaf.timeout is not None else 3600.0
     parked_state = ParkedState(
         yielded=leaf,
@@ -671,6 +679,7 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
             parked_event_keys=getattr(leaf, "event_keys", None),
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
+            drained_reply_keys=_drained_reply_keys(session),
         ),
     )
 
@@ -784,6 +793,7 @@ async def persist_resume_tool_result_record_for_graph(
         WorkspaceSession,
     )
     from primer.session.persistence import WorkspaceMessageWriter
+    from primer.session.seq_reservation import advance_last_seq
     from primer.worker.graph_resume import fresh_session_row_and_last_seq
 
     tool_result_part = next(
@@ -803,7 +813,7 @@ async def persist_resume_tool_result_record_for_graph(
         break
 
     try:
-        fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
+        _fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
         ws = await pool._load_workspace_for_persist(session.workspace_id)
         writer = WorkspaceMessageWriter(
             workspace_io=ws, session_id=session.id, start_seq=last_seq,
@@ -820,10 +830,10 @@ async def persist_resume_tool_result_record_for_graph(
             created_at=datetime.now(timezone.utc),
         ))
         await writer.flush()
-        # Base the update on the FRESH row, not the stale `session`
-        # parameter - see fresh_session_row_and_last_seq's own docstring.
-        storage = pool._storage.get_storage(WorkspaceSession)
-        await storage.update(fresh.model_copy(update={"last_seq": new_seq}))
+        # ONE field-scoped write: advance last_seq only (GR-5). The whole-row update from the
+        # pre-append read wrote back whatever a concurrent writer committed during the append
+        # (a Cancel, a steer) to its old value, and regressed last_seq below the steer's seq.
+        await advance_last_seq(pool._storage.get_storage(WorkspaceSession), session.id, new_seq)
         if pool._event_bus is not None:
             try:
                 await pool._event_bus.publish(
@@ -900,6 +910,7 @@ def _repark_graph_yield_outcome(session, repark, *, node_tool_call_seq=None):
             parked_event_keys=repark.yielded.event_keys,
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
+            drained_reply_keys=_drained_reply_keys(session),
         ),
     )
 
@@ -987,6 +998,7 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
             parked_event_keys=wake_keys or None,
             parked_until=now + timedelta(seconds=timeout),
             parked_at=now,
+            drained_reply_keys=_drained_reply_keys(session),
         ),
     )
 

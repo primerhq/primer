@@ -139,7 +139,7 @@ async def check_filesystem_artifact_stores(
         try:
             # Ordered by id, so the offset pages neither skip nor repeat a row.
             page = await provider_storage.find(
-                filesystem_rows, OffsetPage(offset=offset, length=_STORE_CHECK_PAGE), order_by=[OrderBy(field="id", direction="asc")],
+                filesystem_rows, OffsetPage(offset=offset, length=_STORE_CHECK_PAGE, want_total=False), order_by=[OrderBy(field="id", direction="asc")],
             )
         except Exception:
             logger.exception("startup check of the filesystem artifact stores: the provider rows could not be read")
@@ -488,8 +488,10 @@ async def _dispatch_recovered_deliveries(
             )
             continue
         # Gone, or finalized by a live sibling between collection and now.
-        # Either way it is not ours to re-fire.
-        if _row is None or _row.status != "pending":
+        # Either way it is not ours to re-fire. A pending row that carries a
+        # fire_id has fired already: an interactive hold keeps its row pending
+        # until the run ends, which can be well past the grace (W12).
+        if _row is None or _row.status != "pending" or _row.fire_id is not None:
             continue
         # Re-check the grace window against the fresh row: a row that was
         # stale at collection time is still stale now, but the re-check pass
@@ -759,6 +761,15 @@ async def recover_webhook_deliveries(
     except Exception:  # noqa: BLE001 -- never break startup
         logger.exception("lifespan: webhook recovery failed")
         return None
+
+
+async def recover_interrupted_indexing(storage_provider) -> None:
+    """A collection whose search backfill was running when the previous process ended reads ``indexing`` for ever: mark it ``error`` (KN-13)."""
+    from primer.knowledge.lifecycle import reset_interrupted_indexing
+
+    changed = await reset_interrupted_indexing(storage_provider)
+    if changed:
+        logger.warning("indexing recovery: marked %d interrupted collection(s) as error: %s", len(changed), ", ".join(changed))
 
 
 async def recover_ic_bootstrap(storage_provider) -> None:

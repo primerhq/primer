@@ -186,7 +186,7 @@ class _FakeWorkspace:
     def runtime_meta(self) -> WorkspaceRuntimeMeta:
         return self._runtime_meta
 
-    async def list_files(self, path=".", *, recursive=False, max_entries=None):
+    async def list_files(self, path=".", *, recursive=False, max_entries=None, skip_reserved=False):
         return []
 
     async def file_info(self, path):

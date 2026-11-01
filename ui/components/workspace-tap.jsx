@@ -443,16 +443,20 @@ function WorkspaceTap({ wid, sessionId, fillHeight }) {
           : { overflowY: "auto", maxHeight: 520, minHeight: 120, padding: "6px 0" }}
         data-testid="tap-event-list"
       >
+        {/* UI-L9d: a dead backfill must stay visible once an event is on screen
+            (a live frame, its own earlier page) - the error is the backfill's
+            state, not the empty list's. */}
+        {historyError ? (
+          <div data-testid="tap-history-error" className="muted text-sm" style={{ padding: "6px 18px" }}>
+            Could not load event history - {historyError}. The live tap still tails for in-flight runs.
+            <button type="button" className="nv-btn-secondary" style={{ marginLeft: 8 }}
+              data-testid="tap-history-retry"
+              onClick={function () { setHistoryRetry(function (t) { return t + 1; }); }}>Retry</button>
+          </div>
+        ) : null}
         {events.length === 0 && (
           <div className="muted text-sm" style={{ padding: "20px 18px", textAlign: "center" }}>
-            {historyError ? (
-              <div data-testid="tap-history-error">
-                Could not load event history — {historyError}. The live tap still tails for in-flight runs.
-                <button type="button" className="nv-btn-secondary" style={{ marginLeft: 8 }}
-                  data-testid="tap-history-retry"
-                  onClick={function () { setHistoryRetry(function (t) { return t + 1; }); }}>Retry</button>
-              </div>
-            ) : connState === "connecting"
+            {connState === "connecting"
               ? "Connecting to tap stream…"
               : connState === "error"
                 ? "Stream error — EventSource will auto-reconnect."

@@ -64,3 +64,73 @@ async def test_harnesses_get_the_first_admin_and_installed_rows_copy_it(sp):
     assert (await sp.get_storage(Graph).get("gr-1")).access == shared
     assert (await sp.get_storage(Collection).get("kb-1")).access.owners == ["zed"]  # its harness is gone: untouched
     assert (await sp.get_storage(Agent).get("ag-own")).access.owners == []  # not installed by a harness
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+from primer.storage.migrations._rows import read_all  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import Agent as AgentView  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import Collection as CollectionView  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import Graph as GraphView  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import Harness as HarnessView  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import Toolset as ToolsetView  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import User as UserView  # noqa: E402
+from primer.storage.migrations.m027_harness_ownership import _owned_by, _unset  # noqa: E402
+from tests.storage._migration_golden import assert_golden, bulk, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 27 as it was before PERF-T16, frozen: read each table whole, then ``update`` per row."""
+    admins = [u for u in await read_all(sp.get_storage(UserView)) if u.role == "admin" and not u.disabled and u.created_at is not None]
+    first_admin = min(admins, key=lambda u: u.created_at).id if admins else None
+    harnesses = sp.get_storage(HarnessView)
+    by_id = {}
+    for row in await read_all(harnesses):
+        access = row.access
+        if _unset(access) and first_admin is not None:
+            access = _owned_by(first_admin)
+            await harnesses.update(row.model_copy(update={"access": access}))
+        by_id[row.id] = access
+    for model in (AgentView, GraphView, ToolsetView, CollectionView):
+        store = sp.get_storage(model)
+        for row in await read_all(store):
+            access = by_id.get(row.harness_id) if row.harness_id else None
+            if not access or row.access == access:
+                continue
+            await store.update(row.model_copy(update={"access": access}))
+
+
+def _golden_seed(with_admin: bool):
+    async def seed(sp) -> None:
+        users = {"u1": {"role": "user", "created_at": "2025-01-01T00:00:00Z"}, **bulk("ub", 450, lambda i: {"role": "user"})}
+        if with_admin:
+            users |= {"admin-a": {"role": "admin", "created_at": "2025-03-01T00:00:00Z"}, "zz-admin": {"role": "admin", "created_at": "2025-02-01T00:00:00Z"}}
+        await insert_raw(sp, UserView, users)
+        shared = {"owners": ["u1"], "grants": {"u2": "use"}, "public": False, "members": ["u:u1"], "rev": 3}
+        await insert_raw(sp, HarnessView, {
+            "h-unset": {"slug": "a"},
+            "h-empty": {"access": {}},
+            "h-null": {"access": None},
+            "h-shared": {"access": shared},
+            "h-public": {"access": {"public": True}},
+            **bulk("hb", 450, lambda i: {"n": i}),
+        })
+        await insert_raw(sp, AgentView, {
+            "a-unset": {"harness_id": "h-unset", "description": "d"},
+            "a-shared": {"harness_id": "h-shared", "access": {"owners": ["other"]}},
+            "a-equal": {"harness_id": "h-shared", "access": shared},
+            "a-gone": {"harness_id": "h-gone", "access": {"owners": ["keep"]}},
+            "a-none": {"access": None},
+            "a-empty-harness": {"harness_id": ""},
+            **bulk("ab", 450, lambda i: {"harness_id": f"hb{i:03d}" if i % 2 else "h-shared"}),
+        })
+        await insert_raw(sp, GraphView, {"g1": {"harness_id": "h-public"}, "g2": {}})
+        await insert_raw(sp, ToolsetView, {"t1": {"harness_id": "h-empty", "kind": "mcp"}})
+        await insert_raw(sp, CollectionView, {"c1": {"harness_id": "h-null"}, "c2": {"harness_id": "h-shared", "access": shared}})
+    return seed
+
+
+@pytest.mark.parametrize("with_admin", [True, False])
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path, with_admin: bool) -> None:
+    views = (HarnessView, AgentView, GraphView, ToolsetView, CollectionView, UserView)
+    await assert_golden(tmp_path, _golden_seed(with_admin), views, _old_apply, M027HarnessOwnership().apply)

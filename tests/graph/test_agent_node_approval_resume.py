@@ -63,6 +63,13 @@ from tests.toolset.test_call_tool_door import _Registry
 
 # Re-export so pytest resolves the in-memory storage and the real provider registry the neighbouring call_tool tests use.
 from tests.toolset.test_system import pr, sp  # noqa: F401
+from tests._support.toolset_rows import seed_public_toolset_rows
+
+
+@pytest.fixture(autouse=True)
+async def _test_toolset_rows(sp):  # noqa: F811
+    """The test toolsets are served by the registry directly, so give them the stored rows a real toolset has."""
+    await seed_public_toolset_rows(sp, "rec", "y", "f")
 
 GATED = "rec__user_x"
 ARGS = {"a": 1}

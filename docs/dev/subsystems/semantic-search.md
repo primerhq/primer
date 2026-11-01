@@ -94,7 +94,7 @@ The entities:
   them (defence in depth; a password under 4 characters or a keyless placeholder is
   not masked, `primer.llm._failure.scrub`'s rule). Document search is
   `POST /v1/collections/{id}/search`. See [rest-api.md](../architecture/rest-api.md).
-- **Auto-bootstrap.** On Postgres-mode installs the reserved `pgvector` SSP row is seeded first (the authoritative vector default), then the reserved `lance` row, so semantic search works zero-config; the internal-collections bootstrap is a
+- **Auto-bootstrap.** On Postgres-mode installs the reserved `pgvector` SSP row is seeded first (the authoritative vector default), then the reserved `lance` row, so semantic search works zero-config. The reserved `pgvector` row copies ALL of the app's Postgres settings (schema and pool too, so two installs sharing a database keep to a schema each) and, on every boot, follows them while it still points at the app's own server: a rotated password and new pool settings reach it, and its schema moves only while the schema it is on holds no vector collections (`catalogue_has_collections`), otherwise a warning says where it stays; the operator's tuning is never touched. The internal-collections bootstrap is a
   separate state machine. See [auto-bootstrap.md](../architecture/auto-bootstrap.md).
 - **Adjacent subsystem.** Embedders, the prompt registry, the `Collection` /
   `Document` models, and the ingestion pipeline are documented in
@@ -262,15 +262,12 @@ Vector data is physically persisted by the SSP backend:
   `~/.primer/vector` for the reserved row). A catalogue table `_primer_collections`
   co-locates with the per-collection tables and records
   `{collection_id, table_name, dimensions, distance, indexed}`. Per-collection
-  tables are named `embeddings_<sanitised collection_id>` with a PyArrow schema of
+  tables are named `embeddings_<slug>_<hash>` (a slug of the collection id plus a hash of the exact id, `primer/vector/names.py`; a collection made before keeps the table its catalogue row stored) with a PyArrow schema of
   `{document_id, chunk_id, text, vector: FixedSizeList(float32, dims), meta: utf8}`;
   `meta` is a JSON string because Arrow has no open-ended struct type. `put()`
   upserts via `merge_insert` on `(document_id, chunk_id)` and lazily builds an ANN
   index (trying `HnswSq` -> `HnswPq` -> `IvfPq`) once row count crosses
-  `index_min_rows`. A known quirk: LanceDB 0.30.2 returns squared L2 distance even
-  for a `cosine` catalogue entry, so `_similarity()` recovers cosine as
-  `1 - raw/2`, which is correct only because upstream embedders L2-normalise their
-  vectors.
+  `index_min_rows`. Every query names the collection's own metric (`distance_type`), so a `cosine` collection ranks and scores by exact cosine whatever the vectors' norm and whether or not the index exists, and `_similarity()` maps the returned distance (`1 - cos`, squared L2, `1 - <a, b>`) to a score that does not shift when the index is built (KN-11, D4: Lance scores moved from `1 - raw/2` of an L2 distance to true cosine). A table with no catalogue row (a crash between the create and the catalogue insert) is replaced by the next `create_collection` (KN-14). A `PgVectorStore` whose cached catalogue entry went stale (another process re-created the collection, perhaps at another width) evicts it and resolves once more instead of failing until restart (KN-18). Two callers creating the same new pgvector collection at once both succeed: the loser of the DDL or catalogue-insert race (`UniqueViolationError`, `DuplicateTableError`) reads the winner's row and uses it, and only a row of another dimension or distance is a `ConflictError` (GI-27). A search for more rows than `hnsw_ef_search` (a path-prefix search overfetches up to 500) runs `SET LOCAL hnsw.ef_search = min(k, 1000)` in its own transaction, as pgvector's HNSW scan returns at most that many; `initialize()` applies the GUC after `CREATE EXTENSION` and expires the pool's earlier connections, which had skipped it (GI-29; a DiskANN index keeps its own list size). `hnsw_m` (2 to 100), `hnsw_ef_construction` (4 to 1000 and at least `2 * hnsw_m`) and `hnsw_ef_search` (1 to 1000) are checked at the save door, REST `422 hnsw_out_of_range` and the system tools' `CrudGuards.validate` (`hnsw_bound_violation`, GI-22); rows saved before are still read. Whether pgvectorscale can build `diskann (vector halfvec_cosine_ops)` (GI-30) is not settled by the code: `tests/vector/test_pgvectorscale_diskann_halfvec_live.py` asks a database that has the extension (skipped without one) and fails with the reason if it cannot.
 
 The provider rows, cross-encoder rows, and internal-collections singletons persist
 through the generic `Storage[T]` interface with no special semantics.

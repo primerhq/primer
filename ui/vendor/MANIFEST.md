@@ -14,9 +14,9 @@ transitive resolution, no surprise additions.
 
 | Path | Origin | Version / commit | sha256 | License | Date added |
 |---|---|---|---|---|---|
-| highlight-python.js | hand-written, no upstream | n/a | `9ccd88e06cd5b81405dae98725bc1e5994adf99151fb9b12fb06f324bbd6e70b` | MIT (this repo) | 2026-05-16 |
+| highlight-python.js | hand-written, no upstream | n/a | `3a01e309ca889135224055ed7b4a83a046909094f5976d053ff85f4db8c34db8` | MIT (this repo) | 2026-05-16 |
 | highlight-json.js   | hand-written, no upstream | n/a | `813aaa2046f5ddcf0f71f3c74a4dc68dec7a24bbb4a538f76fe14e3b55e2729a` | MIT (this repo) | 2026-05-16 |
-| highlight-code.js   | hand-written, no upstream | n/a | `1c9c6b4cdaebadce341ca24bebc77ac3243ce9e756a96f0f29b8ace3db576ced` | MIT (this repo) | 2026-07-05 |
+| highlight-code.js   | hand-written, no upstream | n/a | `ad2ca5f36a503d1475f26b964f9854c489407bf5853dcb708863d30d55134d38` | MIT (this repo) | 2026-07-05 |
 | sparkline.js        | hand-written, no upstream | n/a | `b37449b0745995d38484eaa2facaf06258bd1dbd7c3b6586c3f7c05fc7a1fdda` | MIT (this repo) | 2026-05-16 |
 | auto-layout.js      | hand-written, no upstream | n/a | `bb5944d5aea3a8d91c6e9c3bff64ccb06848c191450030805e285c6971c63f90` | MIT (this repo) | 2026-05-17 |
 | react.min.js        | https://unpkg.com/react@18.3.1/umd/react.production.min.js | 18.3.1 (production build) | `d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd` | MIT | 2026-05-29 |

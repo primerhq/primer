@@ -16,7 +16,7 @@ from tests.api.test_require_user_admin import _login, _seed
 
 STDIO = {"id": "ts-stdio", "provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["/bin/echo", "hi"]}}}
 STDIO_OTHER_COMMAND = {**STDIO, "config": {"transport": "stdio", "config": {"command": ["/bin/sh", "-c", "id"]}}}
-HTTP = {"id": "ts-http", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/mcp"}}}
+HTTP = {"id": "ts-http", "provider": "mcp", "config": {"transport": "http", "config": {"url": "http://mcp.example.com/mcp"}}}
 NO_PROBE = {"allow_unreachable": "true"}
 
 
@@ -117,7 +117,7 @@ async def test_a_plain_user_still_manages_toolsets_that_launch_nothing(raw_clien
 
     created = await raw_client.post("/v1/toolsets", json=HTTP, params=NO_PROBE)
     changed = await raw_client.put(
-        "/v1/toolsets/ts-http", json={**HTTP, "config": {"transport": "http", "config": {"url": "http://127.0.0.1:9/other"}}},
+        "/v1/toolsets/ts-http", json={**HTTP, "config": {"transport": "http", "config": {"url": "http://mcp.example.com/other"}}},
         params=NO_PROBE,
     )
 

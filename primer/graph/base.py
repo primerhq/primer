@@ -56,6 +56,7 @@ from primer.agent.loop import run_agent_turn
 from primer.agent.parked_round import ParkedRound
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.router import RouterRegistry
+from primer.graph.template import InputTemplateError
 from primer.model.chat import (
     ExtendedEvent,
     Message,
@@ -90,7 +91,7 @@ from primer.model.turn_log import (
     TurnLogSuperstepStarted,
 )
 from primer.model.workspace_session import SessionStatus
-from primer.model.yield_ import ToolWaitPark, YieldToWorker, gate_id_of
+from primer.model.yield_ import ToolWaitPark, YieldToWorker, gate_id_of, wait_deadline
 from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
@@ -610,16 +611,19 @@ class _BaseGraphExecutor(
         self._pending_tool_waits = [e for e in tw_all if e not in tw_pending]
         completed_ids: list[str] = []
         for entry in tc_pending:
-            node_def = self._resolve_node_def(entry.node_id)
+            try:
+                node_def = self._resolve_node_def(entry.node_id)
+            except KeyError:
+                node_def = None             # AG-M7: the edited graph no longer has the node; the same drift exit
             if not isinstance(node_def, _ToolCallNode):
                 # Topology drifted between checkpoint + resume: the graph was edited while it was parked and this pending ToolCall entry
                 # now resolves to another kind of node, which cannot be resumed. The run FAILS, like the other failure exits of this method
                 # (01a125a1-3591, T1 of the #701 round 4 review): this branch used to mark the node FAILED and carry on, so the main loop ran
                 # to its tail with nothing failed in the superstep and ended the run "completed". A terminal error event (a resumed child
                 # graph is judged by the error event it yields), the node's balanced exit, and ENDED/failed with the detail.
-                drift = (
-                    f"resume: pending ToolCall node id {entry.node_id!r} "
-                    f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
+                drift = f"resume: pending ToolCall node id {entry.node_id!r} " + (
+                    "no longer exists in the graph" if node_def is None
+                    else f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
                 )
                 node_states[entry.node_id] = NodeRuntimeState(
                     status=NodeRuntimeStatus.FAILED,
@@ -641,7 +645,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="topology_drift")
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="topology_drift", node_id=entry.node_id)
                 return
             if _is_value_yield_toolcall(entry):
                 # Value-yielding tool_call node (e.g. ``system__ask_user``):
@@ -665,6 +669,9 @@ class _BaseGraphExecutor(
                             entry.node_id, context, entry.row_call_id,
                             ToolResultPart(id=entry.row_call_id, output=str(exc), error=True),
                         )
+                    if self._settle_suppressed_failure(entry.node_id, str(exc), "tool_execution_failed", context, node_states):
+                        completed_ids.append(entry.node_id)
+                        continue
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
@@ -690,7 +697,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed")
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed", node_id=entry.node_id)
                     return
                 if entry.row_call_id is not None:
                     yield self._toolcall_answer_event(entry.node_id, context, entry.row_call_id, result)
@@ -698,6 +705,9 @@ class _BaseGraphExecutor(
                     result, output_schema=node_def.output_schema
                 )
                 if mapped.error_code is not None:
+                    if self._settle_suppressed_failure(entry.node_id, mapped.error_message or mapped.error_code, mapped.error_code, context, node_states):
+                        completed_ids.append(entry.node_id)
+                        continue
                     fail_out = NodeOutput(
                         text=mapped.text, parsed=None, history=[],
                         iteration=context.iteration,
@@ -725,20 +735,13 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code)
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code, node_id=entry.node_id)
                     return
-                context.nodes[entry.node_id] = NodeOutput(
+                self._apply_node_result(entry.node_id, _NodeDone(node_id=entry.node_id, output=NodeOutput(
                     text=mapped.text, parsed=mapped.parsed, history=[],
                     iteration=context.iteration,
-                )
-                node_states[entry.node_id] = NodeRuntimeState(
-                    status=NodeRuntimeStatus.ENDED,
-                    last_run_iteration=context.iteration,
-                    last_run_at=datetime.now(timezone.utc),
-                )
+                ), error=None), context, node_states)
                 completed_ids.append(entry.node_id)
-                # 01a0812c: settled (ENDED) - see the discard above.
-                self._ready_set.discard(entry.node_id)
                 continue
             # 01a11faa: the approved dispatch runs under a FRESH call id, not the parked one (the id of the call row is carried in ``entry.row_call_id``): a gate raised inside it builds its event key
             # from the id it is called with, and a reply that names an id selects the gate by it, so a second gate under the first gate's id would answer to the first gate's reply (C-033).
@@ -774,6 +777,7 @@ class _BaseGraphExecutor(
                         # the row the node wrote is still the one to answer, under the scoped id its first park stashed
                         scoped_tool_call_id=entry.scoped_tool_call_id,
                         row_call_id=entry.row_call_id,
+                        deadline=wait_deadline(yld.yielded.timeout),
                     )
                 )
                 continue
@@ -790,6 +794,9 @@ class _BaseGraphExecutor(
                 # always the generic "tool_execution_failed", which made a
                 # declined approval byte-identical to an actual tool crash
                 # in ended_detail — the two are now distinguishable).
+                if self._settle_suppressed_failure(entry.node_id, str(rej), rej.ended_detail_code, context, node_states):
+                    completed_ids.append(entry.node_id)
+                    continue
                 fail_out = NodeOutput(
                     text="",
                     parsed=None,
@@ -821,7 +828,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=rej.ended_detail_code)
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=rej.ended_detail_code, node_id=entry.node_id)
                 return
             except Exception as exc:  # noqa: BLE001 -- map all to node failure
                 if entry.row_call_id is not None:
@@ -829,6 +836,9 @@ class _BaseGraphExecutor(
                         entry.node_id, context, entry.row_call_id,
                         ToolResultPart(id=entry.row_call_id, output=str(exc), error=True),
                     )
+                if self._settle_suppressed_failure(entry.node_id, str(exc), "tool_execution_failed", context, node_states):
+                    completed_ids.append(entry.node_id)
+                    continue
                 fail_out = NodeOutput(
                     text="",
                     parsed=None,
@@ -858,7 +868,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed")
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed", node_id=entry.node_id)
                 return
             finally:
                 reset_current_toolcall(call_token)
@@ -871,6 +881,9 @@ class _BaseGraphExecutor(
                 result, output_schema=node_def.output_schema
             )
             if mapped.error_code is not None:
+                if self._settle_suppressed_failure(entry.node_id, mapped.error_message or mapped.error_code, mapped.error_code, context, node_states):
+                    completed_ids.append(entry.node_id)
+                    continue
                 fail_out = NodeOutput(
                     text=mapped.text,
                     parsed=None,
@@ -900,7 +913,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code)
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code, node_id=entry.node_id)
                 return
             tc_out = NodeOutput(
                 text=mapped.text,
@@ -908,15 +921,8 @@ class _BaseGraphExecutor(
                 history=[],
                 iteration=context.iteration,
             )
-            context.nodes[entry.node_id] = tc_out
-            node_states[entry.node_id] = NodeRuntimeState(
-                status=NodeRuntimeStatus.ENDED,
-                last_run_iteration=context.iteration,
-                last_run_at=datetime.now(timezone.utc),
-            )
+            self._apply_node_result(entry.node_id, _NodeDone(node_id=entry.node_id, output=tc_out, error=None), context, node_states)
             completed_ids.append(entry.node_id)
-            # 01a0812c: settled (ENDED) - see the discard above.
-            self._ready_set.discard(entry.node_id)
 
         # Resume the selected agent-node yields: continue each node's turn
         # with the human's answer / decision injected as the tool result.
@@ -1003,6 +1009,7 @@ class _BaseGraphExecutor(
                             # (``_resume_agent_node``): not left to the drain's stash, which runs only with a tap. A new round's are
                             # looked up by that stash (its raw ids can repeat the old round's).
                             remaining_scoped_call_ids=dict(getattr(yld, "remaining_scoped_call_ids", None) or {}),
+                            deadline=wait_deadline(yld.yielded.timeout),
                         )
                     )
                     continue
@@ -1057,9 +1064,12 @@ class _BaseGraphExecutor(
                     # raise this exception.
                     detail = (
                         exc.ended_detail_code
-                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached))
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached, InputTemplateError))
                         else "tool_execution_failed"
                     )
+                    if self._settle_suppressed_failure(ay.node_id, str(exc), detail, context, node_states):
+                        completed_ids.append(ay.node_id)
+                        continue
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
@@ -1085,18 +1095,10 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail)
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail, node_id=ay.node_id)
                     return
-                context.nodes[ay.node_id] = out
-                node_states[ay.node_id] = NodeRuntimeState(
-                    status=NodeRuntimeStatus.ENDED,
-                    last_run_iteration=context.iteration,
-                    last_run_at=datetime.now(timezone.utc),
-                )
+                self._apply_node_result(ay.node_id, _NodeDone(node_id=ay.node_id, output=out, error=None), context, node_states)
                 completed_ids.append(ay.node_id)
-                # 01a0812c: settled (ENDED) - see the tc_pending discards
-                # above.
-                self._ready_set.discard(ay.node_id)
             finally:
                 reset_current_graph_node_id(token)
 
@@ -1155,6 +1157,7 @@ class _BaseGraphExecutor(
                             ),
                             # Ticket 01a15327: the round the continued turn parked in, as its batch stamped it.
                             **ParkedRound.of_park(yld).stored_fields(),
+                            deadline=wait_deadline(yld.yielded.timeout),
                         )
                     )
                     continue
@@ -1210,9 +1213,12 @@ class _BaseGraphExecutor(
                     # a tool_wait batch's resolution path either.
                     detail = (
                         exc.ended_detail_code
-                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached))
+                        if isinstance(exc, (TurnStreamFailure, ToolTurnCapReached, InputTemplateError))
                         else "tool_execution_failed"
                     )
+                    if self._settle_suppressed_failure(tw.node_id, str(exc), detail, context, node_states):
+                        completed_ids.append(tw.node_id)
+                        continue
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
@@ -1235,18 +1241,10 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail)
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail, node_id=tw.node_id)
                     return
-                context.nodes[tw.node_id] = out
-                node_states[tw.node_id] = NodeRuntimeState(
-                    status=NodeRuntimeStatus.ENDED,
-                    last_run_iteration=context.iteration,
-                    last_run_at=datetime.now(timezone.utc),
-                )
+                self._apply_node_result(tw.node_id, _NodeDone(node_id=tw.node_id, output=out, error=None), context, node_states)
                 completed_ids.append(tw.node_id)
-                # 01a0812c: settled (ENDED) - see the tc_pending discards
-                # above.
-                self._ready_set.discard(tw.node_id)
             finally:
                 reset_current_graph_node_id(token)
 
@@ -1275,6 +1273,7 @@ class _BaseGraphExecutor(
                 phase="exit",
                 status=_status,
             )
+            await self._log_resumed_node(nid, context.iteration, node_states, getattr(context.nodes.get(nid), "ended_detail", None))
 
         # 01a0812c / 01a08016 (absorbed into this task): compute + fold
         # THIS resume's own completed_ids' successors into self._ready_set
@@ -1307,7 +1306,7 @@ class _BaseGraphExecutor(
                 )
                 await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="routing_failed")
                 return
-            except ConfigError as exc:
+            except Exception as exc:  # noqa: BLE001 -- ConfigError or a raising router (AG-M8): never escapes
                 # The main loop's own answer to an edge that cannot be evaluated: log it, remember why, end the run ``failed`` with no detail. It used to leave this
                 # method as a raw exception and the thread was never saved as ended (ticket 01a12625-436c).
                 logger.warning(
@@ -1318,11 +1317,7 @@ class _BaseGraphExecutor(
                 await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=None)
                 return
             # Drain any fan-out plans spawned by the drained ToolCalls.
-            for fanout_id, instances in list(self._pending_fanout.items()):
-                for inst in instances:
-                    self._fanout_instances[inst.synthesized_id] = inst
-                    next_ready.add(inst.synthesized_id)
-                del self._pending_fanout[fanout_id]
+            next_ready |= self._drain_pending_fanout(context)
             # NOTE: context.iteration is bumped further down, only once we
             # know this superstep is actually fully drained (past the
             # pending-recheck below) - see the comment there. Do not move
@@ -1365,6 +1360,15 @@ class _BaseGraphExecutor(
             )
             raise self._build_pending_park_exception()
 
+        # AG-H2: a resumed instance can be the last of a drain_then_fail spec to report: fail the run as the main loop's drain check
+        # does, after the park check as there. A failure already remembered wins, as in the main loop (which checks it first).
+        if self._pending_ended_reason is None:
+            drain_event = self._drain_then_fail_event()
+            if drain_event is not None:
+                yield drain_event  # type: ignore[misc]
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="fanin_upstream_failed")
+                return
+
         # This superstep is now confirmed fully drained (the pending-recheck
         # above did not re-park): bump context.iteration exactly once for
         # it here, not per partial resume - see the NOTE above the fold
@@ -1381,14 +1385,18 @@ class _BaseGraphExecutor(
         )
 
         # aclosing: a consumer that closes this generator cancels the node tasks NOW, in the closing task, not whenever the loop's finalizer gets scheduled.
-        async with contextlib.aclosing(self._run_superstep_loop(
-            context=context,
-            node_states=node_states,
-            ended_reason_in=self._pending_ended_reason,
-            ended_detail_in=self._pending_ended_detail,
-        )) as steps:
-            async for ev in steps:
-                yield ev
+        try:
+            async with contextlib.aclosing(self._run_superstep_loop(
+                context=context,
+                node_states=node_states,
+                ended_reason_in=self._pending_ended_reason,
+                ended_detail_in=self._pending_ended_detail,
+            )) as steps:
+                async for ev in steps:
+                    yield ev
+        except (GeneratorExit, asyncio.CancelledError):
+            await self._save_cancelled(context, node_states)
+            raise
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -1423,6 +1431,7 @@ class _BaseGraphExecutor(
         iteration: int,
         node_states: dict[str, NodeRuntimeState],
         ended_detail: str | None,
+        node_id: str | None = None,
     ) -> None:
         """Persist ``ENDED/failed`` AND expose the outcome: the failure exits of :meth:`resume_from_checkpoint`.
 
@@ -1436,6 +1445,8 @@ class _BaseGraphExecutor(
         """
         self._last_ended_reason = "failed"
         self._last_ended_detail = ended_detail
+        if node_id is not None:
+            await self._log_resumed_node(node_id, iteration, node_states, ended_detail)
         await self._save_state(
             iteration=iteration,
             node_states=node_states,
@@ -1443,6 +1454,304 @@ class _BaseGraphExecutor(
             ended_reason="failed",
             ended_detail=ended_detail,
         )
+
+    async def _log_resumed_node(
+        self,
+        nid: str,
+        iteration: int,
+        node_states: dict[str, NodeRuntimeState],
+        ended_detail: str | None,
+    ) -> None:
+        """The per-node completed / failed turn-log record of a node the resume settled (AG-L11a): the main loop writes it for the nodes it runs.
+
+        The node's start was logged before it parked, so there is no duration to report (0) and no superstep id.
+        """
+        w = self._node_turn_logs.get(nid)
+        if w is None:
+            w = self._node_turn_logs[nid] = self._turn_log_factory(nid)
+        rt = node_states.get(nid)
+        now = datetime.now(timezone.utc)
+        if rt is not None and rt.status == NodeRuntimeStatus.ENDED:
+            event: TurnLogCompleted | TurnLogFailed = TurnLogCompleted(seq=0, ts=now, node_id=nid, iteration=iteration)
+        else:
+            event = TurnLogFailed(seq=0, ts=now, node_id=nid, iteration=iteration, error=ProblemDetails(
+                type="/errors/graph-node-failed", title="Graph node failed", status=500,
+                detail=redact_credentials(rt.error if rt is not None and rt.error else "node failed"),
+                extensions={"ended_detail": ended_detail},
+            ))
+        await _safe_graph_turn_log(w, event)
+
+    async def _save_cancelled(
+        self,
+        context: GraphContext,
+        node_states: dict[str, NodeRuntimeState],
+    ) -> None:
+        """A run closed or cancelled mid-flight is saved ENDED/cancelled, not left RUNNING (AG-L11c). Best effort: the close or cancel goes on regardless."""
+        try:
+            await self._save_state(
+                iteration=context.iteration,
+                node_states=node_states,
+                status=SessionStatus.ENDED,
+                ended_reason="cancelled",
+            )
+        except Exception:  # noqa: BLE001 -- must not mask the close or the cancel it runs for
+            logger.warning("GraphExecutor: could not save the cancelled run", extra={"graph_id": self._graph.id}, exc_info=True)
+
+    async def _fold_successors_before_park(
+        self,
+        settled: set[str],
+        context: GraphContext,
+    ) -> "_GraphErrorEvent | None":
+        """Fold the successors of the nodes that settled in a superstep about to park into ``_ready_set`` (AG-H1).
+
+        The park raises before the main loop walks the superstep's edges, and the resume walks only the RESUMED nodes' edges, so a sibling
+        that finished beside the park lost its whole branch and a FanOut its instances. Folded here (with the drained fan-out plans), the
+        checkpoint carries them and the superstep after the last answer runs them. An edge that cannot be routed does not lose the park:
+        the failure is remembered as a node failure is (the run ends ``failed`` once the park is answered) and the routing error event is
+        returned for the caller to emit, as the main loop emits it.
+        """
+        if not settled:
+            return None
+        try:
+            next_ready = await self._compute_next_ready(settled, context)
+        except _RoutingFailed as exc:
+            logger.warning(
+                "GraphExecutor: routing failed",
+                extra={"graph_id": self._graph.id, "node_id": exc.source_node_id, "error": str(exc)},
+            )
+            if self._pending_ended_reason is None:
+                self._pending_ended_reason = "failed"
+                self._pending_ended_detail = "routing_failed"
+            return _GraphErrorEvent(code="routing_failed", message=str(exc), node_id=exc.source_node_id)
+        except Exception as exc:  # noqa: BLE001 -- ConfigError or a raising router: fail the run after the park, never lose the park to it
+            logger.warning(
+                "GraphExecutor: edge evaluation failed",
+                extra={"graph_id": self._graph.id, "error": str(exc)},
+            )
+            self._last_failure_text = f"edge evaluation failed: {exc}"
+            if self._pending_ended_reason is None:
+                self._pending_ended_reason = "failed"
+            return None
+        next_ready |= self._drain_pending_fanout(context)
+        self._ready_set |= next_ready
+        return None
+
+    def _drain_pending_fanout(self, context: GraphContext) -> set[str]:
+        """Register the staged fan-out instances and return their ids for the next ready set (the three drain sites: loop tail, resume, park).
+
+        A target fanned out again (a loop-back) starts over (AG-M9): its old aggregator list is dropped and its expected count is this
+        drain's, so its FanIn waits for and reads only this pass's copies.
+        """
+        admitted: set[str] = set()
+        counts: dict[str, int] = {}
+        for fanout_id, instances in list(self._pending_fanout.items()):
+            for inst in instances:
+                self._fanout_instances[inst.synthesized_id] = inst
+                admitted.add(inst.synthesized_id)
+                counts[inst.target_node_id] = counts.get(inst.target_node_id, 0) + 1
+            del self._pending_fanout[fanout_id]
+        for target, n in counts.items():
+            context.nodes.pop(target, None)
+            self._fanout_target_expected_count[target] = n
+        return admitted
+
+    def _suppressing_drain(self, nid: str) -> "tuple[FanOutSpec, _FanoutDrainState] | None":
+        """The spec and drain state that suppress ``nid``'s failure (Spec B §2.5): a fan-out instance whose spec is not ``fail_fast``.
+
+        ``None`` when the failure fails the run: not an instance, a ``fail_fast`` spec, or no drain state to count it in.
+        """
+        inst_spec = self._instance_to_spec.get(nid)
+        if inst_spec is None or inst_spec[1].on_failure == "fail_fast":
+            return None
+        fanout_id, spec = inst_spec
+        drain_key = f"{fanout_id}__{spec.target_node_id or ''}"
+        # Fall back to scanning when the spec is a tee (target
+        # is in target_node_ids and nid identifies one of them).
+        if drain_key not in self._fanout_drain_state:
+            # Recover the target id from the synthesized id's
+            # _FanoutInstance entry (tee path: synthesized_id ==
+            # target_node_id; broadcast/map: target_node_id is
+            # the bare target).
+            inst_lookup = self._fanout_instances.get(nid)
+            if inst_lookup is not None:
+                drain_key = f"{fanout_id}__{inst_lookup.target_node_id}"
+        drain = self._fanout_drain_state.get(drain_key)
+        return None if drain is None else (spec, drain)
+
+    def _apply_node_result(
+        self,
+        nid: str,
+        done: "_NodeDone | None",
+        context: GraphContext,
+        node_states: dict[str, NodeRuntimeState],
+    ) -> bool:
+        """Settle one node's result into the run: its state, its output, a fan-out instance's aggregator slot and drain count.
+
+        The main loop calls it for every node of a superstep that did not park, the resume for every node it resumes (AG-H2: a resumed
+        instance used to reach neither the aggregator, the drain count nor its spec's ``on_failure`` policy). Returns True when the node
+        failed and nothing suppresses it, so the caller fails the run; a failure its fan-out spec suppresses returns False.
+        """
+        # 01a0812c: every branch reached from here on settles this
+        # node ONE way or another - an ordinary FAILED, a
+        # suppressed-fanout FAILED, or ENDED (a park never reaches here).
+        # Discard at the write site instead of tracking a second
+        # exclusion set to subtract later - see self._ready_set's own
+        # docstring in __init__.
+        self._ready_set.discard(nid)
+        if done is None or done.error is not None:
+            err_text = (
+                str(done.error) if done is not None else "no result"
+            )
+            node_states[nid] = NodeRuntimeState(
+                status=NodeRuntimeStatus.FAILED,
+                last_run_iteration=context.iteration,
+                last_run_at=datetime.now(timezone.utc),
+                error=err_text,
+            )
+            # Spec B §2.5 - when this failed node is a fan-out
+            # instance whose spawning spec has on_failure != fail_fast,
+            # SUPPRESS the immediate failure: bump the drain state and
+            # let the superstep continue. For ``collect`` we also
+            # stamp NodeOutput.error and append to the aggregator.
+            suppressing = self._suppressing_drain(nid)
+            if suppressing is None:
+                return True
+            spec, drain = suppressing
+            drain.completed_count += 1
+            drain.any_failed = True
+            if drain.first_failure is None:
+                drain.first_failure = (
+                    nid, done.ended_detail or "node_failed",  # type: ignore[union-attr]
+                )
+            # ``collect`` mode: stamp NodeOutput.error so
+            # downstream FanIn templates can branch on n.error,
+            # and append to the aggregator list so the FanIn
+            # ready-set still counts the failed instance.
+            if spec.on_failure == "collect":
+                fail_output = NodeOutput(
+                    text="",
+                    parsed=None,
+                    history=[],
+                    iteration=context.iteration,
+                    error=(
+                        str(done.error)
+                        if done is not None and done.error is not None
+                        else (done.ended_detail if done else "node_failed")
+                    ),
+                    ended_detail=(
+                        done.ended_detail
+                        if done is not None and done.ended_detail is not None
+                        else "node_failed"
+                    ),
+                )
+                context.nodes[nid] = fail_output
+                inst_obj = self._fanout_instances.get(nid)
+                if inst_obj is not None:
+                    agg = context.nodes.get(inst_obj.target_node_id)
+                    agg_list: list[NodeOutput | None] = (
+                        list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
+                    )
+                    if inst_obj.fanout_index is not None:
+                        target_len = inst_obj.fanout_index + 1
+                        while len(agg_list) < target_len:
+                            agg_list.append(None)
+                        agg_list[inst_obj.fanout_index] = fail_output
+                    else:
+                        # tee: append (no leading-None pad).
+                        agg_list.append(fail_output)
+                    # Keep the list positionally aligned: a slot
+                    # that has not reported yet stays ``None`` at
+                    # its own index. Compacting here would shift
+                    # later results onto the wrong index and make
+                    # the FanIn ready-set undercount. The FanIn
+                    # template / consumer reads by position.
+                    context.nodes[inst_obj.target_node_id] = agg_list
+            return False
+        if done.output is not None:
+            context.nodes[nid] = done.output
+            # Fan-out instance: also append to the aggregator list at
+            # the target's bare id, preserving index order via
+            # pad-with-None for out-of-order completion.
+            inst = self._fanout_instances.get(nid)
+            if inst is not None:
+                agg = context.nodes.get(inst.target_node_id)
+                agg_list = list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
+                if inst.fanout_index is not None:
+                    # Indexed (broadcast/map): place at its own slot,
+                    # padding with None for out-of-order completion.
+                    target_len = inst.fanout_index + 1
+                    while len(agg_list) < target_len:
+                        agg_list.append(None)
+                    agg_list[inst.fanout_index] = done.output
+                else:
+                    # tee: one run per named target -> just append.
+                    # Padding here would leave a leading None
+                    # (nodes.<target>[0] == None).
+                    agg_list.append(done.output)
+                # Keep the list positionally aligned (see the collect
+                # path above): an instance that has not reported stays
+                # ``None`` at its index; never compact, or later
+                # results shift onto the wrong index.
+                context.nodes[inst.target_node_id] = agg_list
+                # Spec B §2.5 - count successful instances against the
+                # drain state too so drain_then_fail / collect modes
+                # know when every sibling has reported in.
+                inst_spec_ok = self._instance_to_spec.get(nid)
+                if inst_spec_ok is not None:
+                    fanout_id_ok, spec_ok = inst_spec_ok
+                    drain_key_ok = (
+                        f"{fanout_id_ok}__{inst.target_node_id}"
+                    )
+                    drain_ok = self._fanout_drain_state.get(drain_key_ok)
+                    if drain_ok is not None:
+                        drain_ok.completed_count += 1
+        node_states[nid] = NodeRuntimeState(
+            status=NodeRuntimeStatus.ENDED,
+            last_run_iteration=context.iteration,
+            last_run_at=datetime.now(timezone.utc),
+        )
+        return False
+
+    def _drain_then_fail_event(self) -> "_GraphErrorEvent | None":
+        """Spec B §2.5 drain_then_fail: once every instance of a (FanOut, target) pair has reported and any failed, the run fails.
+
+        The terminal error event to emit, naming the first failed instance; ``None`` while no such spec has fully drained. Every drain
+        state is checked because several FanOut specs can target different ids; the first one that signals failure wins.
+        """
+        for drain in self._fanout_drain_state.values():
+            if (
+                drain.on_failure == "drain_then_fail"
+                and drain.any_failed
+                and drain.completed_count >= drain.expected_count
+                and drain.first_failure is not None
+            ):
+                failed_nid, _failed_detail = drain.first_failure
+                return _GraphErrorEvent(
+                    code="fanin_upstream_failed",
+                    message=(
+                        f"fan-out worker {failed_nid!r} failed; aborting "
+                        "after draining sibling workers"
+                    ),
+                    node_id=failed_nid,
+                )
+        return None
+
+    def _settle_suppressed_failure(
+        self,
+        nid: str,
+        error: str,
+        ended_detail: str,
+        context: GraphContext,
+        node_states: dict[str, NodeRuntimeState],
+    ) -> bool:
+        """A resumed node's failure that its fan-out spec suppresses (``collect``, ``drain_then_fail``): settle it as the main loop does and return True.
+
+        False, changing nothing, when the failure fails the run; the resume arm then fails it as before (AG-H2).
+        """
+        if self._suppressing_drain(nid) is None:
+            return False
+        self._apply_node_result(nid, _NodeDone(node_id=nid, output=None, error=error, ended_detail=ended_detail), context, node_states)
+        return True
 
     async def _build_sub_executor(
         self,
@@ -1559,14 +1868,18 @@ class _BaseGraphExecutor(
         self._ready_set = ready
         self._node_states = node_states
 
-        async with contextlib.aclosing(self._run_superstep_loop(
-            context=context,
-            node_states=node_states,
-            ended_reason_in=self._pending_ended_reason,
-            ended_detail_in=self._pending_ended_detail,
-        )) as steps:
-            async for ev in steps:
-                yield ev
+        try:
+            async with contextlib.aclosing(self._run_superstep_loop(
+                context=context,
+                node_states=node_states,
+                ended_reason_in=self._pending_ended_reason,
+                ended_detail_in=self._pending_ended_detail,
+            )) as steps:
+                async for ev in steps:
+                    yield ev
+        except (GeneratorExit, asyncio.CancelledError):
+            await self._save_cancelled(context, node_states)
+            raise
 
     async def _run_superstep_loop(
         self,
@@ -1635,13 +1948,14 @@ class _BaseGraphExecutor(
             # reader of the outcome treats it as a failure: last_done_reason
             # maps any outcome but ``completed`` to ``graph_failed``, and the
             # child readers match on ``FAILED_ENDED_REASONS``.
-            if (
-                self._graph.max_iterations is not None
-                and context.iteration >= self._graph.max_iterations
-                and not self._max_iter_routed
+            # AG-M10: after the reroute an acyclic finishing tail ends within len(graph.nodes) supersteps; a landing node inside a cycle would
+            # otherwise loop for ever, so past that bound the run ends ``max_iterations_exceeded`` after all.
+            cap = self._graph.max_iterations
+            if cap is not None and context.iteration >= cap and not (
+                self._max_iter_routed and context.iteration < cap + len(self._graph.nodes)
             ):
                 route_to = self._graph.on_max_iterations
-                if route_to is not None and route_to in self._nodes_by_id:
+                if not self._max_iter_routed and route_to is not None and route_to in self._nodes_by_id:
                     # Graceful landing: route once to the configured node
                     # (typically a finalize/report node) instead of failing.
                     # ``_max_iter_routed`` keeps the cap from re-tripping while
@@ -1769,23 +2083,30 @@ class _BaseGraphExecutor(
             # tasks (each an LLM loop + workspace persistence). Nodes in a
             # superstep are independent, so bounding to >=1 never deadlocks.
             # A fresh semaphore per superstep keeps the bound local to it.
+            # AG-M24: a slot is taken BEFORE its node's task is created (by a
+            # spawner running beside the drain below, which must keep
+            # resolving dispatch barriers), so a wide fan-out never has more
+            # than max_parallel_nodes node tasks alive. Each node still gets
+            # its own task (its own context), in the same order as before.
             node_semaphore = asyncio.Semaphore(self._max_parallel_nodes)
+            tasks: list[asyncio.Task] = []
 
-            async def _run_node_bounded(
-                nid: str,
-                sem: asyncio.Semaphore = node_semaphore,
-            ) -> None:
-                async with sem:
+            async def _run_node_bounded(nid: str) -> None:
+                try:
                     await self._stream_node(nid, context, queue)
+                finally:
+                    node_semaphore.release()
 
-            tasks: list[asyncio.Task] = [
-                asyncio.create_task(_run_node_bounded(nid))
-                for nid in ready_ordered
-            ]
+            async def _spawn_nodes() -> None:
+                for nid in ready_ordered:
+                    await node_semaphore.acquire()
+                    tasks.append(asyncio.create_task(_run_node_bounded(nid)))
+
+            spawner = asyncio.create_task(_spawn_nodes())
             results: dict[str, _NodeDone] = {}
             done_count = 0
             try:
-                while done_count < len(tasks):
+                while done_count < len(ready_ordered):
                     item = await queue.get()
                     if isinstance(item, _ToolDispatchBarrier):
                         # 01a0518b (seam-split A-graph surface). Resolved the
@@ -1901,11 +2222,13 @@ class _BaseGraphExecutor(
                         yield item
             finally:
                 # Belt-and-braces: tasks should all have completed by now,
-                # but if the caller closed the iterator early, cancel.
-                for t in tasks:
+                # but if the caller closed the iterator early, cancel. The
+                # spawner first: once cancelled it starts no further task.
+                spawner.cancel()
+                for t in (spawner, *tasks):
                     if not t.done():
                         t.cancel()
-                for t in tasks:
+                for t in (spawner, *tasks):
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
@@ -1969,184 +2292,50 @@ class _BaseGraphExecutor(
                 # detects pending entries and propagates YieldToWorker.
                 if done is not None and done.suspended:
                     continue
-                # 01a0812c: every branch reached from here on settles this
-                # node ONE way or another this superstep - an ordinary
-                # FAILED, a suppressed-fanout FAILED (its own sub-branch
-                # below, which still sets node_states[nid] to FAILED
-                # before its own continue), or ENDED. The suspended guard
-                # above is the ONLY branch that must NOT settle (a park,
-                # not a completion). Discard at the write site instead of
-                # tracking a second exclusion set to subtract later - see
-                # self._ready_set's own docstring in __init__.
-                self._ready_set.discard(nid)
-                if done is None or done.error is not None:
-                    err_text = (
-                        str(done.error) if done is not None else "no result"
-                    )
-                    node_states[nid] = NodeRuntimeState(
-                        status=NodeRuntimeStatus.FAILED,
-                        last_run_iteration=context.iteration,
-                        last_run_at=datetime.now(timezone.utc),
-                        error=err_text,
-                    )
-                    # Spec B §2.5 — when this failed node is a fan-out
-                    # instance whose spawning spec has on_failure != fail_fast,
-                    # SUPPRESS the immediate failure: bump the drain state and
-                    # let the superstep continue. For ``collect`` we also
-                    # stamp NodeOutput.error and append to the aggregator.
-                    inst_spec = self._instance_to_spec.get(nid)
-                    if inst_spec is not None and inst_spec[1].on_failure != "fail_fast":
-                        fanout_id, spec = inst_spec
-                        drain_key = f"{fanout_id}__{spec.target_node_id or ''}"
-                        # Fall back to scanning when the spec is a tee (target
-                        # is in target_node_ids and nid identifies one of them).
-                        if drain_key not in self._fanout_drain_state:
-                            # Recover the target id from the synthesized id's
-                            # _FanoutInstance entry (tee path: synthesized_id ==
-                            # target_node_id; broadcast/map: target_node_id is
-                            # the bare target).
-                            inst_lookup = self._fanout_instances.get(nid)
-                            if inst_lookup is not None:
-                                drain_key = (
-                                    f"{fanout_id}__{inst_lookup.target_node_id}"
-                                )
-                        drain = self._fanout_drain_state.get(drain_key)
-                        if drain is not None:
-                            drain.completed_count += 1
-                            drain.any_failed = True
-                            if drain.first_failure is None:
-                                drain.first_failure = (
-                                    nid, done.ended_detail or "node_failed",
-                                )
-                            # ``collect`` mode: stamp NodeOutput.error so
-                            # downstream FanIn templates can branch on n.error,
-                            # and append to the aggregator list so the FanIn
-                            # ready-set still counts the failed instance.
-                            if spec.on_failure == "collect":
-                                fail_output = NodeOutput(
-                                    text="",
-                                    parsed=None,
-                                    history=[],
-                                    iteration=context.iteration,
-                                    error=(
-                                        str(done.error)
-                                        if done is not None and done.error is not None
-                                        else (done.ended_detail if done else "node_failed")
-                                    ),
-                                    ended_detail=(
-                                        done.ended_detail
-                                        if done is not None and done.ended_detail is not None
-                                        else "node_failed"
-                                    ),
-                                )
-                                context.nodes[nid] = fail_output
-                                inst_obj = self._fanout_instances.get(nid)
-                                if inst_obj is not None:
-                                    agg = context.nodes.get(inst_obj.target_node_id)
-                                    agg_list: list[NodeOutput | None] = (
-                                        list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
-                                    )
-                                    if inst_obj.fanout_index is not None:
-                                        target_len = inst_obj.fanout_index + 1
-                                        while len(agg_list) < target_len:
-                                            agg_list.append(None)
-                                        agg_list[inst_obj.fanout_index] = fail_output
-                                    else:
-                                        # tee: append (no leading-None pad).
-                                        agg_list.append(fail_output)
-                                    # Keep the list positionally aligned: a slot
-                                    # that has not reported yet stays ``None`` at
-                                    # its own index. Compacting here would shift
-                                    # later results onto the wrong index and make
-                                    # the FanIn ready-set undercount. The FanIn
-                                    # template / consumer reads by position.
-                                    context.nodes[inst_obj.target_node_id] = (
-                                        agg_list
-                                    )
-                            continue
-                    any_failed = True
-                    # 01a0812c: persist that an un-suppressed failure
-                    # occurred so it survives a park - any_failed and
-                    # ended_reason/ended_detail below are pure locals of
-                    # THIS call to _run_superstep_loop, discarded if a
-                    # park raises before the `if any_failed:` check
-                    # further down ever runs (the pending-park branch is
-                    # checked FIRST). Sticky: first un-suppressed failure
-                    # wins, never overwritten by a later one - mirrors
-                    # ended_reason's own `if ended_reason is None:`
-                    # pattern below. Mirrors ended_reason/ended_detail's
-                    # own conditional structure exactly, not a blanket
-                    # "set both here": reason is unconditional (matches
-                    # how the `if any_failed:` fallback below always
-                    # eventually produces SOME reason even with no
-                    # specific detail), detail is set only inside the
-                    # SAME conditional ended_detail is - setting both
-                    # unconditionally would manufacture a detail value
-                    # (e.g. coercing None) that today's code never
-                    # produces, changing observable behavior for callers
-                    # that branch on ended_detail.
-                    if self._pending_ended_reason is None:
-                        self._pending_ended_reason = "failed"
-                    # When the failure carries a spec §5.4 code (e.g. End-node
-                    # output validation), propagate it so the executor's
-                    # final state records both reason="failed" and the code,
-                    # and emit a terminal _GraphErrorEvent for taps to see.
-                    if done is not None and done.ended_detail is not None:
-                        ended_reason = "failed"
-                        ended_detail = done.ended_detail
-                        if self._pending_ended_detail is None:
-                            self._pending_ended_detail = done.ended_detail
-                        error_events.append(
-                            _GraphErrorEvent(
-                                code=done.ended_detail,
-                                message=err_text,
-                                node_id=nid,
-                            )
-                        )
+                if not self._apply_node_result(nid, done, context, node_states):
                     continue
-                if done.output is not None:
-                    context.nodes[nid] = done.output
-                    # Fan-out instance: also append to the aggregator list at
-                    # the target's bare id, preserving index order via
-                    # pad-with-None for out-of-order completion.
-                    inst = self._fanout_instances.get(nid)
-                    if inst is not None:
-                        agg = context.nodes.get(inst.target_node_id)
-                        agg_list = list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
-                        if inst.fanout_index is not None:
-                            # Indexed (broadcast/map): place at its own slot,
-                            # padding with None for out-of-order completion.
-                            target_len = inst.fanout_index + 1
-                            while len(agg_list) < target_len:
-                                agg_list.append(None)
-                            agg_list[inst.fanout_index] = done.output
-                        else:
-                            # tee: one run per named target -> just append.
-                            # Padding here would leave a leading None
-                            # (nodes.<target>[0] == None).
-                            agg_list.append(done.output)
-                        # Keep the list positionally aligned (see the collect
-                        # path above): an instance that has not reported stays
-                        # ``None`` at its index; never compact, or later
-                        # results shift onto the wrong index.
-                        context.nodes[inst.target_node_id] = agg_list
-                        # Spec B §2.5 — count successful instances against the
-                        # drain state too so drain_then_fail / collect modes
-                        # know when every sibling has reported in.
-                        inst_spec_ok = self._instance_to_spec.get(nid)
-                        if inst_spec_ok is not None:
-                            fanout_id_ok, spec_ok = inst_spec_ok
-                            drain_key_ok = (
-                                f"{fanout_id_ok}__{inst.target_node_id}"
-                            )
-                            drain_ok = self._fanout_drain_state.get(drain_key_ok)
-                            if drain_ok is not None:
-                                drain_ok.completed_count += 1
-                node_states[nid] = NodeRuntimeState(
-                    status=NodeRuntimeStatus.ENDED,
-                    last_run_iteration=context.iteration,
-                    last_run_at=datetime.now(timezone.utc),
+                err_text = (
+                    str(done.error) if done is not None else "no result"
                 )
+                any_failed = True
+                # 01a0812c: persist that an un-suppressed failure
+                # occurred so it survives a park - any_failed and
+                # ended_reason/ended_detail below are pure locals of
+                # THIS call to _run_superstep_loop, discarded if a
+                # park raises before the `if any_failed:` check
+                # further down ever runs (the pending-park branch is
+                # checked FIRST). Sticky: first un-suppressed failure
+                # wins, never overwritten by a later one - mirrors
+                # ended_reason's own `if ended_reason is None:`
+                # pattern below. Mirrors ended_reason/ended_detail's
+                # own conditional structure exactly, not a blanket
+                # "set both here": reason is unconditional (matches
+                # how the `if any_failed:` fallback below always
+                # eventually produces SOME reason even with no
+                # specific detail), detail is set only inside the
+                # SAME conditional ended_detail is - setting both
+                # unconditionally would manufacture a detail value
+                # (e.g. coercing None) that today's code never
+                # produces, changing observable behavior for callers
+                # that branch on ended_detail.
+                if self._pending_ended_reason is None:
+                    self._pending_ended_reason = "failed"
+                # When the failure carries a spec §5.4 code (e.g. End-node
+                # output validation), propagate it so the executor's
+                # final state records both reason="failed" and the code,
+                # and emit a terminal _GraphErrorEvent for taps to see.
+                if done is not None and done.ended_detail is not None:
+                    ended_reason = "failed"
+                    ended_detail = done.ended_detail
+                    if self._pending_ended_detail is None:
+                        self._pending_ended_detail = done.ended_detail
+                    error_events.append(
+                        _GraphErrorEvent(
+                            code=done.ended_detail,
+                            message=err_text,
+                            node_id=nid,
+                        )
+                    )
 
             # Persist superstep results so each turn-end is recoverable
             # (and, in the workspace executor, git-committed).
@@ -2169,6 +2358,15 @@ class _BaseGraphExecutor(
                 or self._pending_agent_yields
                 or self._pending_tool_waits
             ):
+                # AG-H1: the nodes that settled beside the park keep their successors (and a FanOut its instances): folded into
+                # self._ready_set now, so the checkpoint carries them. Not when an un-suppressed failure already dooms the run.
+                if not any_failed:
+                    routing_error = await self._fold_successors_before_park(
+                        {nid for nid in ready_ordered if not (results.get(nid) is not None and results[nid].suspended)},
+                        context,
+                    )
+                    if routing_error is not None:
+                        yield routing_error  # type: ignore[misc]
                 # 01a0812c: NO self._ready_set reset here (deleted, not
                 # adapted - this was the round-4 BLOCKER's exact
                 # mechanism). By this point in the classification loop
@@ -2212,26 +2410,9 @@ class _BaseGraphExecutor(
             # the graph ``failed`` with ``fanin_upstream_failed``. We check
             # every drain state because multiple FanOut specs can target
             # different ids; the first one that signals failure wins.
-            drain_failure: tuple[str, str] | None = None
-            for drain in self._fanout_drain_state.values():
-                if (
-                    drain.on_failure == "drain_then_fail"
-                    and drain.any_failed
-                    and drain.completed_count >= drain.expected_count
-                    and drain.first_failure is not None
-                ):
-                    drain_failure = drain.first_failure
-                    break
-            if drain_failure is not None:
-                failed_nid, _failed_detail = drain_failure
-                yield _GraphErrorEvent(  # type: ignore[misc]
-                    code="fanin_upstream_failed",
-                    message=(
-                        f"fan-out worker {failed_nid!r} failed; aborting "
-                        "after draining sibling workers"
-                    ),
-                    node_id=failed_nid,
-                )
+            drain_event = self._drain_then_fail_event()
+            if drain_event is not None:
+                yield drain_event  # type: ignore[misc]
                 ended_reason = "failed"
                 ended_detail = "fanin_upstream_failed"
                 break
@@ -2258,7 +2439,7 @@ class _BaseGraphExecutor(
                 ended_reason = "failed"
                 ended_detail = "routing_failed"
                 break
-            except ConfigError as exc:
+            except Exception as exc:  # noqa: BLE001 -- ConfigError or a raising router (AG-M8): end failed, never leave the run RUNNING
                 logger.warning(
                     "GraphExecutor: edge evaluation failed",
                     extra={"graph_id": self._graph.id, "error": str(exc)},
@@ -2272,11 +2453,7 @@ class _BaseGraphExecutor(
             # next superstep; per-instance dispatch resolves the underlying
             # target node and renders its template with fanout_* in scope
             # (Task 2.4).
-            for fanout_id, instances in list(self._pending_fanout.items()):
-                for inst in instances:
-                    self._fanout_instances[inst.synthesized_id] = inst
-                    next_ready.add(inst.synthesized_id)
-                del self._pending_fanout[fanout_id]
+            next_ready |= self._drain_pending_fanout(context)
 
             # 01a0812c: additive, not a bare reset - union is the default
             # pattern for every successor-fold site in this class (see
@@ -2295,7 +2472,9 @@ class _BaseGraphExecutor(
             #      max_iterations hard reset a few lines up (a `continue`
             #      that restarts the loop with a completely fresh
             #      ready_ordered snapshot next iteration, so it never
-            #      reaches this line either), and this fold itself. Grep
+            #      reaches this line either), the park-time fold
+            #      (_fold_successors_before_park, always followed by the
+            #      park's raise), and this fold itself. Grep
             #      ``self\._ready_set`` in this file to re-verify; nothing
             #      else ever calls .add()/|= on it.
             #   2. ready_ordered (a few lines up) is `sorted(self._ready_set)`

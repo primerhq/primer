@@ -1,0 +1,91 @@
+{
+ "git": [
+  {
+   "files": [
+    "sessions/<sid>/agent.json",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "<sid>: attach"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: hello"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: first answer"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl",
+    "sessions/<sid>/session.json"
+   ],
+   "subject": "user[<sid12>]: a follow-up"
+  },
+  {
+   "files": [
+    "sessions/<sid>/messages.jsonl"
+   ],
+   "subject": "turn[<sid12>]: second answer"
+  }
+ ],
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "30260afba5232490"
+    ]
+   ],
+   "role": "assistant",
+   "text": "first answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d055b1b548b56b60"
+    ]
+   ],
+   "role": "user",
+   "text": "a follow-up"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  }
+ ],
+ "max_event_log_seq": 0,
+ "messages_jsonl": {
+  "bytes": 259,
+  "lines": [
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"first answer\"}]}",
+   "{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"a follow-up\"}]}",
+   "{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"text\":\"second answer\"}]}"
+  ],
+  "sha": "79179ac75f0f8fe1"
+ },
+ "pending": []
+}

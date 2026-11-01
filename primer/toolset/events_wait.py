@@ -20,6 +20,7 @@ the orphan delivers nothing into it).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -31,6 +32,7 @@ from primer.authz import _role_allows
 from primer.common.user_regex import UserRegexError
 from primer.events.filters import check_field_regex, validate_filter_expr
 from primer.events.redaction import redact_payload
+from primer.events.stable_head import stable_head
 from primer.events.visibility import (
     SCOPE_PATHS,
     input_glob,
@@ -47,12 +49,15 @@ from primer.model.event import (
     SessionWakeSink,
 )
 from primer.model.chat import ToolCallResult
-from primer.model.yield_ import ToolContext, Yielded
+from primer.model.except_ import NotFoundError
+from primer.model.yield_ import ToolContext, Yielded, scoped_event_key
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset._system_common import _err_from_validation
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
+
+logger = logging.getLogger(__name__)
 
 
 class _WaitForEventArgs(BaseModel):
@@ -225,7 +230,10 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
                     error_type="forbidden",
                 )
 
-        event_key = f"evwait:{ctx.session_id}:{ctx.tool_call_id}"
+        from primer.graph._node_identity import current_graph_node_id      # lazy: primer.graph imports the toolsets at package init
+
+        event_key = scoped_event_key("evwait", ctx, current_graph_node_id())     # fan-out siblings may share a raw tool_call_id (GS-33)
+        _remember_storage(storage_provider)
         subscription = EventSubscription(
             description=(
                 f"wait_for_event park for session {ctx.session_id}"
@@ -244,9 +252,9 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
         subs = storage_provider.get_storage(EventSubscription)
         created = await subs.create(subscription)
         store = storage_provider.get_event_store()
-        # Pin the cursor at the current head: everything after this
-        # call is in scope, nothing before it replays.
-        await store.set_cursor(created.id, await store.max_id())
+        # Pin the cursor at the stable head (see primer.events.stable_head): everything after this call is in scope, nothing before it replays,
+        # and an event whose transaction commits a moment later with a lower id is not skipped (GS-34).
+        await store.set_cursor(created.id, await stable_head(store))
         return Yielded(
             tool_name="",  # stamped by the provider
             event_key=event_key,
@@ -305,9 +313,43 @@ def wait_for_event_resume(
     return _ok({"event": event_payload})
 
 
-from primer.worker.yield_resume_registry import register_resume_hook  # noqa: E402
+from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook  # noqa: E402
 
-register_resume_hook("wait_for_event", wait_for_event_resume)
+# The resume hook is module-level and gets no provider, so the storage a wait's subscription lives in is remembered when a handler is built (one in
+# process; a test that builds several uses the last).
+_storage_provider: "StorageProvider | None" = None
+
+
+def _remember_storage(storage_provider: "StorageProvider") -> None:
+    global _storage_provider
+    _storage_provider = storage_provider
+
+
+async def _resume_and_clean_up(yield_metadata: dict[str, Any], event_payload: Any, rctx: ResumeContext) -> ToolCallResult:
+    """:func:`wait_for_event_resume`, then, for a park that timed out or was cancelled, delete the subscription (and cursor) it left behind.
+
+    The dispatcher deletes a one-shot when it delivers; a wait nothing ever matches would otherwise stay in the list it reads on every tick
+    (GS-13). Best effort: a failed delete is logged, never a failed resume.
+    """
+    from primer.model.yield_ import YieldCancelled, YieldTimeout
+
+    result = wait_for_event_resume(yield_metadata, event_payload, rctx)
+    subscription_id = yield_metadata.get("subscription_id")
+    if isinstance(event_payload, (YieldTimeout, YieldCancelled)) and subscription_id and _storage_provider is not None:
+        try:
+            await _storage_provider.get_storage(EventSubscription).delete(subscription_id)
+        except NotFoundError:
+            pass
+        except Exception:  # noqa: BLE001 - the dispatcher still collects an orphan one-shot
+            logger.warning("wait_for_event: subscription %s could not be removed", subscription_id, exc_info=True)
+        try:
+            await _storage_provider.get_event_store().delete_cursor(subscription_id)
+        except Exception:  # noqa: BLE001 - a cursor with no subscription is harmless
+            logger.warning("wait_for_event: the cursor of subscription %s could not be removed", subscription_id, exc_info=True)
+    return result
+
+
+register_resume_hook("wait_for_event", _resume_and_clean_up)
 
 
 __all__ = [

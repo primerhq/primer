@@ -77,7 +77,7 @@ async def test_a_later_boot_publishes_no_profile(tmp_path):
         await sp.get_storage(ModelProfile).create(
             ModelProfile(id="a-opus", description="d", provider_id="a-gpu", model_name="m", context_length=1000)
         )
-        assert await default_profile_id(sp) == "a-opus"  # lists first
+        assert await default_profile_id(sp) == "prof"  # a-opus lists first, but the seeded agents run on "prof" (GI-2)
 
         await ensure_seeded_agents(sp)  # a later boot
 

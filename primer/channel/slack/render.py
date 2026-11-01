@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from primer.channel.adapter import PromptEnvelope, format_tool_args
+from primer.channel.adapter import PromptEnvelope, format_tool_args, split_text
 from primer.channel.gate_tag import attach_gate_suffix
 
 
@@ -12,6 +12,9 @@ REJECT_MODAL_CALLBACK_ID = "primer_reject_modal"
 
 # Slack section text caps at 3000 chars; keep args well under it.
 _ARGS_MAX = 2800
+# A section block's text is at most 3000 characters (api.slack.com/reference/block-kit/blocks#section).
+# shortcut: a message holds at most 50 blocks, so a prompt over ~147,000 characters still fails; cap it if one ever does.
+_SECTION_MAX = 3000
 
 
 def _metadata(envelope: PromptEnvelope) -> dict[str, Any]:
@@ -37,8 +40,8 @@ def build_ask_user_message(
         "text": envelope.prompt,
         "metadata": _metadata(envelope),
         "blocks": [
-            {"type": "section",
-             "text": {"type": "mrkdwn", "text": envelope.prompt}},
+            *({"type": "section", "text": {"type": "mrkdwn", "text": part}}
+              for part in split_text(envelope.prompt, _SECTION_MAX)),
             {"type": "context",
              "elements": [
                 {"type": "mrkdwn",

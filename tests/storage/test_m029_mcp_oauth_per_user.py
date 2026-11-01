@@ -108,7 +108,11 @@ async def test_connected_by_user_wins_and_unknown_username_goes_to_the_first_adm
         token_key("gh", "u-root"): _moved(before["gh"], token_key("gh", "u-root"), "gh", "u-root"),
         token_key("nb", "u-root"): _moved(before["nb"], token_key("nb", "u-root"), "nb", "u-root"),
         "cc": _moved(before["cc"], "cc", "cc", None),
-    }, "a browser row moves to its heir with its tokens as stored; client credentials stay the shared row"
+        # GR-14: the bare id stays a shared copy (stamped), which an auth-disabled install's system person still reads
+        "kb": _moved(before["kb"], "kb", "kb", None),
+        "gh": _moved(before["gh"], "gh", "gh", None),
+        "nb": _moved(before["nb"], "nb", "nb", None),
+    }, "a browser row is copied to its heir with its tokens as stored; the bare row stays as the shared copy; client credentials stay shared"
 
 
 async def test_no_users_leaves_the_row_under_the_bare_id(sp):
@@ -145,8 +149,8 @@ async def test_second_run_changes_nothing(sp):
     assert {view.__name__: await _rows(sp, view) for view in (TOKENS, PENDING, McpOAuthClient)} == once
 
 
-async def test_a_run_that_died_after_the_copy_finishes_the_move(sp):
-    """The heir's row was written and the bare row not yet deleted: the next run deletes the bare row and keeps the copy as it is."""
+async def test_a_run_that_died_after_the_copy_finishes_the_stamp(sp):
+    """The heir's row was written and the bare row not yet stamped: the next run stamps the bare row and keeps the copy as it is."""
     await _an_install(sp)
     before = await _rows(sp, TOKENS)
     key = token_key("kb", "u-alice")
@@ -155,7 +159,7 @@ async def test_a_run_that_died_after_the_copy_finishes_the_move(sp):
     await run_migrations(sp, is_fresh_install=False)
 
     after = await _rows(sp, TOKENS)
-    assert "kb" not in after and after[key] == _moved(before["kb"], key, "kb", "u-alice")
+    assert after["kb"] == _moved(before["kb"], "kb", "kb", None) and after[key] == _moved(before["kb"], key, "kb", "u-alice")
 
 
 def test_it_is_registered_as_version_29():
@@ -192,3 +196,92 @@ async def test_no_enabled_admin_leaves_the_row(sp):
     await run_migrations(sp, is_fresh_install=False)
 
     assert {key: (row["toolset_id"], row["user_id"]) for key, row in (await _rows(sp, TOKENS)).items()} == {"kb": ("kb", None)}
+
+
+async def test_the_bare_id_shared_row_survives_the_move(sp):
+    """GR-14: an install that once had auth on (so users exist) and now has it off acts as the system person, which reads only the bare-id row."""
+    await _an_install(sp)
+    await run_migrations(sp, is_fresh_install=False)
+    after = await _rows(sp, TOKENS)
+    for toolset_id in ("kb", "gh", "nb"):
+        assert after[toolset_id]["toolset_id"] == toolset_id and after[toolset_id]["user_id"] is None
+        assert after[toolset_id]["access_token_enc"] == "v1:sealed-access"
+
+
+# -- golden characterization (PERF-T16) ---------------------------------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from primer.model.except_ import ConflictError, NotFoundError  # noqa: E402
+from primer.storage.migrations._rows import read_all  # noqa: E402
+from primer.storage.migrations.m029_mcp_oauth_per_user import M029McpOAuthPerUser, _token_key  # noqa: E402
+from primer.storage.migrations.m029_mcp_oauth_per_user import McpOAuthPendingSignIn as PendingView  # noqa: E402
+from primer.storage.migrations.m029_mcp_oauth_per_user import McpOAuthTokenSet as TokenView  # noqa: E402
+from primer.storage.migrations.m029_mcp_oauth_per_user import User as UserView  # noqa: E402
+from tests.storage._migration_golden import assert_golden, bulk, insert_raw  # noqa: E402
+
+
+async def _old_apply(sp) -> None:
+    """Migration 29 as it was before PERF-T16, frozen: read the three tables whole, then copy, stamp and delete."""
+    tokens = sp.get_storage(TokenView)
+    pending = sp.get_storage(PendingView)
+    users = await read_all(sp.get_storage(UserView))
+    token_rows = await read_all(tokens)
+    pending_rows = await read_all(pending)
+    by_id = {u.id for u in users}
+    admins = [u for u in users if u.role == "admin" and not u.disabled]
+    by_name = {u.username: u.id for u in admins if u.username}
+    dated = [u for u in admins if u.created_at is not None]
+    first_admin = min(dated, key=lambda u: u.created_at).id if dated else None
+    for row in token_rows:
+        if row.toolset_id is not None:
+            continue
+        heir = None
+        if row.grant != "client_credentials":
+            named = row.connected_by
+            heir = (named if named in by_id else None) or by_name.get(named) or first_admin
+        if heir is None:
+            await tokens.update(row.model_copy(update={"toolset_id": row.id, "user_id": None}))
+            continue
+        try:
+            await tokens.create(row.model_copy(update={"id": _token_key(row.id, heir), "toolset_id": row.id, "user_id": heir}))
+        except ConflictError:
+            pass
+        await tokens.update(row.model_copy(update={"toolset_id": row.id, "user_id": None}))
+    for row in pending_rows:
+        try:
+            await pending.delete(row.id)
+        except NotFoundError:
+            continue
+
+
+def _golden_seed(with_users: bool):
+    async def seed(sp) -> None:
+        await insert_raw(sp, UserView, {
+            "admin-new": {"username": "boss", "role": "admin", "created_at": "2025-06-01T00:00:00Z"},
+            "admin-old": {"username": "elder", "role": "admin", "created_at": "2025-01-01T00:00:00Z"},
+            "admin-ghost": {"username": "ghost", "role": "admin", "disabled": True, "created_at": "2024-01-01T00:00:00Z"},
+            "admin-undated": {"username": "nodate", "role": "admin"},
+            "u1": {"username": "carol", "role": "user"},
+            **bulk("ub", 450, lambda i: {"role": "user"}),
+        } if with_users else {})
+        # Browser rows copy to keys "u-<sha256>", which sort after every "ts-" id: the step creates rows ahead of its own cursor.
+        await insert_raw(sp, TokenView, {
+            "ts-a": {"grant": "authorization_code", "connected_by": "u1", "sealed": "ciphertext", "version": 3},
+            "ts-b": {"grant": "authorization_code", "connected_by": "boss"},
+            "ts-c": {"grant": "authorization_code", "connected_by": "carol"},
+            "ts-d": {"grant": "authorization_code", "connected_by": "ghost"},
+            "ts-e": {"grant": "client_credentials", "connected_by": "u1"},
+            "ts-f": {"grant": "authorization_code", "toolset_id": "ts-f", "user_id": None},
+            "ts-g": {"lease": {"until": None}},
+            "ts-h": {"grant": "authorization_code", "connected_by": "u1"},
+            _token_key("ts-h", "u1"): {"grant": "authorization_code", "toolset_id": "ts-h", "user_id": "u1", "copied": "earlier run"},
+            **bulk("ts-b", 450, lambda i: {"grant": "authorization_code", "connected_by": "u1" if i % 2 else "nodate", "n": i}),
+        })
+        await insert_raw(sp, PendingView, {"p1": {"toolset_id": "ts-a"}, "p2": {}, **bulk("pb", 450, lambda i: {"state": i})})
+    return seed
+
+
+@pytest.mark.parametrize("with_users", [True, False])
+async def test_golden_rows_match_the_old_implementation_and_a_second_run_changes_nothing(tmp_path: Path, with_users: bool) -> None:
+    await assert_golden(tmp_path, _golden_seed(with_users), (TokenView, PendingView, UserView), _old_apply, M029McpOAuthPerUser().apply)

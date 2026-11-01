@@ -8,6 +8,11 @@ so folding Messages is necessarily POSITIONAL: a Message belongs to the
 rewound span when the last seq seen before it was written exceeds the
 marker's to_seq. That mirrors how compaction already folds by physical
 position.
+
+The fixtures use the order production writes (AG-M2): a user's Message line
+lands just before its user_input record, and a turn's own Message lines land
+after the records the turn's writer numbered (the persist flushes the writer
+first), so they are tagged past the turn's user_input seq.
 """
 
 import json
@@ -29,32 +34,33 @@ def _texts(lines):
 
 
 def test_plain_history_is_untouched():
-    lines = [_rec(1, "user_input"), _msg("user", "a"), _msg("assistant", "b")]
+    lines = [_msg("user", "a"), _rec(1, "user_input"),
+             _rec(2, "assistant_token"), _rec(3, "done"), _msg("assistant", "b")]
     assert _texts(lines) == ["a", "b"]
 
 
 def test_rewind_drops_messages_written_after_the_target_seq():
-    lines = [_rec(1, "user_input"), _msg("user", "keep"),
-             _rec(2, "assistant_token"), _msg("assistant", "drop"),
-             _rec(3, "done"),
+    lines = [_msg("user", "keep"), _rec(1, "user_input"),
+             _rec(2, "assistant_token"), _rec(3, "done"),
+             _msg("assistant", "drop"),
              _rec(4, "rewind_marker", to_seq=1)]
     assert _texts(lines) == ["keep"]
 
 
 def test_messages_after_the_rewind_marker_survive():
     """The marker folds what preceded it, never what follows."""
-    lines = [_rec(1, "user_input"), _msg("user", "old"),
+    lines = [_msg("user", "old"), _rec(1, "user_input"),
              _rec(2, "done"),
              _rec(3, "rewind_marker", to_seq=1),
-             _rec(4, "user_input"), _msg("user", "new")]
+             _msg("user", "new"), _rec(4, "user_input")]
     assert _texts(lines) == ["old", "new"]
 
 
 def test_repeated_rewinds_nest():
-    lines = [_rec(1, "user_input"), _msg("user", "first"),
+    lines = [_msg("user", "first"), _rec(1, "user_input"),
              _rec(2, "done"),
              _rec(3, "rewind_marker", to_seq=1),
-             _rec(4, "user_input"), _msg("user", "second"),
+             _msg("user", "second"), _rec(4, "user_input"),
              _rec(5, "done"),
              _rec(6, "rewind_marker", to_seq=4)]
     assert _texts(lines) == ["first", "second"]
@@ -70,9 +76,10 @@ def test_compaction_still_folds_everything_before_it():
 def test_rewind_after_a_compaction_keeps_the_summary():
     lines = [_msg("user", "old"),
              _rec(1, "compaction_marker", summary="summary"),
-             _rec(2, "user_input"), _msg("user", "keep"),
-             _rec(3, "assistant_token"), _msg("assistant", "drop"),
-             _rec(4, "rewind_marker", to_seq=2)]
+             _msg("user", "keep"), _rec(2, "user_input"),
+             _rec(3, "assistant_token"), _rec(4, "done"),
+             _msg("assistant", "drop"),
+             _rec(5, "rewind_marker", to_seq=2)]
     assert _texts(lines) == ["summary", "keep"]
 
 
@@ -85,6 +92,16 @@ def test_rewind_before_a_compaction_drops_the_summary_too():
     """
     lines = [_msg("user", "old"),
              _rec(5, "compaction_marker", summary="summary"),
-             _rec(6, "user_input"), _msg("user", "later"),
+             _msg("user", "later"), _rec(6, "user_input"),
              _rec(7, "rewind_marker", to_seq=4)]
     assert _texts(lines) == []
+
+
+def test_rewind_drops_a_whole_tool_turn():
+    """A tool turn's Message lines are persisted together, after every record of the turn."""
+    lines = [_msg("user", "q"), _rec(1, "user_input"),
+             _rec(2, "tool_call"), _rec(3, "llm_call"), _rec(4, "done"),
+             _rec(5, "tool_result"), _rec(6, "llm_call"), _rec(7, "assistant_token"), _rec(8, "done"),
+             _msg("assistant", "calls"), _msg("tool", "result"), _msg("assistant", "answer"),
+             _rec(9, "rewind_marker", to_seq=1)]
+    assert _texts(lines) == ["q"]

@@ -36,6 +36,7 @@ class ChannelInboundRouter:
         scheduler=None,
         workspace_registry=None,
         artifact_registry=None,
+        stt_registry=None,
     ) -> None:
         self._sp = storage_provider
         self._correlation = correlation_store
@@ -48,6 +49,7 @@ class ChannelInboundRouter:
         self._scheduler = scheduler
         self._workspace_registry = workspace_registry
         self._artifacts = artifact_registry
+        self._stt_registry = stt_registry
 
     async def route_event(
         self, *, event, channel: Channel, media_parts: list | None = None,
@@ -80,6 +82,7 @@ class ChannelInboundRouter:
             ),
             event_bus=self._bus,
             artifact_registry=self._artifacts,
+            stt_registry=self._stt_registry,
         )
         outcome = await router.route_event(
             event=event, channel=channel, media_parts=media_parts,

@@ -25,6 +25,7 @@ from primer.api._app_lifespan_phases import (
     assert_harness_kinds_registered,
     check_filesystem_artifact_stores,
     recover_ic_bootstrap,
+    recover_interrupted_indexing,
     recover_sessions,
     recover_webhook_deliveries,
     run_first_boot_bootstrap,
@@ -62,6 +63,14 @@ logger = logging.getLogger(__name__)
 def _make_lifespan(config: AppConfig):
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # A python tool runs as this process's user: non-dumpable keeps it from reading /proc/<pid>/environ (the DSN and provider keys).
+        from primer.common.hardening import make_non_dumpable
+        from primer.toolset.python_runner.runners import detect_local_isolation, warn_if_unconfined
+        make_non_dumpable()
+        from primer.service.gateway import configure_limits
+        configure_limits(global_cap=config.limits.gateway_max_concurrent, per_service_cap=config.limits.gateway_max_per_service)
+        warn_if_unconfined(detect_local_isolation())
+
         # --- Observability wiring ----------------------------------------
         # Set up OTEL tracing + auto-instrumentation as early as possible
         # in the lifespan so any span-emitting code below is covered.
@@ -102,20 +111,15 @@ def _make_lifespan(config: AppConfig):
         from primer.api import app as _app_facade
         storage_provider = _app_facade._build_storage_provider(config)
         await storage_provider.initialize()
-        await storage_provider.get_content_store().ensure_schema()
-        await storage_provider.get_event_store().ensure_schema()
-        # Ordered data migrations. Runs BEFORE auto-bootstrap so a migration
-        # never has to reason about whether a reserved row exists yet: it
-        # only ever transforms rows that were already there. A fresh install
-        # baselines straight to LATEST_VERSION instead of running the chain
-        # against an empty database.
-        from primer.storage.migrations import run_migrations
+        # Content and event schemas, then the ordered data migrations
+        # (``primer init`` runs the same preamble). Runs BEFORE auto-bootstrap
+        # so a migration never has to reason about whether a reserved row
+        # exists yet: it only ever transforms rows that were already there. A
+        # fresh install baselines straight to LATEST_VERSION instead of
+        # running the chain against an empty database.
+        from primer.storage.migrations import prepare_storage
 
-        _state = await storage_provider.get_system_state()
-        await run_migrations(
-            storage_provider,
-            is_fresh_install=_state.bootstrap_completed_at is None,
-        )
+        await prepare_storage(storage_provider)
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory
@@ -182,7 +186,17 @@ def _make_lifespan(config: AppConfig):
             # a graph park's key can be node-qualified.
             storage_provider=storage_provider,
         )
+        # Only a process that OWNS inbound may open channel gateways. Warming a
+        # chat adapter opens its inbound listener (Telegram long-poll / Slack
+        # socket / Discord gateway); doing that in a worker-only process would
+        # be a SECOND inbound connection competing with the API's (Telegram 409
+        # Conflict; duplicate Slack/Discord deliveries). A worker-only process
+        # posts over outbound-only connections and never warms (W7).
+        owns_inbound = config.runtime_mode in (
+            RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
+        )
         channel_registry = ChannelRegistry(
+            owns_inbound=owns_inbound,
             channel_storage=storage_provider.get_storage(Channel),
             channel_provider_storage=storage_provider.get_storage(ChannelProvider),
             inbox=channel_inbox,
@@ -212,12 +226,18 @@ def _make_lifespan(config: AppConfig):
             secret_provider=secret_provider,
             local_policy=local_workspace_policy,
         )
-        from primer.auth.secret import resolve_secret_box
+        from primer.auth.secret import resolve_secret_box, resolve_session_secret
         from primer.toolset.oauth.service import ToolsetOAuthService
 
+        # Resolved once (env var > db > generated and stored) and shared by the
+        # cookie signer below and the token box, so they never disagree (GS-14).
+        session_secret = (
+            await resolve_session_secret(storage=storage_provider, auth_config=config.auth)
+            if config.auth.enabled or config.encryption_key is None else None
+        )
         mcp_oauth = ToolsetOAuthService(
             storage_provider=storage_provider,
-            secret_box=await resolve_secret_box(config, storage_provider),
+            secret_box=await resolve_secret_box(config, storage_provider, session_secret=session_secret),
             public_url=config.public_url,
             auth_enabled=config.auth.enabled,
         )
@@ -240,6 +260,7 @@ def _make_lifespan(config: AppConfig):
             toolset_factory=_build_default_toolset_factory(
                 allowed_stdio_commands=allowlist,
                 oauth=mcp_oauth,
+                storage_provider=storage_provider,
             ),
             trace_llm_io=config.observability.trace_llm_io,
         )
@@ -365,17 +386,10 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.config = config
 
-        # Resolve the cookie-signing secret (env var > db > auto-generate).
-        # Stashed on app.state so the auth router + middleware can sign /
-        # verify session cookies without re-reading from storage on every
-        # request.
+        # The cookie-signing secret resolved above. Stashed on app.state so
+        # the auth router + middleware can sign / verify session cookies
+        # without re-reading from storage on every request.
         if config.auth.enabled:
-            from primer.auth.secret import resolve_session_secret
-
-            session_secret = await resolve_session_secret(
-                storage=storage_provider,
-                auth_config=config.auth,
-            )
             app.state.session_secret = session_secret
             logger.info("auth: session secret resolved")
         else:
@@ -461,6 +475,8 @@ def _make_lifespan(config: AppConfig):
         timeout_sweeper = None
         event_dispatcher = None
         event_retention_pruner = None
+        session_retention_sweeper = None
+        vector_maintenance = None
         workspace_event_bridge = None
         stuck_session_sweeper = None
         session_messaging_sweeper = None
@@ -509,6 +525,14 @@ def _make_lifespan(config: AppConfig):
             # The artifact-storage registry is a second cache on the same bus: an edit of a provider row in ANY process (a REST edit on the API, a tool
             # in a worker) drops this process's cached store too.
             await artifact_storage_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+            # The semantic-search, web-search, web-fetch, speech and workspace-provider caches are per process too: an edit of a row in the API must
+            # reach the worker that runs the agent turns, and one made by a tool in a worker must reach the API (GX-3).
+            for _registry in (
+                semantic_search_registry, web_search_registry, web_fetch_registry, stt_registry, tts_registry, workspace_registry,
+            ):
+                await _registry.bind_invalidation_bus(coordinator.invalidation_bus)
+            # The approval gate caches its policy lookups per process: an edit in any process must reach every gate (GS-28).
+            await approval_resolver.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
             # ChannelInbox was constructed earlier (lines 102-104) with
@@ -559,6 +583,23 @@ def _make_lifespan(config: AppConfig):
             )
             event_retention_pruner.start(coordinator.leader_elector)
             app.state.event_dispatcher = event_dispatcher
+            # Off unless session_retention_days is set: then ENDED sessions past the window are deleted in bounded batches, on the leader only (GR-6).
+            session_retention_sweeper = None
+            if config.session_retention_days is not None:
+                from primer.bus.scheduler_tasks import SessionRetentionSweeper
+                session_retention_sweeper = SessionRetentionSweeper(
+                    storage_provider=storage_provider, retention_days=config.session_retention_days, workspace_registry=workspace_registry,
+                )
+                session_retention_sweeper.start(coordinator.leader_elector)
+
+            # Runs maintain_indexes on each semantic-search provider's reindex_cron (Lance: nightly), on the leader only (GI-28).
+            from primer.model.providers.vector import SemanticSearchProvider as _SemanticSearchProvider
+            from primer.vector.maintenance import VectorMaintenance
+            vector_maintenance = VectorMaintenance(
+                storage=storage_provider.get_storage(_SemanticSearchProvider),
+                registry=semantic_search_registry,
+            )
+            vector_maintenance.start(coordinator.leader_elector)
 
             # Ends sessions whose first turn never ran. Without this a lost claim leaves a
             # non-terminal row forever, and a `parallelism="skip"` subscription will not fire
@@ -723,16 +764,7 @@ def _make_lifespan(config: AppConfig):
         channel_registry.set_claim_engine(claim_engine)
         channel_registry.set_session_wiring(
             workspace_registry=workspace_registry, scheduler=scheduler,
-        )
-
-        # Only a process that OWNS inbound may open channel gateways. Warming a
-        # chat adapter opens its inbound listener (Telegram long-poll / Slack
-        # socket / Discord gateway); doing that in a worker-only process would
-        # be a SECOND inbound connection competing with the API's (Telegram 409
-        # Conflict; duplicate Slack/Discord deliveries). Worker-only processes
-        # do not open inbound at all, so they must NOT warm.
-        owns_inbound = config.runtime_mode in (
-            RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
+            stt_registry=getattr(app.state, "stt_registry", None),
         )
 
         if owns_inbound:
@@ -791,6 +823,8 @@ def _make_lifespan(config: AppConfig):
         # claim them again. Without this, a session created in the
         # previous process sits at status=RUNNING forever with no owner
         # — the diagnostic-report Bug 1.
+        # A search backfill that was running when the previous process ended left its collection reading "indexing": say so (KN-13).
+        await recover_interrupted_indexing(storage_provider)
         if claim_engine is not None:
             await recover_sessions(claim_engine, scheduler, storage_provider)
             # The executor's boot sweep (BPF wave 1, its step 9): void the
@@ -1099,6 +1133,8 @@ def _make_lifespan(config: AppConfig):
                 (harness_sweeper, "harness_sweeper"),
                 (workspace_event_bridge, "workspace_event_bridge"),
                 (event_retention_pruner, "event_retention_pruner"),
+                (session_retention_sweeper, "session_retention_sweeper"),
+                (vector_maintenance, "vector_maintenance"),
                 (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
@@ -1111,6 +1147,12 @@ def _make_lifespan(config: AppConfig):
                         await task.stop()
                     except Exception:
                         logger.exception("%s.stop failed", name)
+            try:
+                from primer.knowledge.system_collection import settle as settle_live_map
+
+                await settle_live_map()                  # the live map's deferred index rebuilds run before the storage closes
+            except Exception:
+                logger.exception("live map flush failed")
             if workspace_tap_router is not None:
                 try:
                     await workspace_tap_router.aclose()

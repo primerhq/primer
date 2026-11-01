@@ -12,9 +12,10 @@ Pipeline:
    ``N = max(k, cer.top_n)``.
 2. Embed the query.
 3. Retrieve ``N`` candidates from the vector store.
-4. Rerank (if configured): score each candidate's text against the
-   query, replace ``SearchResult.score`` with the cross-encoder
-   logit, re-sort descending.
+4. Rerank (if configured): score the first ``top_n`` candidates'
+   text against the query, replace ``SearchResult.score`` with the
+   cross-encoder logit, re-sort descending. When ``k > top_n`` the
+   remaining candidates follow in vector order with ``score=None``.
 5. Return the top-``k`` hits.
 
 MMR was dropped in S2: its config was unreachable once the Collection
@@ -28,6 +29,7 @@ import math
 from typing import TYPE_CHECKING
 
 from primer.model.chat import TextPart
+from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.except_ import BadRequestError, ConfigError
 from primer.model.vector import SearchResult, Vector
 
@@ -140,6 +142,7 @@ class CollectionSearcher:
         response = await self._embedder.embed(
             model=self._embedding_model,
             inputs=[TextPart(text=query)],
+            config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
         )
         if not response.embeddings:
             raise BadRequestError("embedder returned no embedding for the query")
@@ -172,5 +175,6 @@ class CollectionSearcher:
             SearchResult(record=hit.record, score=float(score))
             for hit, score in zip(pool, scores, strict=True)
         ]
-        rescored.sort(key=lambda h: h.score or float("-inf"), reverse=True)
-        return rescored
+        rescored.sort(key=lambda h: h.score if h.score is not None else float("-inf"), reverse=True)
+        # k > top_n fetched k candidates: the ones past the pool follow in vector order, unscored (their similarity is not a logit).
+        return rescored + [SearchResult(record=hit.record, score=None) for hit in candidates[cer.top_n:]]

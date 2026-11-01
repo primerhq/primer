@@ -7,7 +7,7 @@ accepted and ignored (pool-less parity, like the SQLite store).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from primer.int.event_store import EventStore
@@ -66,6 +66,8 @@ class InMemoryEventStore(EventStore):
         since: datetime | None = None,
     ) -> list[Event]:
         out: list[Event] = []
+        if limit <= 0:
+            return out  # SQL's LIMIT 0: nothing (CV-11)
         for e in self._events:
             if e.id <= after_id:
                 continue
@@ -82,7 +84,7 @@ class InMemoryEventStore(EventStore):
             if since is not None and e.occurred_at < since:
                 continue
             out.append(e)
-            if len(out) >= max(0, limit):
+            if len(out) >= limit:
                 break
         return out
 
@@ -103,10 +105,16 @@ class InMemoryEventStore(EventStore):
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         self._cursors[subscriber_id] = event_id
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        return {sid: self._cursors[sid] for sid in subscriber_ids if sid in self._cursors}
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        self._cursors.update(cursors)
+
     async def delete_cursor(self, subscriber_id: str) -> None:
         self._cursors.pop(subscriber_id, None)
 
-    async def active_cursor_floor(self) -> int | None:
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
         return min(self._cursors.values()) if self._cursors else None
 
 

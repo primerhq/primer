@@ -27,7 +27,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
 from primer.llm._reasoning import ollama_extended
-from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_lazy_with_connect_timeout
 from primer.llm._tokenizer._executor import run_counter
 from primer.llm._tokenizer.hf import count_tokens_hf_detailed
 from primer.model.chat import (
@@ -581,7 +581,7 @@ class OllamaLLM(LLM):
                     client = self._get_client()
                     from primer.model.except_ import ProviderTimeoutError
                     try:
-                        sdk_stream = await _open_with_connect_timeout(
+                        sdk_stream = await _open_lazy_with_connect_timeout(
                             lambda: client.chat(**request),
                             self._connect_timeout_seconds,
                             provider_id=self._provider.id,

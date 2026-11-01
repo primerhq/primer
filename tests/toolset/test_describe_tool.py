@@ -37,6 +37,7 @@ from primer.model.yield_ import ToolContext
 from primer.toolset._system_crud import _describe_tool_tool, _live_approval_gate
 from primer.toolset.system import build_system_toolset
 from primer.toolset.tool_catalog import ToolEntry, collect_tool_entries
+from tests._support.toolset_rows import seed_public_toolset_rows
 from tests.mcp.test_required_role_completeness import reserved_provider_registry  # noqa: F401  (the fixture: a registry with every built-in toolset wired)
 from tests.toolset._scripted_toolset import Registry, Scripted, scripted_tool
 
@@ -48,7 +49,8 @@ KEYS = {
 
 
 @pytest.fixture
-def sp(fake_storage_provider):
+async def sp(fake_storage_provider):
+    await seed_public_toolset_rows(fake_storage_provider, "rec", "search")   # user-made toolsets the registry serves directly: give them stored rows
     return fake_storage_provider
 
 
@@ -303,6 +305,7 @@ async def test_the_listing_is_made_as_the_principal_the_runs_context_carries(res
     (``ToolContext.principal`` defaults to ``None``), so a stand-in that lacks it is not a context.
     """
     rec = Scripted([scripted_tool("go")], roles={"go": "user"})
+    await seed_public_toolset_rows(reserved_provider_registry.storage_provider, "rec")      # served by the registry directly: give it a stored row
     _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
     arguments = {"toolset_id": "rec", "tool_name": "go"}
     assert not (await handler(arguments, ctx=SimpleNamespace(principal="alice", initiated_by=None))).is_error
@@ -315,6 +318,7 @@ async def test_a_principal_argument_the_model_supplies_is_ignored(reserved_provi
     """The listing is made as the run's own principal, the one the dispatch layer put on the context, and never as one a model names: ``describe_tool`` takes no
     ``principal`` argument (``list_toolset_tools`` and ``call_tool`` take none either), so a toolset keyed per user cannot be listed as somebody else through it."""
     rec = Scripted([scripted_tool("go")], roles={"go": "user"})
+    await seed_public_toolset_rows(reserved_provider_registry.storage_provider, "rec")      # served by the registry directly: give it a stored row
     _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
     asked = {"toolset_id": "rec", "tool_name": "go", "principal": "mallory"}
 

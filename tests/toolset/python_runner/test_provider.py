@@ -227,5 +227,5 @@ async def test_a_bad_source_lists_no_tools_and_keeps_the_error() -> None:
 @pytest.mark.asyncio
 async def test_the_provider_reports_its_isolation_level() -> None:
     assert _provider().isolation_level in {
-        "container", "seccomp", "sandbox-exec", "rlimit-only",
+        "container", "landlock", "seccomp", "sandbox-exec", "rlimit-only",
     }

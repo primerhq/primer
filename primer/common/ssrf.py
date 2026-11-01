@@ -28,17 +28,16 @@ from typing import Any
 from aiohttp.abc import AbstractResolver, ResolveResult
 from yarl import URL
 
+from primer.common import addrules
+
 _log = logging.getLogger(__name__)
-
-
-_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
-_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
-_IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
 
 
 # Operator opt-in (AppConfig.workspace_allow_private_url_sources, env PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES):
 # a deployment that seeds workspaces from an internal file server, or whose MCP servers name an authorization server on a
-# private address, turns the refusal off. Set once at boot.
+# private address, lets PRIVATE and loopback destinations through. It never opens link-local or cloud-metadata ones (169.254.0.0/16,
+# fe80::/10, 169.254.169.254, fd00:ec2::254, ...; lead ruling D19, review GS-44): an internal file server is not on link-local, and a hostile
+# MCP server's OAuth endpoints must not reach the metadata service because an operator wanted a file server. Set once at boot.
 _ALLOW_PRIVATE = False
 
 
@@ -53,43 +52,34 @@ class BlockedDestinationError(ValueError):
 
 
 def blocked_reason(address: str) -> str | None:
-    """Why ``address`` (an IP literal) is refused, or ``None`` when it is a public unicast address."""
-    try:
-        ip = ipaddress.ip_address(address.split("%", 1)[0])
-    except ValueError:
+    """Why ``address`` (an IP literal) is not a public unicast address, or ``None`` when it is: the platform's one address rule
+    (:mod:`primer.common.addrules`, shared with :mod:`primer.common.netguard`). Independent of the opt-in; see :func:`_refused`."""
+    ip = addrules.parse(address)
+    if ip is None:
         return "not an IP address"
-    if isinstance(ip, ipaddress.IPv6Address):
-        # An IPv6 address that carries an IPv4 one is judged by that IPv4: IPv4-mapped (::ffff:a.b.c.d), the NAT64
-        # well-known prefix (64:ff9b::/96, which a NAT64 gateway translates to the embedded address) and the
-        # deprecated IPv4-compatible form (::a.b.c.d; :: and ::1 unwrap to 0.0.0.0 and 0.0.0.1, both refused), and the
-        # SIIT IPv4-translated form (::ffff:0:a.b.c.d).
-        if ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        elif ip in _NAT64_WELL_KNOWN or ip in _IPV4_COMPATIBLE or ip in _IPV4_TRANSLATED:
-            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-    if ip.is_unspecified:
-        return "unspecified"
-    if ip.is_loopback:
-        return "loopback"
-    if ip.is_link_local:
-        return "link-local (includes the cloud metadata address)"
-    if ip.is_multicast:
-        return "multicast"
-    if ip.is_private or not ip.is_global:
-        return "private or reserved"
-    return None
+    return addrules.refusal_reason(ip)
+
+
+def _refused(address: str) -> str | None:
+    """Why a connection to ``address`` is refused NOW: :func:`blocked_reason`, except that with the operator's opt-in on only link-local and
+    cloud-metadata addresses are still refused (ruling D19)."""
+    reason = blocked_reason(address)
+    if reason is None or reason == "not an IP address":
+        return reason
+    if _ALLOW_PRIVATE:
+        ip = addrules.parse(address)
+        if ip is not None and not addrules.is_link_local_or_metadata(ip):
+            return None
+    return reason
 
 
 def refuse_private_literal(url: str) -> None:
-    """Raise :class:`BlockedDestinationError` when ``url``'s host is an IP literal in a blocked range."""
-    if _ALLOW_PRIVATE:
-        return
+    """Raise :class:`BlockedDestinationError` when ``url``'s host is an IP literal in a blocked range (private ones too unless the opt-in is on;
+    link-local and metadata always)."""
     host = URL(url).host or ""
-    try:
-        ipaddress.ip_address(host.split("%", 1)[0])
-    except ValueError:
+    if addrules.parse(host) is None:
         return  # a host name: the resolver checks it at connect time
-    reason = blocked_reason(host)
+    reason = _refused(host)
     if reason is not None:
         _log.warning("url source refused: %s is %s", host, reason)
         raise BlockedDestinationError(f"destination {host} is not a public address")
@@ -108,21 +98,17 @@ async def _resolve(host: str, port: int) -> list[str]:
 
 async def public_addresses(host: str, port: int) -> list[str]:
     """The addresses to connect to for ``host``: refused (:class:`BlockedDestinationError`) when ANY address it resolves to, or the IP
-    literal it is, is in a blocked range, as :class:`PublicOnlyResolver` does for aiohttp. The operator's opt-in returns them unchecked.
-    A name that does not resolve raises ``OSError``."""
+    literal it is, is in a blocked range, as :class:`PublicOnlyResolver` does for aiohttp. The operator's opt-in lets private and loopback
+    addresses through, never link-local or metadata ones (ruling D19). A name that does not resolve raises ``OSError``."""
     literal = host.strip("[]")
-    try:
-        ipaddress.ip_address(literal.split("%", 1)[0])
-    except ValueError:
+    if addrules.parse(literal) is None:
         addresses = await _resolve(host, port)
     else:
         addresses = [literal]
     if not addresses:
         raise OSError(f"{host} resolves to no address")
-    if _ALLOW_PRIVATE:
-        return addresses
     for address in addresses:
-        reason = blocked_reason(address)
+        reason = _refused(address)
         if reason is not None:
             # As for the url sources: the address and the reason go to the server log only, the error names the host.
             _log.warning("destination refused: %s resolves to %s, which is %s", host, address, reason)
@@ -143,10 +129,8 @@ class PublicOnlyResolver(AbstractResolver):
             from aiohttp.resolver import DefaultResolver
             self._inner = DefaultResolver()
         results = await self._inner.resolve(host, port, family=family)
-        if _ALLOW_PRIVATE:
-            return results
         for r in results:
-            reason = blocked_reason(r["host"])
+            reason = _refused(r["host"])
             if reason is not None:
                 # The resolved address goes to the server log only: the error reaches the template author (a 422
                 # detail), and echoing it would make the platform an oracle for internal DNS.

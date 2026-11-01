@@ -54,8 +54,12 @@ def test_the_input_is_not_modified() -> None:
 
 
 @pytest_asyncio.fixture
-async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
-    register_event_kind("llmprovider", LLMProvider)
+async def sp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SqliteStorageProvider]:
+    from primer.events import registry
+
+    # restored after the test: a global "llmprovider" kind would shadow the app's "llm_provider" in later tests of the worker
+    monkeypatch.setitem(registry._EVENT_KINDS, "llmprovider", LLMProvider)
+    monkeypatch.setitem(registry._KIND_BY_MODEL, LLMProvider, "llmprovider")
     provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "t.sqlite")))
     await provider.initialize()
     try:

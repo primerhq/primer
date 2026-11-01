@@ -47,6 +47,8 @@ class Read(WorkspaceTool):
     The runtime then honours that flag and skips outer truncation.
     """
 
+    read_only: ClassVar[bool] = True
+
     id: ClassVar[str] = "read"
     description: ClassVar[str] = (
         "Read a file with offset+limit pagination; output prefixes each "

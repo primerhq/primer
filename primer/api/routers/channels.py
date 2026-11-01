@@ -113,11 +113,12 @@ async def _invalidate_and_rewarm_channel(entity_id: str, request: Request) -> No
 
 async def _invalidate_provider_channels(entity_id: str, request: Request) -> None:
     """A provider edit (e.g. rotated bot token) affects every channel that
-    shares its connection, so flush the whole warm-adapter cache; each channel
-    rebuilds lazily against the new provider config on next use."""
+    shares its connection: close that provider's adapters and, in a process
+    that owns inbound, rewarm its chat-enabled channels so they do not go deaf
+    until a restart. Other providers' adapters are untouched (W34)."""
     registry = _channel_registry(request)
     if registry is not None:
-        await registry.invalidate(channel_id=None)
+        await registry.invalidate_provider(entity_id, rewarm=_owns_inbound(request))
 
 
 # ---------------------------------------------------------------------------

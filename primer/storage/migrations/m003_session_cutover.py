@@ -42,6 +42,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
+from primer.storage.migrations._rows import iter_rows, read_all
 from primer.model.common import Identifiable
 from primer.model.storage import OffsetPage
 
@@ -80,17 +81,9 @@ class Collection(Identifiable):  # noqa: N801 - name selects the storage table
 
 
 async def _iter_rows(storage):
-    """Page through every row of one table."""
-    offset = 0
-    while True:
-        page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
-        if not page.items:
-            return
-        for row in page.items:
-            yield row
-        if len(page.items) < _PAGE:
-            return
-        offset += _PAGE
+    """Page through every row of one table (keyset; see ``_rows``)."""
+    async for row in iter_rows(storage):
+        yield row
 
 
 class M003SessionCutover:

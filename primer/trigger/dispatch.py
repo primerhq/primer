@@ -13,6 +13,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from jinja2.exceptions import SecurityError
+
+from primer.common.bounded_template import off_loop
 from primer.model.channel_event import ChannelEvent
 from primer.model.event_matcher import EventTextBudget, current_event_text_budget, match_outcome
 from primer.model.principal import PrincipalRef
@@ -156,19 +159,21 @@ async def _record_delivery_outcomes(
 async def enabled_subscriptions(storage_provider, trigger_id: str) -> list[Subscription]:
     """Every enabled subscription of ``trigger_id``.
 
-    Pages in batches of 200 (OffsetPage max). Real-world fan-out is small
-    (<10 subs per trigger), but the loop is bounded defensively at 10k to
-    avoid an infinite walk if the storage layer ever misbehaves.
+    The ``enabled`` flag is pushed into the predicate (M9), so disabled rows
+    are never read: the page walk sees only enabled rows and ends when a page
+    comes back short. Real-world fan-out is small (<10 subs per trigger), but
+    the loop is bounded defensively at 10k to avoid an infinite walk if the
+    storage layer ever misbehaves.
     """
     subs_storage = storage_provider.get_storage(Subscription)
-    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
+    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id).where_op("enabled", Op.EQ, True)
     enabled: list[Subscription] = []
     offset = 0
     while offset < 10_000:
         subs_page = await subs_storage.find(
             q.build(), OffsetPage(offset=offset, length=200),
         )
-        enabled.extend(s for s in subs_page.items if s.enabled)
+        enabled.extend(subs_page.items)
         if len(subs_page.items) < 200:
             break
         offset += 200
@@ -373,8 +378,8 @@ async def fire_trigger(
                 })
                 continue
         try:
-            rendered = render_payload(sub.payload_template, fire_context)
-        except PayloadTemplateError as exc:
+            rendered = await off_loop(render_payload, sub.payload_template, fire_context)
+        except (PayloadTemplateError, SecurityError) as exc:  # SecurityError: off_loop's backstop
             results.append({
                 "subscription_id": sub.id,
                 "ok": False,
@@ -415,7 +420,8 @@ async def fire_trigger(
     last_fire_error = json.dumps({
         "code": first_err.get("error_code"),
         "subscription_id": first_err.get("subscription_id"),
-        "message": first_err.get("error_message"),
+        # Scrubbed as on the subscription row: this one is served to every READ grantee of the trigger (W44).
+        "message": _safe_error_message(first_err.get("error_message")),
     }) if first_err else None
     # The fire's own fields only (P3 Decision 8): an edit or a sharing change saved while the fire ran survives it.
     await write_trigger_fields(triggers_storage, trigger, {

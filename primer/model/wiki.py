@@ -34,4 +34,12 @@ class WikiStamp(Identifiable):
             "has already been replaced and never writes the wiki again."
         ),
     )
+    source_hash: str | None = Field(
+        default=None,
+        description=(
+            "The hash of the build's SOURCE pages (the hand-written and the legacy ones: no tool catalog, no live toolset), "
+            "which only a release changes. A hash in ``superseded`` may write again when the source and the app version are the same: that is a "
+            "config toggle within one build (a toolset switched off and on), not a rolling deploy. None on a stamp from before the field."
+        ),
+    )
     written_at: datetime = Field(..., description="When the stamp last changed.")

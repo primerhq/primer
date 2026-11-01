@@ -8,6 +8,7 @@ work, threads CRUD is exposed, and deferred stubs surface their
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,7 @@ import respx
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
+from primer.api.registries.retirement import AdapterRetirement
 from primer.model.agent import Agent, AgentModel
 from primer.model.collection import (
     Collection,
@@ -602,6 +604,7 @@ class TestCascadeInvalidation:
         sentinel_v2.aclose = AsyncMock()
 
         pr._llm_factory = lambda p: sentinel_v1  # type: ignore[attr-defined]
+        pr._retirement = AdapterRetirement(0.01)  # type: ignore[attr-defined]   # a replaced adapter closes once it has been idle (GX-1)
         first = await pr.get_llm("anthropic-1")
         assert first is sentinel_v1
 
@@ -614,6 +617,7 @@ class TestCascadeInvalidation:
 
         second = await pr.get_llm("anthropic-1")
         assert second is sentinel_v2
+        await asyncio.sleep(0.1)
         sentinel_v1.aclose.assert_awaited_once()
 
 

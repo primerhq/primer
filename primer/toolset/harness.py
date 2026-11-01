@@ -28,15 +28,14 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from primer.access.service import rewrite_keeping_access
 from primer.access.person import person_for_tool
 from primer.access.policy import level_of, visible_predicate
 from primer.model.access import Access
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
-from primer.model.common import refuse_served_masks
+from primer.model.common import dump_for_storage, refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.harness.enqueue import announce_enqueued
@@ -63,6 +62,7 @@ from primer.model.storage import (
     Value,
 )
 from primer.toolset._helpers import err as _err, ok_json as _ok
+from primer.toolset._system_common import _err_from_validation
 from primer.toolset.admin_gates import apply_admin_gate_previews
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
@@ -427,6 +427,63 @@ def _refuse_while_pending(harness: Harness, what: str) -> ToolCallResult | None:
     )
 
 
+async def _write_fields(
+    storage: Any, harness: Harness, changes: dict[str, Any], *, fenced: tuple[str, ...] = ("pending_operation",),
+) -> Harness | None:
+    """Write ``changes`` (field name to new value) alone, iff the ``fenced`` fields still hold what ``harness`` read (AG-L5).
+
+    Every caller refused a pending operation on its read. A whole-row write from that read put ``pending_operation`` back over one
+    enqueued in between (its lease left on a row the worker never runs) and undid any other field written meanwhile. ``None``: the
+    fence was refused, nothing was written.
+    """
+    read, dumped = dump_for_storage(harness), dump_for_storage(harness.model_copy(update=changes))
+    return await storage.patch_if(harness.id, {f: dumped[f] for f in changes}, where={f: [read[f]] for f in fenced})
+
+
+def _changed_meanwhile(harness_id: str) -> ToolCallResult:
+    return _err(
+        f"Harness {harness_id!r} changed while this call ran (an operation was enqueued, or its overrides changed); nothing was "
+        "changed, retry",
+        error_type="conflict",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Argument models: the types the handlers read (AG-M14). A missing or ill-typed argument is a validation-error answer, not a KeyError or a
+# TypeError out of the handler. Only types (and the page bounds OffsetPage enforces): what a call could do before it still does. ``overrides``
+# stays a raw read, the handlers already answer a missing or wrong one.
+# ---------------------------------------------------------------------------
+
+
+class _IdArgs(BaseModel):
+    id: str
+
+
+class _ListArgs(BaseModel):
+    slug: str | None = None
+    status: str | None = None
+    offset: int = Field(0, ge=0)
+    length: int = Field(50, ge=1, le=200)
+
+
+class _RegisterArgs(BaseModel):
+    name: str
+    slug: str
+    git_url: str
+    ref: str | None = None
+    subpath: str | None = None
+    git_token: str | None = None
+    description: str | None = None
+
+
+class _UpdateArgs(_IdArgs):
+    name: str | None = None
+    description: str | None = None
+    ref: str | None = None
+    subpath: str | None = None
+    git_token: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Handler factories
 # ---------------------------------------------------------------------------
@@ -434,12 +491,13 @@ def _refuse_while_pending(harness: Harness, what: str) -> ToolCallResult | None:
 
 def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        try:
+            args = _ListArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
-        slug: str | None = arguments.get("slug")
-        status_raw: str | None = arguments.get("status")
-        offset: int = int(arguments.get("offset", 0))
-        length: int = int(arguments.get("length", 50))
-        page = OffsetPage(offset=offset, length=length)
+        slug, status_raw = args.slug, args.status
+        page = OffsetPage(offset=args.offset, length=args.length)
 
         predicates: list[Predicate] = []
         if slug is not None:
@@ -476,7 +534,10 @@ def _make_list_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         # A harness the caller cannot read answers exactly as a missing one.
@@ -489,15 +550,15 @@ def _make_get_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        try:
+            args = _RegisterArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
 
-        name: str = arguments["name"]
-        slug: str = arguments["slug"]
-        git_url: str = arguments["git_url"]
-        ref: str = arguments.get("ref") or "main"
-        subpath: str | None = arguments.get("subpath")
-        git_token_raw: str | None = arguments.get("git_token")
-        description: str | None = arguments.get("description")
+        name, slug, git_url = args.name, args.slug, args.git_url
+        ref: str = args.ref or "main"
+        subpath, git_token_raw, description = args.subpath, args.git_token, args.description
 
         # The REST body's rules: https only, no value git could read as an option (AUTHZ-04).
         try:
@@ -523,20 +584,23 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
             )
 
         harness_id = f"hns_{uuid4().hex[:12]}"
-        harness = Harness(
-            id=harness_id,
-            slug=slug,
-            name=name,
-            description=description,
-            git_url=git_url,
-            git_token=SecretStr(git_token_raw) if git_token_raw else None,
-            ref=ref,
-            subpath=subpath,
-            status=HarnessStatus.DRAFT,
-            created_at=datetime.now(timezone.utc),
-            # The registering admin owns it (an id-less admin or the system principal: admin-managed).
-            access=Access.owned_by(owner_id) if (owner_id := person_for_tool(ctx).user_id) is not None else Access(),
-        )
+        try:
+            harness = Harness(
+                id=harness_id,
+                slug=slug,
+                name=name,
+                description=description,
+                git_url=git_url,
+                git_token=SecretStr(git_token_raw) if git_token_raw else None,
+                ref=ref,
+                subpath=subpath,
+                status=HarnessStatus.DRAFT,
+                created_at=datetime.now(timezone.utc),
+                # The registering admin owns it (an id-less admin or the system principal: admin-managed).
+                access=Access.owned_by(owner_id) if (owner_id := person_for_tool(ctx).user_id) is not None else Access(),
+            )
+        except ValidationError as exc:  # the row's own bounds (slug and name length, ...)
+            return _err_from_validation(exc)
         # A create has nothing stored to restore a mask from: the copy-a-harness move (harness__get, a new slug, harness__register) would store the served git_token mask as the token, as
         # POST /v1/harnesses refuses to (01a1212a, round 3 of #711).
         try:
@@ -551,7 +615,11 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            args = _UpdateArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        harness_id = args.id
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -560,35 +628,33 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
         if refusal is not None:
             return refusal
 
-        overrides_dirty = harness.overrides_dirty
-
-        name: str | None = arguments.get("name")
-        description: str | None = arguments.get("description")
-        ref: str | None = arguments.get("ref")
-        subpath: str | None = arguments.get("subpath")
-        git_token_raw: str | None = arguments.get("git_token")
+        name, description, ref, subpath, git_token_raw = args.name, args.description, args.ref, args.subpath, args.git_token
 
         if ref is not None:
             try:
                 validate_git_ref(ref)
             except ValueError as exc:
                 return _err(str(exc), error_type="validation-error")
+        changes: dict[str, Any] = {"overrides_dirty": harness.overrides_dirty}
         # This tool cannot move git_url, so only the token half of the REST rule applies: the served mask means "unchanged".
-        apply_git_token_update(harness, git_url_set=False, git_url=None, git_token=git_token_raw)
+        edited = harness.model_copy()
+        apply_git_token_update(edited, git_url_set=False, git_url=None, git_token=git_token_raw)
+        if edited.git_token is not harness.git_token:
+            changes["git_token"] = edited.git_token
 
         if name is not None:
-            harness.name = name
+            changes["name"] = name
         if description is not None:
-            harness.description = description
+            changes["description"] = description
         if ref is not None and ref != harness.ref:
-            harness.ref = ref
-            overrides_dirty = True
+            changes.update(ref=ref, overrides_dirty=True)
         if subpath is not None and subpath != harness.subpath:
-            harness.subpath = subpath
-            overrides_dirty = True
+            changes.update(subpath=subpath, overrides_dirty=True)
 
-        harness.overrides_dirty = overrides_dirty
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        # overrides_dirty is written as read (or True), so it is fenced too: an overrides change in between is not undone.
+        updated = await _write_fields(storage, harness, changes, fenced=("pending_operation", "overrides_dirty"))
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -596,7 +662,10 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
 
 def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         overrides_body: dict[str, Any] = arguments.get("overrides", {})
 
         storage = storage_provider.get_storage(Harness)
@@ -629,18 +698,18 @@ def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolH
                 error_type="overrides-invalid",
             )
 
-        harness.overrides = overrides_body
-        harness.overrides_hash = hash_overrides(overrides_body)
+        overrides_hash = hash_overrides(overrides_body)
 
         # Recompute overrides_dirty against the HarnessRendering snapshot
         rendering_storage = storage_provider.get_storage(HarnessRendering)
         rendering = await rendering_storage.get(harness_id)
-        if rendering is not None:
-            harness.overrides_dirty = harness.overrides_hash != rendering.overrides_hash
-        else:
-            harness.overrides_dirty = False
+        overrides_dirty = rendering is not None and overrides_hash != rendering.overrides_hash
 
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        updated = await _write_fields(
+            storage, harness, {"overrides": overrides_body, "overrides_hash": overrides_hash, "overrides_dirty": overrides_dirty},
+        )
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         return _ok(_harness_dict(updated))
 
     return _handler
@@ -655,7 +724,10 @@ def _make_enqueue_handler(
     """Build a handler for FETCH or UNINSTALL (simple enqueue with 409 guard)."""
 
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -674,13 +746,15 @@ def _make_enqueue_handler(
                 error_type="conflict",
             )
 
-        harness.pending_operation = operation
+        changes: dict[str, Any] = {"pending_operation": operation}
         if operation == HarnessOperation.UNINSTALL:
             # As the delete route's default: an inbound harness removes the objects it installed, an outbound one keeps
             # the objects it merely tracks. The model default (False) would leave everything an agent's uninstall
             # was meant to remove.
-            harness.uninstall_cascade = harness.direction == HarnessDirection.INBOUND
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+            changes["uninstall_cascade"] = harness.direction == HarnessDirection.INBOUND
+        updated = await _write_fields(storage, harness, changes)
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
@@ -693,7 +767,10 @@ def _make_install_handler(
     _INSTALL_ALLOWED = {HarnessStatus.DRAFT, HarnessStatus.READY, HarnessStatus.OUTDATED}
 
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -747,10 +824,13 @@ def _make_install_handler(
         if refusal is not None:
             return refusal
 
-        harness.pending_operation = HarnessOperation.INSTALL
-        harness.operation_requested_by = _requester(ctx)
-        harness.operation_inputs = operation_input_digests(harness)
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        updated = await _write_fields(storage, harness, {
+            "pending_operation": HarnessOperation.INSTALL,
+            "operation_requested_by": _requester(ctx),
+            "operation_inputs": operation_input_digests(harness),
+        })
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 
@@ -763,7 +843,10 @@ def _make_sync_handler(
     _SYNC_ALLOWED = {HarnessStatus.INSTALLED, HarnessStatus.OUTDATED}
 
     async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
-        harness_id: str = arguments["id"]
+        try:
+            harness_id = _IdArgs.model_validate(arguments).id
+        except ValidationError as exc:
+            return _err_from_validation(exc)
         storage = storage_provider.get_storage(Harness)
         harness = await storage.get(harness_id)
         if harness is None:
@@ -797,10 +880,13 @@ def _make_sync_handler(
         if refusal is not None:
             return refusal
 
-        harness.pending_operation = HarnessOperation.SYNC
-        harness.operation_requested_by = _requester(ctx)
-        harness.operation_inputs = operation_input_digests(harness)
-        updated = await rewrite_keeping_access(storage, harness, what="Harness")
+        updated = await _write_fields(storage, harness, {
+            "pending_operation": HarnessOperation.SYNC,
+            "operation_requested_by": _requester(ctx),
+            "operation_inputs": operation_input_digests(harness),
+        })
+        if updated is None:
+            return _changed_meanwhile(harness_id)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
 

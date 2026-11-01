@@ -343,8 +343,11 @@ Tracing plus metrics are wired at these call sites:
 - `ToolExecutionManager.execute` (`primer/agent/tool_manager.py`) wraps each
   call in `_tracing.span(_tracer, "tool.exec")` with `tool.name`, increments
   `tool_calls_total{name,outcome}`, and observes `tool_duration_seconds{name}` in a
-  `finally`. The standalone `invoke_one` helper used by the MCP endpoint opens the
-  same `tool.exec` span with an added `tool.via='mcp'` attribute.
+  `finally`. The `name` label is the scoped id when the routing table knows it and
+  `unknown` otherwise, cut to 128 characters, so a model that invents tool names adds
+  one series rather than one per name (GS-38). The standalone `invoke_one` helper used
+  by the MCP endpoint opens the same `tool.exec` span with an added `tool.via='mcp'`
+  attribute; its name is already checked against the exposed catalogue.
 - Both claim engines (`primer/claim/postgres.py`, `primer/claim/in_memory.py`) wrap
   `claim_due` in `tracer.start_as_current_span("claim.due")`, set `claim.count`, add
   a `claim_assigned` span event per lease, and observe
@@ -388,7 +391,10 @@ leave its families behind:
 - `sessions_active{workspace_id}` is inc/dec'd around the turn body in the same
   function. Six writers mutate `SessionStatus` outside the lifecycle lock, so a
   transition-delta gauge would drift; the streaming `try`/`finally` is the one
-  exact chokepoint every exit passes through.
+  exact chokepoint every exit passes through. The same `finally` removes the
+  workspace's series once no turn of it runs in the process
+  (`drop_idle_sessions_active`), so an idle workspace has no series and a deleted one
+  does not keep one for the process's life (GS-38).
 - `llm_calls_total{provider_id,profile_id,status}` and
   `llm_profile_tokens_total{profile_id,direction}` are written by
   `_observe_llm_call` in `primer/agent/loop.py`. That loop is the one model-call

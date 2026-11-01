@@ -32,12 +32,19 @@ logger = logging.getLogger(__name__)
 
 _LEASE_TTL_SECONDS = 60
 _HEARTBEAT_INTERVAL_SECONDS = 20
+# A waiter at the limit sleeps until a release of its key is announced on the bus; the poll is only the fallback for a lost announcement (M10).
+_RELEASE_EVENT_PREFIX = "rate_limit_released:"
+_WAIT_FALLBACK_SECONDS = 1.0
+# With no bus to announce on, the old fixed poll.
+_POLL_SECONDS = 0.1
 
 
 class _PostgresRateLimiterLease(RateLimiterLease):
     def __init__(
         self, *, storage, lease_id: str, key: str, owner_id: str,
+        announce: "Callable[[str], Awaitable[None]] | None" = None,
     ) -> None:
+        self._announce = announce
         self._storage = storage
         self._table = storage.rate_limit_lease_table
         self._lease_id = lease_id
@@ -118,6 +125,11 @@ class _PostgresRateLimiterLease(RateLimiterLease):
                     )
                 except Exception:
                     pass
+            if self._announce is not None:
+                try:
+                    await self._announce(self._key)
+                except Exception:  # best effort: the waiters' fallback poll finds the free slot
+                    logger.debug("rate-limit release announce failed for %s", self._key, exc_info=True)
         except Exception:
             logger.exception(
                 "rate-limit lease %s release failed", self._lease_id,
@@ -128,34 +140,68 @@ class PostgresRateLimiter(RateLimiter):
     """Storage-backed semaphore. Atomic acquire via INSERT-where-COUNT;
     heartbeat-renewed leases bound crash loss to one TTL window."""
 
-    def __init__(self, storage_provider: "StorageProvider", owner_id: str) -> None:
+    def __init__(
+        self, storage_provider: "StorageProvider", owner_id: str, event_bus: "EventBus | None" = None,
+    ) -> None:
         self._storage = storage_provider
         self._owner_id = owner_id
         self._table = storage_provider.rate_limit_lease_table
+        self._bus = event_bus
+
+    async def _announce_release(self, key: str) -> None:
+        assert self._bus is not None
+        await self._bus.publish(_RELEASE_EVENT_PREFIX + key, {})
+
+    def _watch_releases(self, key: str):
+        """A subscription to this key's releases, taken BEFORE the first attempt so a release between the attempt and the wait is not missed
+        (``None`` with no bus: waiters poll)."""
+        if self._bus is None:
+            return None
+        return self._bus.subscribe(key=_RELEASE_EVENT_PREFIX + key, coalesce=True)
+
+    @staticmethod
+    async def _wait(watch, timeout: float) -> None:
+        """Sleep until a release is announced, or ``timeout`` (the fallback poll)."""
+        if watch is None:
+            await asyncio.sleep(min(_POLL_SECONDS, timeout))
+            return
+        try:
+            await asyncio.wait_for(watch.__anext__(), timeout=min(_WAIT_FALLBACK_SECONDS, timeout))
+        except (TimeoutError, StopAsyncIteration):
+            pass
 
     async def acquire(
         self, key: str, *, max_concurrency: int,
     ) -> RateLimiterLease:
-        while True:
-            lease = await self._try_insert(key, max_concurrency)
-            if lease is not None:
-                return lease
-            # At limit — wait briefly and retry. Future: LISTEN on
-            # rate_limit_released and select on event vs sleep.
-            await asyncio.sleep(0.1)
+        watch = self._watch_releases(key)
+        try:
+            while True:
+                lease = await self._try_insert(key, max_concurrency)
+                if lease is not None:
+                    return lease
+                # At limit: wait for a release of this key (or the fallback poll) and retry.
+                await self._wait(watch, _WAIT_FALLBACK_SECONDS)
+        finally:
+            if watch is not None:
+                await watch.aclose()
 
     async def try_acquire(
         self, key: str, *, max_concurrency: int, timeout_s: float,
     ) -> RateLimiterLease | None:
         deadline = asyncio.get_event_loop().time() + timeout_s
-        while True:
-            lease = await self._try_insert(key, max_concurrency)
-            if lease is not None:
-                return lease
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                return None
-            await asyncio.sleep(min(0.1, remaining))
+        watch = self._watch_releases(key)
+        try:
+            while True:
+                lease = await self._try_insert(key, max_concurrency)
+                if lease is not None:
+                    return lease
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return None
+                await self._wait(watch, remaining)
+        finally:
+            if watch is not None:
+                await watch.aclose()
 
     async def _try_insert(
         self, key: str, max_concurrency: int,
@@ -191,6 +237,7 @@ class PostgresRateLimiter(RateLimiter):
             return None
         return _PostgresRateLimiterLease(
             storage=self._storage, lease_id=lease_id, key=key, owner_id=self._owner_id,
+            announce=self._announce_release if self._bus is not None else None,
         )
 
 
@@ -214,7 +261,7 @@ class _PostgresInvalidationSubscription(InvalidationSubscription):
         # subscription: LISTEN/NOTIFY drops events across a reconnect, so
         # this fires when the transport comes back and the subscriber
         # needs to treat its cached invalidation state as stale.
-        self._sub = bus.subscribe(on_reconnect=on_reconnect)
+        self._sub = bus.subscribe(on_reconnect=on_reconnect, prefix=f"invalidate:{topic.value}:")
         self._task: asyncio.Task = asyncio.create_task(
             self._run(),
             name=f"invalidation-sub-{topic.value}",

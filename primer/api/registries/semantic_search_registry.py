@@ -15,6 +15,10 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.api.registries._invalidation import BusInvalidated
+from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+from primer.int.coordinator import InvalidationTopic
+
 if TYPE_CHECKING:
     from primer.int.storage import Storage
     from primer.int.vector_store import VectorStore
@@ -49,7 +53,7 @@ def _default_factory(row: "SemanticSearchProvider") -> "VectorStoreProvider":  #
     return VectorStoreProviderFactory.create(config)
 
 
-class SemanticSearchRegistry:
+class SemanticSearchRegistry(BusInvalidated):
     """Cache + lifecycle for per-row SemanticSearchProvider instances.
 
     ``get_provider(id)`` lazy-resolves the row from Storage, dispatches
@@ -63,11 +67,16 @@ class SemanticSearchRegistry:
         *,
         storage: "Storage",
         factory: Callable[["SemanticSearchProvider"], "VectorStoreProvider"] | None = None,
+        retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
+        self._retirement = AdapterRetirement(retire_idle_seconds)
+        self._init_invalidation(InvalidationTopic.SEMANTIC_SEARCH_PROVIDER)
         self._storage = storage
         self._factory = factory or _default_factory
         self._instances: dict[str, "VectorStoreProvider"] = {}
         self._lock = asyncio.Lock()
+        # Bumped by every eviction and flush: a get that read its row before one never caches what it built (GX-4).
+        self._generation = 0
 
     async def get_provider(self, ssp_id: str) -> "VectorStoreProvider":
         """Resolve a row to its live VectorStoreProvider instance.
@@ -85,6 +94,7 @@ class SemanticSearchRegistry:
             return cached
 
         # Slow path: resolve + construct + initialize OUTSIDE the lock.
+        generation = self._generation
         row = await self._storage.get(ssp_id)
         if row is None:
             from primer.model.except_ import NotFoundError
@@ -92,11 +102,12 @@ class SemanticSearchRegistry:
             raise NotFoundError(
                 f"semantic search provider {ssp_id!r} does not exist"
             )
-        provider = self._factory(row)
+        provider = self._retirement.track(self._factory(row))
         await provider.initialize()
 
         # Insert under the lock, with a re-check in case a concurrent
-        # caller beat us (or invalidate() ran in the meantime).
+        # caller beat us; an invalidate() in the meantime moved the
+        # generation, and then the instance is this caller's only.
         async with self._lock:
             winner = self._instances.get(ssp_id)
             if winner is not None:
@@ -105,7 +116,10 @@ class SemanticSearchRegistry:
                 close_loser = provider
                 provider = winner
             else:
-                self._instances[ssp_id] = provider
+                if self._generation == generation:
+                    self._instances[ssp_id] = provider
+                else:
+                    self._retirement.retire(provider, repr(ssp_id))
                 close_loser = None
         if close_loser is not None:
             try:
@@ -122,26 +136,29 @@ class SemanticSearchRegistry:
         p = await self.get_provider(ssp_id)
         return p.get_vector_store()
 
-    async def invalidate(self, ssp_id: str) -> None:
-        """Drop the cached instance for one id; aclose() it.
+    async def _invalidate_local(self, ssp_id: str) -> None:
+        """Drop the cached instance for one id (this process); retire it.
 
         Called AFTER the provider row was updated or deleted, so a failing close is logged and swallowed, like every
         other close in this registry: raising would report a write that already landed as failed. The instance is
         already out of the cache, so the next ``get_provider`` rebuilds it either way.
         """
         async with self._lock:
+            self._generation += 1
             inst = self._instances.pop(ssp_id, None)
         if inst is not None:
-            try:
-                await inst.aclose()
-            except Exception as exc:  # noqa: BLE001 - best-effort cleanup
-                logger.warning(
-                    "SemanticSearchRegistry.invalidate: aclose() on the dropped instance for %r failed: %s",
-                    ssp_id, exc,
-                )
+            self._retirement.retire(inst, repr(ssp_id))         # closed once its in-flight calls are done (GX-1)
+
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        self._generation += 1
+        instances, self._instances = list(self._instances.values()), {}
+        for inst in instances:
+            self._retirement.retire(inst)
 
     async def aclose(self) -> None:
-        """Drop + aclose every cached instance."""
+        """Unsubscribe, then drop + aclose every cached instance."""
+        await self._unbind_invalidation_bus()
         async with self._lock:
             instances = list(self._instances.values())
             self._instances.clear()
@@ -153,3 +170,4 @@ class SemanticSearchRegistry:
                     "SemanticSearchRegistry.aclose: instance close failed: %s",
                     exc,
                 )
+        await self._retirement.close_all()

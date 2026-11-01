@@ -64,7 +64,7 @@ from primer.model.except_ import (
     UnsupportedContentError,
 )
 from primer.model.principal import ActorRef, PrincipalRef
-from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
+from primer.model.yield_ import ToolContext, ToolWaitPark, Yielded, YieldToWorker
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -122,6 +122,9 @@ _CALL_TOOL_ID = f"system{_SCOPE_SEPARATOR}call_tool"
 # How many ``call_tool`` wrappers the look-through follows. A chain longer than this is not something a model writes on
 # purpose; it is treated as protected (when unsure, wait) rather than followed without bound.
 _CALL_TOOL_LOOKTHROUGH_DEPTH = 4
+
+# The longest ``name`` label the tool metrics carry (GS-38): an MCP server's tool names are its own, of any length.
+_METRIC_LABEL_MAX = 128
 
 
 def _wrapped_call(arguments: object) -> tuple[str, dict] | None:
@@ -276,6 +279,9 @@ class ToolExecutionManager:
         # :meth:`is_interruptible_call` must still find their declaration. Filled in ``list_tools``;
         # the loop asks only once a Stop has fired.
         self._uninterruptible: set[str] = set()
+        # Scoped ids of the tools declared ``read_only`` (``Tool.read_only``): the only ones a batch may run concurrently
+        # (:meth:`is_parallel_safe`), and only when ``parallel_readonly_tool_calls`` is on.
+        self._read_only: set[str] = set()
         # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
         # Separate map so dispatch can look up the WorkspaceTool from
         # ``_workspace_tools`` (still keyed by bare name).
@@ -367,6 +373,7 @@ class ToolExecutionManager:
         event_recorder: "Any | None" = None,
         turn_no: int | None = None,
         actor: ActorRef | None = None,
+        parallel_readonly: bool = False,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -383,7 +390,7 @@ class ToolExecutionManager:
         the same way — see ``ToolContext.turn_no``.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
-        return cls(
+        manager = cls(
             event_recorder=event_recorder,
             toolset_providers=toolset_providers,
             workspace_tools=ws_tools,
@@ -398,6 +405,8 @@ class ToolExecutionManager:
             turn_no=turn_no,
             actor=actor,
         )
+        manager.parallel_readonly_tool_calls = parallel_readonly
+        return manager
 
     def rebind_workspace(
         self,
@@ -430,6 +439,7 @@ class ToolExecutionManager:
             initiated_by=initiated_by or self._initiated_by,
             turn_no=self._turn_no,
             actor=self._actor_override,
+            parallel_readonly=self.parallel_readonly_tool_calls,
         )
 
     async def list_tools(
@@ -561,6 +571,8 @@ class ToolExecutionManager:
                     # cannot call directly can still be reached through ``call_tool``.
                     if not t.interruptible:
                         self._uninterruptible.add(scoped_id)
+                    if getattr(t, "read_only", False):
+                        self._read_only.add(scoped_id)
                     # External tools bypass the agent allowlist: they are
                     # per-invocation grants carried by the triggering
                     # message, not entries in Agent.tools.
@@ -596,6 +608,8 @@ class ToolExecutionManager:
                 # getattr: the ABC always has it, but tests (and embedders) hand in duck-typed tools.
                 if not getattr(ws_tool, "interruptible", True):
                     self._uninterruptible.add(scoped_id)
+                if getattr(ws_tool, "read_only", False):
+                    self._read_only.add(scoped_id)
             # Together, once the walk is whole: a listing that fails or is cancelled halfway leaves neither behind.
             self._unavailable = unavailable
             self._unavailable_states = unavailable_states
@@ -670,6 +684,28 @@ class ToolExecutionManager:
             ):
                 match = (toolset_id, reason)
         return match
+
+    #: Whether a batch of read-only calls may run concurrently (``WorkerConfig.parallel_readonly_tool_calls``; default OFF).
+    parallel_readonly_tool_calls: bool = False
+
+    async def is_parallel_safe(self, call: ToolCallPart) -> bool:
+        """Whether THIS call may run beside its batch siblings: its tool is declared read-only, is not notifying, yielding or uninterruptible,
+        and has no approval policy (a gated call parks the session and must be decided in order). ``call_tool`` is never parallel: the tool it
+        forwards to is not looked through. Anything the manager does not know is not parallel."""
+        name = call.name
+        if name not in self._read_only or name in self._notifying or name in self._uninterruptible:
+            return False
+        descriptor = self._descriptors.get(name)
+        if descriptor is None or descriptor.yields:
+            return False
+        if self._approval_resolver is not None:
+            if name in self._workspace_scoped:
+                toolset_id, tool_id = WORKSPACE_TOOLSET_ID, self._workspace_scoped[name]
+            else:
+                toolset_id, tool_id = self._tool_to_toolset.get(name, (None, None))
+            if toolset_id is None or await self._approval_resolver.find(toolset_id=toolset_id, tool_name=tool_id) is not None:
+                return False
+        return True
 
     def is_notifying(self, tool_name: str) -> bool:
         """True iff the SCOPED ``tool_name`` was declared notifying.
@@ -788,17 +824,31 @@ class ToolExecutionManager:
                 result = _without_credentials(await self._execute_inner(
                     call, principal=principal, bypass_approval=bypass_approval,
                 ))
-                _metrics.tool_calls_total.labels(call.name, "ok").inc()
+                _metrics.tool_calls_total.labels(self._metric_label(call.name), "ok").inc()
                 await self._emit_tool_called(call, ok=not result.error)
                 return result
             except Exception as _exc:
-                _metrics.tool_calls_total.labels(call.name, "fail").inc()
+                _metrics.tool_calls_total.labels(self._metric_label(call.name), "fail").inc()
                 await self._emit_tool_called(call, ok=False)
-                raise
+                # A PrimerError here is a routing or gate answer the callers already handle; a park and a sign-in leave as they always did.
+                if isinstance(_exc, (PrimerError, YieldToWorker, ToolWaitPark)):
+                    raise
+                # Anything else is the tool's own failure (W16, ruling D1): an error result and the turn goes on. On the claims path a raise
+                # was retried as transient, re-running earlier side effects. The text is fixed: the exception's may carry paths or secrets.
+                logger.exception("ToolExecutionManager: tool %r raised; answered as a tool error", call.name)
+                _tracing.record_failure(_span, _exc)  # the span still says the call failed (masked, as an escaping exception was)
+                return ToolResultPart(id=call.id, output=f"tool {call.name} failed with an internal error; see the server logs", error=True)
             finally:
-                _metrics.tool_duration_seconds.labels(call.name).observe(
+                _metrics.tool_duration_seconds.labels(self._metric_label(call.name)).observe(
                     _time.monotonic() - _t0
                 )
+
+    def _metric_label(self, name: str) -> str:
+        """The ``name`` label a call is counted under (GS-38): its scoped id when the routing table knows it, else ``unknown``, so a model
+        that invents names adds one series, not one per name."""
+        if name in self._workspace_scoped or name in self._tool_to_toolset:
+            return name[:_METRIC_LABEL_MAX]
+        return "unknown"
 
     async def _emit_tool_called(self, call: ToolCallPart, *, ok: bool) -> None:
         """Land a ``tool.called`` on the platform event log (when wired).
@@ -1334,13 +1384,13 @@ async def invoke_one(
                 principal=principal,
                 ctx=None,
             )
-            _metrics.tool_calls_total.labels(tool_name, "ok").inc()
+            _metrics.tool_calls_total.labels(tool_name[:_METRIC_LABEL_MAX], "ok").inc()
             return result
         except Exception as _exc:
-            _metrics.tool_calls_total.labels(tool_name, "fail").inc()
+            _metrics.tool_calls_total.labels(tool_name[:_METRIC_LABEL_MAX], "fail").inc()
             raise
         finally:
-            _metrics.tool_duration_seconds.labels(tool_name).observe(
+            _metrics.tool_duration_seconds.labels(tool_name[:_METRIC_LABEL_MAX]).observe(
                 _time.monotonic() - _t0
             )
 

@@ -1721,6 +1721,14 @@ class Workspace(Owned, Identifiable):
         default=None,
         description="Populated when phase=failed; one-line cause.",
     )
+    terminating_since: datetime | None = Field(
+        default=None,
+        description=(
+            "UTC instant a destroy marked the row terminating. The probe fails "
+            "a mark that has stood far longer than any teardown takes (a "
+            "destroy whose process died) so the delete can be asked again."
+        ),
+    )
     runtime_meta: WorkspaceRuntimeMeta = Field(
         ...,
         description="Connection coordinates for the runtime inside this workspace.",

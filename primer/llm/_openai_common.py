@@ -8,6 +8,7 @@ that drift over time.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Literal
 
@@ -17,6 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 SamplingTarget = Literal["responses", "chat_completions"]
+
+
+def parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """A tool call's streamed arguments as the object ``ToolCallEnd`` requires.
+
+    Invalid JSON and a value that is not an object (``null``, a list, a number) become ``{}``, as on Anthropic, instead
+    of failing the whole stream; a string holding a JSON object (a double-encoded call) is decoded once more.
+    """
+    try:
+        parsed = json.loads(raw or "{}")
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def build_sampling_params(

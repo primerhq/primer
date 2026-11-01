@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -100,8 +101,7 @@ def _coerce_verdict(raw: Any) -> RegoVerdict:
     )
 
 
-def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:
-    """One-shot evaluation (no cache). Useful for the create-time validator."""
+def _regopy() -> Any:
     try:
         import regopy
     except (ImportError, OSError) as exc:
@@ -115,9 +115,22 @@ def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:
         raise RegoCompileError(
             f"regopy unavailable for tool-approval policies: {exc}"
         ) from exc
+    return regopy
+
+
+def _compile(policy_text: str) -> Any:
+    """A regopy interpreter holding the policy module (the expensive step)."""
+    regopy = _regopy()
     try:
         interpreter = regopy.Interpreter()
         interpreter.add_module("primer_tool_approval", policy_text)
+    except Exception as exc:
+        raise RegoCompileError(f"rego compile/eval failed: {exc}") from exc
+    return interpreter
+
+
+def _run(interpreter: Any, input: dict[str, Any]) -> RegoVerdict:
+    try:
         interpreter.set_input(input)
         raw = interpreter.query(_PACKAGE_QUERY)
         if not raw.ok():
@@ -129,17 +142,22 @@ def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:
     return _coerce_verdict(raw)
 
 
-class RegoEvaluator:
-    """Long-lived evaluator with a content-addressed cache.
+def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:
+    """One-shot evaluation (no cache). Useful for the create-time validator."""
+    return _run(_compile(policy_text), input)
 
-    Each entry is keyed by ``(policy_id, sha256(policy_text))`` so an
-    edit to the policy invalidates only that entry. Cache size is
-    bounded by the number of distinct policies the operator has
-    written; no eviction policy beyond letting the dict grow.
+
+class RegoEvaluator:
+    """Long-lived evaluator: one compiled interpreter per ``(policy_id, sha256(policy_text))``.
+
+    An edit to a policy gets a new key, and the superseded version of that policy id is dropped, so the cache holds one interpreter per policy.
+    The interpreter is not re-entrant (``set_input`` then ``query`` is one critical section), so evaluations take one lock; they are short and
+    CPU-bound, and compiling is the cost this saves.
     """
 
     def __init__(self) -> None:
-        self._cache: dict[tuple[str, str], str] = {}
+        self._interpreters: dict[tuple[str, str], Any] = {}
+        self._lock = threading.Lock()
         self.cache_hits = 0
 
     def evaluate(
@@ -149,13 +167,17 @@ class RegoEvaluator:
         policy_text: str,
         input: dict[str, Any],
     ) -> RegoVerdict:
-        digest = hashlib.sha256(policy_text.encode("utf-8")).hexdigest()
-        key = (policy_id, digest)
-        if key in self._cache:
-            self.cache_hits += 1
-        else:
-            self._cache[key] = policy_text
-        return evaluate_policy(policy_text, input)
+        key = (policy_id, hashlib.sha256(policy_text.encode("utf-8")).hexdigest())
+        with self._lock:
+            interpreter = self._interpreters.get(key)
+            if interpreter is None:
+                interpreter = _compile(policy_text)  # raises for a bad policy before anything is cached
+                for stale in [k for k in self._interpreters if k[0] == policy_id]:
+                    del self._interpreters[stale]
+                self._interpreters[key] = interpreter
+            else:
+                self.cache_hits += 1
+            return _run(interpreter, input)
 
 
 __all__ = [

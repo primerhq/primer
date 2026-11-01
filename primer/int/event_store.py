@@ -13,7 +13,7 @@ Spec: ``docs/superpowers/specs/2026-08-22-event-bus-design.md``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from primer.model.event import Event
@@ -69,6 +69,15 @@ class EventStore(ABC):
         dispatcher's filter evaluator, not the store.
         """
 
+    async def read_horizon(self) -> tuple[int, int] | None:
+        """``(oldest, next)`` transaction ids of the database right now, or ``None`` when ids are assigned in commit order.
+
+        Postgres assigns an event id at INSERT, not at COMMIT, so a reader can see id N+1 while the transaction that holds id N is still running. A
+        reader that finds a hole in the ids asks this: every transaction that was running when it first saw the hole has finished once ``oldest``
+        reaches the ``next`` it read then. A store with one writer (SQLite) never has such a hole and answers ``None``.
+        """
+        return None
+
     @abstractmethod
     async def max_id(self) -> int:
         """The highest event id, or 0 when the log is empty."""
@@ -93,10 +102,27 @@ class EventStore(ABC):
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         """Persist ``subscriber_id``'s cursor at ``event_id``."""
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        """The stored cursors of ``subscriber_ids`` (ids with no cursor row are absent). Backends override this with one query; the default loops."""
+        out: dict[str, int] = {}
+        for subscriber_id in subscriber_ids:
+            cursor = await self.get_cursor(subscriber_id)
+            if cursor is not None:
+                out[subscriber_id] = cursor
+        return out
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        """Persist several cursors. Backends override this with one statement; the default loops."""
+        for subscriber_id, event_id in cursors.items():
+            await self.set_cursor(subscriber_id, event_id)
+
     @abstractmethod
     async def delete_cursor(self, subscriber_id: str) -> None:
         """Forget ``subscriber_id``'s cursor. Idempotent."""
 
     @abstractmethod
-    async def active_cursor_floor(self) -> int | None:
-        """The smallest stored cursor, or ``None`` when no cursors exist."""
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
+        """The smallest stored cursor, or ``None`` when no cursors exist.
+
+        With ``stale_after``, a cursor not written for that long is ignored: a paused or orphaned one-shot subscriber must not hold retention back
+        for ever. A store that does not date its cursors ignores the argument."""

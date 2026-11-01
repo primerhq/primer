@@ -40,8 +40,13 @@ class InvalidationTopic(str, Enum):
     SEMANTIC_SEARCH_PROVIDER = "semantic_search_provider"
     CHANNEL_PROVIDER = "channel_provider"
     WORKSPACE_PROVIDER = "workspace_provider"
+    WEB_SEARCH_PROVIDER = "web_search_provider"
+    WEB_FETCH_PROVIDER = "web_fetch_provider"
+    TEXT_TO_SPEECH_PROVIDER = "text_to_speech_provider"
+    SPEECH_TO_TEXT_PROVIDER = "speech_to_text_provider"
     HARNESS = "harness"
     ARTIFACT_STORAGE_PROVIDER = "artifact_storage_provider"
+    TOOL_APPROVAL_POLICY = "tool_approval_policy"
 
 
 ROLE_TIMER_SCHEDULER = "timer-scheduler"
@@ -54,7 +59,9 @@ ROLE_STUCK_SESSION_SWEEPER = "stuck-session-sweeper"
 ROLE_SESSION_MESSAGING_SWEEPER = "session-messaging-sweeper"
 ROLE_EVENT_DISPATCHER = "event-dispatcher"
 ROLE_EVENT_RETENTION = "event-retention"
+ROLE_SESSION_RETENTION = "session-retention"
 ROLE_WORKSPACE_EVENTS = "workspace-events"
+ROLE_VECTOR_MAINTENANCE = "vector-maintenance"
 
 
 class RateLimiterLease(AbstractAsyncContextManager["RateLimiterLease"]):

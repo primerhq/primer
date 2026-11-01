@@ -47,12 +47,13 @@ Pagination supports both styles required by :class:`primer.int.Storage`:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
@@ -112,7 +113,7 @@ from primer.storage._cursor import (
     _encode_cursor_for,
     _resolve_dotted,
 )
-from primer.storage._predicate import _PredicateTranslator, render_order_by
+from primer.storage._predicate import _PredicateTranslator, _render_field_expr, render_order_by
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,9 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 # table names predictable, comparable across deployments, and free
 # of any quoting surprises.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+#: First half of the migration lock's advisory key ("prim"); the second half is ``hashtext(schema)``, so installs in other schemas never wait.
+_MIGRATION_LOCK_KEY = 0x7072696D
 
 
 def _sanitize_identifier(name: str, *, kind: str) -> str:
@@ -316,12 +320,21 @@ class PostgresStorageProvider(StorageProvider):
                 f'  PRIMARY KEY (kind, entity_id)'
                 f')',
             )
+            # The claim query reads two disjoint kinds of candidate per kind (unclaimed; claimed but expired), each served by its own partial index.
+            # They supersede the earlier (priority_score, next_attempt_at) index, which had no kind prefix and could not serve the expired branch.
             await execute_create_idempotent(
                 conn,
-                f'CREATE INDEX IF NOT EXISTS leases_claim_order '
-                f'ON "{self._schema}"."leases" (priority_score, next_attempt_at) '
+                f'CREATE INDEX IF NOT EXISTS leases_unclaimed_by_kind '
+                f'ON "{self._schema}"."leases" (kind, priority_score, next_attempt_at) '
                 f'WHERE claimed_by IS NULL',
             )
+            await execute_create_idempotent(
+                conn,
+                f'CREATE INDEX IF NOT EXISTS leases_expiry_by_kind '
+                f'ON "{self._schema}"."leases" (kind, expires_at) '
+                f'WHERE claimed_by IS NOT NULL',
+            )
+            await conn.execute(f'DROP INDEX IF EXISTS "{self._schema}".leases_claim_order')
             await execute_create_idempotent(
                 conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."system_state" ('
@@ -434,23 +447,41 @@ class PostgresStorageProvider(StorageProvider):
         async with self.pool.acquire() as conn:
             await conn.execute(sql, ts, "singleton")
 
+    @asynccontextmanager
+    async def migration_lock(self):
+        """A session advisory lock on one pooled connection, held for the whole chain.
+
+        ``pg_try_advisory_lock`` is polled rather than ``pg_advisory_lock``
+        awaited, because a wait longer than the pool's ``command_timeout``
+        would fail the boot. A connection that dies holding the lock ends
+        its session, which releases it, and the pool's reset on release
+        runs ``pg_advisory_unlock_all``.
+        """
+        async with self.pool.acquire() as conn:
+            while not await conn.fetchval("SELECT pg_try_advisory_lock($1, hashtext($2))", _MIGRATION_LOCK_KEY, self._schema):
+                await asyncio.sleep(0.2)
+            try:
+                yield
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock($1, hashtext($2))", _MIGRATION_LOCK_KEY, self._schema)
+
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,
     ) -> None:
-        """Stamp ``schema_version`` and ``last_migration_at``."""
+        """Stamp ``schema_version`` (never lower) and ``last_migration_at``."""
         ts = migrated_at or datetime.now(UTC)
         sql = (
             f'UPDATE {self.system_state_table} '
-            f'SET schema_version = $1, last_migration_at = $2 WHERE id = $3'
+            f'SET schema_version = GREATEST(schema_version, $1), last_migration_at = $2 WHERE id = $3'
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, version, ts, "singleton")
 
     async def set_session_secret(self, secret: str) -> None:
-        """Persist the cookie-signing HMAC secret on the singleton row."""
+        """Persist the cookie-signing HMAC secret on the singleton row, only when none is stored."""
         sql = (
             f'UPDATE {self.system_state_table} '
-            f'SET session_secret = $1 WHERE id = $2'
+            f'SET session_secret = $1 WHERE id = $2 AND session_secret IS NULL'
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, secret, "singleton")
@@ -585,11 +616,28 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "apitoken": [
         ("token_hash_uniq", True, "((data->>'token_hash'))"),
     ],
+    "service": [
+        # The name is the /svc/{name}/ URL (GS-9); tolerant of rows that already share one, like the others in _DUP_TOLERANT_UNIQUE_INDEX_NAMES.
+        ("name_uniq", True, "((data->>'name'))"),
+    ],
+    "user": [
+        # Two concurrent creates of one name (GS-20); created only when no duplicates exist (see _DUP_TOLERANT_UNIQUE_INDEX_NAMES).
+        ("username_uniq", True, "((data->>'username'))"),
+    ],
     "sessions": [
         ("status", False, "((data->>'status'))"),
         # Cross-workspace list filters push `workspace_id IN <readable>`
         # into the query (access-control P2 Task 5); index-backed.
         ("workspace_id", False, "((data->>'workspace_id'))"),
+        # M2: the lookups the sweeps, the routers and the claim path run by these fields were sequential scans of the sessions table.
+        ("parent_session_id", False, "((data->>'parent_session_id'))"),
+        ("last_worker_id", False, "((data->>'last_worker_id'))"),
+        ("binding_agent_id", False, "((data->'binding'->>'agent_id'))"),
+        ("binding_graph_id", False, "((data->'binding'->>'graph_id'))"),
+        ("turn_status", False, "((data->>'turn_status'))"),
+        ("parked_status", False, "((data->>'parked_status'))"),
+        # The default list order (`ORDER BY data->>'created_at' DESC NULLS LAST, id`).
+        ("created_at_desc", False, "((data->>'created_at') DESC NULLS LAST, id)"),
     ],
     "workspace": [
         # Access-control list queries filter on the derived membership
@@ -649,6 +697,12 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     ],
     "useridentity": [
         ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),
+        # Listing a person's linked identities, and deleting a user's (M2).
+        ("user_id", False, "((data->>'user_id'))"),
+    ],
+    "subscription": [
+        # A trigger's subscriptions are listed and deleted by trigger_id (M2).
+        ("trigger_id", False, "((data->>'trigger_id'))"),
     ],
     "webhookdelivery": [
         # Startup webhook recovery filters status='pending' on every boot;
@@ -686,7 +740,42 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "workspacetemplate": [
         ("access_members", False, "USING GIN ((data->'access'->'members'))"),
     ],
+    "serviceversion": [
+        # KN-19j: two concurrent publishes compute the same next number
+        # from the same read; the unique (service_id, version) makes the
+        # loser's create a ConflictError, which primer/service/publish.py
+        # retries on the freshly read next number.
+        ("service_version_uniq", True, "((data->>'service_id'), (data->>'version'))"),
+    ],
 }
+
+
+# The hot-field indexes created over possibly-dirty rows (KN-19j, GS-20): a
+# pre-fix database can already hold duplicate (service_id, version) pairs or
+# duplicate usernames -- the races the indexes exist to stop -- and CREATE
+# UNIQUE INDEX over them would fail inside _ensure_table and break every
+# later read and write of the table. Their creation runs under a savepoint
+# that tolerates the unique violation (log and continue without the index,
+# for an admin to resolve); every other hot-field index keeps raising.
+_DUP_TOLERANT_UNIQUE_INDEX_NAMES = ("serviceversion_service_version_uniq", "user_username_uniq", "service_name_uniq")
+
+
+# Trigram indexes for the console's `?q=` search (an ILIKE '%q%' over each field; a btree cannot serve a leading wildcard). table -> the
+# fields its router searches (Decision 11). They need the ``pg_trgm`` extension, which a role may not be allowed to create: then they are
+# skipped with ONE log line and the search stays a scan. They are never part of the table's transaction and never fail a boot.
+_TRIGRAM_FIELDS: dict[str, tuple[str, ...]] = {
+    "modelprofile": ("id", "description", "model_name"),
+    "service": ("id", "name", "description"),
+    "agent": ("id", "description"),
+    "graph": ("id", "description"),
+}
+_trigram_unavailable_logged = False
+
+
+def _trigram_index_ddl(table: str, qualified: str, field: str) -> str:
+    """``CREATE INDEX IF NOT EXISTS`` over the exact expression the ILIKE predicate renders for ``field`` (an index serves only its own expression)."""
+    expr = "id" if field == "id" else f"data->>'{field}'"
+    return f'CREATE INDEX IF NOT EXISTS "{table}_{field}_trgm" ON {qualified} USING gin (({expr}) gin_trgm_ops)'
 
 
 def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
@@ -776,7 +865,14 @@ class PostgresStorage(Storage[ModelT]):
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_index)
                     for ddl in ddl_hot:
-                        await conn.execute(ddl)
+                        if any(f'"{name}"' in ddl for name in _DUP_TOLERANT_UNIQUE_INDEX_NAMES):
+                            # A failed statement aborts the whole
+                            # Postgres transaction, so this one index
+                            # (possibly dirty rows, KN-19j) runs under a
+                            # savepoint; the others keep raising.
+                            await self._create_dup_tolerant_index(conn, ddl)
+                        else:
+                            await conn.execute(ddl)
         except CONCURRENT_CREATE_RACE as exc:
             # Concurrent-creation race (see primer.storage._ddl): another
             # process won the race and created the table + index atomically
@@ -794,6 +890,50 @@ class PostgresStorage(Storage[ModelT]):
         # Reached only when the DDL committed (a race loss means the other
         # process committed the same table): mark this handle ensured.
         self._table_ensured = True
+        await self._ensure_trigram_indexes()
+
+    async def _ensure_trigram_indexes(self) -> None:
+        """Best-effort trigram indexes for this table's searchable fields (see ``_TRIGRAM_FIELDS``). Never raises."""
+        global _trigram_unavailable_logged
+        fields = _TRIGRAM_FIELDS.get(self._table)
+        if not fields:
+            return
+        try:
+            async with self._provider.pool.acquire() as conn:
+                try:
+                    await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                except Exception as exc:  # noqa: BLE001 - the role may not create extensions
+                    if not _trigram_unavailable_logged:
+                        _trigram_unavailable_logged = True
+                        logger.warning("pg_trgm is not available (%s); the ?q= search stays a scan", type(exc).__name__)
+                    return
+                for field in fields:
+                    await conn.execute(_trigram_index_ddl(self._table, self._qualified, field))
+        except Exception:  # noqa: BLE001 - an index is an optimisation, never a reason not to boot
+            logger.warning("could not create the trigram indexes of %s", self._qualified, exc_info=True)
+
+    async def _create_dup_tolerant_index(self, conn: Any, ddl: str) -> None:
+        """Create a duplicate-tolerant unique index (serviceversion, user) over possibly-dirty rows.
+
+        Pre-fix databases hold duplicate (service_id, version) pairs --
+        the race the index exists to stop (KN-19j) -- and CREATE UNIQUE
+        INDEX over them fails. A failed statement aborts the whole
+        Postgres transaction, so the index runs under a SAVEPOINT: on a
+        unique violation roll back to it, warn once, and continue
+        without the index (the enclosing commit releases the savepoint).
+        """
+        await conn.execute("SAVEPOINT tolerant_unique_index")
+        try:
+            await conn.execute(ddl)
+        except asyncpg.UniqueViolationError:
+            await conn.execute(
+                "ROLLBACK TO SAVEPOINT tolerant_unique_index",
+            )
+            logger.warning(
+                "could not create the unique index in %r: duplicate rows already "
+                "exist; continuing without it until an admin resolves them (KN-19j, GS-20)",
+                ddl,
+            )
 
     # ---------- Serialisation ---------------------------------------------
 
@@ -948,11 +1088,18 @@ class PostgresStorage(Storage[ModelT]):
         if event_kind is not None:
             await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
+        # ONE statement answers all three outcomes (PERF-T17 L2): the guarded UPDATE's own row (written), else the row's
+        # existence (the guard rejected it), else nothing (no such id). The existence arm reads the statement's snapshot, so a
+        # row deleted by a concurrent writer in the same instant reads as "guard rejected" (the update was ordered first).
         sql = (
-            f'UPDATE {self._qualified} '
+            f'WITH upd AS (UPDATE {self._qualified} '
             f'SET data = $2::jsonb, updated_at = now() '
             f'WHERE id = $1 AND (data->>$3) IS DISTINCT FROM $4 '
-            f'RETURNING id, data'
+            f'RETURNING id, data) '
+            f'SELECT id, data, TRUE AS written FROM upd '
+            f'UNION ALL '
+            f'SELECT t.id, NULL::jsonb, FALSE FROM {self._qualified} t '
+            f'WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM upd)'
         )
         try:
             async with self._acquire_or_use(conn) as c:
@@ -963,30 +1110,20 @@ class PostgresStorage(Storage[ModelT]):
                         row = await c.fetchrow(
                             sql, entity_id, data_json, field, forbidden,
                         )
-                        if row is not None:
+                        if row is not None and row["written"]:
                             await _append_crud_event(
                                 c, self._provider.schema,
                                 event_type=f"{event_kind}.updated",
                                 entity_kind=event_kind, entity_id=entity_id,
                                 payload_json=data_json,
                             )
-                if row is None:
-                    # Ambiguous on its own: no id, or guard rejected. This
-                    # probe only disambiguates WHICH exception/return
-                    # shape to give the caller - it does not affect
-                    # whether the write above was safe, that was already
-                    # decided atomically by the WHERE clause.
-                    exists = await c.fetchval(
-                        f'SELECT 1 FROM {self._qualified} WHERE id = $1',
-                        entity_id,
-                    )
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         if row is None:
-            if not exists:
-                raise NotFoundError(
-                    f"{self._model.__name__} with id {entity_id!r} not found"
-                )
+            raise NotFoundError(
+                f"{self._model.__name__} with id {entity_id!r} not found"
+            )
+        if not row["written"]:
             return None
         return self._decode_row(row)
 
@@ -999,6 +1136,29 @@ class PostgresStorage(Storage[ModelT]):
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: Any | None = None,
     ) -> ModelT | None:
+        return (await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=False))[0]
+
+    async def patch_if_or_current(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None = None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None = None,
+        conn: Any | None = None,
+    ) -> tuple[ModelT | None, ModelT | None]:
+        return await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=True)
+
+    async def _patch_if(
+        self,
+        id: str,
+        patch: Mapping[str, Any] | None,
+        *,
+        where: Mapping[WhereKey, Sequence[Any]],
+        set_paths: Mapping[tuple[str, ...], Any] | None,
+        conn: Any | None,
+        want_current: bool,
+    ) -> tuple[ModelT | None, ModelT | None]:
         # The new document is ONE expression over the row's own ``data`` column, and the guard is
         # part of the UPDATE's WHERE: Postgres evaluates both against the row's current version
         # (re-checked after a concurrent writer commits), so there is no read-modify-write and no
@@ -1052,12 +1212,18 @@ class PostgresStorage(Storage[ModelT]):
                                 entity_kind=event_kind, entity_id=id,
                                 payload_json=row["data"],
                             )
+                current_row = None
                 if row is None:
                     # Disambiguates the shape of the answer only; the write was already decided
-                    # atomically by the WHERE clause above.
-                    exists = await c.fetchval(
-                        f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
-                    )
+                    # atomically by the WHERE clause above. A caller that wants the row as it now stands (a lost
+                    # race) reads it in the same probe: READ COMMITTED, so this sees what the winner committed.
+                    if want_current:
+                        current_row = await c.fetchrow(f'SELECT id, data FROM {self._qualified} WHERE id = $1', id)
+                        exists = current_row is not None
+                    else:
+                        exists = await c.fetchval(
+                            f'SELECT 1 FROM {self._qualified} WHERE id = $1', id,
+                        )
         except (PatchSpecError, ValidationError):
             # A malformed spec or a leaf the model drops (PatchSpecError), or a patch that leaves the row unreadable
             # (ValidationError): the caller's mistake, reported as itself. Any OTHER ValueError (a corrupt stored
@@ -1070,8 +1236,8 @@ class PostgresStorage(Storage[ModelT]):
                 raise NotFoundError(
                     f"{self._model.__name__} with id {id!r} not found"
                 )
-            return None
-        return entity
+            return None, (self._decode_row(current_row) if current_row is not None else None)
+        return entity, None
 
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()
@@ -1120,6 +1286,70 @@ class PostgresStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=predicate, page=page, order_by=order_by)
 
+    #: Rows per query of :meth:`find_ids`.
+    _IDS_PAGE = 2000
+
+    supports_ids_of = True
+
+    def _translator(self) -> _PredicateTranslator:
+        return _PredicateTranslator(self._model, lambda model: self._provider.get_storage(model)._qualified)  # type: ignore[attr-defined]
+
+    async def _where(self, translator: _PredicateTranslator, predicate: Predicate | None) -> str:
+        """``predicate`` as SQL; the tables its IN subqueries read are created first (a table is created on its handle's first use)."""
+        if predicate is None:
+            return "TRUE"
+        where_sql, _ = translator.translate(predicate)
+        for model in translator.joined:
+            await self._provider.get_storage(model)._ensure_table()  # type: ignore[attr-defined]
+        return where_sql
+
+    async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
+        """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
+        if not values:
+            return {}
+        await self._ensure_table()
+        from primer.model.storage import FieldRef, Op, Value
+
+        match = Predicate(left=FieldRef(name=field), op=Op.IN, right=Value(value=list(values)))
+        if predicate is not None:
+            match = Predicate(left=match, op=Op.AND, right=predicate)
+        translator = self._translator()
+        where_sql = await self._where(translator, match)
+        expr = _render_field_expr(self._model, field)
+        sql = f"SELECT {expr} AS k, count(*) AS n FROM {self._qualified} WHERE {where_sql} GROUP BY {expr}"
+        try:
+            async with self._provider.pool.acquire() as conn:
+                rows = await conn.fetch(sql, *translator._params)  # noqa: SLF001
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        return {row["k"]: int(row["n"]) for row in rows if row["k"] is not None}
+
+    async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
+        """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
+        await self._ensure_table()
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        last: str | None = None
+        while True:
+            translator = self._translator()
+            where_sql = await self._where(translator, predicate)
+            if last is not None:
+                where_sql = f"({where_sql}) AND id > {translator.append_param(last)}"
+            limit_ph = translator.append_param(self._IDS_PAGE)
+            sql = f"SELECT id, data->'access' AS access FROM {self._qualified} WHERE {where_sql} ORDER BY id LIMIT {limit_ph}"
+            try:
+                async with self._provider.pool.acquire() as conn:
+                    rows = await conn.fetch(sql, *translator._params)  # noqa: SLF001
+            except Exception as exc:
+                raise self._wrap_db_error(exc) from exc
+            for row in rows:
+                access = row["access"]
+                if isinstance(access, str):  # asyncpg returns JSONB as text unless a codec is registered
+                    access = json.loads(access)
+                out.append((row["id"], access))
+            if len(rows) < self._IDS_PAGE:
+                return out
+            last = rows[-1]["id"]
+
     async def _paged(
         self,
         *,
@@ -1129,10 +1359,8 @@ class PostgresStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         await self._ensure_table()
 
-        translator = _PredicateTranslator(self._model)
-        where_sql = "TRUE"
-        if predicate is not None:
-            where_sql, _ = translator.translate(predicate)
+        translator = self._translator()
+        where_sql = await self._where(translator, predicate)
 
         order_clause = render_order_by(self._model, order_by)
 
@@ -1180,10 +1408,17 @@ class PostgresStorage(Storage[ModelT]):
             f'SELECT count(*) FROM {self._qualified} WHERE {where_sql}'
         )
 
+        total: int | None = None
         try:
+            # One connection and one snapshot for the page and its count, so ``total`` agrees with the page (SQLite already did this, L1).
             async with self._provider.pool.acquire() as conn:
-                rows = await conn.fetch(select_sql, *params)
-                total = await conn.fetchval(count_sql, *count_params)
+                async with conn.transaction(isolation="repeatable_read", readonly=True):
+                    rows = await conn.fetch(select_sql, *params)
+                    if len(rows) < page.length:
+                        # A short page is the end of the result: the count is the rows before it plus these, no COUNT(*) needed.
+                        total = page.offset + len(rows) if (rows or page.offset == 0) else None
+                    if total is None and page.want_total:
+                        total = await conn.fetchval(count_sql, *count_params)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
@@ -1459,6 +1694,7 @@ class PostgresDocumentContentStore(DocumentContentStore):
         limit: int = 20,
         conn: Any | None = None,
     ) -> list[FulltextHit]:
+        query = query.replace("\x00", "")  # Postgres refuses a NUL in a text parameter; it cannot be searched for (CV-5)
         if not query.strip():
             return []
         sql = (
@@ -1473,13 +1709,13 @@ class PostgresDocumentContentStore(DocumentContentStore):
             "WHERE collection_id = $1 "
             "AND to_tsvector('english', content) "
             "@@ websearch_to_tsquery('english', $2) "
-            "AND ($3::text IS NULL OR path LIKE $3 || '%') "
+            "AND ($3::text IS NULL OR path LIKE $3 || '%' ESCAPE '\\') "
             "ORDER BY score DESC LIMIT $4"
         )
         try:
             async with self._acquire_or_use(conn) as c:
                 rows = await c.fetch(sql, collection_id, query,
-                                     path_prefix, limit)
+                                     None if path_prefix is None else _escape_like(path_prefix), limit)
         except Exception as exc:
             raise _wrap_content_error(exc, op="search_fulltext") from exc
         return [
@@ -1679,6 +1915,20 @@ class PostgresEventStore(EventStore):
             'CREATE INDEX IF NOT EXISTS events_workspace '
             f'ON {self._qualified} (workspace_id)'
         )
+        # M2: reads of one session's events and of one workspace's events page by id; the type index takes `LIKE 'prefix%'` filters
+        # (text_pattern_ops matters under a non-C collation; under C it is the same as the default and costs a second index).
+        ddl_session = (
+            'CREATE INDEX IF NOT EXISTS events_session_id '
+            f'ON {self._qualified} (session_id, id)'
+        )
+        ddl_workspace_id = (
+            'CREATE INDEX IF NOT EXISTS events_workspace_id '
+            f'ON {self._qualified} (workspace_id, id)'
+        )
+        ddl_type_pattern = (
+            'CREATE INDEX IF NOT EXISTS events_type_pattern '
+            f'ON {self._qualified} (event_type text_pattern_ops)'
+        )
         ddl_cursors = (
             f'CREATE TABLE IF NOT EXISTS {self._qualified_cursors} ('
             'subscriber_id text PRIMARY KEY, '
@@ -1693,6 +1943,9 @@ class PostgresEventStore(EventStore):
                 await conn.execute(ddl_entity)
                 await conn.execute(ddl_occurred)
                 await conn.execute(ddl_workspace)
+                await conn.execute(ddl_session)
+                await conn.execute(ddl_workspace_id)
+                await conn.execute(ddl_type_pattern)
                 await conn.execute(ddl_cursors)
 
     async def append(
@@ -1783,6 +2036,17 @@ class PostgresEventStore(EventStore):
             rows = await conn.fetch(sql, *params)
         return [self._row_to_event(r) for r in rows]
 
+    async def read_horizon(self) -> tuple[int, int] | None:
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    'SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS lo, pg_snapshot_xmax(pg_current_snapshot())::text AS hi',
+                )
+        except Exception:  # noqa: BLE001 - a server without the snapshot functions (before 13): ids are then read as they always were
+            logger.warning("events: the transaction horizon is unavailable; out-of-order commits cannot be detected", exc_info=True)
+            return None
+        return int(row["lo"]), int(row["hi"])
+
     async def max_id(self) -> int:
         async with self._pool.acquire() as conn:
             value = await conn.fetchval(
@@ -1790,17 +2054,23 @@ class PostgresEventStore(EventStore):
             )
         return int(value) if value is not None else 0
 
-    async def prune(self, *, older_than: datetime, keep_after_id: int) -> int:
-        async with self._pool.acquire() as conn:
-            tag = await conn.execute(
-                f'DELETE FROM {self._qualified} '
-                'WHERE occurred_at < $1 AND id <= $2',
-                older_than, keep_after_id,
-            )
-        try:
-            return int(tag.rsplit(" ", 1)[-1])
-        except (ValueError, AttributeError):
-            return 0
+    async def prune(self, *, older_than: datetime, keep_after_id: int, batch_size: int = 10_000) -> int:
+        """Delete in batches, each its own short statement, so a long backlog never holds one big lock or one huge transaction (M10)."""
+        removed = 0
+        while True:
+            async with self._pool.acquire() as conn:
+                tag = await conn.execute(
+                    f'DELETE FROM {self._qualified} WHERE id IN ('
+                    f'SELECT id FROM {self._qualified} WHERE occurred_at < $1 AND id <= $2 ORDER BY id LIMIT $3)',
+                    older_than, keep_after_id, batch_size,
+                )
+            try:
+                n = int(tag.rsplit(" ", 1)[-1])
+            except (ValueError, AttributeError):
+                return removed
+            removed += n
+            if n < batch_size:
+                return removed
 
     # -- cursors ----------------------------------------------------------
 
@@ -1824,6 +2094,30 @@ class PostgresEventStore(EventStore):
                 subscriber_id, event_id,
             )
 
+    async def get_cursors(self, subscriber_ids: list[str]) -> dict[str, int]:
+        if not subscriber_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT subscriber_id, cursor FROM {self._qualified_cursors} '
+                'WHERE subscriber_id = ANY($1::text[])',
+                list(subscriber_ids),
+            )
+        return {r["subscriber_id"]: int(r["cursor"]) for r in rows}
+
+    async def set_cursors(self, cursors: dict[str, int]) -> None:
+        if not cursors:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO {self._qualified_cursors} '
+                '(subscriber_id, cursor, updated_at) '
+                'SELECT s, c, now() FROM unnest($1::text[], $2::bigint[]) AS t(s, c) '
+                'ON CONFLICT (subscriber_id) DO UPDATE SET '
+                'cursor = excluded.cursor, updated_at = excluded.updated_at',
+                list(cursors), list(cursors.values()),
+            )
+
     async def delete_cursor(self, subscriber_id: str) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -1832,9 +2126,13 @@ class PostgresEventStore(EventStore):
                 subscriber_id,
             )
 
-    async def active_cursor_floor(self) -> int | None:
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
         async with self._pool.acquire() as conn:
-            value = await conn.fetchval(
-                f'SELECT MIN(cursor) FROM {self._qualified_cursors}',
-            )
+            if stale_after is None:
+                value = await conn.fetchval(f'SELECT MIN(cursor) FROM {self._qualified_cursors}')
+            else:
+                value = await conn.fetchval(
+                    f'SELECT MIN(cursor) FROM {self._qualified_cursors} WHERE updated_at > now() - $1::interval',
+                    stale_after,
+                )
         return int(value) if value is not None else None

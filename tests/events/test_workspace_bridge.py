@@ -180,3 +180,25 @@ async def test_state_bookkeeping_noise_is_dropped(sp):
         assert len(events) == 1
     finally:
         await bridge.stop()
+
+
+async def test_workspaces_past_the_first_page_still_stream_and_keep_their_stream(sp):
+    """Core review finding 7: the scan read one page of 200, so an opted-in workspace past it never got a stream (and one that drifted past it
+    had its live stream cancelled by the next scan)."""
+    workspaces = sp.get_storage(Workspace)
+    for i in range(205):
+        await workspaces.create(_workspace(f"ws-{i:03d}", None))
+    await workspaces.create(_workspace("ws-zz-last", WorkspaceEventsConfig()))
+    resolver = _ScriptedResolver([])
+    bridge = WorkspaceEventBridge(storage_provider=sp, stream_resolver=resolver, scan_interval_seconds=60)
+    try:
+        await bridge._scan_once()
+        await asyncio.sleep(0.05)
+        assert set(bridge._streams) == {"ws-zz-last"}
+        task = bridge._streams["ws-zz-last"]
+        await bridge._scan_once()  # a second scan keeps it
+        assert bridge._streams["ws-zz-last"] is task and not task.done()
+        assert resolver.resolved == ["ws-zz-last"]
+    finally:
+        for t in bridge._streams.values():
+            t.cancel()

@@ -366,8 +366,9 @@ def test_build_claim_query_single_adapter():
 
     assert "harness_cand" in sql
     assert "harness" in sql
-    # Only one CTE — no union needed.
-    assert "UNION ALL" not in sql
+    # Only one kind's CTE (no union ACROSS kinds): its two branches, unclaimed and expired, are checked in test_claim_sql_shape.py.
+    assert "session_cand" not in sql
+    assert sql.count("UNION ALL") == 1
 
 
 def test_build_claim_query_multiple_adapters():
@@ -435,7 +436,7 @@ def test_claim_query_for_kinds_scopes_to_the_subset_and_caches():
     scoped = engine._claim_query_for([ClaimKind.HARNESS])
     assert "harness_cand" in scoped
     assert "session_cand" not in scoped
-    assert "UNION ALL" not in scoped
+    assert scoped.count("UNION ALL") == 1  # only the kind's own unclaimed/expired branches; nothing across kinds
 
     # Repeat call with an equal (but distinct list object) subset hits
     # the cache - same compiled string, not merely an equal one.
@@ -467,7 +468,7 @@ def test_claim_query_for_the_pools_kind_set_omits_tool_call_and_keeps_the_rest()
     scoped = engine._claim_query_for([ClaimKind.SESSION, ClaimKind.HARNESS, ClaimKind.TRIGGER])
     assert "tool_call_cand" not in scoped
     assert all(f"{k}_cand" in scoped for k in ("session", "harness", "trigger"))
-    assert scoped.count("UNION ALL") == 2
+    assert scoped.count("UNION ALL") == 3 + 2  # one per kind (unclaimed / expired branches) plus two across the three kinds
     assert "tool_call_cand" in engine._claim_query_for(None)
 
 

@@ -22,12 +22,13 @@ def _mentions_bot(entities, text, *, bot_id, bot_username) -> bool:
     if not text:
         return False
     target = f"@{bot_username}".lower() if bot_username else None
+    units = text.encode("utf-16-le")  # Telegram counts entity offsets in UTF-16 code units (W56a)
     for e in entities or []:
         etype = e.get("type")
         if etype == "mention" and target:
             offset = e.get("offset", 0)
             length = e.get("length", 0)
-            if text[offset:offset + length].lower() == target:
+            if units[offset * 2:(offset + length) * 2].decode("utf-16-le", errors="replace").lower() == target:
                 return True
         elif etype == "text_mention" and bot_id is not None:
             user_id = (e.get("user") or {}).get("id")

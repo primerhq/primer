@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +21,11 @@ logger = logging.getLogger(__name__)
 PROBE_DATA = b"primer artifact storage probe"
 PROBE_MIME = "text/plain"
 PROBE_FILENAME = "primer-probe.txt"
+#: How long the probe's steps may take together. Test and the active-store selection run it inline, and a silent endpoint would otherwise hold
+#: the request for the client's retries, minutes for S3 (GX-15).
+PROBE_TIMEOUT_S = 20.0
+#: How long each best-effort cleanup step (removing the probe object, closing the store) may take after a failure.
+CLEANUP_TIMEOUT_S = 5.0
 
 ProbeStep = Literal["prepare", "build", "initialize", "put", "get", "delete"]
 
@@ -72,46 +78,49 @@ async def probe_artifact_provider(
     artifact_id: str | None = None
     deleted = False
     step: ProbeStep = "build"
+    deadline = asyncio.timeout(PROBE_TIMEOUT_S)
     try:
-        if prepare:
-            step = "prepare"
-            await prepare_artifact_provider(row)
-            step = "build"
-        store = builder(row, storage_provider=storage_provider)
-        step = "initialize"
-        await store.initialize()
-        step = "put"
-        artifact_id = await store.put(
-            data=PROBE_DATA,
-            mime_type=PROBE_MIME,
-            filename=PROBE_FILENAME,
-        )
-        step = "get"
-        blob = await store.get(artifact_id)
-        if blob is None:
-            raise RuntimeError("probe object was not found after it was written")
-        if (
-            blob.data != PROBE_DATA
-            or blob.mime_type != PROBE_MIME
-            or blob.filename != PROBE_FILENAME
-        ):
-            raise RuntimeError("probe object read-back did not match what was written")
-        step = "delete"
-        await store.delete(artifact_id)
-        deleted = True
-        if await store.get(artifact_id) is not None:
-            raise RuntimeError("probe object still exists after delete")
-        return ArtifactProbeResult(ok=True)
+        async with deadline:
+            if prepare:
+                step = "prepare"
+                await prepare_artifact_provider(row)
+                step = "build"
+            store = builder(row, storage_provider=storage_provider)
+            step = "initialize"
+            await store.initialize()
+            step = "put"
+            artifact_id = await store.put(
+                data=PROBE_DATA,
+                mime_type=PROBE_MIME,
+                filename=PROBE_FILENAME,
+            )
+            step = "get"
+            blob = await store.get(artifact_id)
+            if blob is None:
+                raise RuntimeError("probe object was not found after it was written")
+            if (
+                blob.data != PROBE_DATA
+                or blob.mime_type != PROBE_MIME
+                or blob.filename != PROBE_FILENAME
+            ):
+                raise RuntimeError("probe object read-back did not match what was written")
+            step = "delete"
+            await store.delete(artifact_id)
+            deleted = True
+            if await store.get(artifact_id) is not None:
+                raise RuntimeError("probe object still exists after delete")
+            return ArtifactProbeResult(ok=True)
     except Exception as exc:  # noqa: BLE001 - a probe reports every backend failure
         return ArtifactProbeResult(
             ok=False,
             step=step,
-            error=probe_failure_text(exc, row.config),
+            error=f"no answer within {PROBE_TIMEOUT_S:g}s" if deadline.expired() else probe_failure_text(exc, row.config),
         )
     finally:
         if store is not None and artifact_id is not None and not deleted:
             try:
-                await store.delete(artifact_id)
+                async with asyncio.timeout(CLEANUP_TIMEOUT_S):
+                    await store.delete(artifact_id)
             except Exception:  # noqa: BLE001 - best-effort cleanup after the reported failure
                 logger.warning(
                     "artifact probe cleanup failed for provider %r",
@@ -120,7 +129,8 @@ async def probe_artifact_provider(
                 )
         if store is not None:
             try:
-                await store.aclose()
+                async with asyncio.timeout(CLEANUP_TIMEOUT_S):
+                    await store.aclose()
             except Exception:  # noqa: BLE001 - the probe result is already decided
                 logger.warning(
                     "artifact probe close failed for provider %r",
@@ -134,6 +144,7 @@ __all__ = [
     "PROBE_DATA",
     "PROBE_FILENAME",
     "PROBE_MIME",
+    "PROBE_TIMEOUT_S",
     "ProbeStep",
     "probe_artifact_provider",
     "probe_failure_text",

@@ -5,6 +5,48 @@
 
 var NV_FILE_EDIT_MAX_BYTES = 1024 * 1024;
 
+// GU-6: unsaved file drafts, keyed by workspace and path (the key of gap review GU-1). Each tab group renders only its active tab's document, so a
+// tab switch unmounts the file doc; a draft that lived in component state went with it. This map outlives the unmount, so the draft is there when
+// the tab comes back, and the tab bar reads it to mark a tab that holds one and to ask before closing it.
+var NV_FILE_DRAFTS = {};
+var NV_FILE_DRAFT_LISTENERS = [];
+function NV_fileDraftKey(wid, path) { return wid + ":" + path; }
+function NV_fileDraftGet(key) { return Object.prototype.hasOwnProperty.call(NV_FILE_DRAFTS, key) ? NV_FILE_DRAFTS[key] : null; }
+function NV_fileDraftSet(key, value) {
+  if (value == null) delete NV_FILE_DRAFTS[key]; else NV_FILE_DRAFTS[key] = value;
+  NV_FILE_DRAFT_LISTENERS.slice().forEach(function (fn) { fn(); });
+}
+// Re-renders the caller when any draft appears or goes; answers {dirty(path), confirmClose(tab)} for the current workspace.
+function NV_useFileDrafts() {
+  var con = NV_useConsole();
+  var tick = React.useState(0);
+  var bump = tick[1];
+  React.useEffect(function () {
+    var fn = function () { bump(function (n) { return n + 1; }); };
+    NV_FILE_DRAFT_LISTENERS.push(fn);
+    return function () { NV_FILE_DRAFT_LISTENERS = NV_FILE_DRAFT_LISTENERS.filter(function (f) { return f !== fn; }); };
+  }, []);
+  return {
+    dirty: function (path) { return NV_fileDraftGet(NV_fileDraftKey(con.wid, path)) != null; },
+    confirmClose: function (tab) { return NV_confirmCloseTab(con.wid, tab); },
+  };
+}
+// Closing a file tab that holds a draft asks first; true when the tab may close (a "yes" drops the draft). Other tabs close without a question.
+async function NV_confirmCloseTab(wid, tab) {
+  if (!tab || tab.kind !== "file") return true;
+  var key = NV_fileDraftKey(wid, tab.ref);
+  if (NV_fileDraftGet(key) == null) return true;
+  var ok = await window.confirmDialog({
+    title: "Discard unsaved changes",
+    message: tab.ref + " has changes that are not saved. Closing the tab discards them.",
+    confirmLabel: "Discard", danger: true,
+  });
+  if (ok) NV_fileDraftSet(key, null);
+  return !!ok;
+}
+window.NV_useFileDrafts = NV_useFileDrafts;
+window.NV_confirmCloseTab = NV_confirmCloseTab;
+
 function NV_FileDoc(props) {
   var con = NV_useConsole();
   var path = props.path;
@@ -13,29 +55,56 @@ function NV_FileDoc(props) {
     function (signal) { return SH_api.fileRead(con.wid, path, signal); },
     { pollMs: 0, deps: [con.wid, path] }
   );
-  var draftState = React.useState(null);
+  var draftKey = NV_fileDraftKey(con.wid, path);
+  var draftState = React.useState(function () { return NV_fileDraftGet(draftKey); });
   var draft = draftState[0];
-  var setDraft = draftState[1];
+  var setDraftState = draftState[1];
+  // The map is the draft's home (it outlives this component); the state only re-renders it. Accepts a value or an updater, like a state setter.
+  function setDraft(next) {
+    var value = typeof next === "function" ? next(NV_fileDraftGet(draftKey)) : next;
+    NV_fileDraftSet(draftKey, value);
+    setDraftState(value);
+  }
   var conflictState = React.useState(false);
   var conflict = conflictState[0];
   var setConflict = conflictState[1];
+  // The last successful save's body plus the read object the save went out
+  // against. The render shows the body only while that read is still the
+  // read on file: a refetch landing different content (an agent's write in
+  // between) must show that content in the same render, because the save's
+  // etag no longer matches the disk. A refetch that keeps the same read
+  // object (or identical content) still shows the body, which equals it.
+  var savedRef = React.useRef(null);
+  // A save already in flight; a second save would ride the same etag out
+  // and 412 into a false "changed on disk" banner.
+  var savingRef = React.useRef(false);
 
   var meta = read.data || {};
   var etag = meta.etag || null;
   var binary = meta.encoding === "base64";
   var tooBig = (meta.size_bytes || 0) > NV_FILE_EDIT_MAX_BYTES;
-  var content = draft == null ? (meta.content || "") : draft;
+  var saved = savedRef.current;
+  var content = draft != null ? draft
+    : (saved && saved.data === read.data ? saved.body : (meta.content || ""));
 
   function save(force) {
     if (draft == null) return;
-    SH_api.fileWrite(con.wid, path, draft, force ? null : etag).then(
+    if (savingRef.current) return;
+    savingRef.current = true;
+    var sent = draft;
+    SH_api.fileWrite(con.wid, path, sent, force ? null : etag).then(
       function () {
-        setDraft(null);
+        savingRef.current = false;
+        // Keystrokes typed while the write was out are the next edit:
+        // clear the draft only if it is still exactly what went out.
+        setDraft(function (cur) { return cur === sent ? null : cur; });
+        savedRef.current = { body: sent, data: read.data };
         setConflict(false);
         read.refetch();
         con.toast("Saved " + path);
       },
       function (err) {
+        savingRef.current = false;
         if (err && err.status === 412) { setConflict(true); return; }
         con.toast("Save failed: " + (err && (err.detail || err.message)));
       }
@@ -44,10 +113,16 @@ function NV_FileDoc(props) {
 
   React.useEffect(function () {
     function onKey(ev) {
-      if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "s") {
-        ev.preventDefault();
-        save(false);
-      }
+      if (!((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "s")) return;
+      // Only this editor saves: with two file docs open, one Ctrl+S must
+      // not write both, and a Ctrl+S aimed at another surface's input
+      // must not write at all. The nearest file-doc root of the focused
+      // element is this doc's root exactly when focus is inside it.
+      var el = document.activeElement;
+      var root = el && el.closest ? el.closest('[data-testid^="nv-file-doc:"]') : null;
+      if (!root || root.getAttribute("data-testid") !== "nv-file-doc:" + path) return;
+      ev.preventDefault();
+      save(false);
     }
     window.addEventListener("keydown", onKey);
     return function () { window.removeEventListener("keydown", onKey); };

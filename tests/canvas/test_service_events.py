@@ -323,16 +323,19 @@ async def test_a_disabled_or_hidden_element_does_not_take_events():
     assert (await w.canvas("s1")).event_seq == 1
 
 
-async def test_a_disabled_container_does_not_block_its_descendants():
-    """Only a HIDDEN container takes what is in it out of the user's reach. ``disabled`` is a flag on the element it is set on: the
-    controls inside a disabled Card or Row keep their own state (#790 review: a change that read ``disabled`` up the tree survived)."""
+async def test_a_disabled_container_takes_the_controls_inside_it_out_of_reach():
+    """GU-22 (decision D20, which reverses the #790 ruling that ``disabled`` is only a flag on its own element): a disabled Card or Row
+    disables what is in it, as a hidden one hides it; the server refuses the event the renderer no longer lets the person send."""
     w = make_world()
     await seed_session(w)
-    await _apply(w, 'root = Column([card, outer])\ncard = Card([inner])\ninner = Button("Inner")\ncard.disabled = true\n'
-                    'outer = Column([mid])\nmid = Row([deep])\ndeep = Button("Deep")\nouter.disabled = true\nmid.disabled = true')
-    assert (await _event(w, "inner", "click")).label == "Inner"
-    assert (await _event(w, "deep", "click")).label == "Deep"
-    assert (await w.canvas("s1")).event_seq == 2
+    await _apply(w, 'root = Column([card, outer, free])\ncard = Card([inner])\ninner = Button("Inner")\ncard.disabled = true\n'
+                    'outer = Column([mid])\nmid = Row([deep])\ndeep = Button("Deep")\nouter.disabled = true\nfree = Button("Free")')
+    for element in ("inner", "deep"):
+        with pytest.raises(CanvasEventRefused) as exc:
+            await _event(w, element, "click")
+        assert exc.value.code == "element_disabled"
+    assert (await _event(w, "free", "click")).label == "Free"
+    assert (await w.canvas("s1")).event_seq == 1
 
 
 async def test_a_hidden_container_further_up_blocks_its_descendants():

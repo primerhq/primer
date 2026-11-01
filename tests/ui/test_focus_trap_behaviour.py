@@ -811,3 +811,60 @@ def test_only_the_first_summary_of_a_details_is_a_stop(ctx) -> None:
     assert end["fwd"] is True and end["toFwd"] == "first", f"the second summary was counted as the last stop: {end}"
     lone = _tabs(ctx, "[{name:'first',tag:'button'},{name:'dt',tag:'details'},{name:'s1',tag:'summary',within:'dt'}]", "s.first.focus();")
     assert lone["fwd"] is False and lone["toFwd"] == "s1", lone
+
+
+# ---- GU-11: an overlay opened from the palette gives focus back to where the palette itself came from -----------------------------------------
+
+_PALETTE_SCENE = """
+function hookState() { return { refs: [], effects: [], i: 0, pending: [] }; }
+function paletteScene() {
+  var s = scene();
+  var A = hookState(), B = hookState();
+  __h = A; var paletteRef = open(s); commit();                       // Ctrl+K: the palette traps focus, its opener is `opener`
+  var input = s.first;                                                // the palette's input holds focus
+  var ov = el('overlay'); ov.__node = true;
+  var ovBtn = el('ovbtn', { parent: ov }); ov.focusables = [ovBtn];
+  PAGE.push(ov, ovBtn); DOC.push(ov, ovBtn);
+  // the verb runs: the overlay's first render captures the palette's input as ITS opener ...
+  __h = B; render({ current: ov }, true, null, []);
+  // ... while the palette unmounts in the same batch (its input leaves the document and its trap gives focus back to its own opener)
+  __h = A; render(paletteRef, false, null, []);
+  [s.dialog, s.first, s.middle, s.last].forEach(function (x) { var i = PAGE.indexOf(x); if (i >= 0) PAGE.splice(i, 1); });
+  commit();
+  __h = B; commit();                                                  // the overlay takes focus
+  return { s: s, A: A, B: B, ov: ov, input: input };
+}
+function closeOverlay(p) { __h = p.B; render({ current: p.ov }, false, null, []); commit(); }
+"""
+
+
+def test_an_overlay_opened_from_the_palette_returns_focus_to_what_had_it_before_the_palette(ctx) -> None:
+    out = _ev(ctx, _PALETTE_SCENE + """(function () {
+      var p = paletteScene();
+      var inside = document.activeElement.name;
+      closeOverlay(p);
+      return { inside: inside, after: document.activeElement.name };
+    })()""")
+    assert out == {"inside": "ovbtn", "after": "opener"}, out
+
+
+def test_when_that_element_is_gone_too_focus_goes_to_the_palette_button(ctx) -> None:
+    out = _ev(ctx, _PALETTE_SCENE + """(function () {
+      var p = paletteScene();
+      var home = el('palette-button'); PAGE.push(home); DOC.push(home);
+      document.querySelector = function (sel) { return sel === '[data-focus-home]' ? home : null; };
+      PAGE.splice(PAGE.indexOf(p.s.opener), 1);                       // the element focused before the palette left the page as well
+      closeOverlay(p);
+      return document.activeElement.name;
+    })()""")
+    assert out == "palette-button", out
+
+
+def test_an_overlay_opened_from_something_other_than_the_palette_still_returns_to_its_opener(ctx) -> None:
+    out = _ev(ctx, """(function () {
+      var s = scene(), ref = open(s); commit();
+      document.querySelector = function () { return el('palette-button'); };
+      render(ref, false, null, []); commit();
+      return document.activeElement.name;
+    })()""")
+    assert out == "opener", out

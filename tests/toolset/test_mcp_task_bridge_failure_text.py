@@ -18,6 +18,7 @@ import pytest
 
 from primer.bus.in_memory import InMemoryEventBus
 from primer.bus.mcp_tasks import McpTaskBridge
+from primer.model.workspace_session import WorkspaceSession
 from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
 from tests.conftest import _FakeStorageProvider
 from tests.toolset.test_mcp_tasks import (
@@ -58,12 +59,14 @@ async def _run(session) -> tuple[dict, list]:
     """Run the bridge until it publishes once; return the bus payload and the ``session.wake`` events recorded in the platform log."""
     bus = InMemoryEventBus()
     await bus.initialize()
-    scheduler = InMemoryScheduler()
+    sp = _FakeStorageProvider()
+    scheduler = InMemoryScheduler(storage_provider=sp)
     await scheduler.initialize()
     await scheduler.register_worker(worker_id="wrk", host="h", pid=1, capacity=1)
-    scheduler._sessions["sess-1"] = _make_mcp_task_parked_session(session_id="sess-1", tool_call_id="tc-1", toolset_id="srv-1", task_id="t-abc")
-    scheduler._leases["sess-1"] = _LeaseState(worker_id=None, expires_at=None, runnable=False, next_attempt_at=datetime.now(timezone.utc))
-    sp = _FakeStorageProvider()
+    # The park lives in session storage, where production keeps it.
+    await sp.get_storage(WorkspaceSession).create(
+        _make_mcp_task_parked_session(session_id="sess-1", tool_call_id="tc-1", toolset_id="srv-1", task_id="t-abc")
+    )
     store = sp.get_event_store()
     await store.ensure_schema()
     sub = bus.subscribe()

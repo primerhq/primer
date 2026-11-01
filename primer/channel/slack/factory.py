@@ -25,6 +25,7 @@ from primer.channel.slack.adapter import (
     SlackChannelAdapter,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
+from primer.channel.slack.normalizer import _ROUTED_SUBTYPES
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
 )
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 _HANDLERS_INSTALLED: set[str] = set()
+# A closed connection takes its handlers with it, so the next connection of the provider gets them again (W8).
+SLACK_CONNECTIONS.on_close = lambda provider_id: _HANDLERS_INSTALLED.discard(provider_id)
 
 
 async def _route_channel_event(
@@ -211,6 +214,15 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     oldest=message_ts, inclusive=True, limit=1,
                 )
                 orig_blocks = (hist.get("messages") or [{}])[0].get("blocks")
+                if orig_blocks is None:
+                    # A reply in a thread (where approvals are posted) is not in the channel history; conversations.replies
+                    # returns it, after the thread's parent (W56d).
+                    thread = await client.conversations_replies(
+                        channel=channel_id, ts=message_ts, latest=message_ts, oldest=message_ts, inclusive=True,
+                    )
+                    orig_blocks = next(
+                        (m.get("blocks") for m in thread.get("messages") or [] if m.get("ts") == message_ts), None,
+                    )
             except Exception:
                 logger.warning("slack: history lookup for reject update failed")
             try:
@@ -229,10 +241,11 @@ def _install_handlers(provider_id: str, app: Any) -> None:
     @app.event("message")
     async def _on_message(event, client, context):
         # Ignore bot/self messages and edits/deletes (no plain text payload).
-        # A "file_share" subtype carries the user's uploaded files, so it is
-        # let through (any other subtype - edits, deletes, joins - is dropped).
+        # A "file_share" subtype carries the user's uploaded files and a
+        # "thread_broadcast" is a thread reply also sent to the channel, so
+        # they are let through (any other subtype - edits, deletes, joins - is dropped).
         subtype = event.get("subtype")
-        if event.get("bot_id") or (subtype and subtype != "file_share"):
+        if event.get("bot_id") or (subtype and subtype not in _ROUTED_SUBTYPES):
             return
         thread_ts = event.get("thread_ts")
         channel_id = event["channel"]
@@ -266,10 +279,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                         # The question was replaced since this thread's prompt: the reply answered nothing. Tell the person (best effort).
                         await _tell_the_approval_is_routed_elsewhere(client, channel_id, event.get("user"), refusal_notice(relayed))
                     # One reply answers one question (or finds it replaced): only the gate is cleared, so the thread stays mapped to its
-                    # session and the next reply steers it.
+                    # session and the next reply steers it. Only THAT gate: a newer question asked since is left open (W56h).
                     try:
                         await CorrelationStore(sp).clear_gate(
-                            adapter._channel.id, thread_ts,
+                            adapter._channel.id, thread_ts, rec.tool_call_id,
                         )
                     except Exception:
                         logger.warning("slack: clearing the answered question of thread %s failed", thread_ts, exc_info=True)
@@ -308,6 +321,7 @@ async def _slack_factory(
     artifact_registry=None,
     workspace_registry=None,
     scheduler=None,
+    owns_inbound=True,
     **_kw,
 ):
     adapter = SlackChannelAdapter(
@@ -316,10 +330,11 @@ async def _slack_factory(
         claim_engine=claim_engine, artifact_registry=artifact_registry,
         workspace_registry=workspace_registry, scheduler=scheduler,
     )
+    adapter.owns_inbound = owns_inbound
     await adapter.initialize()
-    # The connection is now acquired; install handlers on it once.
+    # The connection is now acquired; install handlers on it once (none on a posting-only connection, W7).
     conn = SLACK_CONNECTIONS.entry(provider.id)
-    if conn is not None:
+    if conn is not None and owns_inbound:
         _install_handlers(provider.id, conn.conn.app)
     return adapter
 

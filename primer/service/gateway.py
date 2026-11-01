@@ -27,6 +27,24 @@ _ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
 
 _runner: Runner | None = None
 
+# Admission control (GS-8): a call on a viewer_auth=none service is anonymous and starts a python process, so the gateway admits a bounded number
+# at once and answers the rest "busy" at once instead of queueing without bound. Counters, not semaphores: a refused call must not wait.
+DEFAULT_GLOBAL_CAP = 32
+_global_cap = DEFAULT_GLOBAL_CAP
+_per_service_cap: int | None = None
+_running = 0
+_running_by_service: dict[str, int] = {}
+
+
+def configure_limits(*, global_cap: int, per_service_cap: int | None) -> None:
+    """Set the caps (the app lifespan calls this from ``limits``); ``per_service_cap=None`` means no per-service cap."""
+    global _global_cap, _per_service_cap
+    _global_cap, _per_service_cap = global_cap, per_service_cap
+
+
+class GatewayBusy(Exception):
+    """The gateway is at its concurrency cap; the caller should retry shortly."""
+
 
 class FunctionNotFound(Exception):
     """No such function in the active version."""
@@ -60,6 +78,26 @@ def _get_runner() -> Runner:
     if _runner is None:
         _runner = LocalHardenedRunner(env={})
     return _runner
+
+
+def _admit(service_id: str) -> None:
+    global _running
+    if _running >= _global_cap:
+        raise GatewayBusy(f"{_running} calls are running (cap {_global_cap})")
+    if _per_service_cap is not None and _running_by_service.get(service_id, 0) >= _per_service_cap:
+        raise GatewayBusy(f"service {service_id} has {_per_service_cap} calls running")
+    _running += 1
+    _running_by_service[service_id] = _running_by_service.get(service_id, 0) + 1
+
+
+def _release(service_id: str) -> None:
+    global _running
+    _running -= 1
+    left = _running_by_service.get(service_id, 1) - 1
+    if left > 0:
+        _running_by_service[service_id] = left
+    else:
+        _running_by_service.pop(service_id, None)
 
 
 def find_spec(version: ServiceVersion, fn: str) -> ServiceFunctionSpec:
@@ -108,10 +146,13 @@ async def call_function(
         address_space_bytes=_ADDRESS_SPACE_BYTES,
     )
     active = runner or _get_runner()
+    _admit(service_id)
     try:
         response = await active.run(request, timeout_seconds=spec.timeout_seconds)
     except OSError as exc:
         raise RunnerUnavailable(str(exc)) from exc
+    finally:
+        _release(service_id)
 
     if response.yield_request is not None:
         raise FunctionRaised(

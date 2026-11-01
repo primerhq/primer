@@ -325,9 +325,11 @@ async def test_resume_subagent_reyields_pushes_agent_frame():
     frame = frames[0]
     assert frame.kind == "agent"
     assert frame.tool_call_id == "parent-tcid"
-    # The NEW continuation delta (the assistant message that emitted the
-    # re-yielding tool_use) is captured, not the original parked history.
-    assert frame.llm_messages, "AgentFrame.llm_messages must be non-empty"
+    # The whole in-progress history after the system and task prefix (AG-H4): the parked call, its result, then the
+    # continuation's assistant message that emitted the re-yielding tool_use. It held only the continuation, so a second
+    # resume forgot the first call.
+    shape = [(m["role"], [p.get("id") for p in m["parts"]]) for m in frame.llm_messages]
+    assert shape == [("assistant", ["call-1"]), ("tool", ["call-1"]), ("assistant", ["call-wait"])]
 
 
 @pytest.mark.asyncio

@@ -92,5 +92,13 @@ class ContainerRuntimeAdapter(ABC):
         """Remove a named volume. Called from
         :meth:`ContainerWorkspaceBackend.destroy` after sandbox removal."""
 
+    async def remove_by_name(self, name: str, volume_name: str) -> bool:
+        """Remove the sandbox *name* and the volume *volume_name*, whatever state the sandbox is in.
+
+        For the destroy of a workspace :meth:`get_sandbox` could not hand out (not running, no token, a runtime that does
+        not answer): both would otherwise outlive the row, and a same-id create would reuse the volume. True when either
+        existed. The default knows of neither; an adapter whose sandboxes can outlive ``get_sandbox`` overrides it."""
+        return False
+
 
 __all__ = ["ContainerRuntimeAdapter"]

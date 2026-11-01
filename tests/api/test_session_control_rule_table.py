@@ -91,6 +91,7 @@ from primer.trigger.service import _LIST_PAGE_SIZE
 from primer.worker.engine_handlers import run_engine_trigger
 from primer.worker.pool import WorkerPool
 from primer.workspace.local.state import LocalStateRepo
+from tests._support.keep_destroyed_sessions import keep_destroyed_sessions  # noqa: F401  (the fixture)
 from tests.api.test_session_steer_restart_rank import WHO as PERSONS
 from tests.api.test_session_steer_restart_rank import _Spy, _access_for, _token_client, _user_id
 from tests.session._peer_fakes import FakeBus, FakeEngine, FakeRegistry, FakeScheduler, FakeSlot, FakeWorkspace, World, seed_session
@@ -776,7 +777,7 @@ class _LiveWorkspace:
             raise NotFoundError(f"{path!r} not found")
         return FileEntry(path=path, kind="file", size_bytes=len(self.files[path]), modified_at=NOW)
 
-    async def list_files(self, path: str = ".", *, recursive: bool = False, max_entries: int | None = None) -> list[FileEntry]:
+    async def list_files(self, path: str = ".", *, recursive: bool = False, max_entries: int | None = None, skip_reserved: bool = False) -> list[FileEntry]:
         return [self._entry(p) for p in sorted(self.files)][:max_entries]
 
     async def file_info(self, path: str) -> FileEntry:
@@ -1367,6 +1368,7 @@ async def test_delete_workspace_goes_on_when_the_person_holds_owner(case, own, d
     assert await world.sp.get_storage(Workspace).get("ws-2") is None
 
 
+@pytest.mark.usefixtures("keep_destroyed_sessions")
 async def test_the_rest_delete_of_a_workspace_is_decided_by_its_access(app, client, fake_storage_provider):
     """F3 over REST, access edition (P2 Task 2/3): the gate is the workspace's OWNER access, not a rank scan of its open sessions. The owner
     deletes even while an admin's session is open in it (the destroy ends that session, as it always has); a stranger to the workspace gets

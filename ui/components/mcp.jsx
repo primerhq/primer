@@ -345,9 +345,17 @@ function MC_ToolsPanel({ exposure, available }) {
   const items = Array.isArray(available.data?.items) ? available.data.items : [];
   const row = exposure.data;
   const masterEnabled = !!(row && row.enabled);
+  // The memo depends on the sorted CONTENT, not the array's identity: any
+  // new row object (the master toggle's refetch, a poll-driven re-read
+  // after another admin's edit) would otherwise rebuild the Set and the
+  // resync effect below would wipe the operator's staged picks even when
+  // the list is unchanged (UI-M14).
+  const allowedKey = JSON.stringify(
+    [...(row && row.allowed_tools || [])].sort()
+  );
   const persistedAllowed = React.useMemo(
     () => new Set(Array.isArray(row && row.allowed_tools) ? row.allowed_tools : []),
-    [row && row.allowed_tools],
+    [allowedKey],
   );
 
   // Local staged selection. Initialised from persisted set; re-syncs

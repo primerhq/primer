@@ -22,11 +22,13 @@ from pydantic import BaseModel
 
 from primer.llm._openai_common import (
     build_sampling_params as _build_sampling_params_impl,
+    parse_tool_arguments,
 )
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
     Done,
+    Error as ChatError,
     ExtendedPart,
     ImagePart,
     Message,
@@ -333,6 +335,7 @@ class _StreamState:
     """Per-stream mutable state used by :func:`_translate_chunk`."""
 
     stream_started: bool = False
+    finished: bool = False
     saw_function_call: bool = False
     tool_calls: dict[int, _ToolCallInProgress] = field(default_factory=dict)
     request_id: str | None = None
@@ -386,12 +389,19 @@ def _map_finish_reason(reason: str | None, *, saw_function_call: bool = False) -
 
 
 def _end_tool_call(in_progress: _ToolCallInProgress) -> ToolCallEnd:
-    """The ``ToolCallEnd`` of a call whose arguments have all streamed in (a buffer that is not valid JSON ends as ``{}``)."""
-    try:
-        parsed = json.loads(in_progress.arguments_buffer or "{}")
-    except json.JSONDecodeError:
-        parsed = {}
-    return ToolCallEnd(id=in_progress.call_id, arguments=parsed, index=in_progress.index)
+    """The ``ToolCallEnd`` of a call whose arguments have all streamed in (see :func:`parse_tool_arguments`)."""
+    return ToolCallEnd(
+        id=in_progress.call_id, arguments=parse_tool_arguments(in_progress.arguments_buffer), index=in_progress.index,
+    )
+
+
+def _end_of_stream(state: _StreamState) -> list[StreamEvent]:
+    """What a stream that ended owes its consumer. One that started and never sent its ``finish_reason`` chunk was cut
+    (EOF, or an early ``[DONE]``): it ends with a fatal, retryable ``network_error`` instead of quietly, so a half-streamed
+    answer or tool call is not taken for a finished one. An empty stream owes nothing."""
+    if state.stream_started and not state.finished:
+        return [ChatError(fatal=True, code="network_error", message="the stream ended before its finish_reason chunk")]
+    return []
 
 
 def _translate_chunk(  # noqa: C901
@@ -502,6 +512,7 @@ def _translate_chunk(  # noqa: C901
                     raw_reason=finish_reason,
                 )
             )
+            state.finished = True
             return out
 
     if not choices:

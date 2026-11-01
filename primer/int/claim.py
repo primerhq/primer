@@ -43,6 +43,10 @@ class ParkRequest:
     # Multi-event park: the full set of keys the session waits on (any one
     # firing wakes it). None for the common single-event park.
     parked_event_keys: list[str] | None = None
+    # A graph re-park (GR-3): the ``resume_event_payloads`` keys the resume that built it read from its claim-time row, all drained. The session
+    # adapter carries every OTHER entry whose key the new park still waits on (a reply accepted while the resume ran) and makes the row
+    # ``resumable``. None (every first park): nothing is carried.
+    drained_reply_keys: frozenset[str] | None = None
 
 
 #: Claim priorities (lower is claimed first). Three named values instead of scattered literals: a
@@ -92,6 +96,10 @@ class ReleaseOutcome:
     # while the row still carries it, and refuses the write when it is ``None``: a ``None``
     # token never matches, so a token-less release cannot move a row someone else now owns.
     claim_token: str | None = None
+    # A TRIGGER claim's due tick (the ``scheduled_for`` of its last fire): ``TriggerClaimAdapter.on_release`` advances ``next_fire_at``
+    # from it, not from the release's clock, so a tick that passed while the fire ran is still due to the next claim (W47). ``None``: from
+    # the release's clock.
+    fired_tick: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.entity_noop and (self.park is not None or self.preserve_park):

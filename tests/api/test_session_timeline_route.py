@@ -125,3 +125,51 @@ async def test_missing_workspace_is_404(
     app.state.workspace_registry.get_workspace = _none  # type: ignore[assignment]
     r = await client.get("/v1/sessions/sess-tl-1/turns/0/timeline")
     assert r.status_code == 404
+
+
+class _StatWorkspace(_FakeWorkspace):
+    """A fake that also reports a size and an mtime per file, and counts its reads."""
+
+    def __init__(self, inner: _FakeWorkspace) -> None:
+        super().__init__()
+        self._files, self.reads, self.mtime = inner._files, 0, 1
+
+    async def read_file(self, path: str) -> bytes:
+        self.reads += 1
+        return await super().read_file(path)
+
+    async def file_info(self, path: str):
+        from types import SimpleNamespace
+
+        from primer.model.except_ import NotFoundError
+        if path not in self._files:
+            raise NotFoundError(path)
+        return SimpleNamespace(size_bytes=len(self._files[path]), modified_at=self.mtime)
+
+
+@pytest.mark.asyncio
+async def test_a_second_turn_of_the_same_log_reads_nothing_and_a_grown_log_is_read_again(
+    client: httpx.AsyncClient, app, timeline_setup,
+):
+    from primer.api.routers import sessions as sessions_router
+
+    sessions_router.TIMELINE_CACHE._entries.clear()
+    _, inner = timeline_setup
+    ws = _StatWorkspace(inner)
+
+    async def _get(workspace_id: str):
+        return ws
+
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+    first = await client.get("/v1/sessions/sess-tl-1/turns/0/timeline")
+    reads = ws.reads
+    second = await client.get("/v1/sessions/sess-tl-1/turns/1/timeline")
+    again = await client.get("/v1/sessions/sess-tl-1/turns/0/timeline")
+    assert first.status_code == second.status_code == 200 and again.json() == first.json()
+    assert reads == 2 and ws.reads == reads                       # both files read once, then served from the parsed sources
+
+    path = ".state/sessions/sess-tl-1/messages.jsonl"
+    ws.write(path, ws._files[path].decode() + '{"seq":6,"kind":"user_input","payload":{"text":"3"},"created_at":"2026-08-16T10:00:05+00:00"}\n'
+             '{"seq":7,"kind":"done","payload":{"stop_reason":"stop"},"created_at":"2026-08-16T10:00:06+00:00"}\n')
+    third = await client.get("/v1/sessions/sess-tl-1/turns/2/timeline")
+    assert third.status_code == 200 and third.json()["terminal_seq"] == 7

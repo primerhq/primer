@@ -355,6 +355,25 @@ class TestTranslateResponse:
         assert out.embeddings[0].vector == [0.1, 0.2]
         assert isinstance(out.embeddings[0].vector, list)
 
+    def test_out_of_order_data_is_sorted_by_index(self) -> None:
+        # KN-19c: callers zip response.embeddings to their inputs by
+        # position (knowledge/indexing.py), so the vectors must come back
+        # in input order. Batched OpenAI-compatible backends (llama.cpp
+        # style) may return ``data`` out of order; the explicit ``index``
+        # field is the source of truth.
+        resp = NS(
+            model="text-embedding-3-small",
+            data=[
+                NS(index=2, embedding=[0.3]),
+                NS(index=0, embedding=[0.1]),
+                NS(index=1, embedding=[0.2]),
+            ],
+            usage=None,
+        )
+        out = _translate_response(resp)
+        assert [e.index for e in out.embeddings] == [0, 1, 2]
+        assert [e.vector for e in out.embeddings] == [[0.1], [0.2], [0.3]]
+
 
 # ------------------------------------------------------------------------- #
 # Embed orchestrator helpers                                                 #

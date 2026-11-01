@@ -62,3 +62,31 @@ def test_gauge_round_trips():
 def test_workspace_id_is_the_only_label():
     import primer.observability.metrics as m
     assert m.sessions_active._labelnames == ("workspace_id",)
+
+
+def _series(m) -> dict[str, float]:
+    return {s.labels["workspace_id"]: s.value for metric in m.sessions_active.collect() for s in metric.samples}
+
+
+def test_an_idle_workspace_series_is_removed_and_a_busy_one_kept():
+    """GS-38: a deleted workspace's series is not kept for the process's life. The turn that ends the last running turn of a workspace in
+    this process drops its series (only this process's turns move it, so the API process's delete could never reach a worker's series)."""
+    import primer.observability.metrics as m
+    m.reset_for_test()
+    try:
+        m.sessions_active.labels("ws-gone").inc()
+        m.sessions_active.labels("ws-busy").inc()
+        m.sessions_active.labels("ws-busy").inc()
+        for ws in ("ws-gone", "ws-busy"):
+            m.sessions_active.labels(ws).dec()
+            m.drop_idle_sessions_active(ws)
+        assert _series(m) == {"ws-busy": 1.0}
+        m.drop_idle_sessions_active("never-seen")  # no series: a no-op, not an error
+    finally:
+        m.reset_for_test()
+
+
+def test_dispatch_drops_the_idle_series_right_after_the_dec():
+    src = inspect.getsource(dispatch.run_one_session_turn)
+    dec = src.index("sessions_active.labels(session.workspace_id).dec()")
+    assert src.index("drop_idle_sessions_active(session.workspace_id)", dec) - dec < 120

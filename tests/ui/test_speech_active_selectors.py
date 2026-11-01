@@ -65,6 +65,10 @@ def _serve_active(ctx, **overrides) -> dict:
         **overrides,
     }
     ctx.eval(f"serve({json.dumps(ACTIVE_KEY)}, {json.dumps(row)});")
+    # The save re-reads the row before its PUT (GU-17): the served row answers that GET, anything else echoes.
+    ctx.eval(
+        f"HANDLER = function (m, p, body) {{ return Promise.resolve(m === 'GET' ? {json.dumps(row)} : body); }};"
+    )
     return row
 
 
@@ -84,6 +88,25 @@ def test_changing_asr_keeps_the_tts_fields(ctx) -> None:
     }]
     assert js(ctx, "TOASTS")[-1] == {"kind": "success", "title": "Speech default saved"}
     assert ctx.eval("RELOADS") == 1
+
+
+def test_a_change_is_laid_over_the_row_read_just_before_the_put(ctx) -> None:
+    """GU-17: the selector's row is a poll-less read, so another admin's change to the other fields must not be put back."""
+    _serve_active(ctx)
+    ctx.eval(r'''
+      HANDLER = function (method, path, body) {
+        if (method === "GET") return Promise.resolve({ id: "active-speech", stt_provider_id: "asr-old", tts_provider_id: "tts-elsewhere", tts_voice: "voice-elsewhere" });
+        return Promise.resolve(body);
+      };
+      mountStt([{ id: "asr-old" }, { id: "asr-new" }]);
+      changeSelect("pc-active-stt-provider", "asr-new");
+    ''')
+    assert settle(ctx) == "fulfilled"
+    assert _put_bodies(ctx) == [{
+        "stt_provider_id": "asr-new",
+        "tts_provider_id": "tts-elsewhere",
+        "tts_voice": "voice-elsewhere",
+    }]
 
 
 def test_changing_the_tts_provider_resets_the_voice(ctx) -> None:

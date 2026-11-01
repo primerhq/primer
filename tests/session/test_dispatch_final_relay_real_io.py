@@ -33,7 +33,7 @@ WORKSPACE_ID = "w1"
 
 
 class _SpyWorkspace:
-    """The real workspace, with every ``read_file`` recorded (and, when asked, never answered)."""
+    """The real workspace, with every read of the history (``read_file``, or the ranged ``read_file_tail`` the relay reads the end with) recorded (and, when asked, never answered)."""
 
     def __init__(self, workspace, reads: list[str], *, hang: bool = False) -> None:
         self._workspace, self._reads, self._hang = workspace, reads, hang
@@ -46,6 +46,12 @@ class _SpyWorkspace:
         if self._hang:
             await asyncio.Event().wait()        # a runtime connection that never answers
         return await self._workspace.read_file(path)
+
+    async def read_file_tail(self, path: str, max_bytes: int):
+        self._reads.append(path)
+        if self._hang:
+            await asyncio.Event().wait()
+        return await self._workspace.read_file_tail(path, max_bytes)
 
 
 class _Registry:
@@ -156,7 +162,7 @@ class TestTheRelayReadsThroughTheWorkspaceTheWayProductionIsWired:
     async def test_a_reply_bound_session_that_completes_posts_its_final_answer(self, tmp_path) -> None:
         run = await _run_with_the_pools_io(tmp_path, metadata={SESSION_REPLY_BINDING_KEY: BINDING})
         assert run.texts == ["here is the answer"]
-        assert len(run.reads) == 1 and run.reads[0].endswith("/messages.jsonl"), "the history is read once, through read_file"
+        assert len(run.reads) == 1 and run.reads[0].endswith("/messages.jsonl"), "the history is read once (its end, through read_file_tail)"
 
     async def test_a_thread_mapped_session_relays_every_turn_through_the_same_path(self, tmp_path) -> None:
         """``relay_every_turn``: a turn that leaves the session WAITING still posts its answer (max_tokens here)."""

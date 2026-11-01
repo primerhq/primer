@@ -20,7 +20,8 @@ untyped (``extra="allow"``; the table is selected by the class NAME, as in m007 
 the clear, as the storage layer holds them. Only the ``backend`` dict is copied with a new ``image``.
 
 The log names the template id and the images (``template_id``, ``previous_image``, ``image``) and never anything else: not the env, not
-a file source, not a url. Idempotent: a moved row already names the runtime image, so a second run finds nothing to do.
+a file source, not a url. Idempotent: a moved row already names the runtime image, so a second run finds nothing to do. Only the container
+rows not on the runtime image are read, and the new ``backend`` is written with ``patch_if``, the rest of the row as stored (PERF-T16).
 """
 
 from __future__ import annotations
@@ -32,8 +33,10 @@ from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
-from primer.model.storage import OffsetPage
+from primer.model.storage import Op
 from primer.model.workspace import DOCKER_RUNTIME_IMAGE
+from primer.storage.migrations._rows import iter_rows
+from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
 
@@ -67,19 +70,18 @@ class M009DockerTemplateRuntimeImage:
 
     async def apply(self, sp: StorageProvider) -> None:
         storage = sp.get_storage(WorkspaceTemplate)
-        rows: list[WorkspaceTemplate] = []
-        offset = 0
-        while True:
-            page = await storage.list(OffsetPage(offset=offset, length=_PAGE))
-            rows.extend(page.items)
-            if len(page.items) < _PAGE:
-                break
-            offset += _PAGE
-        for row in rows:
+        # Every row _previous_image moves, and a few it skips (no image key): NE alone would miss a null image, so IS NULL is OR-ed in.
+        stale = Q.or_(
+            Q(WorkspaceTemplate).where_null("backend.image"),
+            Q(WorkspaceTemplate).where_op("backend.image", Op.NE, DOCKER_RUNTIME_IMAGE),
+        ).where("backend.kind", "container").build()
+        async for row in iter_rows(storage, predicate=stale, page_size=_PAGE):
             moved, previous = _previous_image(row.backend)
             if not moved:
                 continue
-            await storage.update(row.model_copy(update={"backend": {**row.backend, "image": DOCKER_RUNTIME_IMAGE}}))
+            await storage.patch_if(
+                row.id, {"backend": {**row.backend, "image": DOCKER_RUNTIME_IMAGE}}, where={("backend", "kind"): ["container"]},
+            )
             logger.warning(
                 "moved a Docker workspace template to the runtime image it already ran",
                 extra={

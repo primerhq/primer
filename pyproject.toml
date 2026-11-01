@@ -109,6 +109,10 @@ packages = ["primer"]
 # tree is mapped to `primer/_ui` so an installed `primer-ai` serves the
 # console without a separate checkout; `_resolve_ui_dir()` prefers it.
 "ui" = "primer/_ui"
+# The agent docs and the platform wiki, for the same reason: `resolve_ai_docs_dir()` and `resolve_wiki_dir()` look at `primer/_docs/...` first, so a
+# pip-installed `primer-ai` seeds the system collection and the legacy docs layer without a checkout beside it.
+"docs/agents" = "primer/_docs/agents"
+"docs/wiki" = "primer/_docs/wiki"
 
 
 [tool.pytest.ini_options]

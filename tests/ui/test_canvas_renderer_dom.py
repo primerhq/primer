@@ -25,7 +25,7 @@ from tests.ui._canvas_dom import canvas_dom_context, js
 
 ALLOWED_TAGS = {"MAIN", "DIV", "SECTION", "H1", "H2", "H3", "P", "PRE", "CODE", "STRONG", "EM", "BR", "HR", "BUTTON", "SPAN", "LABEL",
                 "SELECT", "OPTION", "FIELDSET", "LEGEND", "INPUT", "IMG", "AUDIO", "IFRAME"}
-ALLOWED_ATTRIBUTES = {"id", "type", "data-cv-id", "data-cv", "sandbox", "title", "aria-busy", "aria-label", "inert"}
+ALLOWED_ATTRIBUTES = {"id", "type", "data-cv-id", "data-cv", "sandbox", "title", "aria-busy", "aria-disabled", "aria-label", "inert"}
 HOSTILE = '<img src=x onerror="alert(1)">'
 
 
@@ -148,7 +148,8 @@ def test_a_button_click_sends_one_event_and_shows_busy(ctx):
     assert events(ctx) == [], "a script's click is not a person's"
     ctx.eval("FD.byId('go').click(); FD.byId('go').click(); FD.byId('off').click();")
     assert events(ctx) == [{"type": "event", "element": "go", "kind": "click"}]
-    assert js(ctx, "[FD.byId('go').disabled, FD.byId('go').attrs['aria-busy']]") == [True, "true"]
+    # busy is aria-disabled, not natively disabled: the pressed control keeps focus (GU-2)
+    assert js(ctx, "[FD.byId('go').disabled, FD.byId('go').attrs['aria-busy'], FD.byId('go').attrs['aria-disabled']]") == [False, "true", "true"]
     ctx.eval("FD.post({type: 'busy', element: 'go', on: false});")
     assert js(ctx, "[FD.byId('go').disabled, FD.byId('go').attrs['aria-busy'] || null]") == [False, None]
     ctx.eval("FD.byId('go').click(); FD.advance(30001);")

@@ -105,7 +105,7 @@ class Workspace(ABC):
         Backends that persist state via a local git repo (currently
         :class:`primer.workspace.local.LocalWorkspace`) expose a
         :class:`primer.workspace.local.state.LocalStateRepo` here so
-        downstream callers — primarily the graph executor — can
+        downstream callers - primarily the graph executor - can
         commit per-graph state directly. Backends that do not yet
         offer a compatible state-repo surface (sandbox / container /
         k8s) return ``None``; callers that require state_repo MUST
@@ -228,6 +228,7 @@ class Workspace(ABC):
         *,
         recursive: bool = False,
         max_entries: int | None = None,
+        skip_reserved: bool = False,
     ) -> list[FileEntry]:
         """List files in the workspace (user-facing, NOT a tool).
 
@@ -243,6 +244,11 @@ class Workspace(ABC):
         preserving the exact pre-existing behaviour for any caller that
         doesn't pass it. Ignored when ``recursive=False`` (a one-level
         ``iterdir`` is already bounded by the directory's own size).
+
+        ``skip_reserved`` makes a recursive walk never DESCEND into the runtime's reserved trees (``state_path`` and ``tmp_path``, normally
+        ``.state`` and ``.tmp``): the listing a non-admin gets. Pruning during the walk, not after, matters because the walk is capped at the
+        page's size: a state repo with thousands of git objects would otherwise fill the whole capped walk with entries the page then drops
+        (review of workspaces, W55c). Default ``False``: the walk lists everything, as an admin sees it.
         """
 
     @abstractmethod
@@ -253,6 +259,13 @@ class Workspace(ABC):
         and the workspace tool dispatch -- the user might want a 100 MB
         binary.
         """
+
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        """The file's bytes from byte ``offset`` (empty at or past the end): what a log reader asks for each tick instead of the whole file.
+
+        The default reads the whole file and slices; a backend that can seek overrides it.
+        """
+        return (await self.read_file(path))[offset:]
 
     @abstractmethod
     def download_archive(
@@ -277,7 +290,7 @@ class Workspace(ABC):
     async def file_info(self, path: str) -> FileEntry:
         """Return :class:`FileEntry` for one path (file, dir, or symlink).
 
-        User-facing — distinct from the agent ``ls`` tool which
+        User-facing - distinct from the agent ``ls`` tool which
         returns descriptive metadata for many entries. Raises
         :class:`primer.model.except_.NotFoundError` if the path does
         not exist; :class:`primer.model.except_.BadRequestError` if
@@ -374,7 +387,7 @@ class Workspace(ABC):
         """Cheap liveness probe. True if the underlying transport is healthy.
 
         Called by the workspace probe task at ~30s intervals to drive
-        phase transitions. Must be fast — implementations should not
+        phase transitions. Must be fast - implementations should not
         retry or wait beyond the connection's natural timeout.
         """
 

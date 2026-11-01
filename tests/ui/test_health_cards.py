@@ -29,6 +29,9 @@ window.primerApi = {
   apiFetch: function (method, path) { __asked.push([method, path]); return Promise.resolve({}); },
 };
 var SH_api = { pendingAttention: function () { __asked.push(["GET", "/yields/pending"]); return Promise.resolve({ total: 0 }); } };
+// The attention card reads the shared hook (T87): it asks under the rail's key and carries the aggregate through.
+var NV_useConsole = function () { return { workspaces: [] }; };
+var SH_useAttention = function () { return window.primerApi.useResource("nv-rail-inbox", function () { return SH_api.pendingAttention(); }); };
 // the colour of each card's dot, in card order, as the last render drew them
 var __dots = [];
 (function () {

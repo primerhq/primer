@@ -507,8 +507,8 @@ fetch, speech and artifact storage providers stay global settings (below), not g
 - New rows are private; rows the platform writes are public: the bootstrap runner's providers, and the profile the
   public seeded agents run on, which `publish_default_profile` (`primer/bootstrap/seed.py`) makes public together with its
   members and their LLM providers, only while no admin ever shared them (`rev` 0). The ensure pass (boot and
-  `/setup/seed`) calls it ONLY while it writes the seeded roster for the first time (a fresh install, the wizard's seed),
-  for the profile those agents are written with; a later boot or seed re-run publishes nothing, so a private profile an
+  `/setup/seed`) calls it ONLY while it writes the seeded roster for the first time (a fresh install, the wizard's seed; a `SeedMarker` row `agent-roster`, written by the first pass, records it, so an admin who deletes the roster to start over publishes nothing),
+  for the profile those agents are written with (a re-created seeded agent takes the profile the `operator` agent already runs on, else another seeded agent's, and the first profile only when none exists); a later boot or seed re-run publishes nothing, so a private profile an
   admin adds stays private, and pointing the seeded agents at one is the admin's call (users get
   `model_profile_unusable`). Existing rows become public in migration 28.
 - The choices lists (`GET /v1/model_profiles/choices`, `system__list_model_profile_choices`,

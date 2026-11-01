@@ -80,9 +80,42 @@ def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
     )
 
 
+#: How far below the cursor a record must be before the tail is known to hold every record at or past it. Records are written in seq order
+#: except that a record reserved while a turn runs (task 55) can land in the file before the turn's own later records, which sit inside the
+#: turn writer's lease (``persistence._SEQ_LEASE_BLOCK``, 64); twice that is the margin.
+_WINDOW_MARGIN = 128
+
+
+async def window_lines(read_tail, cursor: int) -> list[str] | None:
+    """The lines of the log's end that hold every record at ``seq >= cursor``, or ``None`` when the log cannot be read by range.
+
+    ``read_tail(max_bytes)`` is the ranged read (``(bytes, is_whole_file)``); the tail is widened until it holds a record with
+    ``seq <= cursor - _WINDOW_MARGIN`` or is the whole file. :func:`count_turn_state` ignores records below the cursor, so its answer on these lines
+    is its answer on the whole log.
+    """
+    from primer.workspace.tail_read import read_window
+
+    floor = cursor - _WINDOW_MARGIN
+
+    def enough(lines: list[bytes]) -> bool:
+        if floor < 0:
+            return False
+        for line in reversed(lines):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and "kind" in obj and isinstance(obj.get("seq"), int) and obj["seq"] <= floor:
+                return True
+        return False
+
+    data = await read_window(read_tail, enough)
+    return None if data is None else data.decode("utf-8", "replace").splitlines()
+
+
 def has_open_turn(raw_lines: list[str], cursor: int) -> bool:
     """True when a user message in the window has no closing terminal after it."""
     return count_turn_state(raw_lines, cursor=cursor).open_turns > 0
 
 
-__all__ = ["TurnCount", "count_turn_state", "has_open_turn"]
+__all__ = ["TurnCount", "count_turn_state", "has_open_turn", "window_lines"]
