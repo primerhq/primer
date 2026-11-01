@@ -45,6 +45,14 @@ class MemoryEntry:
     body: EntryBody
     meta: dict[str, Any] = field(default_factory=dict)
 
+    def as_dict(self) -> dict[str, Any]:
+        """The entry as the routes and tools show it: the body's items as ``{id, text}``."""
+        items = lambda pairs: [{"id": i, "text": t} for i, t in pairs]  # noqa: E731
+        return {
+            "name": self.name, "status": self.status, "description": self.description, "meta": self.meta,
+            "body": {"steps": items(self.body.steps), "pitfalls": items(self.body.pitfalls), "example": items(self.body.example)},
+        }
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
