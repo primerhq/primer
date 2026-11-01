@@ -7,7 +7,7 @@ accepted and ignored (pool-less parity, like the SQLite store).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from primer.int.event_store import EventStore
@@ -112,7 +112,7 @@ class InMemoryEventStore(EventStore):
     async def delete_cursor(self, subscriber_id: str) -> None:
         self._cursors.pop(subscriber_id, None)
 
-    async def active_cursor_floor(self) -> int | None:
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
         return min(self._cursors.values()) if self._cursors else None
 
 

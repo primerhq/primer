@@ -13,7 +13,7 @@ Spec: ``docs/superpowers/specs/2026-08-22-event-bus-design.md``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from primer.model.event import Event
@@ -121,5 +121,8 @@ class EventStore(ABC):
         """Forget ``subscriber_id``'s cursor. Idempotent."""
 
     @abstractmethod
-    async def active_cursor_floor(self) -> int | None:
-        """The smallest stored cursor, or ``None`` when no cursors exist."""
+    async def active_cursor_floor(self, *, stale_after: timedelta | None = None) -> int | None:
+        """The smallest stored cursor, or ``None`` when no cursors exist.
+
+        With ``stale_after``, a cursor not written for that long is ignored: a paused or orphaned one-shot subscriber must not hold retention back
+        for ever. A store that does not date its cursors ignores the argument."""
