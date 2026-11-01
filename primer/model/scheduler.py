@@ -81,6 +81,13 @@ class WorkerConfig(BaseModel):
             "Used only to build the stable metric label."
         ),
     )
+    session_log_verify_reads: bool = Field(
+        default=False,
+        description=(
+            "Compare every cached read of a session's messages.jsonl with a full parse and fail loudly on a mismatch (Task 14 stage 1). "
+            "Costs one full parse per read, so it is for tests and a canary instance; the cache itself is always on."
+        ),
+    )
     parallel_readonly_tool_calls: bool = Field(
         default=False,
         description=(

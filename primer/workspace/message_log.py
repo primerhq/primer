@@ -44,8 +44,17 @@ class LogView:
     size: int
 
 
+_verify_configured = False
+
+
+def set_verify_default(on: bool) -> None:
+    """``WorkerConfig.session_log_verify_reads``: verify every cached read of every session (the canary setting)."""
+    global _verify_configured
+    _verify_configured = bool(on)
+
+
 def verify_default() -> bool:
-    return os.environ.get("PRIMER_SESSION_LOG_VERIFY_READS", "") not in ("", "0", "false", "False")
+    return _verify_configured or os.environ.get("PRIMER_SESSION_LOG_VERIFY_READS", "") not in ("", "0", "false", "False")
 
 
 class MessageLogCache:
@@ -122,4 +131,4 @@ class MessageLogCache:
             raise MessageLogMismatch("the cached highest event-log seq differs from a full parse of messages.jsonl")
 
 
-__all__ = ["LogView", "MessageLogCache", "MessageLogMismatch", "verify_default"]
+__all__ = ["LogView", "MessageLogCache", "MessageLogMismatch", "set_verify_default", "verify_default"]

@@ -109,6 +109,9 @@ class WorkerPool:
         engine: "ClaimEngine",
     ) -> None:
         self.config = config
+        from primer.workspace.message_log import set_verify_default
+
+        set_verify_default(config.session_log_verify_reads)
         self._scheduler = scheduler
         self._storage = storage
         self._workspace_registry = workspace_registry
