@@ -375,6 +375,35 @@ async def test_an_unreadable_registration_is_renewed_only_by_full_access(svc, kb
     assert mock_oauth_mcp.state.registrations == []
 
 
+@pytest.mark.parametrize("why", ["unreadable", "issuer"])
+async def test_with_a_public_url_an_unreadable_or_moved_issuer_registration_is_renewed_only_by_full_access(
+    why, kb, fake_storage_provider, mock_oauth_mcp,
+):
+    """GX-13: with PRIMER_PUBLIC_URL set the redirect cannot differ, but a sign-in still re-registered when the stored client could not be read (a
+    process with another encryption key) or the issuer changed, replacing the client every person's tokens name and signing them all out. Now
+    only someone with full access renews it there too; a moved public URL still re-registers as before (above)."""
+    from primer.model.except_ import ConflictError
+    from primer.toolset.oauth.store import McpOAuthStore
+    from tests.toolset.oauth._service_helpers import NOW, OTHER_KEY
+
+    public = ToolsetOAuthService(storage_provider=fake_storage_provider, secret_box=SecretBox.from_key_material(KEY), public_url="https://primer.example")
+    try:
+        redirect = public.redirect_uri("kb", request_base_url=None)
+        sealer = McpOAuthStore(fake_storage_provider, SecretBox.from_key_material(OTHER_KEY if why == "unreadable" else KEY))
+        issuer = mock_oauth_mcp.issuer if why == "unreadable" else "https://old-issuer.example"
+        await sealer.put_client(McpOAuthClient(id="kb", issuer=issuer, redirect_uri=redirect, client_id="old-client",
+                                               client_secret_enc=sealer.seal("old-secret"), registered_at=NOW))
+
+        with pytest.raises(ConflictError, match="full access"):
+            await public.start_sign_in(target_of(kb, B), redirect_uri=redirect, started_by="u-b", browser_binding=BINDING, may_reregister=False)
+        assert mock_oauth_mcp.state.registrations == [] and (await public.store.get_client("kb")).client_id == "old-client"
+
+        await public.start_sign_in(target_of(kb, A), redirect_uri=redirect, started_by="u-a", browser_binding=BINDING, may_reregister=True)
+        assert (await public.store.get_client("kb")).client_id != "old-client"
+    finally:
+        await public.aclose()
+
+
 async def test_with_auth_enabled_the_system_person_gets_no_browser_token(fake_storage_provider, clock, kb, mock_oauth_mcp):
     """Review finding 2: the shared browser row is the system person's only on an auth-disabled install. With auth enabled, a run whose person is
     the system principal (a system-owned trigger's fire, a session made while auth was off and resumed, a graph fallback) gets sign-in required,

@@ -50,6 +50,8 @@ class WebSearchRegistry(BusInvalidated):
         self._factory = factory or default_web_search_factory
         self._instances: dict[str, WebSearchAdapter] = {}
         self._lock = asyncio.Lock()
+        # Bumped by every eviction and flush: a get that read its row before one never caches what it built (GX-4).
+        self._generation = 0
 
     async def get(self, provider_id: str) -> WebSearchAdapter:
         """Resolve a row to its live adapter instance.
@@ -67,6 +69,7 @@ class WebSearchRegistry(BusInvalidated):
                 return cached
 
         # Slow path: storage + construct OUTSIDE the lock.
+        generation = self._generation
         row = await self._storage.get(provider_id)
         if row is None:
             raise NotFoundError(
@@ -78,7 +81,10 @@ class WebSearchRegistry(BusInvalidated):
         async with self._lock:
             winner = self._instances.get(provider_id)
             if winner is None:
-                self._instances[provider_id] = candidate
+                if self._generation == generation:
+                    self._instances[provider_id] = candidate
+                else:
+                    self._retirement.retire(candidate)  # built from a row read before an eviction: for this caller only
                 return candidate
 
         # Race-loser path: close our candidate, return the winner.
@@ -93,12 +99,14 @@ class WebSearchRegistry(BusInvalidated):
     async def _invalidate_local(self, provider_id: str) -> None:
         """Drop the cached instance for one id (this process); retire it."""
         async with self._lock:
+            self._generation += 1
             inst = self._instances.pop(provider_id, None)
         if inst is not None:
             self._retirement.retire(inst)         # closed once its in-flight calls are done (GX-1)
 
     def _flush_local(self) -> None:
         """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        self._generation += 1
         instances, self._instances = list(self._instances.values()), {}
         for inst in instances:
             self._retirement.retire(inst)

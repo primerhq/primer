@@ -132,11 +132,24 @@ async def test_hydrate_prompt_parts_noop_when_storage_is_none():
 
 
 @pytest.mark.asyncio
-async def test_hydrate_prompt_parts_missing_artifact_leaves_part_unhydrated():
+async def test_hydrate_prompt_parts_missing_artifact_becomes_a_note():
+    """GX-8: an image with no bytes and no url made the provider refuse every later turn of the session; the model is told instead."""
+    from primer.llm._openai_compat import _messages_to_chat
+
     arts = _MemArtifacts()
     messages = [Message(role="user", parts=[
+        TextPart(text="what is this?"),
         ImagePart(artifact_id="does-not-exist", mime_type="image/png"),
     ])]
     out = await hydrate_prompt_parts(arts, messages)
-    assert out[0].parts[0].artifact_id == "does-not-exist"
-    assert out[0].parts[0].data is None
+    assert out[0].parts[1] == TextPart(text="[attachment unavailable: image/png]")
+    assert "image_url" not in repr(_messages_to_chat(out))
+    assert messages[0].parts[1].artifact_id == "does-not-exist"     # the stored history is not touched
+
+
+@pytest.mark.asyncio
+async def test_hydrate_prompt_parts_missing_artifact_with_a_url_keeps_the_url():
+    arts = _MemArtifacts()
+    part = ImagePart(artifact_id="does-not-exist", url="https://example.com/a.png", mime_type="image/png")
+    out = await hydrate_prompt_parts(arts, [Message(role="user", parts=[part])])
+    assert out[0].parts[0] == part

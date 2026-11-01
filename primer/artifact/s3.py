@@ -146,6 +146,7 @@ class S3ArtifactStorage(ArtifactStorage):
         self._closed = False
         # Removals of the objects of puts that did not complete; the event loop keeps only weak references to tasks.
         self._pending: set[asyncio.Task[None]] = set()
+        self._warned_no_list = False
 
     @property
     def config(self) -> S3ArtifactConfig:
@@ -284,6 +285,8 @@ class S3ArtifactStorage(ArtifactStorage):
             # Only a missing key reads as a missing artifact. A missing bucket or a refused read is an outage, not an absent file: it is raised.
             if _error_code(exc) in _MISSING_CODES:
                 return None
+            if _error_code(exc) == "AccessDenied" and await self._cannot_list(client, key):
+                return None
             raise
         async with response["Body"] as stream:
             data = await stream.read()
@@ -293,6 +296,27 @@ class S3ArtifactStorage(ArtifactStorage):
             mime_type=response.get("ContentType") or "application/octet-stream",
             filename=unquote(filename) if filename is not None else None,
         )
+
+    async def _cannot_list(self, client: Any, key: str) -> bool:
+        """True when these credentials lack ``s3:ListBucket``: S3 then answers a read of a MISSING key with 403 AccessDenied instead of 404
+        (GX-12), the usual least-privilege artifact policy. With ListBucket a missing key answers 404, so a 403 is a real refusal (False).
+        A read refused outright still fails the probe, at the read of the object it has just written."""
+        from botocore.exceptions import ClientError
+
+        try:
+            await client.list_objects_v2(Bucket=self.bucket, Prefix=key, MaxKeys=1)
+        except ClientError as exc:
+            if _error_code(exc) != "AccessDenied":
+                return False
+            if not self._warned_no_list:
+                self._warned_no_list = True
+                logger.warning(
+                    "S3 artifact store on bucket %r: the credentials lack s3:ListBucket, so a missing object answers 403; such a read is "
+                    "taken as missing. Grant s3:ListBucket on the bucket to tell a refused read from a missing one",
+                    self.bucket,
+                )
+            return True
+        return False
 
     async def delete(self, artifact_id: str) -> None:
         key = self._key_or_none(artifact_id, "delete")

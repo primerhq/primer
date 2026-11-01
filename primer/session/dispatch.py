@@ -1375,6 +1375,7 @@ async def run_one_session_turn(
             # on refresh. Before delta_buffer.aclose() so the live parts are closed too.
             await _make_partial_output_durable("stop", "finishing the cancel without it")
         _metrics.sessions_active.labels(session.workspace_id).dec()
+        _metrics.drop_idle_sessions_active(session.workspace_id)
         reset_delegation_sink(_delegation_token)
         cancel_task.cancel()
         try:

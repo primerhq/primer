@@ -8,6 +8,7 @@ source of truth.
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 from primer.model.harness import OverrideMapping
@@ -108,7 +109,7 @@ def apply_override_mappings(
     entity: dict[str, Any],
     mappings: list[OverrideMapping],
 ) -> dict[str, Any]:
-    """Replace each mapped pointer in a deep-copy with ``{{ overrides.<path> }}``.
+    """Replace each mapped pointer in a deep-copy with ``{{ overrides.<path> }}`` (a segment that is not a plain name in brackets).
 
     Raises ``KeyError(field_path)`` if any mapping's pointer doesn't resolve.
     """
@@ -116,9 +117,17 @@ def apply_override_mappings(
     for m in mappings:
         # Verify path resolves (raises KeyError if not).
         _resolve_pointer(out, m.field_path)
-        token = "{{ overrides." + m.override_path + " }}"
-        _set_pointer(out, m.field_path, token)
+        _set_pointer(out, m.field_path, "{{ overrides" + _jinja_lookup(m.override_path) + " }}")
     return out
+
+
+def _jinja_lookup(override_path: str) -> str:
+    """``.seg`` for a plain name, ``['seg']`` otherwise (GX-6): Jinja reads ``x.0`` as ``x[0]`` (an int), ``a-b`` as ``a - b`` and ``x.items`` as
+    the dict method, while the composed schema keys each value by the literal segment."""
+    return "".join(
+        f".{seg}" if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", seg) and not hasattr(dict, seg) else f"[{seg!r}]"
+        for seg in override_path.split(".")
+    )
 
 
 # Literal Jinja delimiters the inbound renderer would interpret (KN-17):

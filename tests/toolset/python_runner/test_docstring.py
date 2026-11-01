@@ -78,3 +78,38 @@ def test_a_malformed_example_is_an_error() -> None:
             "    Examples:\n        not json\n"
         )
     assert exc.value.field == "examples"
+
+
+def test_a_wrapped_arg_description_with_a_colon_is_kept_whole_in_a_cleaned_docstring() -> None:
+    """GX-11: registration parses ``ast.get_docstring`` output, where names sit at 4 and continuations at 8; a continuation holding a colon
+    (a URL, a time, "Note:") was read as a new argument."""
+    parsed = parse_docstring(
+        "Do a thing.\n\n"
+        "Use when you must.\n\n"
+        "Args:\n"
+        "    url: the page to fetch, for example\n"
+        "        https://example.com/a\n"
+        "    when: a time such as\n"
+        "        10:30\n"
+    )
+    assert parsed.args == {"url": "the page to fetch, for example https://example.com/a", "when": "a time such as 10:30"}
+
+
+def test_a_wrapped_arg_description_with_a_colon_is_kept_whole_through_registration() -> None:
+    from primer.toolset.python_runner.registration import register_module
+
+    src = '''
+@primer_tool()
+def fetch(url: str) -> str:
+    """Fetch one page.
+
+    Use when the user names a page.
+
+    Args:
+        url: the page to fetch, for example
+            https://example.com/a
+    """
+    return ""
+'''
+    [tool] = register_module(src, "ts", 30.0)
+    assert tool.tool.args_schema["properties"]["url"]["description"] == "the page to fetch, for example https://example.com/a"

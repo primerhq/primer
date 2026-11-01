@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+import weakref
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from primer.common.toolset_ids import canonical_toolset_id
@@ -451,6 +452,9 @@ class ProviderRegistry:
         # the staleness the flush exists to clear (see arch-review batch 1,
         # MEDIUM-2).
         self._cache_generation = 0
+        # One lock per (cache, id) being built, held across that miss's storage read and build only: a hit takes no lock and a miss never
+        # waits for another id's (GX-7). Weak values: a lock lives only while a lookup holds it.
+        self._build_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = weakref.WeakValueDictionary()
         self._invalidation_bus: InvalidationBus | None = None
         self._invalidation_subs: list[InvalidationSubscription] = []
 
@@ -462,21 +466,33 @@ class ProviderRegistry:
         """The storage the registry resolves rows from (read access checks on a toolset row use it)."""
         return self._sp
 
-    async def get_llm(self, provider_id: str) -> LLM:
-        async with self._lock:
-            cached = self._llm_cache.get(provider_id)
+    async def _cached(self, kind: str, cache: dict[str, Any], key: str, build: Callable[[], Awaitable[Any]]) -> Any:
+        """``cache[key]``, else what ``build`` makes, cached unless an eviction or a flush landed while it was built (the generation moved): that
+        adapter came from a row read before it, so it serves this caller only."""
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        lock = self._build_locks.setdefault((kind, key), asyncio.Lock())
+        async with lock:
+            cached = cache.get(key)
             if cached is not None:
                 return cached
             generation = self._cache_generation
+            adapter = await build()
+            if self._cache_generation == generation:
+                cache[key] = adapter
+            return adapter
+
+    async def get_llm(self, provider_id: str) -> LLM:
+        async def build() -> LLM:
             row = await self._sp.get_storage(LLMProvider).get(provider_id)
             if row is None:
                 raise NotFoundError(
                     f"LLMProvider {provider_id!r} does not exist"
                 )
-            adapter = self._retirement.track(self._llm_factory(row))
-            if self._cache_generation == generation:
-                self._llm_cache[provider_id] = adapter
-            return adapter
+            return self._retirement.track(self._llm_factory(row))
+
+        return await self._cached("llm", self._llm_cache, provider_id, build)
 
     async def get_aggregated_llm(
         self,
@@ -495,8 +511,8 @@ class ProviderRegistry:
         ``resolve_llm()`` call would reset the cursor every time, and
         ROUND_ROBIN routing would never rotate past member[0].
 
-        Takes an id and re-fetches the row itself, INSIDE the lock,
-        exactly mirroring :meth:`get_llm` -- an earlier version took the
+        Takes an id and re-fetches the row itself, after sampling the
+        cache generation, exactly mirroring :meth:`get_llm` -- an earlier version took the
         caller's (:func:`primer.model_profile.resolve_llm`) already-fetched
         row instead, on the reasoning that the caller's own fetch already
         told it which branch to take. That was a real bug, not a style
@@ -507,7 +523,7 @@ class ProviderRegistry:
         between it and the cache insert, so it could never observe a
         flush that happened before this method was even entered. Caching
         is what introduces the race (a fresh-construction-per-call design
-        could never go stale); re-fetching in-lock is what closes it, the
+        could never go stale); re-fetching after the sample is what closes it, the
         same way it's already closed for every other cache in this class.
         One redundant read per cache-miss is negligible at
         once-per-turn-build call frequency.
@@ -518,53 +534,38 @@ class ProviderRegistry:
         ignoring anything about the calling context beyond the id once
         cached.
         """
-        async with self._lock:
-            cached = self._aggregated_llm_cache.get(profile_id)
-            if cached is not None:
-                return cached
-            generation = self._cache_generation
+        async def build() -> "AggregatedLLM":
             row = await self._sp.get_storage(ModelProfile).get(profile_id)
             if row is None:
                 raise NotFoundError(
                     f"ModelProfile {profile_id!r} does not exist"
                 )
             from primer.llm.aggregated import AggregatedLLM
-            adapter = self._retirement.track(AggregatedLLM(row, resolve_member=resolve_member))
-            if self._cache_generation == generation:
-                self._aggregated_llm_cache[profile_id] = adapter
-            return adapter
+            return self._retirement.track(AggregatedLLM(row, resolve_member=resolve_member))
+
+        return await self._cached("aggregated_llm", self._aggregated_llm_cache, profile_id, build)
 
     async def get_embedder(self, provider_id: str) -> Embedder:
-        async with self._lock:
-            cached = self._embedder_cache.get(provider_id)
-            if cached is not None:
-                return cached
-            generation = self._cache_generation
+        async def build() -> Embedder:
             row = await self._sp.get_storage(EmbeddingProvider).get(provider_id)
             if row is None:
                 raise NotFoundError(
                     f"EmbeddingProvider {provider_id!r} does not exist"
                 )
-            adapter = self._retirement.track(self._embedder_factory(row))
-            if self._cache_generation == generation:
-                self._embedder_cache[provider_id] = adapter
-            return adapter
+            return self._retirement.track(self._embedder_factory(row))
+
+        return await self._cached("embedder", self._embedder_cache, provider_id, build)
 
     async def get_cross_encoder(self, provider_id: str) -> CrossEncoder:
-        async with self._lock:
-            cached = self._cross_encoder_cache.get(provider_id)
-            if cached is not None:
-                return cached
-            generation = self._cache_generation
+        async def build() -> CrossEncoder:
             row = await self._sp.get_storage(CrossEncoderProvider).get(provider_id)
             if row is None:
                 raise NotFoundError(
                     f"CrossEncoderProvider {provider_id!r} does not exist"
                 )
-            adapter = self._retirement.track(self._cross_encoder_factory(row))
-            if self._cache_generation == generation:
-                self._cross_encoder_cache[provider_id] = adapter
-            return adapter
+            return self._retirement.track(self._cross_encoder_factory(row))
+
+        return await self._cached("cross_encoder", self._cross_encoder_cache, provider_id, build)
 
     async def toolsets_off_by_design(self) -> frozenset[str]:
         """The reserved toolsets this install has switched off on purpose (module :func:`toolsets_off_by_design`)."""
@@ -648,43 +649,42 @@ class ProviderRegistry:
                     f"Toolset {toolset_id!r} does not exist"
                 )
             return self._canvas_toolset_provider
-        async with self._lock:
-            cached = self._toolset_cache.get(toolset_id)
-            if cached is not None:
-                return cached
-            generation = self._cache_generation
+        async def build() -> ToolsetProvider:
             row = await self._sp.get_storage(Toolset).get(toolset_id)
             if row is None:
                 raise NotFoundError(
                     f"Toolset {toolset_id!r} does not exist"
                 )
-            adapter = self._toolset_factory(row)
-            if self._cache_generation == generation:
-                self._toolset_cache[toolset_id] = adapter
-            return adapter
+            return self._toolset_factory(row)
+
+        return await self._cached("toolset", self._toolset_cache, toolset_id, build)
 
     # ---- Invalidation (private local helpers) ----------------------------
 
     async def _invalidate_llm_local(self, provider_id: str) -> None:
         async with self._lock:
+            self._cache_generation += 1           # a build in flight for it must not cache what it read before
             adapter = self._llm_cache.pop(provider_id, None)
         if adapter is not None:
             self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_aggregated_llm_local(self, profile_id: str) -> None:
         async with self._lock:
+            self._cache_generation += 1           # a build in flight for it must not cache what it read before
             adapter = self._aggregated_llm_cache.pop(profile_id, None)
         if adapter is not None:
             self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_embedder_local(self, provider_id: str) -> None:
         async with self._lock:
+            self._cache_generation += 1           # a build in flight for it must not cache what it read before
             adapter = self._embedder_cache.pop(provider_id, None)
         if adapter is not None:
             self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
 
     async def _invalidate_cross_encoder_local(self, provider_id: str) -> None:
         async with self._lock:
+            self._cache_generation += 1           # a build in flight for it must not cache what it read before
             adapter = self._cross_encoder_cache.pop(provider_id, None)
         if adapter is not None:
             self._retirement.retire(adapter)     # closed once its in-flight calls are done (GX-1)
@@ -707,6 +707,7 @@ class ProviderRegistry:
         ):
             return
         async with self._lock:
+            self._cache_generation += 1           # a build in flight for it must not cache what it read before
             adapter = self._toolset_cache.pop(toolset_id, None)
         if adapter is not None:
             try:
@@ -796,8 +797,8 @@ class ProviderRegistry:
         is enough to force a fresh build next time.
 
         Because no lock is taken, this CAN land while a ``get_*`` is
-        suspended at its storage await (``get_*`` holds ``self._lock``
-        across that await, which does not exclude this hook). That get
+        suspended at its storage await (``get_*`` holds only its own id's
+        build lock across that await). That get
         would then re-populate the cache with an adapter built from a
         pre-flush row, leaving the stale adapter cached until restart --
         the exact bug the flush exists to fix. Bumping the generation

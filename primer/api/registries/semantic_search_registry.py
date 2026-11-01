@@ -75,6 +75,8 @@ class SemanticSearchRegistry(BusInvalidated):
         self._factory = factory or _default_factory
         self._instances: dict[str, "VectorStoreProvider"] = {}
         self._lock = asyncio.Lock()
+        # Bumped by every eviction and flush: a get that read its row before one never caches what it built (GX-4).
+        self._generation = 0
 
     async def get_provider(self, ssp_id: str) -> "VectorStoreProvider":
         """Resolve a row to its live VectorStoreProvider instance.
@@ -92,6 +94,7 @@ class SemanticSearchRegistry(BusInvalidated):
             return cached
 
         # Slow path: resolve + construct + initialize OUTSIDE the lock.
+        generation = self._generation
         row = await self._storage.get(ssp_id)
         if row is None:
             from primer.model.except_ import NotFoundError
@@ -103,7 +106,8 @@ class SemanticSearchRegistry(BusInvalidated):
         await provider.initialize()
 
         # Insert under the lock, with a re-check in case a concurrent
-        # caller beat us (or invalidate() ran in the meantime).
+        # caller beat us; an invalidate() in the meantime moved the
+        # generation, and then the instance is this caller's only.
         async with self._lock:
             winner = self._instances.get(ssp_id)
             if winner is not None:
@@ -112,7 +116,10 @@ class SemanticSearchRegistry(BusInvalidated):
                 close_loser = provider
                 provider = winner
             else:
-                self._instances[ssp_id] = provider
+                if self._generation == generation:
+                    self._instances[ssp_id] = provider
+                else:
+                    self._retirement.retire(provider, repr(ssp_id))
                 close_loser = None
         if close_loser is not None:
             try:
@@ -137,12 +144,14 @@ class SemanticSearchRegistry(BusInvalidated):
         already out of the cache, so the next ``get_provider`` rebuilds it either way.
         """
         async with self._lock:
+            self._generation += 1
             inst = self._instances.pop(ssp_id, None)
         if inst is not None:
             self._retirement.retire(inst, repr(ssp_id))         # closed once its in-flight calls are done (GX-1)
 
     def _flush_local(self) -> None:
         """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        self._generation += 1
         instances, self._instances = list(self._instances.values()), {}
         for inst in instances:
             self._retirement.retire(inst)
