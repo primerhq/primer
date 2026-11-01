@@ -391,6 +391,7 @@ class EventDispatcher(_BackgroundTask):
             entity_id=event.entity_id,
             provider_registry=self._provider_registry,
             semantic_search_registry=self._semantic_search_registry,
+            coalesce=True,
         )
         return True
 

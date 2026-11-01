@@ -147,3 +147,15 @@ Binary document conversion is gone. The loader, splitter and ingester that turne
 MMR was removed when the collection model changed shape: its config became unreachable from any live model, and an unreachable-but-tested code path is worse than a deleted one.
 
 The five reserved `_internal_*` collections and their search toolset were replaced by one system collection reachable through the ordinary collections tools. Indexing the platform's own entities no longer requires a separate subsystem, and the toggle that used to gate the whole thing now governs vectorisation only.
+
+### Live-map cost (PERF-T15, H6)
+
+The event dispatcher calls `converge_entity(..., coalesce=True)`: the entity's own page is written at once, but the
+`this-install/<kind>` index (and, for a provider or a model profile, the whole provider map and the agent pages that name a
+profile) is rebuilt ONCE per burst, 250 ms after the last change, from the rows as they are then (`_schedule`, trailing-edge
+debounce per storage and kind). `system_collection.settle()` runs the pending rebuilds now: tests call it after a burst, and the
+app lifespan calls it at shutdown. Called without `coalesce` (the default) `converge_entity` rebuilds inline as before.
+`_public_profile_ids(cached=True)` (the per-agent convergence) reuses the set of public profile ids for 5 s; a `model_profile`
+event drops it, and every full pass reads it fresh. `DocumentTreeService.read(..., with_children=False)` skips the child listing
+(`_converge` and the live-map compares only look at the page), `has_children` is one `parent_id IN (...)` query per read, and
+`tree()` walks one query per level, so the boot pass and the prune walks are O(pages) reads.
