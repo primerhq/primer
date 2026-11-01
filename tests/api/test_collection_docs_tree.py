@@ -126,3 +126,19 @@ async def test_system_collection_writes_are_403(client, fake_storage_provider):
         json={"parent": "", "slug": "a", "body": "x"},
     )
     assert resp.status_code == 403
+
+
+async def test_put_document_by_path_accepts_a_body_at_the_cap(client):
+    cid = await _mk_collection(client)
+    r = await client.put(f"/v1/collections/{cid}/documents", params={"path": "big"}, json={"content": "x" * (1024 * 1024)})
+    assert r.status_code == 200, r.text[:300]
+
+
+async def test_put_document_by_path_refuses_a_body_over_the_cap(client):
+    """KN-12 / D5: the path-addressed door holds the same 1 MiB cap, counted in UTF-8 bytes."""
+    cid = await _mk_collection(client)
+    r = await client.put(f"/v1/collections/{cid}/documents", params={"path": "big"}, json={"content": "é" * (512 * 1024) + "x"})
+    assert r.status_code == 413, r.text[:300]
+    assert r.json()["type"] == "/errors/payload-too-large"
+    assert r.json()["extensions"]["limit_bytes"] == 1024 * 1024
+    assert (await client.get(f"/v1/collections/{cid}/documents", params={"path": "big"})).status_code == 404

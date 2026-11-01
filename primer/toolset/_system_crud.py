@@ -57,6 +57,8 @@ from primer.model.except_ import (
     ProviderError,
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
+from primer.model.payload_too_large import PayloadTooLargeError
+from primer.knowledge.tree import check_body_size
 from primer.model.storage import (
     Op,
     Predicate,
@@ -1827,6 +1829,7 @@ def _collection_extras(
         # and index vectors share dimensionality + metric, then run the
         # similarity search against the collection's vector store.
         from primer.model.chat import TextPart
+        from primer.model.embedding import ExtendedEmbeddingConfig
         from primer.model.except_ import BadRequestError
         from primer.search.run import run_collection_search
 
@@ -1853,6 +1856,7 @@ def _collection_extras(
             response = await embedder.embed(
                 model=coll.search.embedder.model,
                 inputs=[TextPart(text=args.query)],
+                config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
             )
             vector = list(response.embeddings[0].vector)
             store = await semantic_search_registry.get_store(
@@ -2511,6 +2515,7 @@ def _document_extras(
         if denied is not None:
             return denied
         try:
+            check_body_size(args.content)
             doc = await service_factory().upsert(
                 collection_id=args.collection_id,
                 path=args.path,
@@ -2518,6 +2523,8 @@ def _document_extras(
                 title=args.title,
                 meta=args.meta,
             )
+        except PayloadTooLargeError as exc:
+            return _err_from_primer(exc, error_type="validation-error")
         except ConflictError as exc:
             return _err_from_primer(exc, error_type="conflict")
         except PrimerError as exc:
