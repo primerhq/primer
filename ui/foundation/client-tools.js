@@ -35,8 +35,10 @@ function CT_bareName(name) {
 }
 
 function CT_createExecutor(host) {
-  // sessionId -> {mark: int, done: {seq: true}}
+  // sessionId -> {mark: int, done: {seq: true}, seq: the attached_seq the server last reported}
   var attachments = {};
+  // sessions the host has stopped: a heartbeat still in flight must not re-arm one
+  var stopped = {};
 
   function setAttachment(sessionId, attachedSeq) {
     if (!sessionId) return;
@@ -44,6 +46,7 @@ function CT_createExecutor(host) {
     attachments[sessionId] = {
       mark: isFinite(mark) ? mark : 0,
       done: {},
+      seq: attachedSeq,
     };
   }
 
@@ -87,6 +90,7 @@ function CT_createExecutor(host) {
   // Lifecycle sugar: the HOST owns the timer and the transport; these just
   // keep the fence in step with what the host's calls returned.
   function start(sessionId) {
+    delete stopped[sessionId];
     return Promise.resolve(host.attachLifecycle.attach(sessionId)).then(
       function (res) {
         var seq = res && res.attached_seq !== undefined ? res.attached_seq : 0;
@@ -96,11 +100,20 @@ function CT_createExecutor(host) {
     );
   }
 
+  // The heartbeat is the same POST as the attach: the server creates the attachment if there is none, and answers its attached_seq. So an
+  // answer is also how a failed first attach is recovered (no attachment here yet), or how a re-attach on the server (a new attached_seq)
+  // moves the fence. The same attached_seq changes nothing: what already ran stays done.
   function heartbeat(sessionId) {
-    return Promise.resolve(host.attachLifecycle.heartbeat(sessionId));
+    return Promise.resolve(host.attachLifecycle.heartbeat(sessionId)).then(function (res) {
+      if (stopped[sessionId] || !res || res.attached_seq === undefined) return res;
+      var att = attachments[sessionId];
+      if (!att || att.seq !== res.attached_seq) setAttachment(sessionId, res.attached_seq);
+      return res;
+    });
   }
 
   function stop(sessionId) {
+    stopped[sessionId] = true;
     clearAttachment(sessionId);
     return Promise.resolve(host.attachLifecycle.detach(sessionId));
   }
