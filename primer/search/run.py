@@ -85,10 +85,12 @@ async def run_collection_search(
         vector = query_vector
         if vector is None:
             from primer.model.chat import TextPart
+            from primer.model.embedding import ExtendedEmbeddingConfig
 
             response = await embedder.embed(
                 model=search_cfg.embedder.model,
                 inputs=[TextPart(text=query)],
+                config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
             )
             vector = list(response.embeddings[0].vector)
         return await store.search(collection.id, vector, top_k)

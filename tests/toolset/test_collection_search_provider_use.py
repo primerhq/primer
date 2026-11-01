@@ -80,7 +80,7 @@ async def test_create_collection_naming_usable_search_providers_is_stored(sp):
 class _CountingEmb:
     calls = 0
 
-    async def embed(self, *, model, inputs):
+    async def embed(self, *, model, inputs, config=None):
         type(self).calls += 1
         vecs = [type("V", (), {"vector": [0.1] * 4})() for _ in inputs]
         return type("R", (), {"embeddings": vecs})()

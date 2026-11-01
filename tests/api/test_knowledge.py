@@ -127,7 +127,7 @@ class TestSearchUnregisteredCollection:
 
         # Embedder returns a one-vector response.
         class _Emb:
-            async def embed(self, *, model, inputs):
+            async def embed(self, *, model, inputs, config=None):
                 class _R:
                     embeddings = [type("V", (), {"vector": [0.1, 0.2, 0.3]})()]
                 return _R()
@@ -171,7 +171,7 @@ class TestSearchUnregisteredCollection:
         collections.get = AsyncMock(return_value=coll)
 
         class _Emb:
-            async def embed(self, *, model, inputs):
+            async def embed(self, *, model, inputs, config=None):
                 class _R:
                     embeddings = [type("V", (), {"vector": [0.1]})()]
                 return _R()

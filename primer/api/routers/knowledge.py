@@ -53,6 +53,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.routers.access import make_access_router
 from primer.model.access import AccessLevel
 from primer.model.chat import TextPart
+from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.storage import Predicate
 from primer.model.collection import (
     ChunkingConfig,
@@ -729,6 +730,7 @@ async def search_collection(
     response = await embedder.embed(
         model=coll.search.embedder.model,
         inputs=[TextPart(text=body.query)],
+        config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
     )
     vector = list(response.embeddings[0].vector)
 

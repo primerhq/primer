@@ -285,6 +285,7 @@ def build_collections_toolset(
     ):
         """Embed + query the vector store; (hits, error) like _parse."""
         from primer.model.chat import TextPart
+        from primer.model.embedding import ExtendedEmbeddingConfig
         from primer.search.run import run_collection_search
 
         norm_prefix = (path_prefix or "").strip().lstrip("/")
@@ -296,6 +297,7 @@ def build_collections_toolset(
             response = await embedder.embed(
                 model=coll.search.embedder.model,
                 inputs=[TextPart(text=query)],
+                config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
             )
             vector = list(response.embeddings[0].vector)
             store = await semantic_search_registry.get_store(

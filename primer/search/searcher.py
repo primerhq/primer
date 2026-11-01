@@ -28,6 +28,7 @@ import math
 from typing import TYPE_CHECKING
 
 from primer.model.chat import TextPart
+from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.except_ import BadRequestError, ConfigError
 from primer.model.vector import SearchResult, Vector
 
@@ -140,6 +141,7 @@ class CollectionSearcher:
         response = await self._embedder.embed(
             model=self._embedding_model,
             inputs=[TextPart(text=query)],
+            config=ExtendedEmbeddingConfig(task_type="retrieval_query"),
         )
         if not response.embeddings:
             raise BadRequestError("embedder returned no embedding for the query")
