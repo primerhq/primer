@@ -733,7 +733,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       const body = {
         slug,
         name: name || slug,
-        description: description || null,
+        description: description,
         config: buildConfig(),
         enabled: true,
       };
@@ -1075,7 +1075,7 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
       const updated = await apiFetch(
         "PUT",
         "/triggers/" + encodeURIComponent(trigger.id),
-        { name: name || trigger.slug, description: description || null, enabled, config },
+        { name: name || trigger.slug, description: description, enabled, config },
       );
       if (!mountedRef.current) return;
       onSaved(updated);
