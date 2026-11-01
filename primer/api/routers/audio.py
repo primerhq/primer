@@ -120,8 +120,14 @@ _MEDIA_TYPES = {
 }
 
 
+#: Longest `input` the route forwards. The lowest documented per-request limit of a supported backend is OpenAI's 4096 characters; the other
+#: supported backends are self-hosted OpenAI-compatible servers (Kokoro-FastAPI and the like) that document no limit and split long text themselves.
+#: So the ceiling sits far above every documented limit (25x) and only bounds abuse: a body is otherwise capped by the 32 MiB request limit alone.
+SPEECH_INPUT_MAX_CHARS = 100_000
+
+
 class _SpeechBody(BaseModel):
-    input: str = Field(..., min_length=1, description="Text to speak.")
+    input: str = Field(..., min_length=1, max_length=SPEECH_INPUT_MAX_CHARS, description="Text to speak.")
     agent_id: str | None = Field(
         default=None,
         description="When set, the agent's tts_voice overrides the default.",

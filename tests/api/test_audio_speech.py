@@ -215,3 +215,36 @@ async def test_pcm_selects_its_own_media_type(client, app) -> None:
 async def test_the_proxy_requires_authentication(raw_client) -> None:
     r = await raw_client.post("/v1/audio/speech", json={"input": "hello"})
     assert r.status_code in (401, 403), r.text
+
+
+# ---------- CV-10: the input has a ceiling ---------------------------------
+
+
+def test_the_input_ceiling_is_far_above_any_documented_provider_limit() -> None:
+    """OpenAI's documented per-request limit is 4096 characters, the lowest of any supported (OpenAI-compatible) backend; self-hosted servers
+    such as Kokoro-FastAPI document none and chunk long text themselves. The ceiling only bounds abuse and refuses nothing a provider accepts."""
+    from primer.api.routers.audio import SPEECH_INPUT_MAX_CHARS
+
+    assert SPEECH_INPUT_MAX_CHARS >= 20 * 4096
+
+
+@pytest.mark.asyncio
+async def test_an_input_over_the_ceiling_is_a_422_problem_and_the_provider_is_not_called(client, app) -> None:
+    from primer.api.routers.audio import SPEECH_INPUT_MAX_CHARS
+
+    stub = _StubTTS([b"b"])
+    await _configure(client, app, stub)
+    r = await client.post("/v1/audio/speech", json={"input": "x" * (SPEECH_INPUT_MAX_CHARS + 1)})
+    assert r.status_code == 422, r.text[:300]
+    assert r.headers["content-type"].startswith("application/problem+json")
+    assert stub.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_input_at_the_ceiling_is_forwarded(client, app) -> None:
+    from primer.api.routers.audio import SPEECH_INPUT_MAX_CHARS
+
+    stub = _StubTTS([b"b"])
+    await _configure(client, app, stub)
+    r = await client.post("/v1/audio/speech", json={"input": "x" * SPEECH_INPUT_MAX_CHARS})
+    assert r.status_code == 200 and len(stub.calls[0]["text"]) == SPEECH_INPUT_MAX_CHARS
