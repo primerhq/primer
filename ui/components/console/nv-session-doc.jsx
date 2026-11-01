@@ -3373,9 +3373,11 @@ function NV_SessionDoc(props) {
     distanceFromBottom: distanceRef.current,
     newTurns: newTurns,
   });
+  // transcriptSnap too (UI-M5): a streaming answer is one row whose text grows, so the row count alone never moved. The
+  // store commits it at most every 80 ms, so following costs one scrollTop write per commit, and only while following.
   React.useEffect(function () {
     if (follow) jumpLatest();
-  }, [rows.length, follow, !!endedLine, !!restedLine]);
+  }, [rows.length, transcriptSnap, follow, !!endedLine, !!restedLine]);
 
   function refetchAll() {
     detail.refetch();

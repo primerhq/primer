@@ -150,3 +150,51 @@ def test_this_sessions_stream_parses_only_the_row_that_grew(doc) -> None:
 
 def test_the_document_has_no_render_hook_on_the_tap() -> None:
     assert "useWorkspaceTap(" not in DOC
+
+
+# ---- UI-M5: the transcript follows a streaming answer ---------------------------------------------------------------------
+# The harness has no DOM, so the transcript's scroll box is a stand-in object handed to its ref.
+
+def pane(c, *, scroll_top: int) -> None:
+    c.eval(
+        "var PANE = { scrollTop: " + str(scroll_top) + ", scrollHeight: 5000, clientHeight: 500 };"
+        " MR.find('nv-transcript').props.ref.current = PANE;"
+        " MR.find('nv-transcript').props.onScroll(); MR.settle();"
+    )
+
+
+def stream_into_this_session(c, text: str) -> None:
+    c.eval(
+        "frame({ 'class': 'part_start', session_id: 's1', part_id: 'n:text', kind: 'text' });"
+        " frame({ 'class': 'text_delta', session_id: 's1', part_id: 'n:text', kind: 'text', delta: " + json.dumps(text) + " });"
+        " commit(); MR.settle();"
+    )
+
+
+def test_a_new_row_scrolls_a_following_transcript_to_the_bottom(doc) -> None:
+    pane(doc, scroll_top=4500)  # at the bottom: following
+    doc.eval("PANE.scrollHeight = 6000; frame({ 'class': 'user_input', session_id: 's1', seq: 101, ts: ts(101), payload: { text: 'next' } }); commit(); MR.settle();")
+    assert js(doc, "PANE.scrollTop") == 6000
+
+
+def test_a_transcript_scrolled_up_is_left_where_it_is(doc) -> None:
+    pane(doc, scroll_top=1000)  # read further up: not following
+    doc.eval("PANE.scrollHeight = 6000;")
+    stream_into_this_session(doc, "a long answer")
+    doc.eval("frame({ 'class': 'user_input', session_id: 's1', seq: 101, ts: ts(101), payload: { text: 'next' } }); commit(); MR.settle();")
+    assert js(doc, "PANE.scrollTop") == 1000
+
+
+def test_a_following_transcript_follows_the_answer_as_it_grows(doc) -> None:
+    """The live part is one row whose text grows: the row count does not move, so the follow effect never ran."""
+    stream_into_this_session(doc, "Hel")
+    pane(doc, scroll_top=4500)
+    doc.eval("PANE.scrollHeight = 5200;")
+    doc.eval("frame({ 'class': 'text_delta', session_id: 's1', part_id: 'n:text', kind: 'text', delta: 'lo, and more' }); commit(); MR.settle();")
+    assert js(doc, "PANE.scrollTop") == 5200
+
+
+def test_the_follow_effect_depends_on_the_transcript_snapshot() -> None:
+    effect = DOC[DOC.index("if (follow) jumpLatest();"):]
+    deps = effect[effect.index("}, ["):effect.index("]);")]
+    assert "transcriptSnap" in deps
