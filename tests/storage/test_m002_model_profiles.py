@@ -192,3 +192,38 @@ class TestIdempotency:
     async def test_empty_database_is_a_noop(self, sp: StorageProvider) -> None:
         await M002ModelProfiles().apply(sp)
         assert await _all_profiles(sp) == []
+
+
+class TestSlugCollision:
+    """GR-13: two models whose names slug the same must not share a profile, and each agent keeps its own model."""
+
+    async def test_two_models_with_the_same_slug_get_two_profiles_and_each_agent_keeps_its_model(self, sp: StorageProvider) -> None:
+        await sp.get_storage(LegacyProvider).create(
+            LegacyProvider(id="ol", models=[{"name": "llama3:8b", "context_length": 8192}, {"name": "llama3.8b", "context_length": 4096}])
+        )
+        agents = sp.get_storage(LegacyAgent)
+        await agents.create(LegacyAgent(id="a-colon", model={"provider_id": "ol", "model_name": "llama3:8b"}, description="d"))  # type: ignore[call-arg]
+        await agents.create(LegacyAgent(id="a-dot", model={"provider_id": "ol", "model_name": "llama3.8b"}, description="d"))  # type: ignore[call-arg]
+
+        await M002ModelProfiles().apply(sp)
+
+        profiles = {p.id: p for p in await _all_profiles(sp)}
+        assert sorted(p.model_name for p in profiles.values()) == ["llama3.8b", "llama3:8b"]
+        colon = (await agents.get("a-colon")).model["profile_id"]
+        dot = (await agents.get("a-dot")).model["profile_id"]
+        assert colon != dot
+        assert profiles[colon].model_name == "llama3:8b" and profiles[dot].model_name == "llama3.8b"
+
+    async def test_a_second_run_changes_nothing(self, sp: StorageProvider) -> None:
+        await sp.get_storage(LegacyProvider).create(
+            LegacyProvider(id="ol", models=[{"name": "llama3:8b"}, {"name": "llama3.8b"}])
+        )
+        await M002ModelProfiles().apply(sp)
+        once = sorted(p.id for p in await _all_profiles(sp))
+        await M002ModelProfiles().apply(sp)
+        assert sorted(p.id for p in await _all_profiles(sp)) == once and len(once) == 2
+
+    async def test_a_name_without_a_collision_keeps_the_plain_id(self, sp: StorageProvider) -> None:
+        await _seed_provider(sp)
+        await M002ModelProfiles().apply(sp)
+        assert sorted(p.id for p in await _all_profiles(sp)) == sorted([synth_profile_id("gx10", "Qwen/Qwen3-32B"), synth_profile_id("gx10", "qwen")])
