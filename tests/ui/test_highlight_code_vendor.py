@@ -27,6 +27,13 @@ class can never claim a region inside a span a class before it wrapped.
 Pinned here by the visible-text invariant, the flat well-formed span
 shape, the byte-identical snapshots of inputs that rendered correctly
 before, the workspaces.jsx delegation check, and the no-on* fuzz.
+
+UI-H3 (same review): window.renderMarkdown returns React children, not an
+HTML string; the collections read-only pane passed that array through
+dangerouslySetInnerHTML's __html and rendered "[object Object]". Pinned
+here by a static check (no ui/**/*.jsx passes renderMarkdown through
+__html) and a MiniRacer mount of the read-only KN_DocumentPane with the
+real renderMarkdown loaded, which must draw a real heading element.
 """
 
 from __future__ import annotations
@@ -260,3 +267,82 @@ for (var i = 0; i < 20000; i++) {
 bad;
 """
     assert ctx.eval(js) == 0
+
+
+# ---------------------------------------------------------------------------
+# UI-H3: window.renderMarkdown returns React children, not an HTML string.
+# Passing that array to dangerouslySetInnerHTML's __html stringifies it as
+# "[object Object],[object Object]", which is what a markdown document
+# used to render as in the collections read-only pane.
+# ---------------------------------------------------------------------------
+
+KNOWLEDGE = UI / "components" / "knowledge.jsx"
+
+
+def test_no_jsx_passes_render_markdown_through_inner_html() -> None:
+    for path in sorted(UI.rglob("*.jsx")):
+        assert "__html: window.renderMarkdown" not in path.read_text(encoding="utf-8"), (
+            f"{path.name} passes renderMarkdown's React children through __html"
+        )
+
+
+_KN_PRELUDE = """
+var __doc = { body: "# T\\n\\nx", document: { title: "Doc" }, children: [] };
+window.location = { origin: "http://x", search: "", hash: "", pathname: "/console/" };
+globalThis.Btn = function (props) { return React.createElement("div", { "data-testid": props["data-testid"] }); };
+globalThis.Icon = function () { return null; };
+window.primerApi = {
+  apiFetch: function () { return Promise.resolve({}); },
+  useResource: function () { return { data: __doc, error: null, refetch: function () {} }; },
+};
+"""
+
+
+def _doc_pane_context():
+    from tests.ui._mini_react import mini_react_context, transpile
+
+    prelude = (
+        _KN_PRELUDE
+        + HIGHLIGHT_JSON.read_text(encoding="utf-8")
+        + "\n"
+        + HIGHLIGHT_PYTHON.read_text(encoding="utf-8")
+        + "\n"
+        + HIGHLIGHT_CODE.read_text(encoding="utf-8")
+        + "\n"
+        + transpile(MARKDOWN)
+    )
+    return mini_react_context(transpile(KNOWLEDGE), prelude)
+
+
+def test_kn_document_pane_renders_markdown_as_elements() -> None:
+    # The real renderMarkdown (vendor/markdown.jsx) runs in the context, so
+    # the read-only branch must draw the heading as a real element: with
+    # the old __html wiring the elements sat in a prop and no heading
+    # element existed for a screen reader or a test to find.
+    ctx = _doc_pane_context()
+    # Wrap the component so the test can read its rendered output (the
+    # harness keeps the root element in a closure; the wrapper hands its
+    # return value back, which the harness renders in place).
+    ctx.eval(
+        "var __knOut = null; var __knOrig = KN_DocumentPane;"
+        "KN_DocumentPane = function (props) { __knOut = __knOrig(props); return __knOut; };"
+    )
+    ctx.eval(
+        'MR.mount(KN_DocumentPane, { collection: { id: "c1" }, path: "docs/readme", '
+        "readOnly: true, pushToast: function () {}, onChanged: function () {}, onSelect: function () {} })"
+    )
+    types = ctx.eval(
+        "(function () { var out = [];"
+        " (function w(n) {"
+        "  if (n == null || typeof n !== 'object') return;"
+        "  if (Array.isArray(n)) { n.forEach(w); return; }"
+        "  if (!n.__el) return;"
+        "  if (typeof n.type === 'string') out.push(n.type);"
+        "  w(typeof n.type === 'function' && n.type !== React.Fragment ? n.out : n.children);"
+        " })(__knOut); return out; })()"
+    )
+    assert "h1" in types, "the '# T' heading must render as a real element"
+    assert "p" in types, "the paragraph must render as a real element"
+    texts = ctx.eval("MR.texts()")
+    assert "T" in texts and "x" in texts
+    assert "[object Object]" not in " ".join(texts)
