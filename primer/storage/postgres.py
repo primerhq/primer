@@ -113,7 +113,7 @@ from primer.storage._cursor import (
     _encode_cursor_for,
     _resolve_dotted,
 )
-from primer.storage._predicate import _PredicateTranslator, render_order_by
+from primer.storage._predicate import _PredicateTranslator, _render_field_expr, render_order_by
 
 
 logger = logging.getLogger(__name__)
