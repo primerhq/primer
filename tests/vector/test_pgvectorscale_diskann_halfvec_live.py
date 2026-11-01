@@ -13,10 +13,11 @@ from urllib.parse import urlparse
 import asyncpg
 import pytest
 
-from tests.pg_gate import explicit_port, postgres_marks, require_postgres_url
+from tests.pg_gate import explicit_port, require_postgres_url
 
 _WHAT = "the live pgvectorscale diskann halfvec check"
-pytestmark = [pytest.mark.asyncio, *postgres_marks(_WHAT)]
+# No ``postgres`` marker: the lane image has no vectorscale, so its skip there is expected, not a lane failure.
+pytestmark = pytest.mark.asyncio
 
 
 async def test_diskann_can_index_a_halfvec_column() -> None:
