@@ -34,7 +34,7 @@ _REFLECTION = {"run_succeeded": True, "deltas": [_ADD]}
 _ENTRY = "retry-on-429"
 
 
-async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *, timeout_s: float = 25.0) -> None:
+async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *, timeout_s: float = 15.0) -> None:
     """Poll the session's log until an assistant answer holds ``text``."""
     for _ in range(int(timeout_s / 0.5)):
         items = (await client.get(f"/v1/sessions/{session_id}/messages", params={"limit": 500})).json()["items"]
@@ -44,8 +44,11 @@ async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *
     raise AssertionError(f"session {session_id} never answered {text!r}")
 
 
-async def _wait_for_event(client: httpx.AsyncClient, event_type: str, agent_id: str, *, timeout_s: float = 80.0) -> dict:
-    """Poll for an agent's event; the whole journey must fit pytest's 180 s per test, so on a timeout fail with the agent's memory.* events."""
+async def _wait_for_event(
+    client: httpx.AsyncClient, event_type: str, agent_id: str, *, session_id: str, timeout_s: float = 120.0,
+) -> dict:
+    """Poll for an agent's event. The whole journey must fit pytest's 180 s per test, so a timeout fails with every memory.* event of the agent
+    (a skipped reflection says why) and the session's row (its turn counters)."""
     for _ in range(int(timeout_s / 2)):
         resp = await client.get("/v1/events", params={"event_type": event_type, "entity_id": agent_id, "limit": 50})
         assert resp.status_code == 200, resp.text
@@ -55,7 +58,11 @@ async def _wait_for_event(client: httpx.AsyncClient, event_type: str, agent_id: 
         await asyncio.sleep(2)
     seen = (await client.get("/v1/events", params={"entity_id": agent_id, "limit": 200})).json().get("items", [])
     memory = [(e.get("event_type"), e.get("payload")) for e in seen if str(e.get("event_type", "")).startswith("memory.")]
-    raise AssertionError(f"no {event_type} event for agent {agent_id} within {timeout_s}s; memory.* events: {memory}")
+    row = await client.get(f"/v1/sessions/{session_id}")
+    raise AssertionError(
+        f"no {event_type} event for agent {agent_id} within {timeout_s}s; memory.* events: {memory}; "
+        f"session {row.status_code}: {row.text[:600]}"
+    )
 
 
 @pytest.mark.asyncio
@@ -94,7 +101,7 @@ async def test_memory_learns_from_a_session_and_the_next_session_starts_with_it(
     await client.post(f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel")
 
     # 3. the reflection lands one candidate, which waits for the owner (approve mode)
-    done = await _wait_for_event(client, "memory.reflection.completed", agent_id)
+    done = await _wait_for_event(client, "memory.reflection.completed", agent_id, session_id=sid)
     assert done["payload"]["written"] == 1, done
     listed = await client.get(f"/v1/agents/{agent_id}/memory/entries", params={"status": "candidates"})
     assert listed.status_code == 200, listed.text
@@ -105,7 +112,7 @@ async def test_memory_learns_from_a_session_and_the_next_session_starts_with_it(
 
     # 4. a new session of the agent: its model call's system prompt carries the index line and the instructions
     sid2 = await start_agent_session(client, workspace_id=workspace_id, agent_id=agent_id, instructions="third task: hello")
-    await _wait_for_log(client, sid2, "Noted for the third task.")
+    await _wait_for_log(client, sid2, "Noted for the third task.", timeout_s=10.0)
     third = [
         r for r in registry.requests
         if r.get("model") == scenario and "third task" in str((next((m for m in reversed(r["messages"]) if m.get("role") == "user"), {})).get("content", ""))

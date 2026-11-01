@@ -216,17 +216,39 @@ def _nothing_happened(messages: list[Message]) -> bool:
     return not any(m.role == "user" or any(isinstance(p, ToolCallPart) for p in m.parts) for m in rest)
 
 
-async def _trivial(deps: MemoryDeps, job: MemoryJob) -> bool:
+async def _trivial(deps: MemoryDeps, job: MemoryJob) -> str | None:
+    """Why the session is too small to learn from (the detail the skip event carries), or None when it is worth a model call."""
     if job.target_turn - job.reflected_turn < MIN_TURNS:
-        return True
+        return f"turns {job.reflected_turn + 1} to {job.target_turn}: fewer than {MIN_TURNS}"
     if deps.load_messages is None:
-        return False
+        return None
     try:
         messages = await deps.load_messages(job)
     except Exception:  # noqa: BLE001 - an unreadable log is the runner's to report, not a reason to skip
         logger.warning("memory job %s: could not read the session messages for the triviality gate", job.id, exc_info=True)
-        return False
-    return messages is not None and _nothing_happened(messages)
+        return None
+    if messages is not None and _nothing_happened(messages):
+        return f"{len(messages)} messages and no tool call or second user message"
+    return None
+
+
+async def _skipped(deps: MemoryDeps, job: MemoryJob, reason: str, detail: str | None = None, *, retrying: bool = False) -> None:
+    """A reflection attempt that did not complete says so (``memory.reflection.skipped``), so the activity feed never goes quiet."""
+    await deps.recorder.emit(
+        "memory.reflection.skipped",
+        payload={"session_id": job.session_id, "reason": reason, "detail": detail, "retrying": retrying},
+        actor=f"memory:{job.agent_id}", entity_kind="agent", entity_id=job.agent_id,
+    )
+
+
+async def report_job_error(deps: MemoryDeps, lease: Lease, exc: BaseException) -> None:
+    """A job that raised is dropped; its reflection says why (best effort: the row or the recorder may be what failed)."""
+    try:
+        job = await deps.sp.get_storage(MemoryJob).get(lease.entity_id)
+        if job is not None and job.kind == "reflect":
+            await _skipped(deps, job, "error", f"{type(exc).__name__}: {exc}"[:200])
+    except Exception:  # noqa: BLE001 - reporting must not raise out of the handler's cleanup
+        logger.warning("memory job %s: could not report its failure", lease.entity_id, exc_info=True)
 
 
 async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
@@ -243,17 +265,23 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     settings = await sp.get_storage(AgentMemory).get(job.agent_id)
     # 1. memory is off (or was never on): nothing is written, the lease is dropped
     if settings is None or not settings.enabled:
+        if job.kind == "reflect":
+            await _skipped(deps, job, "disabled")
         return _DROP
     # 2. a job nobody ran for a week is stale
     if now > job.expires_at:
+        if job.kind == "reflect":
+            await _skipped(deps, job, "expired")
         await _forget(jobs, job)
         return _DROP
     if job.kind == "reflect":
         # 3. over today's budget: try again after the UTC midnight
         if not budget_allows(settings, now):
+            await _skipped(deps, job, "budget", retrying=True)
             return ReleaseOutcome(success=True, requeue_after=_until_next_utc_midnight(now))
         # 4. a session too small to learn from: marked reflected, no model call
-        if await _trivial(deps, job):
+        if (small := await _trivial(deps, job)) is not None:
+            await _skipped(deps, job, "too_small", small)
             await jobs.patch_if(job.id, {"reflected_turn": job.target_turn}, where={"agent_id": [job.agent_id]})
             return _DROP
         settings = await consume_budget(sp, settings, now)
@@ -261,12 +289,10 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
             await run_reflect(deps, job, agent, settings)
         except ReflectionTransient as exc:
             # the claim engine's normal backoff retries it; after MAX_ATTEMPTS the reflection is given up on, with its event
-            if lease.attempt_count + 1 < MAX_ATTEMPTS:
+            retrying = lease.attempt_count + 1 < MAX_ATTEMPTS
+            await _skipped(deps, job, "llm_unavailable", str(exc)[:200], retrying=retrying)
+            if retrying:
                 return ReleaseOutcome(success=False, last_error=str(exc)[:500])
-            await deps.recorder.emit(
-                "memory.reflection.skipped", payload={"session_id": job.session_id, "reason": "llm_unavailable", "detail": str(exc)[:200]},
-                actor=f"memory:{agent.id}", entity_kind="agent", entity_id=agent.id,
-            )
     elif job.kind == "curate":
         return await run_curate(deps, job, agent, settings) or _DROP
     else:

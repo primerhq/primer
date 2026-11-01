@@ -42,9 +42,17 @@ async def _agent(sp, agent_id="a1", *, enabled=True, **settings) -> None:
     await sp.get_storage(AgentMemory).create(AgentMemory(id=agent_id, enabled=enabled, **settings))
 
 
+class _Recorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type, *, payload=None, **_kw) -> None:
+        self.events.append((event_type, payload or {}))
+
+
 def _deps(sp, engine, *, now=NOW, load_messages=None) -> MemoryDeps:
     return MemoryDeps(
-        sp=sp, provider_registry=None, semantic_search_registry=None, engine=engine, recorder=None, store=None,
+        sp=sp, provider_registry=None, semantic_search_registry=None, engine=engine, recorder=_Recorder(), store=None,
         now=lambda: now, load_messages=load_messages,
     )
 
@@ -150,9 +158,11 @@ async def _queued(sp, engine, **job_fields) -> str:
 async def test_over_budget_requeues_to_next_utc_midnight(fake_storage_provider, engine, ran):
     await _agent(fake_storage_provider, daily_reflections=2, reflections_day=NOW.date(), reflections_count=2)
     job_id = await _queued(fake_storage_provider, engine)
-    out = await run_memory_job(_deps(fake_storage_provider, engine), _lease(job_id))
+    deps = _deps(fake_storage_provider, engine)
+    out = await run_memory_job(deps, _lease(job_id))
     assert out.drop_lease is False and out.requeue_after == datetime(2026, 11, 2, tzinfo=UTC) - NOW
     assert ran == []
+    assert [(e[0], e[1]["reason"], e[1]["retrying"]) for e in deps.recorder.events] == [("memory.reflection.skipped", "budget", True)]
 
 
 async def test_budget_is_day_scoped_in_utc(fake_storage_provider):
@@ -168,8 +178,10 @@ async def test_budget_is_day_scoped_in_utc(fake_storage_provider):
 async def test_expired_job_is_dropped(fake_storage_provider, engine, ran):
     await _agent(fake_storage_provider)
     job_id = await _queued(fake_storage_provider, engine, expires_at=NOW - timedelta(seconds=1))
-    out = await run_memory_job(_deps(fake_storage_provider, engine), _lease(job_id))
+    deps = _deps(fake_storage_provider, engine)
+    out = await run_memory_job(deps, _lease(job_id))
     assert out.drop_lease is True and ran == []
+    assert [e[1]["reason"] for e in deps.recorder.events] == ["expired"]
 
 
 @pytest.mark.parametrize("what", ["agent_deleted", "memory_disabled", "job_missing"])
@@ -191,18 +203,22 @@ async def test_trivial_session_skipped_without_model_call(fake_storage_provider,
     await _agent(fake_storage_provider)
     # fewer than two turns since the last reflection
     await on_turn_completed(fake_storage_provider, engine, _session(turns=1), NOW)
-    out = await run_memory_job(_deps(fake_storage_provider, engine), _lease("reflect:a1:s1"))
+    deps = _deps(fake_storage_provider, engine)
+    out = await run_memory_job(deps, _lease("reflect:a1:s1"))
     job = await fake_storage_provider.get_storage(MemoryJob).get("reflect:a1:s1")
     assert out.drop_lease is True and job.reflected_turn == 1 and ran == []
+    assert [(e[1]["reason"], "fewer than" in e[1]["detail"]) for e in deps.recorder.events] == [("too_small", True)]
 
     # enough turns, but nothing after the first user message: no tool call, no further user message
     async def only_chat(job):
         return [Message(role="user", parts=[TextPart(text="hi")]), Message(role="assistant", parts=[TextPart(text="hello")])]
 
     job_id = await _queued(fake_storage_provider, engine)
-    out = await run_memory_job(_deps(fake_storage_provider, engine, load_messages=only_chat), _lease(job_id))
+    deps = _deps(fake_storage_provider, engine, load_messages=only_chat)
+    out = await run_memory_job(deps, _lease(job_id))
     job = await fake_storage_provider.get_storage(MemoryJob).get(job_id)
     assert out.drop_lease is True and job.reflected_turn == 3 and ran == []
+    assert "2 messages" in deps.recorder.events[0][1]["detail"]
 
 
 async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_provider, engine, ran):
@@ -222,14 +238,6 @@ async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_pro
     assert settings.reflections_count == 1, "the budget is spent as the model call is about to happen"
 
 
-class _Recorder:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict]] = []
-
-    async def emit(self, event_type, *, payload=None, **_kw) -> None:
-        self.events.append((event_type, payload or {}))
-
-
 @pytest.mark.parametrize("attempts, retried", [(0, True), (1, True), (2, False)])
 async def test_an_unreachable_model_is_retried_twice_then_skipped(fake_storage_provider, engine, monkeypatch, attempts, retried):
     from primer.memory.reflect import ReflectionTransient
@@ -244,15 +252,15 @@ async def test_an_unreachable_model_is_retried_twice_then_skipped(fake_storage_p
 
     monkeypatch.setattr(jobs, "run_reflect", down)
     deps = _deps(fake_storage_provider, engine, load_messages=worked)
-    deps.recorder = _Recorder()
     job_id = await _queued(fake_storage_provider, engine)
     lease = Lease(ClaimKind.MEMORY, job_id, "w1", NOW, NOW + timedelta(minutes=1), attempts, None)
     out = await run_memory_job(deps, lease)
     if retried:
-        assert out.success is False and not out.drop_lease and "refused" in out.last_error and deps.recorder.events == []
+        assert out.success is False and not out.drop_lease and "refused" in out.last_error
     else:
-        assert out.drop_lease and [e[0] for e in deps.recorder.events] == ["memory.reflection.skipped"]
-        assert deps.recorder.events[0][1]["reason"] == "llm_unavailable"
+        assert out.drop_lease
+    assert [e[0] for e in deps.recorder.events] == ["memory.reflection.skipped"], "a retry says so too, so the activity feed is never quiet"
+    assert deps.recorder.events[0][1]["reason"] == "llm_unavailable" and deps.recorder.events[0][1]["retrying"] is retried
 
 
 async def test_schedule_job_makes_a_curate_or_topics_job_with_its_lease(fake_storage_provider, engine, ran):
@@ -328,3 +336,12 @@ async def test_an_ended_session_is_queued_due_now(fake_storage_provider, engine,
     deps = SimpleNamespace(claim_engine=engine, storage_provider=fake_storage_provider, event_bus=None)
     await dispatch._publish_terminal(deps, _session(turns=2), SessionStatus.ENDED, "done")
     assert await engine.has_lease(ClaimKind.MEMORY, "reflect:a1:s1")
+
+
+async def test_a_job_that_raises_reports_it_instead_of_going_quiet(fake_storage_provider, engine):
+    await _agent(fake_storage_provider)
+    job_id = await _queued(fake_storage_provider, engine)
+    deps = _deps(fake_storage_provider, engine)
+    await jobs.report_job_error(deps, _lease(job_id), KeyError("boom"))
+    [(event, payload)] = deps.recorder.events
+    assert event == "memory.reflection.skipped" and payload["reason"] == "error" and payload["detail"].startswith("KeyError")

@@ -217,7 +217,7 @@ def _texts(delta: MemoryAdd | MemoryPatch) -> str:
 
 async def _skip(deps: Any, agent: Agent, job: MemoryJob, reason: str, detail: str | None = None) -> ReflectionReport:
     await deps.recorder.emit(
-        "memory.reflection.skipped", payload={"session_id": job.session_id, "reason": reason, "detail": detail}, actor=f"memory:{agent.id}",
+        "memory.reflection.skipped", payload={"session_id": job.session_id, "reason": reason, "detail": detail, "retrying": False}, actor=f"memory:{agent.id}",
         entity_kind="agent", entity_id=agent.id,
     )
     return ReflectionReport(skipped_reason=reason)
