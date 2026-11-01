@@ -15,7 +15,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.api.registries._invalidation import BusInvalidated
 from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+from primer.int.coordinator import InvalidationTopic
 
 if TYPE_CHECKING:
     from primer.int.storage import Storage
@@ -51,7 +53,7 @@ def _default_factory(row: "SemanticSearchProvider") -> "VectorStoreProvider":  #
     return VectorStoreProviderFactory.create(config)
 
 
-class SemanticSearchRegistry:
+class SemanticSearchRegistry(BusInvalidated):
     """Cache + lifecycle for per-row SemanticSearchProvider instances.
 
     ``get_provider(id)`` lazy-resolves the row from Storage, dispatches
@@ -68,6 +70,7 @@ class SemanticSearchRegistry:
         retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
         self._retirement = AdapterRetirement(retire_idle_seconds)
+        self._init_invalidation(InvalidationTopic.SEMANTIC_SEARCH_PROVIDER)
         self._storage = storage
         self._factory = factory or _default_factory
         self._instances: dict[str, "VectorStoreProvider"] = {}
@@ -126,8 +129,8 @@ class SemanticSearchRegistry:
         p = await self.get_provider(ssp_id)
         return p.get_vector_store()
 
-    async def invalidate(self, ssp_id: str) -> None:
-        """Drop the cached instance for one id; aclose() it.
+    async def _invalidate_local(self, ssp_id: str) -> None:
+        """Drop the cached instance for one id (this process); retire it.
 
         Called AFTER the provider row was updated or deleted, so a failing close is logged and swallowed, like every
         other close in this registry: raising would report a write that already landed as failed. The instance is
@@ -138,8 +141,15 @@ class SemanticSearchRegistry:
         if inst is not None:
             self._retirement.retire(inst, repr(ssp_id))         # closed once its in-flight calls are done (GX-1)
 
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        instances, self._instances = list(self._instances.values()), {}
+        for inst in instances:
+            self._retirement.retire(inst)
+
     async def aclose(self) -> None:
-        """Drop + aclose every cached instance."""
+        """Unsubscribe, then drop + aclose every cached instance."""
+        await self._unbind_invalidation_bus()
         async with self._lock:
             instances = list(self._instances.values())
             self._instances.clear()

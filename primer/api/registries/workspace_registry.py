@@ -28,7 +28,10 @@ from pydantic_core import to_jsonable_python
 
 from primer.bootstrap.prime import is_reserved_user_default_id, is_user_default_workspace, resolve_default_workspace_id
 from primer.access.person import Person
+from primer.api.registries._invalidation import BusInvalidated
+from primer.api.registries.retirement import AdapterRetirement
 from primer.access.policy import level_of
+from primer.int.coordinator import InvalidationTopic
 from primer.model.access import Access
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError, ValidationError
@@ -134,7 +137,7 @@ def _default_factory(
     return WorkspaceBackendFactory.create(provider)
 
 
-class WorkspaceRegistry:
+class WorkspaceRegistry(BusInvalidated):
     """Lazy backend cache keyed by :class:`WorkspaceProvider` row id."""
 
     def __init__(
@@ -156,6 +159,8 @@ class WorkspaceRegistry:
         self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
         self._cache: dict[str, "WorkspaceBackend"] = {}
         self._lock = asyncio.Lock()
+        self._retirement = AdapterRetirement()                 # only a bus-reconnect flush retires; an edit still closes the backend at once
+        self._init_invalidation(InvalidationTopic.WORKSPACE_PROVIDER)
         # Workspace ids a destroy() is running for in this process (a count, so two overlapping destroys of one id hold the mark until both end).
         self._destroying: dict[str, int] = {}
         # Creates of one explicit workspace id in this process, run one at a time (round 2 of #917): a lock and how many creates hold or wait on it.
@@ -186,7 +191,7 @@ class WorkspaceRegistry:
                     f"WorkspaceProvider {provider_id!r} does not exist"
                 )
             self._local_policy.check_provider(row)
-            backend = self._factory(row)
+            backend = self._factory(row)             # not instrumented: a flush retires it after the idle period alone
             await backend.initialize()
             self._cache[provider_id] = backend
             return backend
@@ -209,13 +214,20 @@ class WorkspaceRegistry:
         except WorkspaceRefusedError as exc:
             raise exc.for_workspace(workspace_id) from None
 
-    async def invalidate(self, provider_id: str) -> None:
+    async def _invalidate_local(self, provider_id: str) -> None:
         async with self._lock:
             backend = self._cache.pop(provider_id, None)
         if backend is not None:
             await backend.aclose()
 
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached backend (calls in flight finish), so the next get rebuilds."""
+        backends, self._cache = list(self._cache.values()), {}
+        for backend in backends:
+            self._retirement.retire(backend)
+
     async def aclose(self) -> None:
+        await self._unbind_invalidation_bus()
         async with self._lock:
             backends = list(self._cache.values())
             self._cache.clear()
@@ -228,6 +240,7 @@ class WorkspaceRegistry:
                     type(backend).__name__,
                     exc,
                 )
+        await self._retirement.close_all()
 
     # ---- per-workspace helpers ---------------------------------------
 

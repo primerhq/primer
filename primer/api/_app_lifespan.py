@@ -512,6 +512,12 @@ def _make_lifespan(config: AppConfig):
             # The artifact-storage registry is a second cache on the same bus: an edit of a provider row in ANY process (a REST edit on the API, a tool
             # in a worker) drops this process's cached store too.
             await artifact_storage_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+            # The semantic-search, web-search, web-fetch, speech and workspace-provider caches are per process too: an edit of a row in the API must
+            # reach the worker that runs the agent turns, and one made by a tool in a worker must reach the API (GX-3).
+            for _registry in (
+                semantic_search_registry, web_search_registry, web_fetch_registry, stt_registry, tts_registry, workspace_registry,
+            ):
+                await _registry.bind_invalidation_bus(coordinator.invalidation_bus)
             # The approval gate caches its policy lookups per process: an edit in any process must reach every gate (GS-28).
             await approval_resolver.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)

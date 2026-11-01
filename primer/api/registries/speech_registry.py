@@ -20,7 +20,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from primer.api.registries._invalidation import BusInvalidated
 from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+from primer.int.coordinator import InvalidationTopic
 from primer.model.except_ import NotFoundError
 from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
 
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SpeechRegistry:
+class SpeechRegistry(BusInvalidated):
     """Cache + lifecycle for per-row speech adapter instances."""
 
     def __init__(
@@ -46,6 +48,7 @@ class SpeechRegistry:
         retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
         self._retirement = AdapterRetirement(retire_idle_seconds)
+        self._init_invalidation({"tts": InvalidationTopic.TEXT_TO_SPEECH_PROVIDER, "stt": InvalidationTopic.SPEECH_TO_TEXT_PROVIDER}.get(label))
         self._storage = storage
         self._factory = factory
         self._label = label
@@ -84,15 +87,22 @@ class SpeechRegistry:
             )
         return winner
 
-    async def invalidate(self, provider_id: str) -> None:
-        """Drop the cached instance for one id and aclose() it."""
+    async def _invalidate_local(self, provider_id: str) -> None:
+        """Drop the cached instance for one id (this process) and retire it."""
         async with self._lock:
             instance = self._instances.pop(provider_id, None)
         if instance is not None:
             self._retirement.retire(instance)     # closed once its in-flight calls are done (GX-1)
 
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        instances, self._instances = list(self._instances.values()), {}
+        for inst in instances:
+            self._retirement.retire(inst)
+
     async def aclose(self) -> None:
-        """Drop and aclose every cached instance."""
+        """Unsubscribe, then drop and aclose every cached instance."""
+        await self._unbind_invalidation_bus()
         async with self._lock:
             instances = list(self._instances.values())
             self._instances.clear()

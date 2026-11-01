@@ -8,7 +8,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.api.registries._invalidation import BusInvalidated
 from primer.api.registries.retirement import RETIRE_IDLE_SECONDS, AdapterRetirement
+from primer.int.coordinator import InvalidationTopic
 from primer.model.except_ import NotFoundError
 from primer.model.web_fetch import WebFetchProvider, WebFetchProviderType
 from primer.web_fetch.adapter import WebFetchAdapter, WebFetchProviderError
@@ -19,11 +21,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class WebFetchRegistry:
+class WebFetchRegistry(BusInvalidated):
     def __init__(self, *, storage: "Storage[WebFetchProvider]",
                  factory: Callable[[WebFetchProvider], WebFetchAdapter] | None = None,
                  retire_idle_seconds: float = RETIRE_IDLE_SECONDS) -> None:
         self._retirement = AdapterRetirement(retire_idle_seconds)
+        self._init_invalidation(InvalidationTopic.WEB_FETCH_PROVIDER)
         self._storage = storage
         self._factory = factory or default_web_fetch_factory
         self._instances: dict[str, WebFetchAdapter] = {}
@@ -49,13 +52,20 @@ class WebFetchRegistry:
             logger.warning("WebFetchRegistry: race-loser aclose failed: %s", exc)
         return winner
 
-    async def invalidate(self, provider_id: str) -> None:
+    async def _invalidate_local(self, provider_id: str) -> None:
         async with self._lock:
             inst = self._instances.pop(provider_id, None)
         if inst is not None:
             self._retirement.retire(inst)         # closed once its in-flight calls are done (GX-1)
 
+    def _flush_local(self) -> None:
+        """A bus reconnect may have dropped evictions: retire every cached adapter (in-flight calls finish), so the next get rebuilds."""
+        instances, self._instances = list(self._instances.values()), {}
+        for inst in instances:
+            self._retirement.retire(inst)
+
     async def aclose(self) -> None:
+        await self._unbind_invalidation_bus()
         async with self._lock:
             instances = list(self._instances.values())
             self._instances.clear()
