@@ -341,6 +341,14 @@ class TestRerankEdges:
         assert [h.score for h in out[:3]] == [3.0, 2.0, 1.0]
 
     @pytest.mark.asyncio
+    async def test_k_over_top_n_returns_k_hits_with_an_unscored_tail(self) -> None:
+        store = _FakeVectorStore(_ranked(8))
+        out = await _cer_searcher(store, _FakeCrossEncoder([1, 3, 2]), top_n=3).search("q", k=6)
+        assert store.calls[0]["k"] == 6
+        assert [h.record.chunk_id for h in out] == ["c1", "c2", "c0", "c3", "c4", "c5"]
+        assert [h.score for h in out[3:]] == [None, None, None]
+
+    @pytest.mark.asyncio
     async def test_a_zero_score_ranks_above_a_negative_one(self) -> None:
         cands = [_hit("zero", text="z", vector=[1.0]), _hit("neg", text="n", vector=[1.0])]
         out = await _cer_searcher(_FakeVectorStore(cands), _FakeCrossEncoder([0.0, -3.0]), top_n=10).search("q", k=2)
