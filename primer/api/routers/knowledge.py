@@ -81,6 +81,7 @@ from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
 from primer.knowledge import importer
 from primer.knowledge.importer import import_zip
+from primer.knowledge.tree import BODY_CAP_MESSAGE, DOCUMENT_BODY_CAP, check_body_size
 from primer.knowledge.lifecycle import (
     disable_search,
     enable_search,
@@ -229,7 +230,6 @@ collection_router = make_crud_router(
 )
 
 
-_BODY_CAP = 1024 * 1024  # 1 MiB, enforced at the API edge (spec section 3)
 
 
 class _DocCreateBody(BaseModel):
@@ -277,10 +277,10 @@ async def _require_collection(
 
 
 def _check_body_cap(body: str) -> None:
-    if len(body.encode("utf-8")) > _BODY_CAP:
+    if len(body.encode("utf-8")) > DOCUMENT_BODY_CAP:
         raise RequestValidationError(errors=[{
             "type": "value_error", "loc": ("body", "body"),
-            "msg": "document body exceeds the 1 MiB cap", "input": "<omitted>",
+            "msg": BODY_CAP_MESSAGE, "input": "<omitted>",
         }])
 
 
@@ -482,7 +482,7 @@ async def get_or_list_collection_documents(
 @collection_router.put(
     "/collections/{collection_id}/documents",
     summary="Create or replace a document at a path",
-    responses=common_responses(403, 404, 422, 500),
+    responses=common_responses(403, 404, 413, 422, 500),
 )
 async def put_collection_document(
     request: Request,
@@ -499,6 +499,7 @@ async def put_collection_document(
     stored document metadata.
     """
     await _require_collection(request, collections, collection_id, AccessLevel.FULL)
+    check_body_size(body.content)  # 413, the cap POST/PATCH /docs answer 422 for (KN-12, D5)
 
     doc = await service.upsert(
         collection_id=collection_id,

@@ -18,10 +18,21 @@ from primer.int.document_content import DocumentContentStore
 from primer.int.storage import Storage
 from primer.model.collection import Document, _utcnow
 from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
+from primer.model.payload_too_large import PayloadTooLargeError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
 STRICT_SLUG_RE = re.compile(r"[a-z0-9-]+")
+
+DOCUMENT_BODY_CAP = 1024 * 1024
+"""Largest document body, in UTF-8 bytes, a USER door accepts (D5). Internal writers (the system collection, harness) are not capped."""
+BODY_CAP_MESSAGE = "document body exceeds the 1 MiB cap"
+
+
+def check_body_size(body: str) -> None:
+    """Refuse a body over :data:`DOCUMENT_BODY_CAP` at a user door (KN-12); the services themselves stay uncapped for internal writers."""
+    if len(body.encode("utf-8")) > DOCUMENT_BODY_CAP:
+        raise PayloadTooLargeError(BODY_CAP_MESSAGE, limit_bytes=DOCUMENT_BODY_CAP)
 
 Indexer = Callable[..., Awaitable[None]]
 Unindexer = Callable[..., Awaitable[None]]

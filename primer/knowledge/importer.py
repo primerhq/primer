@@ -9,7 +9,7 @@ from typing import BinaryIO, Literal
 
 from pydantic import BaseModel, Field
 
-from primer.knowledge.tree import DocumentTreeService
+from primer.knowledge.tree import BODY_CAP_MESSAGE, DOCUMENT_BODY_CAP, DocumentTreeService
 from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
 from primer.model.payload_too_large import PayloadTooLargeError
 
@@ -202,6 +202,9 @@ async def import_zip(
             continue
         raw = _read_bounded(zf, info, MAX_UNCOMPRESSED_BYTES - inflated)
         inflated += len(raw)
+        if len(raw) > DOCUMENT_BODY_CAP:
+            report.rejected.append({"file": info.filename, "reason": BODY_CAP_MESSAGE})
+            continue
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:

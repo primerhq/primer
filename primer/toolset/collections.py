@@ -32,7 +32,8 @@ from primer.knowledge.indexing import (
     make_document_path_rewriter,
     make_document_unindexer,
 )
-from primer.knowledge.tree import DocumentTreeService
+from primer.knowledge.tree import DocumentTreeService, check_body_size
+from primer.model.payload_too_large import PayloadTooLargeError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
@@ -117,7 +118,7 @@ def _map_error(exc: PrimerError) -> ToolCallResult:
         return _err(str(exc), error_type="not-found")
     if isinstance(exc, ConflictError):
         return _err(str(exc), error_type="conflict")
-    if isinstance(exc, BadRequestError):
+    if isinstance(exc, (BadRequestError, PayloadTooLargeError)):
         return _err(str(exc), error_type="validation-error")
     return _err(str(exc), error_type="tool-error")
 
@@ -441,6 +442,7 @@ def build_collections_toolset(
         if error is not None:
             return error
         try:
+            check_body_size(args.body)
             doc = await tree.create(
                 collection_id=args.collection, parent=args.parent,
                 slug=args.slug, body=args.body, title=args.title,
@@ -478,6 +480,8 @@ def build_collections_toolset(
         if error is not None:
             return error
         try:
+            if args.body is not None:
+                check_body_size(args.body)
             doc = await tree.update(
                 collection_id=args.collection, path=args.path,
                 body=args.body, title=args.title,
