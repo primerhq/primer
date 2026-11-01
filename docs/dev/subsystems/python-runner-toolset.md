@@ -243,3 +243,10 @@ static test passes either way and only the e2e suite can tell them apart.
   recorded.
 - **The editor degrades to a textarea.** Why: a failed bundle load should
   cost syntax highlighting, not the ability to edit a tool.
+
+### Watch parks (GS-12)
+
+A python tool's `watch_files(paths)` parks on `watch:{session}[:{graph node}]:{tool_call}` (the node only inside a graph, as for `ask_user` and
+timers). `to_yielded` writes `paths`, `batch_window_ms` (default 250, 0 to 5000) and `workspace_id` at the TOP of `resume_metadata`, where the
+`WatcherManager` and the write wake read them, after the built-in tool's checks: no absolute path, no `..` segment, 1 to 200 paths, and a
+workspace (all `YieldKindError`, answered to the tool as an error result). The original `params` stay beside them.

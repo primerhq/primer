@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from primer.model.yield_ import ToolContext, Yielded, timer_event_key
+from primer.model.yield_ import ToolContext, Yielded, scoped_event_key, timer_event_key
 
 ASK_USER = "ask_user"
 TIMER = "timer"
@@ -65,19 +65,39 @@ def to_yielded(
         event_key = timer_event_key(ctx, node_scope)
         timeout = _coerce_seconds(params.get("seconds"))
     else:
-        event_key = f"watch:{ctx.session_id}:{ctx.tool_call_id}"
+        event_key = scoped_event_key("watch", ctx, node_scope)
         timeout = _coerce_seconds(params.get("seconds"))
 
-    return Yielded(
-        tool_name=tool_name,
-        event_key=event_key,
-        timeout=timeout,
-        resume_metadata={
-            # Pinned so the resume can tell whether the source changed while the
-            # call was parked: a resume on another version is refused
-            # (PythonToolsetProvider.resume_tool), never run on the new code.
-            "source_version": source_version,
-            "tool_meta": yield_request.get("meta") or {},
-            "params": params,
-        },
-    )
+    resume_metadata: dict[str, Any] = {
+        # Pinned so the resume can tell whether the source changed while the
+        # call was parked: a resume on another version is refused
+        # (PythonToolsetProvider.resume_tool), never run on the new code.
+        "source_version": source_version,
+        "tool_meta": yield_request.get("meta") or {},
+        "params": params,
+    }
+    if kind == WATCH:
+        # The watcher and the write wake read the park's paths from the TOP of resume_metadata, where the built-in watch_files puts them (GS-12).
+        resume_metadata.update(_watch_metadata(params, ctx))
+    return Yielded(tool_name=tool_name, event_key=event_key, timeout=timeout, resume_metadata=resume_metadata)
+
+
+_DEFAULT_BATCH_WINDOW_MS = 250
+
+
+def _watch_metadata(params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """``paths``, ``batch_window_ms`` and ``workspace_id`` of a python tool's watch, with the built-in ``watch_files`` path rules."""
+    paths = params.get("paths")
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths) or len(paths) > 200:
+        raise YieldKindError("watch_files needs a list of 1 to 200 workspace-relative path strings")
+    for p in paths:
+        if p.startswith("/") or (len(p) >= 2 and p[1] == ":"):
+            raise YieldKindError(f"absolute paths not allowed: {p!r}")
+        if ".." in p.replace("\\", "/").split("/"):
+            raise YieldKindError(f"path traversal not allowed: {p!r}")
+    if ctx.workspace_id is None:
+        raise YieldKindError("watch_files needs a workspace: the watcher resolves the paths in its filesystem")
+    window = params.get("batch_window_ms", _DEFAULT_BATCH_WINDOW_MS)
+    if isinstance(window, bool) or not isinstance(window, int) or not 0 <= window <= 5000:
+        window = _DEFAULT_BATCH_WINDOW_MS
+    return {"paths": list(paths), "batch_window_ms": window, "workspace_id": ctx.workspace_id}

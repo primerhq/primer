@@ -207,6 +207,12 @@ jobs:
           uv run pytest tests/session/test_park_flip_writes_leaves_live.py
           -o addopts= -n 0 -p no:cacheprovider -v -rs
           --timeout=120 --timeout-method=thread
+      - name: Postgres-gated test, wait cursor below a late commit (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/events/test_stable_head_live.py
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
 
   core-install:
     # Boundary rule 1 enforcement (modular-monolith): a core-only install

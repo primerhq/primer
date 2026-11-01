@@ -400,6 +400,18 @@ class ToolContext:
 CANCEL_REASON_PREEMPTED = "preempted"
 
 
+def scoped_event_key(prefix: str, ctx: "ToolContext", node_id: str | None = None) -> str:
+    """``{prefix}:{session_id}:{node}:{tool_call_id}`` (the node only inside a graph), the key a ``watch`` or ``evwait`` park waits on.
+
+    A provider repeats ``call_0`` in every conversation and two fan-out siblings of one superstep can share one, so the graph node is folded in as
+    ``timer_event_key`` and ``ask_user`` do (GS-33). Outside a graph (``node_id`` None) the key is ``{prefix}:{session_id}:{tool_call_id}``, as it
+    always was; a park written before this keeps the key it has (the waker reads the stored key).
+    """
+    if node_id is not None:
+        return f"{prefix}:{ctx.session_id}:{node_id}:{ctx.tool_call_id}"
+    return f"{prefix}:{ctx.session_id}:{ctx.tool_call_id}"
+
+
 def timer_event_key(ctx: "ToolContext", node_id: str | None = None) -> str:
     """The event key a timer park (``sleep``, a python tool's timer yield) waits on: ``timer:{session_id}:{tool_call_id}``.
 

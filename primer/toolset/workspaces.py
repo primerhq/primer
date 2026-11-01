@@ -106,7 +106,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     session_state_predicate,
 )
-from primer.model.yield_ import ToolContext, Yielded
+from primer.model.yield_ import ToolContext, Yielded, scoped_event_key
 from primer.session.peer_messages import (
     PEER_MESSAGE_MAX_CHARS,
     ACCESS_NOTE,
@@ -1082,9 +1082,12 @@ async def _watch_files_handler(
                 error_type="bad-request",
             )
 
+    # Lazy: primer.graph imports the toolsets at package init. The node is folded into the key as ask_user's and the timer's are (GS-33).
+    from primer.graph._node_identity import current_graph_node_id
+
     return Yielded(
         tool_name="",  # provider stamps
-        event_key=f"watch:{ctx.session_id}:{ctx.tool_call_id}",
+        event_key=scoped_event_key("watch", ctx, current_graph_node_id()),
         timeout=args.timeout_seconds,
         resume_metadata={
             "paths": list(args.paths),
