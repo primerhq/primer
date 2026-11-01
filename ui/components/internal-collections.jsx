@@ -506,9 +506,8 @@ function DeactivateButton({ onRefresh, pushToast, disabled }) {
         >
           <ul>
             <li>Removes the <span className="mono">InternalCollectionsConfig</span> row.</li>
-            <li>All four <span className="mono">/v1/{`{kind}`}/search</span> routes immediately return 503 <span className="mono">/errors/subsystem-inactive</span>.</li>
-            <li>The CDC worker stops; new entities will <strong>not</strong> be indexed.</li>
-            <li><strong>Drops</strong> the four reserved collections (<span className="mono">_internal_agents</span>, <span className="mono">_internal_graphs</span>, <span className="mono">_internal_collections</span>, <span className="mono">_internal_tools</span>) and all their embeddings from the backing SSP — this is what lets you switch embedding models cleanly. Re-PUT + re-bootstrap rebuilds from scratch.</li>
+            <li>Turns <strong>off</strong> semantic search on the <span className="mono">system</span> collection and drops its embeddings from the backing SSP. The collection stays readable and greppable; only search by meaning stops.</li>
+            <li>Also drops any leftover <span className="mono">_internal_*</span> collections from the backing SSP, so you can switch embedding models cleanly. Re-PUT + bootstrap turns search back on and indexes the system collection again.</li>
             <li>Custom (non-IC) collections in the same SSP are <strong>not</strong> touched.</li>
           </ul>
         </Modal>
