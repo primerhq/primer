@@ -3,7 +3,7 @@
 ``mini_react_context(jsx_path)`` returns a MiniRacer context holding
 
 * a hook runtime (``useState``, ``useEffect`` with dependency arrays and cleanups, ``useRef``, ``useCallback``, ``useMemo``,
-  ``useReducer``, ``useId``) and ``React.createElement`` / ``Fragment``, which together render a function-component tree to a plain element
+  ``useReducer``, ``useId``, ``useSyncExternalStore``) and ``React.createElement`` / ``Fragment``, which together render a function-component tree to a plain element
   tree, re-render it until no state change is pending, and run each effect after the render that changed its dependencies; plus the
   element helpers the shared components call (``isValidElement``, ``cloneElement``, ``Children.toArray``), implemented as React does them;
 * the file's real code, transpiled with the same Babel the server bundles with.
@@ -169,6 +169,18 @@ var window = globalThis;
       pendingEffects.push({ slot: s, fn: fn });
     }
   }
+  // The snapshot is read at render; the store is subscribed after the render (again whenever `subscribe` changes, as React does), and a
+  // notification re-renders only when the snapshot moved.
+  function useSyncExternalStore(subscribe, getSnapshot) {
+    var value = getSnapshot();
+    var s = slotAt();
+    s.get = getSnapshot;
+    s.v = value;
+    useEffect(function () {
+      return subscribe(function () { if (!Object.is(s.get(), s.v)) dirty = true; });
+    }, [subscribe]);
+    return value;
+  }
   function renderNode(node, path, visited) {
     if (node == null || typeof node === "boolean" || typeof node === "string" || typeof node === "number") return;
     if (Array.isArray(node)) {
@@ -304,6 +316,7 @@ var window = globalThis;
   g.React = {
     createElement: createElement, Fragment: Fragment, Component: Component, useState: useState, useReducer: useReducer, useRef: useRef,
     useMemo: useMemo, useCallback: useCallback, useEffect: useEffect, useLayoutEffect: useEffect, useId: useId,
+    useSyncExternalStore: useSyncExternalStore,
     isValidElement: isValidElement, cloneElement: cloneElement, Children: { toArray: childrenToArray },
   };
   g.MR = {

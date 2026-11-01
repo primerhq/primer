@@ -155,15 +155,18 @@ function WTAP_notifyStoresConnState(hub) {
   }
 }
 
-// Trigger a REST catch-up for every store for this wid (spec section 4.1).
+// Trigger a REST catch-up for every store for this wid (spec section 4.1). Only a store an open session
+// document reads (a transcript subscriber) needs its gap in full; a store a pulse dot reads gets its status
+// from one tail read (UI-H1: every listed session used to be read from seq 0 and kept).
 function WTAP_catchUpStores(hub) {
-  if (!window.SS_STORES || !window.SS_catchUp) return;
+  if (!window.SS_STORES || !window.SS_catchUp || !window.SS_catchUpStatus) return;
   var prefix = WTAP_obsPrefix(hub.wid);
   for (var key in window.SS_STORES) {
     if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
         && key.indexOf(prefix) === 0) {
       var store = window.SS_STORES[key];
-      try { window.SS_catchUp(store); } catch (_e) { /* no-op */ }
+      var shown = store._sub && store._sub.transcript && store._sub.transcript.length > 0;
+      try { (shown ? window.SS_catchUp : window.SS_catchUpStatus)(store); } catch (_e) { /* no-op */ }
     }
   }
 }

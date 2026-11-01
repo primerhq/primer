@@ -328,15 +328,6 @@ function SS_apply(store, frame) {
       var finalText = (frame.payload && frame.payload.text) || null;
       SS_finalizePart(store, reconcileId, finalText);
     }
-    // Tap durable frames name their kind field `class` (already read into
-    // `kind` above); REST history records name it `kind` instead (see
-    // SS_insertRecord's own comment) - `kind` alone is blind to a
-    // REST-sourced user_input, which silently skipped both branches
-    // below when seeded from history. recordKind covers both shapes.
-    var recordKind = kind || frame.kind;
-    if (recordKind === "user_input" && store.optimisticSendPending != null) {
-      SS_reconcileOptimistic(store);
-    }
     // SEV-2 fix: a real record superseding an earlier legacy `{role,
     // parts}` placeholder (see the branch above) must drop that
     // placeholder - otherwise the same content would render TWICE once
@@ -359,10 +350,21 @@ function SS_apply(store, frame) {
         });
       }
     }
-    SS_updateStatus(store, frame);
+    SS_applyRecordStatus(store, frame);
     SS_markDirty(store, "transcript");
     SS_markDirty(store, "status");
   }
+}
+
+// The status side of a durable record (SS_apply, and the status-only catch-up): a user_input settles a pending send, then
+// the record derives the turn status. Tap durable frames name their kind field `class`; REST history records name it
+// `kind` (see SS_insertRecord's own comment) - `class` alone is blind to a REST-sourced user_input, so both are read.
+function SS_applyRecordStatus(store, frame) {
+  var recordKind = frame["class"] || frame.kind;
+  if (recordKind === "user_input" && store.optimisticSendPending != null) {
+    SS_reconcileOptimistic(store);
+  }
+  SS_updateStatus(store, frame);
 }
 
 // Reconcile a pending optimistic send with the server's user_input record:
@@ -754,21 +756,56 @@ function SS_catchUp(store) {
   });
 }
 
+// The catch-up of a store only a pulse dot reads (no transcript subscriber): one read of the log's tail, applied to the
+// status alone, so the dot shows the same verb without the session's history being downloaded and kept (UI-H1).
+var SS_STATUS_TAIL = 50;
+
+function SS_catchUpStatus(store) {
+  if (store._catchUpInFlight) return;
+  var apiFetch = (window.primerApi && window.primerApi.apiFetch) || null;
+  if (typeof apiFetch !== "function") return;
+  store._catchUpInFlight = true;
+  apiFetch(
+    "GET",
+    "/sessions/" + encodeURIComponent(store.sid) + "/messages?tail=1&limit=" + SS_STATUS_TAIL
+  ).then(function (res) {
+    var items = (res && res.items) || [];
+    // What the store already holds was applied when it arrived, as the full catch-up reads only after the high-water.
+    var after = SS_highWater(store);
+    var applied = false;
+    for (var i = 0; i < items.length; i++) {
+      if (typeof items[i].seq !== "number" || items[i].seq <= after) continue;
+      SS_applyRecordStatus(store, items[i]);
+      applied = true;
+    }
+    if (applied) SS_markDirty(store, "status");
+  }).catch(function () {
+    // best-effort; the next reconnect retries.
+  }).then(function () {
+    store._catchUpInFlight = false;
+  });
+}
+
 // --- React binding (the only React code; guarded so the core loads in a
 // bare test env without React) ------------------------------------------
 if (typeof window !== "undefined" && window.React &&
     typeof window.React.useSyncExternalStore === "function") {
 
-  // Bind a component to one channel of one store. retain() on mount so the
-  // store survives unmount; the underlying connection lives at the hub.
+  // Bind a component to one channel of one store. The store survives
+  // unmount; the underlying connection lives at the hub. A mounted
+  // consumer is one reference (retained on every render, refs only grew).
   window.useSessionStore = function (wid, sid, channel) {
     var store = SS_getStore(wid, sid);
-    SS_retain(store);
-    return window.React.useSyncExternalStore(
+    var snap = window.React.useSyncExternalStore(
       function (cb) { return SS_subscribe(store, channel, cb); },
       function () { return SS_getSnapshot(store, channel); },
       function () { return SS_getSnapshot(store, channel); }
     );
+    window.React.useEffect(function () {
+      SS_retain(store);
+      return function () { SS_dispose(store); };
+    }, [store]);
+    return snap;
   };
 }
 
@@ -784,6 +821,7 @@ window.SS_retain = SS_retain;
 window.SS_dispose = SS_dispose;
 window.SS_setConnState = SS_setConnState;
 window.SS_catchUp = SS_catchUp;
+window.SS_catchUpStatus = SS_catchUpStatus;
 window.SS_highWater = SS_highWater;
 window.SS_encodeCursor = SS_encodeCursor;
 // Exposed for the test harness (and for a future eviction policy): the
