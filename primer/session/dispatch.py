@@ -81,7 +81,7 @@ from primer.session.seq_reservation import reserve_next_seq
 from primer.session.slot_view import rows_for_session_ids
 from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
-from primer.session.turns import has_open_turn
+from primer.session.turns import has_open_turn, window_lines
 from primer.session.persistence import (
     TurnInvariantError,
     WorkspaceIO,
@@ -2901,13 +2901,26 @@ _REARMABLE_STATUSES = [SessionStatus.RUNNING.value, SessionStatus.WAITING.value]
 
 
 async def _read_message_lines(workspace_io, row: WorkspaceSession) -> list[str] | None:
-    """The session's ``messages.jsonl`` lines, or ``None`` when they cannot be read (logged).
+    """The session's ``messages.jsonl`` lines from the drain cursor on (the whole log when the IO cannot read a range), or ``None`` when they cannot be read (logged).
 
     Through the worker's IO shim (``read_state_file``, which resolves the workspace's own state path and returns
     nothing for an absent file) or a test fake's ``read_lines``. Bounded like the other workspace I/O of a turn exit.
     """
     try:
         async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+            read_state_tail = getattr(workspace_io, "read_state_tail", None)
+            if read_state_tail is not None:
+                rel = f"sessions/{row.id}/messages.jsonl"
+
+                async def read_tail(max_bytes: int):
+                    try:
+                        return await read_state_tail(row.workspace_id, rel, max_bytes)
+                    except NotFoundError:
+                        return b"", True                       # no log yet: nothing to scan, as read_state_file says
+
+                window = await window_lines(read_tail, row.next_unprocessed_seq)
+                if window is not None:
+                    return window
             read_state_file = getattr(workspace_io, "read_state_file", None)
             if read_state_file is not None:
                 raw = await read_state_file(row.workspace_id, f"sessions/{row.id}/messages.jsonl")

@@ -789,3 +789,17 @@ PAUSE_SUPERSEDED record, a cap drop's record; `reserve_seq` for an attachment st
 one of the turn's. A reservation that moves the row between two blocks makes the writer's counter jump over it. The turn's exit
 (`_persist_last_seq`) calls `settle()`: the row goes back to the writer's last seq when nobody took a seq past the lease, so a
 turn with no concurrent writer numbers and leaves the row exactly as before; a crash leaves a gap, which readers tolerate.
+
+### Reads by range (PERF-T14 stage 3)
+
+The readers that look at the end of `messages.jsonl` no longer read all of it. `primer/workspace/tail_read.py` reads the last N bytes
+(`read_file_tail` on the local workspace, `file_info`/`stat` plus the ranged `read_file_from` on the sandbox and runtime ones) and
+widens the tail (x4 from 64 KiB) until a reader's test holds or the whole file has been read; a workspace that cannot read a range is
+read whole, as before. `read_session_final_text` widens until the tail holds three session terminals. The open-turn check
+(`_read_message_lines`, then `count_turn_state` / `has_open_turn`) widens until the tail holds a record 128 seqs below the drain cursor
+(`turns.window_lines`; the margin covers a record reserved inside a running turn's seq lease). The session detail's usage totals keep a
+continuable fold per session (`usage.UsageFold`, in `UsageCache`) with the byte it reached and the 256 bytes before it: a later read
+starts there, folds the complete new lines and, if those bytes changed (a rewrite or trim), a rewind marker is met, or the workspace has
+no ranged read, folds the whole log (`session_usage`) as before. A compaction marker restarts the fold. The turn timeline route keeps the
+parsed windows and envelopes per log identity (`timeline.TimelineSources`, size and mtime of both files, `last_seq`, `turn_no`; 8
+sessions) so the next turn of the same session reads and parses nothing. The default of `session_log_append_only` is unchanged.

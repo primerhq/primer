@@ -16,6 +16,7 @@ it folds the transcript without renumbering the turns.
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -608,13 +609,42 @@ def _waits(
     return out
 
 
-def build_turn_timeline(
-    *,
-    message_lines: list[str],
-    turn_log_lines: list[str],
-    turn_no: int,
+class TimelineSources:
+    """What a turn's timeline is derived from, parsed once per log identity: the turn windows and the turn-log envelopes.
+
+    A finished session's logs do not change, and the timeline view asks for one turn after another; the route keeps these per
+    ``(session, size and mtime of both files, last_seq, turn_no)`` (the key of the usage totals) in a small LRU, so a second turn of the same
+    session reads and parses nothing. Bounded to a few sessions: the parsed records of a long log are not small.
+    """
+
+    def __init__(self, max_entries: int = 8) -> None:
+        self._max = max_entries
+        self._entries: OrderedDict[Any, tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]] = OrderedDict()
+
+    def get(self, key: Any) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]] | None:
+        found = self._entries.get(key)
+        if found is not None:
+            self._entries.move_to_end(key)
+        return found
+
+    def put(self, key: Any, sources: tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]) -> None:
+        self._entries[key] = sources
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max:
+            self._entries.popitem(last=False)
+
+
+def parse_sources(
+    message_lines: list[str], turn_log_lines: list[str],
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    """The turn windows of the message log and the envelopes of the turn log, for :func:`build_turn_timeline_from`."""
+    return turn_windows(message_lines), turn_envelopes(turn_log_lines)
+
+
+def build_turn_timeline_from(
+    sources: tuple[list[dict[str, Any]], list[list[dict[str, Any]]]], turn_no: int,
 ) -> dict[str, Any] | None:
-    """Fold one turn into its execution tree, or None if it does not exist.
+    """Fold one turn into its execution tree from parsed ``sources``, or None if it does not exist.
 
     ``turn_no`` is the window ordinal from :func:`turn_windows`, counted
     by terminals over the unfolded record stream, and it selects the
@@ -622,12 +652,12 @@ def build_turn_timeline(
     folded list and it is NOT generally the envelope's own turn_no: a
     parked turn absorbs its continuation envelope.
     """
-    windows = turn_windows(message_lines)
+    windows, envelopes = sources
     if turn_no < 0 or turn_no >= len(windows):
         return None
     window = windows[turn_no]
     records = window["records"]
-    groups = envelopes_for_window(turn_envelopes(turn_log_lines), turn_no)
+    groups = envelopes_for_window(envelopes, turn_no)
     events = [event for group in groups for event in group]
     started_at = _started_at(events, records)
     ended_at = _ended_at(events, records)
@@ -643,8 +673,21 @@ def build_turn_timeline(
     }
 
 
+def build_turn_timeline(
+    *,
+    message_lines: list[str],
+    turn_log_lines: list[str],
+    turn_no: int,
+) -> dict[str, Any] | None:
+    """Fold one turn into its execution tree, or None if it does not exist (see :func:`build_turn_timeline_from`)."""
+    return build_turn_timeline_from(parse_sources(message_lines, turn_log_lines), turn_no)
+
+
 __all__ = [
+    "TimelineSources",
     "build_turn_timeline",
+    "build_turn_timeline_from",
+    "parse_sources",
     "closes_turn",
     "envelopes_for_window",
     "turn_envelopes",

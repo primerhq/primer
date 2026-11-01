@@ -279,6 +279,32 @@ def _parse_tail(lines_last_first) -> list[dict]:
     return tail
 
 
+async def _read_final_window(workspace_io, path: str) -> bytes | None:
+    """The end of ``messages.jsonl``, widened until it holds three session terminals (two boundaries, and a graph end that is not one), or ``None`` to read it whole.
+
+    ``None`` also when the workspace cannot read a range. The bytes returned start at a line boundary unless they are the whole file.
+    """
+    from primer.workspace.tail_read import read_window, tail_of
+
+    def enough(lines: list[bytes]) -> bool:
+        terminals = 0
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(record, dict) and is_session_terminal(record):
+                terminals += 1
+                if terminals == 3:
+                    return True
+        return False
+
+    async def read_tail(max_bytes: int):
+        return await tail_of(workspace_io, path, max_bytes)
+
+    return await read_window(read_tail, enough)
+
+
 async def read_session_final_text(workspace_io, session_id: str) -> str | None:
     """Read ``messages.jsonl`` for ``session_id`` and derive the final text.
 
@@ -290,10 +316,10 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
     :func:`derive_session_final_text`. Returns ``None`` and never raises on any
     read/parse error so the relay degrades silently.
 
-    The file is still read whole (the workspace read surface has no ranged
-    read), so on a docker or k8s workspace the bytes still cross the runtime
-    connection; what no longer grows with the session is the decode and the
-    JSON parse.
+    A workspace that can read a range gives only the end of the file (see
+    :func:`_read_final_window`), so the bytes that cross a docker or k8s runtime
+    connection do not grow with the session either; one that cannot (a test
+    fake, an old runtime) is read whole, as before.
     """
     lines_last_first = None
     read_lines = getattr(workspace_io, "read_lines", None)
@@ -317,7 +343,7 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
         state_path = getattr(workspace_io, "state_path", ".state")
         path = f"{state_path}/sessions/{session_id}/messages.jsonl"
         try:
-            raw = await read_file(path)
+            raw = await _read_final_window(workspace_io, path) or await read_file(path)
         except NotFoundError:
             return None  # no messages.jsonl yet: nothing to relay, and not a fault
         except Exception:
