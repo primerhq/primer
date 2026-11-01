@@ -35,10 +35,13 @@ import glob
 import logging
 import os
 import pathlib
+import threading
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from watchfiles import Change, awatch
+import anyio.to_thread
+import watchfiles.main as _wf
+from watchfiles import Change
 
 from primer_runtime.ops import OpError, _resolve_safe
 from primer_runtime.protocol import ErrorCode, Event, serialize
@@ -48,6 +51,9 @@ log = logging.getLogger(__name__)
 # Lower debounce so events arrive quickly (default is 1600 ms which is too
 # slow for the <200 ms test budget).
 _DEBOUNCE_MS = 50
+# awatch's defaults: how often the watch thread checks its stop event, and how long one wait for changes lasts.
+_STEP_MS = 50
+_RUST_TIMEOUT_MS = 5_000
 
 # Map protocol event-name strings to watchfiles Change enum members.
 _CHANGE_MAP: dict[str, Change] = {
@@ -59,6 +65,21 @@ _CHANGE_MAP: dict[str, Change] = {
 
 # All watchfiles change types.
 _ALL_CHANGES: frozenset[Change] = frozenset(Change)
+
+
+
+def _build_watcher(watch_dirs: list[str]) -> Any:
+    """The recursive watcher ``awatch`` builds, with awatch's defaults (its ``WATCHFILES_*`` variables included)."""
+    # shortcut: watchfiles internals (what awatch itself calls), so the build can run off the loop; re-check them on a
+    # watchfiles upgrade.
+    return _wf.RustNotify(
+        watch_dirs,
+        _wf._default_debug(None),
+        _wf._default_force_polling(None),
+        _wf._default_poll_delay_ms(300),
+        True,
+        _wf._default_ignore_permission_denied(None),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -232,49 +253,70 @@ async def _run_subscription(
     if not watch_dirs:
         watch_dirs = [str(root)]
 
-    # Announce watch_open immediately
+    # Built off the loop (GI-9): the recursive watch walks the whole tree, directory links included, and a link to a big
+    # tree stalled every connection of the runtime while awatch built it on the loop.
+    try:
+        watcher = await asyncio.to_thread(_build_watcher, watch_dirs)
+    except asyncio.CancelledError:  # cancelled while it was built: closed like any cancelled watch
+        await send(serialize(Event(req_id=req_id, event="watch_closed")))
+        return
+    except Exception as exc:  # noqa: BLE001 - an inotify limit, a directory removed since it was resolved
+        log.warning("watch setup failed for req_id=%d: %s", req_id, exc)
+        await send(serialize(Event(
+            req_id=req_id,
+            event="watch_error",
+            data={"code": ErrorCode.EINTERNAL, "message": f"watch setup failed: {exc}"},
+        )))
+        await send(serialize(Event(req_id=req_id, event="watch_closed")))
+        return
+
+    # Announced once the watch is armed, so a change made after it is never missed.
     await send(serialize(Event(req_id=req_id, event="watch_open")))
 
-    # Use a custom filter that lets ALL file types through (watchfiles
-    # DefaultFilter silently drops .py files and others, which would break tests).
-    def _no_filter(change: Change, path: str) -> bool:  # noqa: ARG001
-        return True
-
+    stop = threading.Event()
     try:
-        async for changes in awatch(
-            *watch_dirs,
-            watch_filter=_no_filter,
-            debounce=_DEBOUNCE_MS,
-            stop_event=None,
-        ):
-            for change_type, changed_path in changes:
-                # Apply event-mask filter
-                if change_type not in change_mask:
-                    continue
+        with watcher:
+            try:
+                while True:
+                    # Driven the way awatch drives it: one wait in a worker thread at a time.
+                    raw = await anyio.to_thread.run_sync(watcher.watch, _DEBOUNCE_MS, _STEP_MS, _RUST_TIMEOUT_MS, stop)
+                    if not isinstance(raw, set):
+                        continue  # "timeout": no change in this wait
+                    for raw_change, changed_path in raw:
+                        change_type = Change(raw_change)
+                        # Apply event-mask filter
+                        if change_type not in change_mask:
+                            continue
 
-                # Apply pattern filter — at least one pattern must match
-                if not _matches_any(changed_path, resolved_patterns):
-                    continue
+                        # Apply pattern filter: at least one pattern must match
+                        if not _matches_any(changed_path, resolved_patterns):
+                            continue
 
-                # Build the change event
-                try:
-                    st = os.stat(changed_path)
-                    mtime: float | None = st.st_mtime
-                    size: int | None = st.st_size
-                except OSError:
-                    mtime = None
-                    size = None
+                        # A change behind a directory link that leaves the workspace is not the workspace's (GI-9).
+                        if not pathlib.Path(os.path.realpath(changed_path)).is_relative_to(root):
+                            continue
 
-                change_event = Event(
-                    req_id=req_id,
-                    event="change",
-                    data={
-                        "path": changed_path,
-                        "mtime": mtime,
-                        "size": size,
-                    },
-                )
-                await send(serialize(change_event))
+                        # Build the change event
+                        try:
+                            st = os.stat(changed_path)
+                            mtime: float | None = st.st_mtime
+                            size: int | None = st.st_size
+                        except OSError:
+                            mtime = None
+                            size = None
+
+                        change_event = Event(
+                            req_id=req_id,
+                            event="change",
+                            data={
+                                "path": changed_path,
+                                "mtime": mtime,
+                                "size": size,
+                            },
+                        )
+                        await send(serialize(change_event))
+            finally:
+                stop.set()  # the watch thread returns within a step; set before the watcher is closed
 
     except asyncio.CancelledError:
         # Normal cancellation path — fall through to watch_closed

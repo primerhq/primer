@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -164,3 +166,73 @@ async def test_a_slow_consumer_holds_at_most_256_exec_events(tmp_path: Path, mon
     assert _stream(events, "stdout") == bytes(20000000)
     assert events[-1].data == {"code": 0}
     assert peak["n"] <= 256
+
+
+# ---------------------------------------------------------------------------
+# GI-9: a watch is built off the loop and stays inside the workspace
+# ---------------------------------------------------------------------------
+
+
+def _spy_watcher_builds(monkeypatch, build) -> None:
+    import watchfiles.main
+
+    monkeypatch.setattr(watchfiles.main, "RustNotify", build)  # where awatch looks it up
+
+
+async def test_a_change_behind_a_link_that_leaves_the_root_is_not_reported(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    (outside / "d").mkdir(parents=True)
+    root = tmp_path / "ws"
+    root.mkdir()
+    os.symlink(outside, root / "escape")
+    frames: list[dict] = []
+    registry = _watch(root, frames)
+    try:
+        await _until(frames, lambda f: f.get("event") == "watch_open")
+        (outside / "d" / "secret.txt").write_text("x")  # changed outside the workspace, seen through the link
+        await _change_seen(root, frames, root / "inside.txt")
+        (outside / "d" / "secret.txt").write_text("y")
+        await _change_seen(root, frames, root / "inside.txt")
+    finally:
+        registry.cancel_all()
+    await _until(frames, lambda f: f.get("event") == "watch_closed")
+    assert [f["data"]["path"] for f in frames if f.get("event") == "change" and "secret" in f["data"]["path"]] == []
+
+
+async def test_the_recursive_watcher_is_built_off_the_loop(tmp_path: Path, monkeypatch) -> None:
+    from watchfiles._rust_notify import RustNotify
+
+    threads: list[threading.Thread] = []
+
+    def build(*args):
+        threads.append(threading.current_thread())
+        return RustNotify(*args)
+
+    _spy_watcher_builds(monkeypatch, build)
+    frames: list[dict] = []
+    registry = _watch(tmp_path, frames)
+    try:
+        await _until(frames, lambda f: f.get("event") == "watch_open")
+        await _change_seen(tmp_path, frames, tmp_path / "a.txt")
+    finally:
+        registry.cancel_all()
+    await _until(frames, lambda f: f.get("event") == "watch_closed")
+    assert len(threads) == 1
+    assert threads[0] is not threading.current_thread()  # this test runs on the loop's thread
+
+
+async def test_a_watch_whose_setup_fails_sends_watch_error(tmp_path: Path, monkeypatch) -> None:
+    def build(*args):
+        raise OSError(28, "OS file watch limit reached")
+
+    _spy_watcher_builds(monkeypatch, build)
+    frames: list[dict] = []
+    registry = _watch(tmp_path, frames, req_id=4)
+    try:
+        await _until(frames, lambda f: f.get("event") == "watch_closed")
+    finally:
+        registry.cancel_all()
+    assert [f["event"] for f in frames] == ["watch_error", "watch_closed"]
+    assert frames[0]["req_id"] == 4
+    assert frames[0]["data"]["code"] == "EINTERNAL"
+    assert "OS file watch limit reached" in frames[0]["data"]["message"]
