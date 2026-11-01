@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 
 from primer.common.openai_errors import classify_openai_exception
@@ -54,6 +55,9 @@ from primer.model.provider import (
 
 
 logger = logging.getLogger(__name__)
+
+#: The TCP connect bound when the row sets none, as the speech adapters use.
+_DEFAULT_CONNECT_SECONDS = 5.0
 
 
 # --------------------------------------------------------------------------- #
@@ -281,9 +285,16 @@ class OpenAIEmbedder(Embedder):
                 if self._config.api_key is not None
                 else ""
             ) or "no-key-required"
+            limits = self._provider.limits
+            # The row's policy, not the SDK's defaults (2 retries, 600 s): its max_retries is the only retry policy (no wrapper sits above
+            # an embedder), and a stalled endpoint fails after the row's request timeout (None disables the read bound).
+            connect = limits.connect_timeout_seconds or _DEFAULT_CONNECT_SECONDS
+            read = limits.request_timeout_seconds
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
                 api_key=key,
+                max_retries=limits.max_retries,
+                timeout=httpx.Timeout(connect=connect, read=read, write=read, pool=connect),
             )
         return self._client
 
