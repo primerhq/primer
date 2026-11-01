@@ -171,6 +171,10 @@ def _helpers():
     ctx.eval("var window = globalThis;")
     ctx.eval((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))
     ctx.eval(src[start:end])
+    # The update lays the wizard's fields over the stored row with the providers kit's PC_mergeKeep, a global when the bundle runs.
+    common = (ROOT / "ui" / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
+    a, b = common.index("function PC_isPlainObject("), common.index("// ---- what the wizard pages share")
+    ctx.eval(common[a:b])
     return ctx
 
 
@@ -352,19 +356,42 @@ def test_a_blank_key_on_the_update_carries_the_stored_keys_mask_so_the_server_ke
     assert put["config"]["api_key"] == "**********1234", "the stored key's served mask is echoed so the server restores the real key"
 
 
-def test_a_key_the_operator_typed_wins_and_the_stored_row_is_not_even_read() -> None:
+def test_a_key_the_operator_typed_wins_over_the_stored_row() -> None:
     stored = '{id: "llm-openchat", provider: "openchat", config: {url: "http://wrong", api_key: "**********1234"}}'
     ctx, out = _save_with_a_stored_row('{url: "http://right", api_key: "sk-new-key"}', stored)
     assert "ok" in out, out
     assert ctx.eval("put.config.api_key") == "sk-new-key"
-    assert json.loads(ctx.eval("JSON.stringify(calls)")) == ["POST /llm_providers", "PUT /llm_providers/llm-openchat"]
+    # The row is always read now: the update is the stored row with the wizard's fields over it (GU-16).
+    assert json.loads(ctx.eval("JSON.stringify(calls)")) == [
+        "POST /llm_providers", "GET /llm_providers/llm-openchat", "PUT /llm_providers/llm-openchat",
+    ]
+
+
+def test_an_update_keeps_the_stored_limits_and_config_fields_it_does_not_show() -> None:
+    """GU-16: the 409 path used to PUT the wizard's defaults (max_concurrency 4, only url and key) over a tuned row."""
+    stored = (
+        '{id: "llm-openchat", provider: "openchat", limits: {max_concurrency: 1, request_timeout_seconds: 90}, '
+        'config: {url: "http://wrong", api_key: "**********1234", flavor: "lmstudio"}}'
+    )
+    ctx = _helpers()
+    ctx.eval(
+        "var put = null; function api(method, path, body) {"
+        " if (method === 'POST') return Promise.reject({status: 409, detail: 'already exists'});"
+        f" if (method === 'GET') return Promise.resolve({stored});"
+        " put = body; return Promise.resolve(body); }"
+    )
+    out = _run(ctx, 'SW_saveProvider(api, {id: "llm-openchat", provider: "openchat", config: {url: "http://right"}, limits: {max_concurrency: 4}})')
+    assert "ok" in out, out
+    put = json.loads(ctx.eval("JSON.stringify(put)"))
+    assert put["limits"] == {"max_concurrency": 1, "request_timeout_seconds": 90}
+    assert put["config"] == {"url": "http://right", "api_key": "**********1234", "flavor": "lmstudio"}
 
 
 def test_a_provider_stored_without_a_key_stays_without_one() -> None:
     stored = '{id: "llm-openchat", provider: "openchat", config: {url: "http://wrong", api_key: null}}'
     ctx, out = _save_with_a_stored_row('{url: "http://right"}', stored)
     assert "ok" in out, out
-    assert ctx.eval("'api_key' in put.config") is False, "nothing stored, nothing to carry"
+    assert not ctx.eval("put.config.api_key"), "nothing stored, nothing to carry (the stored null rides along, still no key)"
 
 
 def test_an_unreadable_stored_row_stops_the_update_instead_of_risking_the_key() -> None:

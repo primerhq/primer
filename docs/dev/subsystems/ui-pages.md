@@ -475,3 +475,14 @@ The `tests/ui_e2e/` suite (gated behind `PRIMER_RUN_UI_E2E=1`, with mobile suite
 The shell's session document mounts `window.ExternalPendingBanner`
 (`ui/components/external-tools.jsx`), and the agent editor exposes the
 `allow_external_tools` toggle. See [external-tools](external-tools.md).
+
+## Entity edit forms: no stale whole-row writes (T130)
+
+A form that PUTs or PATCHes a row sends only what the operator changed, laid over what the server holds now:
+
+- The edit-user dialog PATCHes only the changed fields and sends nothing when none changed; forcing a password rotation asks first.
+- The setup wizard's 409 path always reads the stored provider and lays the wizard's fields over it with `PC_mergeKeep`; it never sends its own `limits` default.
+- The speech selectors pass only the changed field to `save`, which re-reads `/speech_active_config` before the PUT.
+- The share dialog's access read does not refetch on wake, so a draft survives a tab switch.
+- The harness enum select hands back the schema's own member (a numeric enum stays a number) and `null` for the blank option.
+- A blank secret still keeps the stored one. The channel provider edit form (optional secrets) and the SSO edit form have an explicit Clear control: channels send `null` for the field, SSO adds `?clear_client_secret=true` to the PUT (`primer/api/routers/oidc_providers.py`).

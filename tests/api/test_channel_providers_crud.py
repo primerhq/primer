@@ -208,3 +208,19 @@ async def test_a_token_that_breaks_its_rule_is_still_refused_on_an_edit(client, 
 
     assert r.status_code == 422, r.text
     assert (await _stored_config(fake_storage_provider, "cp-bad")).bot_token.get_secret_value() == SLACK_BOT
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_null_clears_an_optional_stored_secret(client, fake_storage_provider) -> None:
+    """GU-20: the edit form's Clear control sends null for the optional signing secret; the other served masks still keep their tokens."""
+    stored, _change, _secrets = _EDITS["slack"]
+    r = await client.post("/v1/channel_providers", json={"id": "cp-clear", "provider": "slack", "config": stored})
+    assert r.status_code == 201, r.text
+    served = (await client.get("/v1/channel_providers/cp-clear")).json()
+
+    r = await client.put("/v1/channel_providers/cp-clear", json={**served, "config": {**served["config"], "signing_secret": None}})
+
+    assert r.status_code == 200, r.text
+    config = await _stored_config(fake_storage_provider, "cp-clear")
+    assert config.signing_secret is None
+    assert config.bot_token.get_secret_value() == SLACK_BOT

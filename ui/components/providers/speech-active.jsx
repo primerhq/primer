@@ -43,12 +43,15 @@ function PC_useActiveSpeech(reload) {
     setLocal(null);
   }, [active.data]);
 
-  const save = async (next) => {
+  // `change` is only the field(s) the operator changed: the PUT replaces the whole row, so it is laid over the row read just now (GU-17), not
+  // over this panel's possibly stale copy.
+  const save = async (change) => {
     if (saving) return;
-    const body = PC_activeSpeechBody(next);
-    setLocal(body);
+    setLocal(PC_activeSpeechBody({ ...(local || active.data), ...change }));
     setSaving(true);
     try {
+      const fresh = await api.apiFetch("GET", "/speech_active_config", null, {});
+      const body = PC_activeSpeechBody({ ...(fresh || local || active.data), ...change });
       const answer = await api.apiFetch("PUT", "/speech_active_config", body);
       setLocal(PC_activeSpeechBody(answer || body));
       active.refetch();
@@ -103,7 +106,7 @@ function PC_SttActiveSelector({ rows, reload }) {
       <window.PK_Field label="Transcribe with">
         <select data-testid="pc-active-stt-provider" aria-label="Transcribe with" value={value} disabled={state.saving || readOnly}
           title={readOnly ? "Only an admin can change this" : undefined}
-          onChange={(event) => state.save({ ...state.row, stt_provider_id: event.target.value || null })}>
+          onChange={(event) => state.save({ stt_provider_id: event.target.value || null })}>
           <option value="">(none)</option>
           {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
@@ -133,7 +136,7 @@ function PC_TtsActiveSelector({ rows, reload }) {
       <window.PK_Field label="Speak with">
         <select data-testid="pc-active-tts-provider" aria-label="Speak with" value={state.row.tts_provider_id || ""} disabled={state.saving || readOnly}
           title={readOnly ? "Only an admin can change this" : undefined}
-          onChange={(event) => state.save({ ...state.row, tts_provider_id: event.target.value || null, tts_voice: null })}>
+          onChange={(event) => state.save({ tts_provider_id: event.target.value || null, tts_voice: null })}>
           <option value="">(none)</option>
           {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
@@ -142,7 +145,7 @@ function PC_TtsActiveSelector({ rows, reload }) {
         <select data-testid="pc-active-tts-voice" aria-label="Voice" value={state.row.tts_voice || ""}
           disabled={state.saving || readOnly || !providerId || voices.loading}
           title={readOnly ? "Only an admin can change this" : undefined}
-          onChange={(event) => state.save({ ...state.row, tts_voice: event.target.value || null })}>
+          onChange={(event) => state.save({ tts_voice: event.target.value || null })}>
           <option value="">(provider default voice)</option>
           {voiceNames.map((voice) => <option key={voice} value={voice}>{voice}</option>)}
         </select>

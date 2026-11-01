@@ -217,3 +217,22 @@ async def test_role_user_forbidden_on_create_and_list(client, app):
     r = await client.get("/v1/admin/oidc-providers")
     assert r.status_code == 403, r.text
     assert r.json()["extensions"]["error"] == "forbidden_role"
+
+
+@pytest.mark.asyncio
+async def test_clear_client_secret_flag_removes_the_stored_secret(client, app):
+    """GU-20: a blank secret keeps the stored one; only the explicit ``?clear_client_secret=true`` turns a confidential client public."""
+    r = await client.post("/v1/auth/register", json={"username": "testadmin-clear", "password": "testpassword"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/v1/admin/oidc-providers", json=_BODY)
+    assert r.status_code == 201, r.text
+
+    blank = {k: v for k, v in _BODY.items() if k != "client_secret"}
+    r = await client.put("/v1/admin/oidc-providers/oidc-okta", json=blank)
+    assert r.status_code == 200, r.text
+    assert await _stored_plaintext_secret(app, "oidc-okta") == "super-secret-plaintext"
+
+    r = await client.put("/v1/admin/oidc-providers/oidc-okta?clear_client_secret=true", json=blank)
+    assert r.status_code == 200, r.text
+    assert r.json()["client_secret"] is None
+    assert await _stored_plaintext_secret(app, "oidc-okta") is None

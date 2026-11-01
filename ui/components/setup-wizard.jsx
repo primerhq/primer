@@ -83,12 +83,14 @@ function SW_saveProvider(apiFetch, body) {
   return apiFetch("POST", "/llm_providers", body, {}).catch(function (err) {
     if (!(err && err.status === 409)) throw err;
     var path = "/llm_providers/" + encodeURIComponent(body.id);
-    var typedAKey = !!(body && body.config && typeof body.config.api_key === "string" && body.config.api_key.trim() !== "");
-    // Read the stored row only when a key could be lost: without knowing what is stored, a blind PUT might erase it, so a
-    // failed read stops the update.
-    var stored = typedAKey ? Promise.resolve(null) : apiFetch("GET", path, null, {});
-    return stored.then(function (row) {
-      return apiFetch("PUT", path, SW_keepStoredKey(body, row), {});
+    // Always read the stored row: a PUT is a full replace, so the update is the stored row with what the wizard shows laid over it, and the wizard's
+    // own defaults (limits) are NOT sent (GU-16: they put a tuned max_concurrency and every other field back to defaults). A failed read stops
+    // the update: a blind PUT could erase the key.
+    return apiFetch("GET", path, null, {}).then(function (row) {
+      var update = Object.assign({}, body);
+      delete update.limits;
+      var merged = typeof PC_mergeKeep === "function" ? PC_mergeKeep(row, update) : update;
+      return apiFetch("PUT", path, SW_keepStoredKey(merged, row), {});
     });
   });
 }

@@ -251,7 +251,9 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, useOnly, 
   var res = api.useResource(
     "shr-access:" + plural + ":" + id,
     function (signal) { return SH_api.getAccess(plural, id, signal); },
-    { pollMs: null, deps: [plural, id] }
+    // No refetch on a tab wake or idle return: the [a] effect below resets the draft onto every fresh object, so a wake would drop unsaved
+    // grants (GU-5). Reload, the 409 path and the refetch after a save still re-read the view.
+    { pollMs: null, refetchOnWake: false, deps: [plural, id] }
   );
   var a = res.data;
   // ACL-P4-T7: a use grant has no owners (the admin is the editor by role),
