@@ -166,3 +166,43 @@ def test_an_example_that_violates_the_schema_is_rejected() -> None:
     )
     with pytest.raises(RegistrationError):
         register_module(src, "ts-1", 30.0)
+
+
+_NON_LITERAL = '''
+LIMIT = 10
+
+
+@primer_tool()
+def fetch(n: int = LIMIT) -> str:
+    """Fetch some rows.
+
+    Use when you need rows.
+
+    Args:
+        n: How many.
+    """
+    return ""
+
+
+@primer_tool()
+def greet(name: str) -> str:
+    """Greet a person by name.
+
+    Use when you need a friendly greeting.
+
+    Args:
+        name: Who to greet.
+    """
+    return name
+'''
+
+
+def test_a_non_literal_default_is_a_registration_error_and_the_report_gives_a_verdict_per_function() -> None:
+    from primer.toolset.python_runner.registration import ToolRegistrationFailure, register_module_report
+
+    with pytest.raises(RegistrationError) as exc:
+        register_module(_NON_LITERAL, "ts", 30.0)
+    assert exc.value.field == "n"
+    bad, good = register_module_report(_NON_LITERAL, "ts", 30.0)
+    assert isinstance(bad, ToolRegistrationFailure) and bad.field == "n"
+    assert not isinstance(good, ToolRegistrationFailure)

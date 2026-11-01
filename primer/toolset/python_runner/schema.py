@@ -77,6 +77,19 @@ def _annotation_to_schema(node: ast.expr, param: str) -> dict[str, Any]:
     )
 
 
+def _literal_default(node: ast.expr, param: str) -> Any:
+    """The default's value, read without running the module; a name or a call is a :class:`SchemaError` naming ``param`` (GX-9), never a bare
+    ``ValueError`` that leaves registration as a 500."""
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError) as exc:
+        raise SchemaError(
+            f"parameter {param!r} needs a literal default (a number, string, bool, None, list or dict of those), not "
+            f"{ast.unparse(node)!r}",
+            field=param,
+        ) from exc
+
+
 def build_args_schema(
     fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
     doc: ParsedDocstring,
@@ -104,10 +117,10 @@ def build_args_schema(
     defaults: dict[str, Any] = {}
     if a.defaults:
         for arg, default in zip(positional[-len(a.defaults) :], a.defaults):
-            defaults[arg.arg] = ast.literal_eval(default)
+            defaults[arg.arg] = _literal_default(default, arg.arg)
     for arg, default in zip(a.kwonlyargs, a.kw_defaults):
         if default is not None:
-            defaults[arg.arg] = ast.literal_eval(default)
+            defaults[arg.arg] = _literal_default(default, arg.arg)
 
     properties: dict[str, Any] = {}
     required: list[str] = []

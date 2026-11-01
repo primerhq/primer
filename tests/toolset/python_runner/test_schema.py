@@ -90,3 +90,13 @@ def test_an_unmappable_annotation_is_an_error_naming_the_param() -> None:
 def test_an_async_function_is_handled_the_same() -> None:
     s = _schema("async def f(a: str, b: int) -> str: ...", DOC)
     assert set(s["required"]) == {"a", "b"}
+
+
+def test_a_non_literal_default_is_a_schema_error_naming_the_param() -> None:
+    """GX-9: ``n: int = LIMIT`` escaped as a bare ValueError, so the toolset save and the dry-run validate answered 500."""
+    doc = "Do a thing.\n\nUse when you must.\n\nArgs:\n    n: How many.\n"
+    for src in ("def f(n: int = LIMIT) -> str: ...", "def f(*, n: int = make()) -> str: ..."):
+        with pytest.raises(SchemaError) as exc:
+            _schema(src, doc)
+        assert exc.value.field == "n"
+        assert "literal" in str(exc.value)
