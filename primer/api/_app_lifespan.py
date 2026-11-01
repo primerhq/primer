@@ -464,6 +464,7 @@ def _make_lifespan(config: AppConfig):
         timeout_sweeper = None
         event_dispatcher = None
         event_retention_pruner = None
+        vector_maintenance = None
         workspace_event_bridge = None
         stuck_session_sweeper = None
         session_messaging_sweeper = None
@@ -570,6 +571,15 @@ def _make_lifespan(config: AppConfig):
             )
             event_retention_pruner.start(coordinator.leader_elector)
             app.state.event_dispatcher = event_dispatcher
+
+            # Runs maintain_indexes on each semantic-search provider's reindex_cron (Lance: nightly), on the leader only (GI-28).
+            from primer.model.providers.vector import SemanticSearchProvider as _SemanticSearchProvider
+            from primer.vector.maintenance import VectorMaintenance
+            vector_maintenance = VectorMaintenance(
+                storage=storage_provider.get_storage(_SemanticSearchProvider),
+                registry=semantic_search_registry,
+            )
+            vector_maintenance.start(coordinator.leader_elector)
 
             # Ends sessions whose first turn never ran. Without this a lost claim leaves a
             # non-terminal row forever, and a `parallelism="skip"` subscription will not fire
@@ -1111,6 +1121,7 @@ def _make_lifespan(config: AppConfig):
                 (harness_sweeper, "harness_sweeper"),
                 (workspace_event_bridge, "workspace_event_bridge"),
                 (event_retention_pruner, "event_retention_pruner"),
+                (vector_maintenance, "vector_maintenance"),
                 (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),

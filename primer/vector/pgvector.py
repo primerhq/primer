@@ -58,6 +58,9 @@ from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_op
 
 logger = logging.getLogger(__name__)
 
+# A maintenance statement (VACUUM, a concurrent REINDEX) on a large table outlives the pool's 30 s command_timeout by far.
+_MAINTENANCE_TIMEOUT_SECONDS = 6 * 3600.0
+
 
 # ---------- Reachability probe --------------------------------------------
 
@@ -497,16 +500,37 @@ class PgVectorStoreProvider(VectorStoreProvider):
         qualified_index = f'"{self._schema}"."{index_name}"'
 
         async with self._pool.acquire() as conn:
+            # The pool's command_timeout is the 30 s ``acquire_timeout``; a VACUUM or a concurrent REINDEX of a large table takes far longer, and a
+            # reindex cancelled part way leaves an INVALID ``_ccnew`` index behind that still slows every write (GI-28). So these statements get
+            # their own, generous, limit.
+            timeout = _MAINTENANCE_TIMEOUT_SECONDS
             if action == "analyze":
-                await conn.execute(f"ANALYZE {qualified_table}")
+                await conn.execute(f"ANALYZE {qualified_table}", timeout=timeout)
             elif action == "vacuum_analyze":
-                await conn.execute(f"VACUUM ANALYZE {qualified_table}")
+                await conn.execute(f"VACUUM ANALYZE {qualified_table}", timeout=timeout)
             elif action == "reindex":
-                await conn.execute(
-                    f"REINDEX INDEX CONCURRENTLY {qualified_index}"
-                )
+                try:
+                    await conn.execute(f"REINDEX INDEX CONCURRENTLY {qualified_index}", timeout=timeout)
+                except BaseException:
+                    await self._drop_invalid_reindex_leftovers(index_name)
+                    raise
             else:  # pragma: no cover - exhaustive
                 raise ConfigError(f"unknown maintenance action {action!r}")
+
+    async def _drop_invalid_reindex_leftovers(self, index_name: str) -> None:
+        """Drop the INVALID ``<index>_ccnew*`` indexes a failed ``REINDEX ... CONCURRENTLY`` leaves (they are maintained on every write and never used)."""
+        try:
+            async with self._pool.acquire() as conn:
+                leftovers = await conn.fetch(
+                    "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = $1 AND NOT i.indisvalid AND c.relname LIKE $2",
+                    self._schema, index_name.replace("_", "\\_") + "\\_ccnew%",
+                )
+                for row in leftovers:
+                    await conn.execute(f'DROP INDEX CONCURRENTLY IF EXISTS "{self._schema}"."{row["relname"]}"', timeout=_MAINTENANCE_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - best effort; the next maintenance run tries again
+            logger.warning("could not drop leftover %s_ccnew indexes", index_name, exc_info=True)
 
 
 # ===========================================================================
