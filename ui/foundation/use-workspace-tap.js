@@ -299,6 +299,12 @@ function useWorkspaceTapListener(wid, onEvent) {
 // ---------------------------------------------------------------------------
 window.useWorkspaceTap = useWorkspaceTap;
 window.useWorkspaceTapListener = useWorkspaceTapListener;
+// The hub's rolling buffer ([] when no hub is open), for a consumer that listens per frame and renders only on its own
+// change, reading the buffer at render (nv-session-doc.jsx, UI-M1: the render hook re-rendered it on every frame).
+window.WTAP_events = function (wid) {
+  var hub = wid ? WTAP_HUBS[wid] : null;
+  return hub ? hub.events : [];
+};
 // Test/introspection surface — how many live hubs (== EventSources) exist.
 window.__wtapHubCount = function () { return Object.keys(WTAP_HUBS).length; };
 // Current hub connState for a workspace, or null when no hub exists. Lets a
