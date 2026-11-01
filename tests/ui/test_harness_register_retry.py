@@ -221,3 +221,16 @@ def test_a_bootstrap_this_client_started_is_toasted_once() -> None:
         assert "ownRunUntil.current = Infinity" in body and "const own = ownRunUntil.current > Date.now();" in body, card
         effect = body[body.index("const own = "):body.index("prevStatusRef.current = curr;")]
         assert effect.index("if (own)") < effect.index('prev === "running" && curr === "succeeded"'), card
+
+
+def test_a_failed_run_of_this_client_keeps_the_settle_window_and_only_a_409_clears_it() -> None:
+    """A non-409 failure is toasted by onError; the poll then sees running to failed and must not toast it again. A 409 is a run started elsewhere."""
+    src = _src(COLLECTIONS)
+    for card in ("ConfiguredCard", "ActiveCard"):
+        body = src[src.index("function " + card + "("):]
+        on_error = body[body.index("onError: (err) => {"):]
+        on_error = on_error[:on_error.index("\n      },\n")]
+        before_409, after_409 = on_error.split("if (err?.status === 409) {")
+        assert "ownRunUntil.current = Date.now() + IC_OWN_RUN_SETTLE_MS;" in before_409, card
+        assert "ownRunUntil.current = 0;" in after_409.split("return;")[0], card
+        assert "ownRunUntil.current = 0;" not in before_409, card

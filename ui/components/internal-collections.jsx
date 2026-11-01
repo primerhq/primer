@@ -224,8 +224,10 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
         }
       },
       onError: (err) => {
-        ownRunUntil.current = 0;
+        // A failure of this client's own run is toasted below; the poll must not toast it again (the settle window). A 409 is a run started elsewhere.
+        ownRunUntil.current = Date.now() + IC_OWN_RUN_SETTLE_MS;
         if (err?.status === 409) {
+          ownRunUntil.current = 0;
           // Already running (started elsewhere) - genuinely nothing
           // terminal to report from THIS request; sync the status and
           // let the poll-transition effect below catch its eventual
@@ -356,8 +358,10 @@ function ActiveCard({ config, onRefresh, pushToast }) {
         }
       },
       onError: (err) => {
-        ownRunUntil.current = 0;
+        // A failure of this client's own run is toasted below; the poll must not toast it again (the settle window). A 409 is a run started elsewhere.
+        ownRunUntil.current = Date.now() + IC_OWN_RUN_SETTLE_MS;
         if (err?.status === 409) {
+          ownRunUntil.current = 0;
           bootstrapStatus.refetch();
           return;
         }
