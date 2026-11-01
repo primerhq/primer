@@ -137,3 +137,18 @@ def test_the_per_workspace_fallback_reads_again_when_the_workspace_list_changes(
     settle(phone)
     assert js(phone, "reads('/workspaces/w-1/yields/pending')") == 1
     assert "loading" not in drawn_since(phone, mark), "the rows already shown stay while the new list is read"
+
+
+def test_a_shown_queue_is_read_again_when_a_workspace_appears(phone) -> None:
+    """With an answer on screen, a workspace that appears is read again in place: its sessions may be waiting (the desktop rail re-read on a
+    changed workspace list before T87; tests/ui_e2e/test_ask_user_panel.py u0048 relies on it after a hash-only navigation)."""
+    phone.eval("AGGREGATE = 200; MR.mount(NV_MobileShell, {});")
+    settle(phone)
+    assert js(phone, "reads('/yields/pending')") == 1
+    mark = js(phone, "DRAWN.length")
+
+    phone.eval("landWorkspaces([{ id: 'w-0', name: 'Alpha' }]);")
+    settle(phone)
+
+    assert js(phone, "reads('/yields/pending')") == 2, "a new workspace is a reason to read the queue again"
+    assert "loading" not in drawn_since(phone, mark), "the answer already shown stays while it is read again"

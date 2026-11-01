@@ -549,9 +549,10 @@ window.SH_api = SH_api;
 // The one read of the cross-workspace attention aggregate (UI-L11): the rail's Inbox, the phone's tabs and both System attention panels share this key, so the
 // endpoint is read once per poll however many of them are mounted. A server predating the aggregate 404s: that falls back to the per-workspace reads of
 // `workspaces` (the rows a caller needs from the answer are mapped by the caller). Every row names its workspace as `workspace_id`.
-// The key holds no workspace ids: the aggregate does not depend on them, and a new key is a new cache entry, so the workspace list landing after a failed
-// read used to drop the phone Inbox's error to "Loading" and read again (Try again detached, ui_e2e mobile inbox journey). Only a fallback answer
-// (`perWorkspace`) depends on the list; it is read again in place when the list changes.
+// The key holds no workspace ids: a new key is a new cache entry, so the workspace list landing after a failed read used to drop the phone Inbox's
+// error to "Loading" and read again (Try again detached, ui_e2e mobile inbox journey). A changed list is read again IN PLACE once an answer is shown
+// (a new workspace's sessions may be waiting, and the fallback reads per workspace); not while the first read has failed, where a re-read would
+// show "Loading" over the error.
 function SH_useAttention(workspaces, opts) {
   var list = workspaces || [];
   var ids = list.map(function (w) { return w.id; });
@@ -575,7 +576,7 @@ function SH_useAttention(workspaces, opts) {
               });
             });
           })).then(function (perWs) {
-            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []), perWorkspace: true };
+            return { items: perWs.reduce(function (a, b) { return a.concat(b); }, []) };
           });
         });
     },
@@ -583,11 +584,11 @@ function SH_useAttention(workspaces, opts) {
   );
   var seenIdsRef = React.useRef(idsKey);
   var refetch = res.refetch;
-  var perWorkspace = !!(res.data && res.data.perWorkspace);
+  var shown = res.data !== undefined && res.data !== null;
   React.useEffect(function () {
     if (seenIdsRef.current === idsKey) return;
     seenIdsRef.current = idsKey;
-    if (perWorkspace) refetch();
+    if (shown) refetch();
   }, [idsKey]);
   return res;
 }
