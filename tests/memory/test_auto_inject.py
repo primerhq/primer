@@ -97,7 +97,7 @@ def _agent() -> Agent:
 
 def _session() -> WorkspaceSession:
     return WorkspaceSession(
-        id="s1", workspace_id="w1", binding=AgentSessionBinding(agent_id=AGENT), status=SessionStatus.RUNNING, created_at=NOW, turn_no=1,
+        id="s1", workspace_id="w1", binding=AgentSessionBinding(agent_id=AGENT), status=SessionStatus.RUNNING, created_at=NOW, turn_no=0,
     )
 
 

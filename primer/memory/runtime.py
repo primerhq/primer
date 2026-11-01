@@ -170,7 +170,7 @@ async def auto_inject_message(deps: Any, agent: Agent, settings: AgentMemory, se
     await deps.recorder.emit(
         "memory.lookup",
         payload={
-            "session_id": session.id, "turn": session.turn_no, "paths": paths, "trial": trial[0].path if trial else None,
+            "session_id": session.id, "turn": session.turn_no + 1, "paths": paths, "trial": trial[0].path if trial else None,
             "scores": [h.score for h in active], "mode": mode, "injected": len(paths),
         },
         actor=f"memory:{agent.id}", entity_kind="agent", entity_id=agent.id, session_id=session.id,
