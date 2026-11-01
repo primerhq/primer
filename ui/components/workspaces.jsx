@@ -1696,7 +1696,7 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
       )}
       <div className="kv mt-3" style={{ gridTemplateColumns: "160px 1fr" }}>
         <dt>workspace</dt><dd className="mono">{wid}</dd>
-        <dt>active sessions</dt><dd className="mono" data-testid="ws-destroy-active">{counting ? "…" : active.length}{!counting && active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
+        <dt>active sessions</dt><dd className="mono" data-testid="ws-destroy-active">{counting ? "…" : active.length} {!counting && active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
         <dt>total sessions</dt><dd className="mono" data-testid="ws-destroy-total">{counting ? "…" : items.length}</dd>
       </div>
       <div className="mt-4">
