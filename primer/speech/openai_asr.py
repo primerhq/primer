@@ -106,7 +106,7 @@ class OpenAIASR(ASR):
                     },
                 )
                 if not replayable:
-                    return speech_error_from_exception(exc)
+                    return speech_error_from_exception(exc, self._provider)
                 await asyncio.sleep(backoff_delay(
                     attempt + 1,
                     base=limits.retry_backoff_seconds,

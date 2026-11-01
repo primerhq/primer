@@ -121,7 +121,7 @@ class OpenAITTS(TTS):
                     },
                 )
                 if not replayable:
-                    yield speech_error_from_exception(exc)
+                    yield speech_error_from_exception(exc, self._provider)
                     return
                 await asyncio.sleep(
                     random.uniform(
