@@ -80,6 +80,7 @@ function WTAP_open(hub) {
   hub.connState = "connecting";
   WTAP_notifyStoresConnState(hub);
   es.onopen = function () {
+    hub.retryMs = 0;
     hub.connState = "live";
     WTAP_notifyRender(hub);
     WTAP_notifyStoresConnState(hub);
@@ -109,6 +110,17 @@ function WTAP_open(hub) {
     hub.connState = "error";
     WTAP_notifyRender(hub);
     WTAP_notifyStoresConnState(hub);
+    // A non-200 answer (a proxy's 502 while the API restarts, the server's 503) closes it for good (readyState 2):
+    // reopen it while anyone still listens, backing off 1 s to 60 s (UI-L1).
+    if (es.readyState === 2 && hub.es === es && hub.refs > 0) {
+      WTAP_close(hub);
+      var delay = hub.retryMs || 1000;
+      hub.retryMs = Math.min(delay * 2, 60000);
+      hub.retryTimer = setTimeout(function () {
+        hub.retryTimer = null;
+        if (hub.refs > 0) WTAP_open(hub);
+      }, delay);
+    }
   };
 }
 
@@ -212,6 +224,7 @@ function WTAP_release(wid) {
   if (!hub) return;
   hub.refs -= 1;
   if (hub.refs <= 0) {
+    if (hub.retryTimer) clearTimeout(hub.retryTimer);
     WTAP_close(hub);
     delete WTAP_HUBS[wid];
   }
