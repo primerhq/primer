@@ -851,8 +851,13 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
 
     inner = outcome.frames[-1] if outcome.frames else None
     child_graph = isinstance(inner, GraphFrame)
+    # GR-10: stamp the new leaf like every park (the resume hook computes the
+    # wait from parked_at_iso), and carry the parked turn's own decisions (the
+    # client toolset and the binding epoch the turn started with): a re-park
+    # that dropped them rebuilt the final resume without the client toolset
+    # and with the binding-epoch void check switched off.
     new_parked = ParkedState(
-        yielded=leaf,
+        yielded=stamp_parked_at(leaf, now),
         llm_messages=parked.llm_messages,
         turn_no=session.turn_no,
         started_at=now,
@@ -861,6 +866,8 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
             or ((inner.node_tcid or parked.tool_call_id) if child_graph else parked.tool_call_id)
         ),
         graph_checkpoint=inner.checkpoint if child_graph else None,
+        client_tools_attached=parked.client_tools_attached,
+        binding_epoch=parked.binding_epoch,
         # 01a068ea-dc95: the leaf re-yielded, but the DURABLE TOOL_CALL
         # record this eventual TOOL_RESULT answers is still the outer
         # session-level call (parked.tool_call_id above) - carry its
@@ -921,6 +928,9 @@ def repark_resumed_yield_outcome(pool: "WorkerPool", session, parked, yld):
         # TOOL_CALL record either way.
         scoped_tool_call_id=parked.scoped_tool_call_id,
         graph_checkpoint=getattr(yld, "graph_checkpoint", None),
+        # GR-10: the parked turn's own decisions, as repark_parked_round carries them.
+        client_tools_attached=parked.client_tools_attached,
+        binding_epoch=parked.binding_epoch,
         # The same call of the round still waits (now for its own event): the round around it is unchanged (ticket 01a15327).
         **_carried_round(parked),
     )
