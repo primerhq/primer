@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -220,3 +221,40 @@ async def test_two_connections_committing_at_once_never_mix_or_fail(runtime) -> 
         results = [r["result"] if r["ok"] else RuntimeError(r["error"]["message"]) for r in replies]
         anomalies += _anomalies(root, i, results)
     assert anomalies == []
+
+
+# ---------------------------------------------------------------------------
+# GI-6: a git timeout does not leave index.lock behind
+# ---------------------------------------------------------------------------
+
+
+async def test_the_commit_after_a_timed_out_one_succeeds(tmp_path: Path, monkeypatch) -> None:
+    root = str(tmp_path)
+    await ops.state_commit({"files": {"a.txt": _b64(b"1")}, "message": "first"}, root)
+
+    monkeypatch.setenv("PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "0.3")
+    try:
+        await ops.state_commit({"files": {"big.bin": _b64(os.urandom(48 * 1024 * 1024))}, "message": "slow"}, root)
+    except ops.OpError as exc:
+        assert exc.code == "EINTERNAL"
+        assert exc.message == "git add -- big.bin timed out after 0.3s"
+    else:
+        raise AssertionError("the slow git add did not time out")
+    monkeypatch.setenv("PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "120")
+
+    assert not (tmp_path / ".state" / ".git" / "index.lock").exists()  # SIGTERM: git removed its own lock
+    sha = (await ops.state_commit({"files": {"c.txt": _b64(b"3")}, "message": "later"}, root))["sha"]
+    assert _files(tmp_path, sha) == ["c.txt"]
+
+
+async def test_an_index_lock_older_than_the_timeout_is_removed_and_the_commit_retried(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    await ops.state_commit({"files": {"a.txt": _b64(b"1")}, "message": "first"}, root)
+    lock = tmp_path / ".state" / ".git" / "index.lock"
+    lock.write_text("")  # left by a git killed outright (an OOM kill)
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+
+    sha = (await ops.state_commit({"files": {"b.txt": _b64(b"2")}, "message": "second"}, root))["sha"]
+    assert _files(tmp_path, sha) == ["b.txt"]
+    assert not lock.exists()

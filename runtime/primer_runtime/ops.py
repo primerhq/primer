@@ -177,10 +177,58 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
     Raises :class:`OpError` (EINTERNAL) on non-zero exit unless ``allow_empty_repo``
     is True and git exits 128 complaining about an empty repo.
 
-    Kills the subprocess and raises :class:`OpError` (EINTERNAL) if the
-    process exceeds the deadline read from ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS``
-    (default 120 s).
+    Stops the subprocess (SIGTERM, then SIGKILL) and raises :class:`OpError`
+    (EINTERNAL) if the process exceeds the deadline read from
+    ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS`` (default 120 s). A failure on an
+    ``index.lock`` older than that deadline removes the lock and retries once.
     """
+    try:
+        return await _run_git_once(state_dir, args, allow_empty_repo)
+    except OpError as exc:
+        # A lock left by a git that was killed outright (an OOM kill, an older SIGKILL) is older than any live git holds it.
+        if "index.lock" not in exc.message or not _remove_stale_index_lock(state_dir):
+            raise
+    return await _run_git_once(state_dir, args, allow_empty_repo)
+
+
+def _remove_stale_index_lock(state_dir: str) -> bool:
+    """Remove ``.git/index.lock`` when it is older than the subprocess timeout; True when removed (or already gone)."""
+    lock = pathlib.Path(state_dir) / ".git" / "index.lock"
+    try:
+        age = _time.time() - lock.stat().st_mtime
+        if age <= _subprocess_timeout():
+            return False
+        lock.unlink()
+    except FileNotFoundError:
+        return True  # gone since the failure: the retry may proceed
+    except OSError:
+        return False
+    log.warning("removed a stale %s (%.0fs old)", lock, age)
+    return True
+
+
+# How long a git that timed out gets to clean up after SIGTERM before SIGKILL.
+_TERMINATE_GRACE_S: float = 2.0
+
+
+async def _stop_git(proc: asyncio.subprocess.Process) -> None:
+    """SIGTERM first: git removes its lockfiles on it. SIGKILL left ``.git/index.lock`` behind and wedged every later
+    commit (GI-6)."""
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_S)
+    except TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+
+
+async def _run_git_once(state_dir: str, args: tuple[str, ...], allow_empty_repo: bool) -> tuple[str, str]:
     timeout = _subprocess_timeout()
     proc = await asyncio.create_subprocess_exec(
         "git",
@@ -196,11 +244,7 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
             timeout=timeout,
         )
     except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
+        await _stop_git(proc)
         raise OpError(
             ErrorCode.EINTERNAL,
             f"git {' '.join(args)} timed out after {timeout}s",
@@ -558,11 +602,7 @@ async def _ensure_state_repo(state_dir: str) -> None:
     try:
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
+        await _stop_git(proc)
         raise OpError(
             ErrorCode.EINTERNAL,
             f"git init timed out after {timeout}s",
@@ -586,11 +626,7 @@ async def _ensure_state_repo(state_dir: str) -> None:
         try:
             await asyncio.wait_for(proc2.communicate(), timeout=timeout)
         except TimeoutError:
-            try:
-                proc2.kill()
-            except ProcessLookupError:
-                pass
-            await proc2.wait()
+            await _stop_git(proc2)
             raise OpError(
                 ErrorCode.EINTERNAL,
                 f"git config timed out after {timeout}s",
