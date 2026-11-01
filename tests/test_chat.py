@@ -398,21 +398,20 @@ class TestOutputToMessageToolCalls:
         msg = output_to_message(events)
         assert msg.parts[0].arguments == {"a": 1}
 
-    def test_tool_call_without_end_uses_empty_args(self):
+    def test_tool_call_without_end_is_never_run(self):
+        # AG-M17: a tool call that never finished streaming is dropped, not run with empty arguments
         events = [ToolCallStart(id="tc_1", name="f", index=0)]
-        msg = output_to_message(events)
-        assert len(msg.parts) == 1
-        assert msg.parts[0].name == "f"
-        assert msg.parts[0].arguments == {}
+        with pytest.raises(ValueError, match="no convertible events"):
+            output_to_message(events)
 
-    def test_tool_call_without_end_with_deltas_uses_empty_args(self):
-        # Deltas alone don't supply parsed args.
+    def test_tool_call_without_end_with_deltas_is_never_run(self):
+        # AG-M17: deltas without the end event are an unfinished call; it is dropped, not run
         events = [
             ToolCallStart(id="tc_1", name="f", index=0),
             ToolCallDelta(id="tc_1", arguments_delta='{"a": 1}', index=0),
         ]
-        msg = output_to_message(events)
-        assert msg.parts[0].arguments == {}
+        with pytest.raises(ValueError, match="no convertible events"):
+            output_to_message(events)
 
     def test_orphan_tool_call_end_ignored(self):
         # An End without a preceding Start has no name to use; should be dropped.
