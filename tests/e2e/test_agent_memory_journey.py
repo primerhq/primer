@@ -34,7 +34,7 @@ _REFLECTION = {"run_succeeded": True, "deltas": [_ADD]}
 _ENTRY = "retry-on-429"
 
 
-async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *, timeout_s: float = 60.0) -> None:
+async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *, timeout_s: float = 25.0) -> None:
     """Poll the session's log until an assistant answer holds ``text``."""
     for _ in range(int(timeout_s / 0.5)):
         items = (await client.get(f"/v1/sessions/{session_id}/messages", params={"limit": 500})).json()["items"]
@@ -44,7 +44,8 @@ async def _wait_for_log(client: httpx.AsyncClient, session_id: str, text: str, *
     raise AssertionError(f"session {session_id} never answered {text!r}")
 
 
-async def _wait_for_event(client: httpx.AsyncClient, event_type: str, agent_id: str, *, timeout_s: float = 180.0) -> dict:
+async def _wait_for_event(client: httpx.AsyncClient, event_type: str, agent_id: str, *, timeout_s: float = 80.0) -> dict:
+    """Poll for an agent's event; the whole journey must fit pytest's 180 s per test, so on a timeout fail with the agent's memory.* events."""
     for _ in range(int(timeout_s / 2)):
         resp = await client.get("/v1/events", params={"event_type": event_type, "entity_id": agent_id, "limit": 50})
         assert resp.status_code == 200, resp.text
@@ -52,7 +53,9 @@ async def _wait_for_event(client: httpx.AsyncClient, event_type: str, agent_id: 
         if items:
             return items[-1]
         await asyncio.sleep(2)
-    raise AssertionError(f"no {event_type} event for agent {agent_id} within {timeout_s}s")
+    seen = (await client.get("/v1/events", params={"entity_id": agent_id, "limit": 200})).json().get("items", [])
+    memory = [(e.get("event_type"), e.get("payload")) for e in seen if str(e.get("event_type", "")).startswith("memory.")]
+    raise AssertionError(f"no {event_type} event for agent {agent_id} within {timeout_s}s; memory.* events: {memory}")
 
 
 @pytest.mark.asyncio
