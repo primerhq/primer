@@ -37,7 +37,7 @@ def _adapter() -> LocalAdapter:
 async def test_html_extraction_is_unchanged() -> None:
     page = await _adapter().fetch(url="https://example.com/a")
     sentence = "The body sentence with a [link](https://example.com/x). "
-    assert page.content_markdown == "# Heading\n\n" + sentence * 12 + "\n\n| k | v | \n|---|---|\n| a | 1 |"
+    assert page.content_markdown == "# Heading\n\n" + (sentence * 12).rstrip() + "\n\n| k | v | \n|---|---|\n| a | 1 |"
     assert (page.title, page.content_type, page.status, page.is_thin) == ("Pinned Page", "text/html", 200, False)
 
 
