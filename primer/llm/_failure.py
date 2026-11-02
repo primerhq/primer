@@ -200,7 +200,7 @@ def _clean(text: str, provider: Any, *, collapse: bool) -> str:
 
 def _clipped(value: object, depth: int = _DUMP_DEPTH) -> object:
     """``value`` cut to ``_DUMP_DEPTH`` levels and ``_DUMP_ITEMS`` entries per container, so dumping it is bounded whatever the body nests to."""
-    if depth <= 0:
+    if depth <= 0 and isinstance(value, (dict, list, tuple)):
         return "..."
     if isinstance(value, dict):
         return {str(k): _clipped(v, depth - 1) for k, v in list(value.items())[:_DUMP_ITEMS]}
@@ -274,11 +274,23 @@ def scrubbed_event_text(text: str, provider: Any) -> str:
     return _cap(_clean(text, provider, collapse=False), _UNTOUCHED_MESSAGE_CAP)
 
 
+_BARE_STATUS_LABEL = re.compile(r"Error code: \d{3}")
+
+
 def describe_failure(err: PrimerError, exc: BaseException, provider: Any) -> PrimerError:
     """``err`` (what the classifier made of ``exc``) with the message a person needs; class, ``code``, ``status_code`` and ``cause`` are kept."""
     what = next((phrase for cls, phrase in _WHAT if isinstance(err, cls)), None)
     if what is None:
         message = _cap(_clean(err.message, provider, collapse=False), _UNTOUCHED_MESSAGE_CAP)
+        if _BARE_STATUS_LABEL.fullmatch(message):
+            # openai 3.x puts only "Error code: 422" in the message and the provider's words in ``body`` (older releases appended them); the
+            # call guards that retry without a refused setting read the words from the message.
+            try:
+                text = _upstream_text(exc, err)
+                if text:
+                    message = _cap(f"{message} - {_clean(text, provider, collapse=True)}", _UNTOUCHED_MESSAGE_CAP)
+            except Exception:  # noqa: BLE001 -- a courtesy: a body nobody can read keeps the bare label
+                logger.warning("could not read the provider's text out of a failed call; the message stays the SDK's label")
         return err if message == err.message else _rebuilt(err, message)
     sentence = f"{provider_label(provider)} {what}"
     if isinstance(err, NetworkError):
