@@ -65,6 +65,17 @@ async def test_a_server_error_reads_as_one_sentence_with_the_providers_words():
     assert (err.code, err.status_code, err.cause) == ("server_error", 500, exc)
 
 
+async def test_a_client_error_keeps_the_providers_words_whatever_the_sdk_puts_in_its_message():
+    """openai 3.x words a 422 as the bare label "Error code: 422" and keeps the provider's reason in ``body``; the guards that retry without a
+    refused profile setting match the setting's name in the message."""
+    detail = [{"type": "extra_forbidden", "loc": ["body", "chat_template_kwargs"], "msg": "Extra inputs are not permitted"}]
+    exc = await _openai_sdk_error(422, {"detail": detail})
+
+    err = _described(exc)
+
+    assert err.status_code == 422 and "chat_template_kwargs" in err.message, err.message
+
+
 async def test_a_rate_limit_and_an_authentication_failure_say_so_with_their_own_text():
     limited = _described(await _openai_sdk_error(429, {"error": {"message": "Rate limit reached for requests"}}))
     rejected = _described(await _openai_sdk_error(401, {"error": {"message": "Invalid credentials"}}))
