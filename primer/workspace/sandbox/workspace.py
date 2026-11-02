@@ -42,6 +42,7 @@ from primer.workspace.sandbox.tools import (
     SandboxRead,
     SandboxWrite,
 )
+from primer.workspace.segments import LOG_NAME, ordered
 from primer.workspace.session import AgentSession
 from primer.workspace.tool import WorkspaceTool
 
@@ -710,10 +711,10 @@ class SandboxWorkspace(Workspace):
         )
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
-        """Append ``line`` to the session's ``messages.jsonl``.
+        """Append ``line`` to the session's log, to its ACTIVE segment (``messages.jsonl`` until the log has rotated).
 
-        Path inside the sandbox:
-        ``<workspace_root>/<template.state_path>/sessions/<session_id>/messages.jsonl``
+        Directory inside the sandbox:
+        ``<workspace_root>/<template.state_path>/sessions/<session_id>/``
 
         Delegates to :meth:`Sandbox.append_line`, the atomic single-line
         primitive (native O_APPEND op on ``WSSandbox``; O_APPEND on
@@ -725,10 +726,7 @@ class SandboxWorkspace(Workspace):
             return
         line = line[:-1] if line.endswith(b"\n") else line
 
-        path = (
-            f"{self._workspace_root}/{self._template.state_path}"
-            f"/sessions/{session_id}/messages.jsonl"
-        )
+        slot = f"{self._workspace_root}/{self._template.state_path}/sessions/{session_id}"
         # Serialise against this session's messages.jsonl read->rewrite
         # windows (AgentSession.append_instruction, the executor's turn
         # persist), which race with this append regardless of the append
@@ -737,7 +735,17 @@ class SandboxWorkspace(Workspace):
         # (locked_for_write tells the message writer when the lock was taken: its write bound starts there, not while a
         # turn persist holds the lock.)
         async with locked_for_write(self._state_repo.messages_lock(session_id)):
-            await self._sandbox.append_line(path, line)
+            # The active segment is listed afresh for every flush (the writer flushes at most every 100 ms); an event row never rotates the log.
+            await self._sandbox.append_line(f"{slot}/{await self._active_log_name(slot)}", line)
+
+    async def _active_log_name(self, slot: str) -> str:
+        """The newest segment of the session's log in the sandbox, or ``messages.jsonl`` when there is none (or the directory cannot be listed yet)."""
+        try:
+            names = [e.path.rsplit("/", 1)[-1] for e in await self._sandbox.list_dir(slot)]
+        except Exception:  # noqa: BLE001 - a session slot that does not exist yet has no segments: the first row creates segment 0
+            return LOG_NAME
+        found = ordered(names)
+        return found[-1][1] if found else LOG_NAME
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:
         """Append ``line`` to ``<workspace_root>/<relative_path>``.

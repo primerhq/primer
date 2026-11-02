@@ -708,9 +708,9 @@ class LocalWorkspace(Workspace):
         )
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
-        """Append ``line`` to the session's ``messages.jsonl``.
+        """Append ``line`` to the session's log, to its ACTIVE segment (``messages.jsonl`` until the log has rotated).
 
-        Path: ``<root>/<template.state_path>/sessions/<session_id>/messages.jsonl``
+        Directory: ``<root>/<template.state_path>/sessions/<session_id>/``
 
         Uses ``open(path, 'ab')`` for an O_APPEND write, which is atomically
         safe at the OS level for all callers within this process (different
@@ -723,18 +723,16 @@ class LocalWorkspace(Workspace):
         if not line.endswith(b"\n"):
             line = line + b"\n"
 
-        target = (
-            self._root
-            / self._template.state_path
-            / "sessions"
-            / session_id
-            / "messages.jsonl"
-        )
+        slot = self._root / self._template.state_path / "sessions" / session_id
 
         def _append() -> None:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("ab") as fh:
-                fh.write(line)
+            # The active segment is resolved afresh at every append, under the session's cross-process lock (the one ``LocalStateRepo.commit`` holds
+            # around resolve + rotate + append), so a row never lands in a segment a commit has just closed. An event row never rotates the log.
+            from primer.workspace.local import state as log_state
+
+            with log_state.log_slot_lock(slot):
+                with (slot / log_state.active_log_name(slot)).open("ab") as fh:
+                    fh.write(line)
 
         # Serialise against this session's messages.jsonl read->rewrite
         # windows (AgentSession.append_instruction, the executor's turn
