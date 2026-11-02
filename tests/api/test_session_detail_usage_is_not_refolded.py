@@ -43,7 +43,9 @@ class _Workspace:
         self.reads = 0
         self.stats = 0
         self.grows_after_read: str | None = None
-        self._can_stat = can_stat
+        if not can_stat:
+            # A handle that cannot stat has no file_info: the log facade then sizes the log by reading it (one read, kept for the fold).
+            self.file_info = None
 
     def append(self, text: str, *, moves_modified: bool = True) -> None:
         self.content += text.encode()
@@ -63,8 +65,6 @@ class _Workspace:
 
     async def file_info(self, path: str) -> FileEntry:
         self.stats += 1
-        if not self._can_stat:
-            raise RuntimeError("this backend cannot stat")
         return FileEntry(path=path, kind="file", size_bytes=len(self.content), modified_at=self.modified)
 
 

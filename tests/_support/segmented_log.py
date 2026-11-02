@@ -29,9 +29,7 @@ _WHEN = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 #: Readers that do not yet read a segmented log (they open ``messages.jsonl`` alone). Each seglog task that fixes a reader deletes its name here; a name left
 #: in the list that no longer fails anywhere is itself a test failure, so the list can only shrink.
-KNOWN_SEGMENT_GAPS: frozenset[str] = frozenset({
-    "usage_totals", "transcript_page", "timeline_parse", "memory_loader",                      # Task 5
-})
+KNOWN_SEGMENT_GAPS: frozenset[str] = frozenset()
 
 
 # ---------------------------------------------------------------------------------------------- the logs
@@ -182,7 +180,7 @@ class Env:
             id=self.sid, workspace_id=WS, binding=AgentSessionBinding(agent_id="ag-seg"), created_at=_WHEN, status=SessionStatus.RUNNING, turn_status="idle",
         )
         self.store = _InMemoryStorage(WorkspaceSession)
-        self.rel = f"{self.state_path}/sessions/{self.sid}/messages.jsonl"
+        self.slot_rel = f"{self.state_path}/sessions/{self.sid}"
 
     @property
     def provider(self) -> Any:
@@ -242,30 +240,34 @@ async def r_usage_totals(env: Env) -> Any:
     from primer.api.routers.sessions import _session_usage_totals
     from primer.api.routers.tap import usage_frame
     from primer.session.usage_cache import UsageCache, fold_usage
+    from primer.workspace.segments import session_log_for
 
-    folded = usage_frame(await fold_usage(env.workspace, env.rel, UsageCache(), ("seg", env.sid)))
+    folded = usage_frame(await fold_usage(session_log_for(env.workspace, env.sid), UsageCache(), ("seg", env.sid)))
     return {"fold": folded, "totals": await _session_usage_totals(env.row, env.registry)}
 
 
 async def r_transcript_page(env: Env) -> Any:
     from primer.api.routers.sessions import _read_workspace_turn_log
+    from primer.workspace.segments import session_log_for
 
     pages = {}
     for visible in (False, True):
         for tail in (False, True):
             pages[f"visible={visible},tail={tail}"] = await _read_workspace_turn_log(
-                workspace=env.workspace, relative_path=env.rel, limit=7, offset=0, since_seq=None, tail=tail, visible=visible,
+                workspace=env.workspace, relative_path=env.slot_rel, log=session_log_for(env.workspace, env.sid), limit=7, offset=0, since_seq=None,
+                tail=tail, visible=visible,
                 dedupe_legacy_user_input=True, fallback_created_at=FIXED_TS, workspace_id=WS, session_id=env.sid,
             )
     return pages
 
 
 async def r_timeline_parse(env: Env) -> Any:
-    """What the timeline route derives from the log's lines (the route reads them with ``_read_log_bytes``)."""
+    """What the timeline route derives from the log's lines (the route reads them with ``_read_log_bytes`` over the log facade)."""
     from primer.api.routers.sessions import _read_log_bytes
     from primer.session.timeline import build_turn_timeline_from, parse_sources
+    from primer.workspace.segments import session_log_for
 
-    raw = await _read_log_bytes(env.workspace, env.rel, workspace_id=WS, session_id=env.sid)
+    raw = await _read_log_bytes(env.workspace, env.slot_rel, workspace_id=WS, session_id=env.sid, log=session_log_for(env.workspace, env.sid))
     sources = parse_sources(raw.decode("utf-8", errors="replace").splitlines(), [])
     return [build_turn_timeline_from(sources, n) for n in range(5)]
 
@@ -351,7 +353,7 @@ async def r_memory_loader(env: Env) -> Any:
     from primer.memory.reflect import session_message_loader
     from primer.model.memory import MemoryJob
 
-    load = session_message_loader(env.provider, env.shim.read_state_file)
+    load = session_message_loader(env.provider, env.shim.read_session_log)
     job = MemoryJob(id="j", kind="reflect", agent_id="ag-seg", session_id=env.sid, created_at=_WHEN, expires_at=_WHEN)
     messages = await load(job)
     return None if messages is None else _msgs(messages, env.sid)

@@ -106,7 +106,7 @@ async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> N
             unindexer=make_document_unindexer(storage_provider=pool._storage, semantic_search_registry=pool._semantic_search_registry),
             path_rewriter=make_document_path_rewriter(storage_provider=pool._storage, semantic_search_registry=pool._semantic_search_registry),
         )
-        read_log = _WorkspaceIOShim(workspace_registry=pool._workspace_registry).read_state_file
+        read_log = _WorkspaceIOShim(workspace_registry=pool._workspace_registry).read_session_log
         deps = MemoryDeps(
             sp=pool._storage,
             provider_registry=pool._provider_registry,

@@ -1,7 +1,8 @@
 """A mixin for the in-memory workspace IO fakes that serve a session log: the listing calls the log facade (``SessionLog`` over ``WorkspaceSource``) makes.
 
 A fake keeps its files as ``{path: bytes}`` (``self._files``, ``self.files``, or what ``_log_files`` returns) and already has ``read_file``; the mixin adds
-``list_files`` (the files directly under a directory), ``file_info`` (a size) and, unless the fake has its own, ``read_file_from`` (the whole file sliced).
+``list_files`` (the files directly under a directory), ``file_info`` (a size, and the fake's ``mtime`` if it keeps one) and, unless the fake has its own,
+``read_file_from`` (the whole file sliced).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ class ListsFiles:
     async def list_files(self, path: str = ".", **_kw: Any) -> list[Any]:
         prefix = path.rstrip("/") + "/"
         return [
-            SimpleNamespace(path=p, kind="file", size_bytes=len(data))
+            SimpleNamespace(path=p, kind="file", size_bytes=len(data), modified_at=getattr(self, "mtime", None))
             for p, data in self._log_files().items()
             if p.startswith(prefix) and "/" not in p[len(prefix) :]
         ]
@@ -29,7 +30,7 @@ class ListsFiles:
         files = self._log_files()
         if path not in files:
             raise NotFoundError(f"{path!r} not found")
-        return SimpleNamespace(size_bytes=len(files[path]))
+        return SimpleNamespace(size_bytes=len(files[path]), modified_at=getattr(self, "mtime", None))
 
     async def read_file_from(self, path: str, offset: int) -> bytes:
         return (await self.read_file(path))[offset:]  # type: ignore[attr-defined]

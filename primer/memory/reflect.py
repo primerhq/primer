@@ -322,7 +322,7 @@ async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], 
     if row is None:
         return None
     try:
-        raw = await read_log(row.workspace_id, f"sessions/{row.id}/messages.jsonl")
+        raw = await read_log(row.workspace_id, f"sessions/{row.id}")
     except Exception:  # noqa: BLE001 - an unreadable log is reported by the caller as "no transcript"
         logger.info("memory job %s: the session log cannot be read", job.id, exc_info=True)
         return None
@@ -349,7 +349,8 @@ def session_message_loader(sp: Any, read_log: Callable[[str, str], Awaitable[byt
     """``MemoryDeps.load_messages``: the session's whole history as it was lived (compaction markers ignored, the same parse as the executor's),
     or None when the session or its log is gone.
 
-    ``read_log(workspace_id, relative_path)`` reads a workspace state file (the worker's IO shim).
+    ``read_log(workspace_id, slot)`` reads the whole session log under a session's state directory, every segment in order (the worker's IO
+    shim, ``read_session_log``): what was said lives before the newest compaction marker too, so this reads every segment, not only that one's.
     """
     from primer.workspace.session import reconstruct_compacted_history
 

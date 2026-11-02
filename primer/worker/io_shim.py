@@ -165,6 +165,12 @@ class _WorkspaceIOShim:
         except NotFoundError:
             return b""
 
+    async def read_session_log(self, workspace_id: str, slot_relative_path: str) -> bytes:
+        """The whole session log under ``slot_relative_path`` (``sessions/<id>``, state relative): every segment in order, empty when there is none."""
+        from primer.workspace.segments import SessionLog, ShimSource
+
+        return await SessionLog(ShimSource(self, workspace_id), slot_relative_path).read_all()
+
     async def _state_target(self, workspace_id: str, state_relative_path: str):
         if self._registry is None:
             return None, ""
