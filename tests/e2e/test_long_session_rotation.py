@@ -6,7 +6,8 @@ server over HTTP and the real OpenChatLLM client against a scripted mock that an
 1. Ten turns are driven, the first by the session's own instructions and the rest by steers; two steers are sent back to back, around a rotation.
 2. The workspace holds more than one ``messages*.jsonl`` segment (the raw file view of the state directory, an admin's).
 3. The messages route returns every record once and in seq order; each steer and each answer appears exactly once; the SSE tap saw the same records, none twice.
-4. The session's usage and a turn's timeline are the same before and after the rotations as a single-file log would give: one turn per input, one model call per turn.
+4. The session row's usage and a turn's timeline equal what the same functions give over the segment files joined in order (what a single file would hold). Every answer
+   compacts the history, so the usage fold starts over at a marker by design: the invariant is agreement with the single-file fold, not one turn per input.
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ import json
 import httpx
 import pytest
 
+from primer.api.routers.tap import usage_frame
+from primer.session.timeline import build_turn_timeline_from, parse_sources
+from primer.session.usage import session_usage
+from primer.workspace.segments import ordered
 from tests._support.mock_llm import Rule
 from tests._support.runs import make_local_workspace, make_scripted_agent, start_agent_session, wait_completed
 from tests._support.session_records import assistant_answers, record_seqs, user_inputs
@@ -65,6 +70,20 @@ async def _segments(client: httpx.AsyncClient, workspace_id: str, session_id: st
     return sorted(str(item["path"]).rsplit("/", 1)[-1] for item in listing["items"] if str(item["path"]).rsplit("/", 1)[-1].startswith("messages"))
 
 
+async def _read_text(client: httpx.AsyncClient, workspace_id: str, path: str) -> str | None:
+    resp = await client.get(f"/v1/workspaces/{workspace_id}/files/read", params={"path": path})
+    return resp.json()["content"] if resp.status_code == 200 else None
+
+
+async def _joined_lines(client: httpx.AsyncClient, workspace_id: str, session_id: str) -> tuple[list[str], list[str]]:
+    """The message log as the single file would hold it (the segment files joined in order, through the admin's raw file view), and the turn log."""
+    names = [name for _, name in ordered(await _segments(client, workspace_id, session_id))]
+    slot = f".state/sessions/{session_id}"
+    log = "".join([await _read_text(client, workspace_id, f"{slot}/{name}") or "" for name in names])
+    turn_log = await _read_text(client, workspace_id, f"{slot}/turns.jsonl") or ""
+    return log.splitlines(), turn_log.splitlines()
+
+
 async def _steer(client: httpx.AsyncClient, workspace_id: str, session_id: str, text: str) -> None:
     resp = await client.post(f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer", json={"instruction": text})
     assert resp.status_code in (200, 201, 202), resp.text
@@ -87,8 +106,7 @@ async def test_a_long_session_rotates_and_every_reader_agrees(client: httpx.Asyn
             client, workspace_id=workspace_id, agent_id=agent["agent_id"], instructions="turn-00 begin",
         )
         await _wait_for_answer(client, session_id, 0)
-        await wait_completed(client, session_id)      # the turn's own records are all written: its timeline is final
-        before = (await client.get(f"/v1/sessions/{session_id}/turns/0/timeline")).json()
+        await wait_completed(client, session_id)
 
         # turns 1 to 7 one at a time, then 8 and 9 back to back (the second steer lands while the first turn's records are being written)
         for n in range(1, 8):
@@ -134,17 +152,23 @@ async def test_a_long_session_rotates_and_every_reader_agrees(client: httpx.Asyn
             f"tap delivered (seq: class) {class_of}; route kinds {kind_of}"
         )
 
-        # usage: one turn per input and one model call per answer (the row's usage is a fold of the log)
+        # usage and the timelines are what a single-file read of the same log gives: the segment files joined in order, folded by the same functions. NOT
+        # "one turn per input": every answer compacts the history and a usage fold starts over at a compaction marker by design (primer/session/usage.py).
+        lines, turn_lines = await _joined_lines(client, workspace_id, session_id)
+        want = usage_frame(session_usage(lines))
         for _ in range(40):
             row = (await client.get(f"/v1/sessions/{session_id}")).json()
-            if row["usage"]["turns"] == TURNS:
+            if row["usage"] == want:
                 break
             await asyncio.sleep(0.5)
-        assert row["usage"]["turns"] == TURNS, row["usage"]
-        assert row["usage"]["model_calls"] == TURNS, row["usage"]
-        # the first turn's timeline is the same after the rotations as before them
-        after = (await client.get(f"/v1/sessions/{session_id}/turns/0/timeline")).json()
-        assert after == before, "turn 0's timeline changed when the log rotated"
+            lines, turn_lines = await _joined_lines(client, workspace_id, session_id)
+            want = usage_frame(session_usage(lines))
+        assert row["usage"] == want, f"the row's usage is not the fold of the joined log: {row['usage']} vs {want}"
+        sources = parse_sources(lines, turn_lines)
+        for n in (0, TURNS // 2, TURNS - 1):
+            timeline = await client.get(f"/v1/sessions/{session_id}/turns/{n}/timeline")
+            assert timeline.status_code == 200, (n, timeline.text)
+            assert timeline.json() == {"session_id": session_id, **build_turn_timeline_from(sources, n)}, f"turn {n}'s timeline is not the single-file one"
     finally:
         follower.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
