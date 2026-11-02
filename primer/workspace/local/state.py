@@ -61,6 +61,10 @@ from primer.workspace.state_helpers import (
 )
 
 
+from primer.int.state_repo import LogRewrite
+from primer.model.except_ import ConflictError
+from primer.workspace.segments import LOG_NAME, ordered, segment_bytes_default, segment_name
+
 if TYPE_CHECKING:
     from primer.model.chat import Message
 
@@ -283,8 +287,13 @@ class LocalStateRepo:
         files: dict[str, str | bytes] | None = None,
         delete_files: list[str] | None = None,
         appends: dict[str, bytes] | None = None,
+        log_rewrite: LogRewrite | None = None,
     ) -> str:
         """Stage files under sessions/<session_id>/, commit with trailers.
+
+        The key ``"messages.jsonl"`` in ``appends`` (and a ``log_rewrite``) names the session LOG: it goes to the active segment, or, when that segment
+        already holds ``session_log_segment_bytes`` (``segment_bytes_default()``, 0 = never), to the next one, created and staged in this same commit
+        together with the end of the previous one (design S4). Rotation happens here and nowhere else.
 
         ``appends`` adds bytes to the end of a file instead of replacing it (Task 14 stage 2): the file is extended by an O_APPEND write (a
         missing final newline is supplied first, as the whole-file writers do) and staged, so a commit that only adds lines to
@@ -324,9 +333,24 @@ class LocalStateRepo:
         async with self._commit_lock:
             await asyncio.to_thread(slot.mkdir, parents=True, exist_ok=True)
             staged_paths: list[str] = []
+            files, appends = dict(files or {}), dict(appends or {})
+            touches_log = LOG_NAME in files or LOG_NAME in appends or log_rewrite is not None
+            if touches_log:
+                active, rotate_to = await asyncio.to_thread(_log_target, slot, segment_bytes_default())
+                if LOG_NAME in files and active != LOG_NAME:
+                    raise ConflictError(f"session {session_id!r} has rotated to {active!r}: rewrite its log with log_rewrite, not files")
+                if log_rewrite is not None:
+                    if log_rewrite.active_name != active:
+                        raise ConflictError(f"the active segment of session {session_id!r} is {active!r}, not {log_rewrite.active_name!r}: read it again")
+                    if rotate_to is None:
+                        files[active] = log_rewrite.existing + log_rewrite.new
+                    else:
+                        files[rotate_to] = log_rewrite.new
+                if LOG_NAME in appends:
+                    appends[rotate_to or active] = appends.pop(LOG_NAME)
 
             # Write files.
-            for rel, content in (files or {}).items():
+            for rel, content in files.items():
                 _validate_relative_path(rel)
                 target = slot / rel
                 await asyncio.to_thread(
@@ -335,14 +359,17 @@ class LocalStateRepo:
                 await asyncio.to_thread(_write_atomic, target, content)
                 staged_paths.append(self._repo_relative(target))
 
-            for rel, data in (appends or {}).items():
+            for rel, data in appends.items():
                 _validate_relative_path(rel)
                 target = slot / rel
                 await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(_append_bytes, target, data)
                 staged_paths.append(self._repo_relative(target))
 
-            # Stage them.
+            # Stage them. A commit that touches the log stages every segment of the slot: the end of the segment it just closed (event rows appended
+            # since the last commit), and anything a crashed rotation left unstaged.
+            if touches_log:
+                staged_paths.append(self._repo_relative(slot) + "/messages*.jsonl")
             if staged_paths:
                 await self._run_git("add", "--", *staged_paths)
 
@@ -837,6 +864,17 @@ class LocalStateRepo:
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+
+def _log_target(slot: Path, threshold: int) -> tuple[str, str | None]:
+    """``(active segment name, next segment name or None)`` for a commit to the session log: the next one when rotation is on and the active
+    segment (not empty) has reached ``threshold`` bytes."""
+    names = ordered(os.listdir(slot)) if slot.is_dir() else []
+    if not names:
+        return LOG_NAME, None
+    index, name = names[-1]
+    size = (slot / name).stat().st_size
+    return name, (segment_name(index + 1) if threshold > 0 and size > 0 and size >= threshold else None)
 
 
 def _append_bytes(target: Path, data: bytes) -> None:

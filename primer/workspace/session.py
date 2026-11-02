@@ -46,6 +46,7 @@ from primer.model.workspace_session import (
 
 
 if TYPE_CHECKING:
+    from primer.int.state_repo import LogRewrite
     from primer.model.workspace import Op
     from primer.workspace.message_log import LogView
     from primer.workspace.local.cache import LocalTruncationStore
@@ -558,10 +559,12 @@ class AgentSession:
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
         appends: dict[str, bytes] | None = None,
+        log_rewrite: "LogRewrite | None" = None,
     ) -> str:
         """Commit one turn's writes to this session's slot. Returns SHA.
 
-        ``appends`` (only when :meth:`append_only` is true) adds bytes to the end of a file instead of rewriting it.
+        ``appends`` (only when :meth:`append_only` is true) adds bytes to the end of a file instead of rewriting it. ``log_rewrite`` writes the
+        log's active segment whole (see :class:`primer.int.state_repo.LogRewrite`).
         """
         if self._info.status == SessionStatus.ENDED:
             raise ConflictError(
@@ -575,6 +578,7 @@ class AgentSession:
             call_id=call_id,
             files=files,
             **({"appends": appends} if appends else {}),
+            **({"log_rewrite": log_rewrite} if log_rewrite is not None else {}),
         )
         self._touch_last_activity()
         return sha
