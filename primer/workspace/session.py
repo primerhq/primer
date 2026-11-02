@@ -702,7 +702,7 @@ class AgentSession:
             if len(excerpt) > 60:
                 excerpt = excerpt[:59].rstrip() + "…"
             # Hold the session's messages lock across BOTH the read
-            # (_appended_messages_jsonl) and the full-file rewrite (commit),
+            # (read_active_segment) and the full-file rewrite (commit),
             # so a concurrent event-row append (Workspace.append_message_line)
             # or a concurrent full-file rewriter (the executor's _persist_turn)
             # cannot slip into the read->rewrite gap and be truncated. The
@@ -738,13 +738,16 @@ class AgentSession:
                         appends={"messages.jsonl": (message.model_dump_json() + "\n").encode()},
                     )
                 else:
-                    new_messages_jsonl = await self._appended_messages_jsonl(message)
+                    from primer.int.state_repo import LogRewrite
+                    from primer.workspace.segments import read_active_segment
+
+                    name, existing = await read_active_segment(self._state, self.session_id)
+                    if existing and not existing.endswith(b"\n"):
+                        existing += b"\n"
                     await self._state.commit(
                         self.session_id, summary=summary, op="user_instruction",
-                        files={
-                            "messages.jsonl": new_messages_jsonl,
-                            "session.json": updated_info.model_dump_json(indent=2),
-                        },
+                        files={"session.json": updated_info.model_dump_json(indent=2)},
+                        log_rewrite=LogRewrite(name, existing, (message.model_dump_json() + "\n").encode()),
                     )
             self._info = updated_info
             return instruction
@@ -943,19 +946,6 @@ class AgentSession:
         await self.set_status(SessionStatus.ENDED, ended_reason="completed")
 
     # ---- Internals -------------------------------------------------------
-
-    async def _appended_messages_jsonl(self, message: Message) -> str:
-        """Return the new messages.jsonl content with ``message`` appended.
-
-        Uses the :class:`StateRepo` protocol's ``read_state_file`` so
-        this works for both local and sandbox (container/k8s) backends.
-        """
-        rel = f"sessions/{self.session_id}/messages.jsonl"
-        raw: bytes | None = await self._state.read_state_file(rel)
-        existing = raw.decode("utf-8") if raw else ""
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        return existing + message.model_dump_json() + "\n"
 
     def _touch_last_activity(self) -> None:
         """Update last_activity_at on the in-memory SessionInfo only.

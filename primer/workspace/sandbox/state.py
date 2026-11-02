@@ -25,7 +25,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from pydantic import TypeAdapter
 
-from primer.model.except_ import ValidationError
+from primer.int.state_repo import LogRewrite
+from primer.model.except_ import ConflictError, ValidationError
 from primer.model.workspace import CommitInfo, Op
 from primer.model.workspace_session import (
     AgentBinding,
@@ -33,6 +34,7 @@ from primer.model.workspace_session import (
     WaitingState,
 )
 from primer.session.mutation_lock import KeyedLock
+from primer.workspace.segments import LOG_NAME, ordered, segment_bytes_default, segment_name
 from primer.workspace.state_helpers import (
     TRAILER_AGENT as _TRAILER_AGENT,
     TRAILER_CALL as _TRAILER_CALL,
@@ -492,11 +494,17 @@ class SandboxStateRepo:
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
         delete_files: list[str] | None = None,
+        log_rewrite: LogRewrite | None = None,
     ) -> str:
         """Stage files under sessions/<session_id>/, commit with trailers.
 
         Returns the new commit SHA. Acquires ``_commit_lock`` for the
         duration so concurrent commits are serialised.
+
+        This repo cannot append, so the session log is written whole: ``log_rewrite`` carries the active segment as the caller read it
+        (``existing``) and the new lines. They go out as ``existing + new`` to the active segment, or, when that segment already holds
+        ``session_log_segment_bytes``, as ``new`` ALONE to the next segment (the closed one is not sent again). The runtime's ``state_commit``
+        already takes any relative path in ``files``: no protocol change.
         """
         self._require_state_ops()
         _validate_session_id(session_id)
@@ -510,9 +518,29 @@ class SandboxStateRepo:
                 "(call create_session first)"
             )
 
+        files = dict(files or {})
+        sandbox = self._state_sandbox()
+        async with self._commit_lock:
+            if LOG_NAME in files or log_rewrite is not None:
+                names = ordered(await self.list_state_dir(f"sessions/{session_id}"))
+                active = names[-1][1] if names else LOG_NAME
+                if LOG_NAME in files and active != LOG_NAME:
+                    raise ConflictError(f"session {session_id!r} has rotated to {active!r}: rewrite its log with log_rewrite, not files")
+                if log_rewrite is not None:
+                    if log_rewrite.active_name != active:
+                        raise ConflictError(f"the active segment of session {session_id!r} is {active!r}, not {log_rewrite.active_name!r}: read it again")
+                    threshold, size = segment_bytes_default(), len(log_rewrite.existing)
+                    if threshold > 0 and 0 < size >= threshold:
+                        files[segment_name(names[-1][0] + 1 if names else 1)] = log_rewrite.new
+                    else:
+                        files[active] = log_rewrite.existing + log_rewrite.new
+            sha = await self._commit_files(session_id, files, delete_files, summary, op, tool, call_id, agent_id, sandbox)
+        return sha
+
+    async def _commit_files(self, session_id, files, delete_files, summary, op, tool, call_id, agent_id, sandbox) -> str:
         # Build the file map with paths relative to the state repo root.
         commit_files: dict[str, bytes] = {}
-        for rel, content in (files or {}).items():
+        for rel, content in files.items():
             _validate_relative_path(rel)
             path = f"sessions/{session_id}/{rel}"
             if isinstance(content, str):
@@ -535,14 +563,12 @@ class SandboxStateRepo:
             call_id=call_id,
         )
 
-        sandbox = self._state_sandbox()
-        async with self._commit_lock:
-            sha = await sandbox.state_commit(
-                files=commit_files,
-                deletes=deletes,
-                message=message,
-                allow_empty=True,
-            )
+        sha = await sandbox.state_commit(
+            files=commit_files,
+            deletes=deletes,
+            message=message,
+            allow_empty=True,
+        )
         logger.debug(
             "SandboxStateRepo committed",
             extra={
