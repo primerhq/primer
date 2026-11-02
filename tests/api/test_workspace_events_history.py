@@ -31,6 +31,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from tests._support.segmented_io import ListsFiles
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,7 +47,7 @@ class _FakeTemplate:
     state_path = ".state"
 
 
-class _FakeWorkspaceForEvents:
+class _FakeWorkspaceForEvents(ListsFiles):
     state_path = ".state"
 
     def __init__(self, workspace_id: str) -> None:

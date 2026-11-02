@@ -244,6 +244,10 @@ class SessionLog:
         """The logical size: the bytes the single file would hold."""
         return sum(s.size for s in await self.segments())
 
+    async def read_segment(self, info: SegmentInfo) -> bytes:
+        """One segment's bytes, as :meth:`segments` listed it (for a reader that walks them newest first and stops early)."""
+        return await self._read(info)
+
     async def _read(self, info: SegmentInfo) -> bytes:
         data = await self._source.read(self._rel(info.name))
         if data is None:

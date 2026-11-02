@@ -14,11 +14,12 @@ import pytest
 
 from primer.claim.tool_call_lookup import ToolCallRecordMismatch, read_tool_call_record
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from tests._support.segmented_io import ListsFiles
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 
 
-class _FakeWorkspaceIO:
+class _FakeWorkspaceIO(ListsFiles):
     state_path = ".state"
 
     def __init__(self) -> None:

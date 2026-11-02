@@ -33,7 +33,6 @@ KNOWN_SEGMENT_GAPS: frozenset[str] = frozenset({
     "history", "compaction_state", "max_event_seq", "take_pending", "executor_history",          # Task 3
     "final_text", "open_turn",                                                                  # Task 4
     "usage_totals", "transcript_page", "timeline_parse", "route_text", "memory_loader",         # Task 5
-    "tap_since", "tap_batch", "record_by_seq",                                                  # Task 6
 })
 
 
@@ -308,7 +307,10 @@ async def r_tap_since(env: Env) -> Any:
     from primer.tap.reader import read_session_since
     from primer.tap.selector import TapSelector
 
-    raw = await env.workspace.read_file(env.rel)
+    from primer.workspace.segments import SessionLog, WorkspaceSource
+
+    # the offsets are logical: the midpoint is found in the whole log, not in segment 0
+    raw = await SessionLog(WorkspaceSource(env.workspace), f"{env.state_path}/sessions/{env.sid}").read_all()
     mid = next((b for b in range(len(raw) // 2, len(raw)) if raw[b - 1 : b] == b"\n"), 0)
     out = {}
     for name, offset, after in (("start", 0, 0), ("mid", mid, 0), ("after_seq", 0, 9)):

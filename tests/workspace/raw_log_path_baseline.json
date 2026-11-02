@@ -9,7 +9,6 @@
  "primer/model/scheduler.py": 2,
  "primer/model/workspace_session.py": 2,
  "primer/session/dispatch.py": 4,
- "primer/tap/reader.py": 1,
  "primer/toolset/workspaces.py": 2,
  "primer/workspace/message_log.py": 3,
  "primer/workspace/session.py": 4
