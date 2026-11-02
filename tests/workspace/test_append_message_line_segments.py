@@ -131,21 +131,27 @@ async def test_a_commit_that_does_not_touch_the_log_takes_no_lock(world, monkeyp
 class _StubSandbox:
     """The two sandbox ops an event row needs: ``list_dir`` (absolute paths, as the runtime answers) and ``append_line``."""
 
-    def __init__(self, files: dict[str, bytes]) -> None:
+    def __init__(self, files: dict[str, bytes], *, list_error: Exception | None = None) -> None:
         self.files = files
+        self.list_error = list_error
+
+    async def stat(self, path: str):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(kind="dir") if any(p.startswith(path + "/") for p in self.files) else None
 
     async def list_dir(self, path: str):
         from types import SimpleNamespace
 
-        if not any(p.startswith(path + "/") for p in self.files):
-            raise FileNotFoundError(path)
+        if self.list_error is not None:
+            raise self.list_error
         return [SimpleNamespace(path=p, kind="file") for p in self.files if p.rsplit("/", 1)[0] == path]
 
     async def append_line(self, path: str, line: bytes) -> None:
         self.files[path] = self.files.get(path, b"") + line + b"\n"
 
 
-async def test_a_sandbox_event_row_goes_to_the_listed_active_segment():
+def _sandbox_workspace(sandbox: _StubSandbox):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
@@ -155,13 +161,34 @@ async def test_a_sandbox_event_row_goes_to_the_listed_active_segment():
     async def _lock():
         yield
 
-    slot = "/workspace/.state/sessions/s1"
-    sandbox = _StubSandbox({f"{slot}/{KEY}": b"a\n", f"{slot}/messages.0001.jsonl": b"b\n", f"{slot}/messages.0002.jsonl": b"c\n", f"{slot}/agent.json": b"{}"})
     ws = object.__new__(SandboxWorkspace)
     ws._sandbox, ws._workspace_root = sandbox, "/workspace"  # noqa: SLF001
     ws._template = SimpleNamespace(state_path=".state")  # noqa: SLF001
     ws._state_repo = SimpleNamespace(messages_lock=lambda sid: _lock())  # noqa: SLF001
+    return ws
+
+
+_SLOT = "/workspace/.state/sessions/s1"
+
+
+def _rotated() -> dict[str, bytes]:
+    return {f"{_SLOT}/{KEY}": b"a\n", f"{_SLOT}/messages.0001.jsonl": b"b\n", f"{_SLOT}/messages.0002.jsonl": b"c\n", f"{_SLOT}/agent.json": b"{}"}
+
+
+async def test_a_sandbox_event_row_goes_to_the_listed_active_segment():
+    sandbox = _StubSandbox(_rotated())
+    ws = _sandbox_workspace(sandbox)
     await ws.append_message_line("s1", b"row\n")
-    assert sandbox.files[f"{slot}/messages.0002.jsonl"] == b"c\nrow\n" and sandbox.files[f"{slot}/{KEY}"] == b"a\n"
+    assert sandbox.files[f"{_SLOT}/messages.0002.jsonl"] == b"c\nrow\n" and sandbox.files[f"{_SLOT}/{KEY}"] == b"a\n"
     await ws.append_message_line("fresh", b"first\n")   # no directory yet: segment 0
     assert sandbox.files["/workspace/.state/sessions/fresh/messages.jsonl"] == b"first\n"
+
+
+async def test_a_failing_listing_fails_the_append_instead_of_landing_in_a_closed_segment():
+    """Only an ABSENT slot means segment 0: a runtime hiccup on a rotated log must not put the row in the closed ``messages.jsonl``."""
+    files = _rotated()
+    sandbox = _StubSandbox(files, list_error=OSError("runtime timed out"))
+    ws = _sandbox_workspace(sandbox)
+    with pytest.raises(OSError):
+        await ws.append_message_line("s1", b"row\n")
+    assert files == _rotated(), "nothing was appended anywhere"

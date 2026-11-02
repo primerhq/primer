@@ -739,12 +739,11 @@ class SandboxWorkspace(Workspace):
             await self._sandbox.append_line(f"{slot}/{await self._active_log_name(slot)}", line)
 
     async def _active_log_name(self, slot: str) -> str:
-        """The newest segment of the session's log in the sandbox, or ``messages.jsonl`` when there is none (or the directory cannot be listed yet)."""
-        try:
-            names = [e.path.rsplit("/", 1)[-1] for e in await self._sandbox.list_dir(slot)]
-        except Exception:  # noqa: BLE001 - a session slot that does not exist yet has no segments: the first row creates segment 0
+        """The newest segment of the session's log in the sandbox. ``messages.jsonl`` only when the session directory is ABSENT (no log yet): a listing that
+        fails (a runtime hiccup, a timeout) raises, because answering segment 0 for a rotated log would put the row in a closed segment."""
+        if await self._sandbox.stat(slot) is None:
             return LOG_NAME
-        found = ordered(names)
+        found = ordered(e.path.rsplit("/", 1)[-1] for e in await self._sandbox.list_dir(slot))
         return found[-1][1] if found else LOG_NAME
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:
