@@ -36,6 +36,7 @@ from primer.model.workspace_session import (
 )
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
+from tests._support.segmented_io import ListsFiles
 
 
 # ---------------------------------------------------------------------------
@@ -1838,7 +1839,7 @@ class _SeqFakeSlot:
         self.reopened += 1
 
 
-class _BridgingWorkspaceIO:
+class _BridgingWorkspaceIO(ListsFiles):
     """Workspace IO serving BOTH surfaces the seq path touches.
 
     * ``append_message_line`` — used by the WorkspaceMessageWriter that both

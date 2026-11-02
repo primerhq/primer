@@ -3,7 +3,7 @@
 Given a workspace, a :class:`~primer.tap.selector.TapSelector`, and a
 :class:`~primer.tap.cursor.TapCursor`, the reader produces
 :class:`~primer.tap.event.TapEvent`s by reading the **durable per-session
-message logs** (``<state>/sessions/<sid>/messages.jsonl``), applying the
+message logs** (``<state>/sessions/<sid>/``, every segment of the log), applying the
 selector, and advancing the cursor.  It is **stateless** — all position lives
 in the cursor (drain path) or the caller-held byte offset (live path), so it is
 reconnect-safe and horizontally scalable (no per-tap server buffer).
@@ -44,6 +44,7 @@ from primer.model.problem_details import record_without_traceback
 from primer.model.storage import OffsetPage
 from primer.tap.event import TapEvent, record_to_tap_event
 from primer.tap.selector import match_events, new_read_budget, session_predicate_for_storage
+from primer.workspace.segments import SegmentGap, SessionLog, WorkspaceSource
 
 if TYPE_CHECKING:
     from primer.tap.cursor import TapCursor
@@ -62,17 +63,20 @@ _SESSION_PAGE_LEN = 200
 
 
 class _WorkspaceReadIO(Protocol):
-    """The slice of the workspace IO surface the reader needs.
+    """The slice of the workspace IO surface the reader needs: what :class:`~primer.workspace.segments.WorkspaceSource` calls.
 
-    Mirrors the real workspace ``read_file`` (see
-    :meth:`primer.int.workspace.Workspace.read_file`) — a single coroutine
-    returning the file bytes and raising
-    :class:`primer.model.except_.NotFoundError` when the file is absent.
-    ``state_path`` is read via ``getattr`` with a default, so an IO object that
-    does not expose it still works.
+    Mirrors the real workspace (see :class:`primer.int.workspace.Workspace`): ``list_files`` and ``file_info`` find the log's segments and their
+    sizes, ``read_file`` and ``read_file_from`` read them; a file that is absent raises :class:`primer.model.except_.NotFoundError`.
+    ``state_path`` is read via ``getattr`` with a default, so an IO object that does not expose it still works.
     """
 
+    async def list_files(self, path: str = ".") -> list[Any]: ...
+
+    async def file_info(self, path: str) -> Any: ...
+
     async def read_file(self, path: str) -> bytes: ...
+
+    async def read_file_from(self, path: str, offset: int) -> bytes: ...
 
 
 # ---------------------------------------------------------------------------
@@ -97,33 +101,24 @@ def agent_graph_ids(session: WorkspaceSession) -> tuple[str | None, str | None]:
     return agent_id, graph_id
 
 
-def _messages_path(workspace_io: Any, session_id: str) -> str:
-    """Build the ``messages.jsonl`` path for *session_id* inside the workspace."""
+def _session_log(workspace_io: Any, session_id: str) -> SessionLog:
+    """The session's log (every segment) through the workspace; offsets into it are logical (the bytes of the single file it would be)."""
     state_path = getattr(workspace_io, "state_path", _DEFAULT_STATE_PATH)
-    return f"{state_path}/sessions/{session_id}/messages.jsonl"
+    return SessionLog(WorkspaceSource(workspace_io), f"{state_path}/sessions/{session_id}")
 
 
-async def _read_raw(
-    workspace_io: _WorkspaceReadIO, path: str, session_id: str, *, reader: Any = None,
-) -> bytes | None:
-    """Read *path*; return ``None`` when the file is missing (or unreadable).
+async def _read_log(workspace_io: Any, session_id: str, *, offset: int = 0) -> bytes:
+    """The session's log from the logical ``offset``; empty when there is no log yet (a new session that has not flushed) or it cannot be read.
 
-    A missing ``messages.jsonl`` (new session that has not flushed yet) is a
-    normal condition, not an error — mirrors the sessions router's replay
-    behaviour.
+    A missing log is a normal condition, not an error, and any read failure is treated as empty, as the sessions router's replay does.
     """
-    from primer.model.except_ import NotFoundError
-
     try:
-        return await (reader(path) if reader is not None else workspace_io.read_file(path))
-    except NotFoundError:
-        return None
-    except Exception as exc:  # noqa: BLE001 — any read failure → treat as empty
-        logger.debug(
-            "tap: read_file(%s) for session %s raised %r; treating as empty",
-            path, session_id, exc,
-        )
-        return None
+        return await _session_log(workspace_io, session_id).read_from(offset)
+    except SegmentGap:
+        logger.warning("tap: session %s has a gap in its log segments; treating it as empty", session_id)
+    except Exception as exc:  # noqa: BLE001 - any read failure -> treat as empty
+        logger.debug("tap: reading the log of session %s raised %r; treating as empty", session_id, exc)
+    return b""
 
 
 _IN_FLIGHT: dict[tuple, "asyncio.Future[bytes | None]"] = {}
@@ -201,7 +196,7 @@ def _parse_record(line: bytes) -> SessionMessageRecord | None:
 async def read_record_by_seq(
     workspace_io: _WorkspaceReadIO, *, session_id: str, seq: int,
 ) -> SessionMessageRecord | None:
-    """Read the single record at ``seq`` from one session's messages.jsonl.
+    """Read the single record at ``seq`` from one session's log (walking its segments newest first).
 
     Phase 3 stage 7a (01a0518b): the read side of a ``ToolCallTask``'s
     ``record_seq`` pointer (see its own docstring for the ordering
@@ -219,15 +214,26 @@ async def read_record_by_seq(
     against a single log read (if that pattern emerges) is a
     reasonable future optimisation, not built here.
     """
-    path = _messages_path(workspace_io, session_id)
-    raw = await _read_raw(workspace_io, path, session_id)
-    if raw is None:
-        return None
-    lines, _ = _complete_lines(raw)
-    for line in lines:
-        record = _parse_record(line)
-        if record is not None and record.seq == seq:
-            return record
+    log = _session_log(workspace_io, session_id)
+    try:
+        segments = await log.segments()
+        for info in reversed(segments):
+            lines, _ = _complete_lines(await log.read_segment(info))
+            first: int | None = None
+            for line in lines:
+                record = _parse_record(line)
+                if record is None:
+                    continue
+                if record.seq == seq:
+                    return record
+                if first is None:
+                    first = record.seq
+            if first is not None and first <= seq:
+                return None  # seqs only grow along the log: nothing older can hold it
+    except SegmentGap:
+        logger.warning("tap: session %s has a gap in its log segments; no record at seq %s", session_id, seq)
+    except Exception as exc:  # noqa: BLE001 - an unreadable log has no record
+        logger.debug("tap: reading the log of session %s for seq %s raised %r", session_id, seq, exc)
     return None
 
 
@@ -245,9 +251,9 @@ async def read_session_since(
     selector: "TapSelector",
     from_offset: int = 0,
 ) -> tuple[list[TapEvent], int]:
-    """Incrementally read one session's log from byte ``from_offset``.
+    """Incrementally read one session's log from logical byte ``from_offset``.
 
-    Reads ``messages.jsonl`` and parses only COMPLETE lines starting at
+    Reads the session's log (all its segments) and parses only COMPLETE lines starting at
     ``from_offset``.  A trailing partial line (buffered partial flush) is NOT
     consumed; the returned offset points before it, so the next tick re-reads
     that fragment once it is whole.
@@ -269,21 +275,12 @@ async def read_session_since(
         after the last COMPLETE line consumed (pass it back next tick).  A
         missing log file yields ``([], from_offset)``.
     """
-    path = _messages_path(workspace_io, session.id)
-    # Only the bytes the log gained since the last tick: a workspace that can read from an offset is asked for the tail; one that cannot is read
-    # whole and sliced, as before.
-    ranged = getattr(workspace_io, "read_file_from", None) if from_offset else None
-    # Subscribers of one workspace at the same offset ask for the same bytes in the same tick: one read serves them (single flight; nothing is kept
-    # once it lands, so the next tick reads afresh).
-    async def _fetch() -> bytes | None:
-        if ranged is not None:
-            return await _read_raw(workspace_io, path, session.id, reader=lambda p: ranged(p, from_offset))
-        raw = await _read_raw(workspace_io, path, session.id)
-        return None if raw is None else raw[from_offset:]
-
-    window = await _single_flight((id(workspace_io), session.id, from_offset), _fetch)
-    if window is None:
-        return [], from_offset
+    # Only the bytes the log gained since the last tick (the logical offset is into the whole log, whatever its segments). Subscribers of one workspace
+    # at the same offset ask for the same bytes in the same tick: one read serves them (single flight; nothing is kept once it lands, so the next tick
+    # reads afresh).
+    window = await _single_flight(
+        (id(workspace_io), session.id, from_offset), lambda: _read_log(workspace_io, session.id, offset=from_offset),
+    )
     if not window:
         return [], from_offset
 
@@ -364,12 +361,12 @@ async def read_batch(
     """Drain up to ``limit`` events across all in-scope sessions since *cursor*.
 
     Resolves in-scope sessions via :func:`session_predicate_for_storage`, then
-    for each session (stable order by id) reads ``messages.jsonl`` **from the
+    for each session (stable order by id) reads the session log **from the
     cursor's byte-offset hint** (``cursor.resume_offset(session.id)``) rather
     than byte 0, so repeated drains skip already-consumed bytes.
 
     Correctness guarantee: the byte offset is a *performance hint only* — it is
-    valid because ``messages.jsonl`` only ever grows: turn writes and the
+    valid because the log (the concatenation of its segments) only ever grows: turn writes and the
     compaction marker are byte-appends, so already-consumed bytes never shift.
     The ``seq > cursor.resume_seq(session.id)`` filter remains the authoritative
     backstop: a stale or wrong offset causes at most a harmless re-read of some
@@ -408,17 +405,11 @@ async def read_batch(
         resume_seq = cursor.resume_seq(session.id)
         from_offset = cursor.resume_offset(session.id)
 
-        path = _messages_path(workspace_io, session.id)
-        raw = await _read_raw(workspace_io, path, session.id)
-        if raw is None:
+        # Seek to the hint offset (logical, into the whole log) - skip bytes we know are already consumed. An offset past the end (a concurrent
+        # truncation, which should never happen on an append-only log) reads as empty.
+        window = await _read_log(workspace_io, session.id, offset=from_offset)
+        if not window:
             continue
-
-        # Seek to the hint offset — skip bytes we know are already consumed.
-        # If the offset is somehow past EOF (e.g. a concurrent truncation, which
-        # should never happen on an append-only log) treat it as empty.
-        if from_offset >= len(raw):
-            continue
-        window = raw[from_offset:]
 
         lines, _ = _complete_lines(window)
 

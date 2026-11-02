@@ -28,6 +28,7 @@ from primer.model.workspace_session import (
 )
 from primer.tap.router import WorkspaceTick
 from primer.toolset.workspaces import build_workspaces_toolset
+from tests._support.segmented_io import ListsFiles
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 _WID = "ws-1"
@@ -38,7 +39,7 @@ _WID = "ws-1"
 # ---------------------------------------------------------------------------
 
 
-class _FakeWorkspaceIO:
+class _FakeWorkspaceIO(ListsFiles):
     """In-memory workspace IO exposing ``read_file`` (mirrors the reader fakes)."""
 
     state_path = ".state"
@@ -413,23 +414,18 @@ class TestTapToolSelectorAndLongPoll:
         router = _FakeTapRouter()
         await _seed_session(provider.store, "s1")
         calls = {"n": 0}
-        real_read = io.read_file
+        real_list = io.list_files
 
-        async def read_file(path: str) -> bytes:
+        async def list_files(path: str = ".", **kw):
             calls["n"] += 1
+            listed = await real_list(path, **kw)
             if calls["n"] == 1:
-                # the session writes a record and ticks while the first drain is reading: the drain returns the old bytes
-                data = await real_read(path) if path in io._files else b""
-                io.write(path, data + _line(1, "user_input"))
+                # the session writes a record and ticks while the first drain is looking at the log: the drain returns what it listed before
+                io.write(f"{path}/messages.jsonl", _line(1, "user_input"))
                 router.publish(WorkspaceTick(session_id="s1", seq=1))
-                if not data:
-                    from primer.model.except_ import NotFoundError
+            return listed
 
-                    raise NotFoundError(path)
-                return data
-            return await real_read(path)
-
-        io.read_file = read_file  # type: ignore[assignment]
+        io.list_files = list_files  # type: ignore[assignment]
         ts = _build(provider, io, tap_router=router)
         result = await asyncio.wait_for(
             ts.call(tool_name="workspace_tap", arguments={"workspace_id": _WID, "wait_seconds": 5}), timeout=1.5,

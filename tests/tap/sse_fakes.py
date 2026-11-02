@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from primer.model.storage import FieldRef, Op, Predicate, Value
 from primer.tap.selector import TapSelector
+from tests._support.segmented_io import ListsFiles
 
 
 class Sub:
@@ -77,7 +78,7 @@ def line(seq, kind, ts="2026-06-01T00:00:00+00:00", payload=None):
     return json.dumps({"seq": seq, "kind": kind, "payload": payload or {}, "created_at": ts}) + "\n"
 
 
-class IO:
+class IO(ListsFiles):
     """``read_file`` of ``<state>/<sid>/...`` returns that session's log; counts reads."""
 
     state_path = ".state"
@@ -85,6 +86,9 @@ class IO:
     def __init__(self, logs: dict[str, bytes]):
         self.logs = logs
         self.reads = 0
+
+    def _log_files(self):
+        return {f".state/sessions/{sid}/messages.jsonl": data for sid, data in self.logs.items()}
 
     async def read_file(self, path):
         self.reads += 1

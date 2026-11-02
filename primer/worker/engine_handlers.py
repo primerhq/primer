@@ -363,19 +363,26 @@ _CLAIM_ROW_MAX_ATTEMPTS = 3
 class _WorkspaceReadFileIO:
     """The read side of ``primer.tap.reader._WorkspaceReadIO`` bound to one live workspace.
 
-    ``read_record_by_seq`` builds the messages.jsonl path from the ``state_path``
-    attribute and reads through ``read_file``; both delegate to the workspace
-    backend, the same seam the pool's own write-side shim (``_WorkspaceIOShim.
-    read_state_file``) uses, so a workspace that overrides its state path via a
-    template is honoured on both sides.
+    ``read_record_by_seq`` builds the session's directory from the ``state_path`` attribute and lists and reads the log's segments through
+    ``list_files``, ``file_info``, ``read_file`` and ``read_file_from``; all delegate to the workspace backend, the same seam the pool's own
+    write-side shim (``_WorkspaceIOShim.read_state_file``) uses, so a workspace that overrides its state path via a template is honoured on both sides.
     """
 
     def __init__(self, workspace) -> None:
         self._workspace = workspace
         self.state_path = getattr(workspace, "state_path", ".state")
 
+    async def list_files(self, path: str = "."):
+        return await self._workspace.list_files(path)
+
+    async def file_info(self, path: str):
+        return await self._workspace.file_info(path)
+
     async def read_file(self, path: str) -> bytes:
         return await self._workspace.read_file(path)
+
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        return await self._workspace.read_file_from(path, offset)
 
 
 def _tool_call_backoff_seconds(config, failures: int) -> float:

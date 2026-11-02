@@ -31,7 +31,6 @@ _WHEN = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
 #: in the list that no longer fails anywhere is itself a test failure, so the list can only shrink.
 KNOWN_SEGMENT_GAPS: frozenset[str] = frozenset({
     "usage_totals", "transcript_page", "timeline_parse", "memory_loader",                      # Task 5
-    "tap_since", "tap_batch", "record_by_seq",                                                  # Task 6
 })
 
 
@@ -309,7 +308,10 @@ async def r_tap_since(env: Env) -> Any:
     from primer.tap.reader import read_session_since
     from primer.tap.selector import TapSelector
 
-    raw = await env.workspace.read_file(env.rel)
+    from primer.workspace.segments import SessionLog, WorkspaceSource
+
+    # the offsets are logical: the midpoint is found in the whole log, not in segment 0
+    raw = await SessionLog(WorkspaceSource(env.workspace), f"{env.state_path}/sessions/{env.sid}").read_all()
     mid = next((b for b in range(len(raw) // 2, len(raw)) if raw[b - 1 : b] == b"\n"), 0)
     out = {}
     for name, offset, after in (("start", 0, 0), ("mid", mid, 0), ("after_seq", 0, 9)):
