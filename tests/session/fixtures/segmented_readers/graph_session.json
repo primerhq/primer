@@ -1,0 +1,638 @@
+{
+ "compaction_state": [
+  null,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9c18237ef5c1b790"
+    ]
+   ],
+   "role": "user",
+   "text": "node input"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9d920c0c544e44fc"
+    ]
+   ],
+   "role": "assistant",
+   "text": "node output"
+  }
+ ],
+ "final_text": "tok",
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9c18237ef5c1b790"
+    ]
+   ],
+   "role": "user",
+   "text": "node input"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9d920c0c544e44fc"
+    ]
+   ],
+   "role": "assistant",
+   "text": "node output"
+  }
+ ],
+ "max_event_seq": 4,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9c18237ef5c1b790"
+    ]
+   ],
+   "role": "user",
+   "text": "node input"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "9d920c0c544e44fc"
+    ]
+   ],
+   "role": "assistant",
+   "text": "node output"
+  }
+ ],
+ "open_turn": {
+  "0": false,
+  "14": false,
+  "4": false,
+  "9": false
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": [
+   "user_input",
+   1
+  ],
+  "10": null,
+  "11": null,
+  "12": null,
+  "13": null,
+  "14": null,
+  "15": null,
+  "16": null,
+  "17": null,
+  "18": null,
+  "19": null,
+  "2": [
+   "reasoning",
+   2
+  ],
+  "3": [
+   "assistant_token",
+   3
+  ],
+  "4": [
+   "done",
+   4
+  ],
+  "5": null,
+  "6": null,
+  "7": null,
+  "8": null,
+  "9": null
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "083f9a86ebd7dc93"
+     ]
+    ],
+    "role": "user",
+    "text": "hello"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "9c18237ef5c1b790"
+     ]
+    ],
+    "role": "user",
+    "text": "node input"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "9d920c0c544e44fc"
+     ]
+    ],
+    "role": "assistant",
+    "text": "node output"
+   }
+  ],
+  "sha": "b91cf17b9e03ad3a"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:1",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "reasoning",
+     "cursor": "<sid>:2",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:3",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:4",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {},
+     "seq": 4,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "offsets": {
+    "<sid>": 629
+   },
+   "seqs": {
+    "<sid>": 4
+   }
+  },
+  "3": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:1",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "reasoning",
+     "cursor": "<sid>:2",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:3",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "offsets": {
+    "<sid>": 406
+   },
+   "seqs": {
+    "<sid>": 3
+   }
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [],
+   "next_offset": 629
+  },
+  "mid": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:4",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {},
+     "seq": 4,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "next_offset": 629
+  },
+  "start": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:1",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "reasoning",
+     "cursor": "<sid>:2",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:3",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:4",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {},
+     "seq": 4,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "next_offset": 629
+  }
+ },
+ "timeline_parse": [
+  {
+   "children": [],
+   "duration_ms": 0,
+   "ended_at": "2026-11-01T12:00:00+00:00",
+   "started_at": "2026-11-01T12:00:00+00:00",
+   "status": "completed",
+   "terminal_seq": 4,
+   "turn_no": 0,
+   "waits": []
+  },
+  null,
+  null,
+  null,
+  null
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "reasoning",
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3
+    },
+    {
+     "parts": [
+      {
+       "text": "node output",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "done",
+     "node_id": null,
+     "payload": {},
+     "seq": 4
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 6
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "reasoning",
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3
+    },
+    {
+     "parts": [
+      {
+       "text": "node output",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "done",
+     "node_id": null,
+     "payload": {},
+     "seq": 4
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 6
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "reasoning",
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "done",
+     "node_id": null,
+     "payload": {},
+     "seq": 4
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 5
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "node input"
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "reasoning",
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "tok"
+     },
+     "seq": 3
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "done",
+     "node_id": null,
+     "payload": {},
+     "seq": 4
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 5
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 1,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 1
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 1,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 1
+  }
+ }
+}
