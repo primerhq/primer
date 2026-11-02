@@ -1,0 +1,405 @@
+{
+ "compaction_state": [
+  null,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "30260afba5232490"
+    ]
+   ],
+   "role": "assistant",
+   "text": "first answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d055b1b548b56b60"
+    ]
+   ],
+   "role": "user",
+   "text": "a follow-up"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  }
+ ],
+ "final_text": null,
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "30260afba5232490"
+    ]
+   ],
+   "role": "assistant",
+   "text": "first answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d055b1b548b56b60"
+    ]
+   ],
+   "role": "user",
+   "text": "a follow-up"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  }
+ ],
+ "max_event_seq": 0,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "30260afba5232490"
+    ]
+   ],
+   "role": "assistant",
+   "text": "first answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d055b1b548b56b60"
+    ]
+   ],
+   "role": "user",
+   "text": "a follow-up"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  }
+ ],
+ "open_turn": {
+  "0": false,
+  "14": false,
+  "4": false,
+  "9": false
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": null,
+  "10": null,
+  "11": null,
+  "12": null,
+  "13": null,
+  "14": null,
+  "15": null,
+  "16": null,
+  "17": null,
+  "18": null,
+  "19": null,
+  "2": null,
+  "3": null,
+  "4": null,
+  "5": null,
+  "6": null,
+  "7": null,
+  "8": null,
+  "9": null
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "083f9a86ebd7dc93"
+     ]
+    ],
+    "role": "user",
+    "text": "hello"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "30260afba5232490"
+     ]
+    ],
+    "role": "assistant",
+    "text": "first answer"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "d055b1b548b56b60"
+     ]
+    ],
+    "role": "user",
+    "text": "a follow-up"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "c8326045b459e1b0"
+     ]
+    ],
+    "role": "assistant",
+    "text": "second answer"
+   }
+  ],
+  "sha": "79179ac75f0f8fe1"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [],
+   "offsets": {
+    "<sid>": 259
+   },
+   "seqs": {}
+  },
+  "3": {
+   "events": [],
+   "offsets": {
+    "<sid>": 259
+   },
+   "seqs": {}
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [],
+   "next_offset": 259
+  },
+  "mid": {
+   "events": [],
+   "next_offset": 259
+  },
+  "start": {
+   "events": [],
+   "next_offset": 259
+  }
+ },
+ "timeline_parse": [
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "parts": [
+      {
+       "text": "first answer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "a follow-up"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "second answer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 4
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "parts": [
+      {
+       "text": "first answer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "a follow-up"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "second answer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 4
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "a follow-up"
+     },
+     "seq": -1
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 2
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "a follow-up"
+     },
+     "seq": -1
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 2
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  }
+ }
+}
