@@ -134,6 +134,18 @@ class StatingStateRepo(Protocol):
 
 
 @runtime_checkable
+class ListingStateRepo(Protocol):
+    """OPTIONAL: a repo that can list a directory of the .state/ tree (the segmented session log asks for its ``messages*.jsonl`` files).
+
+    Callers reach it with ``getattr(repo, "list_state_dir", None)`` and probe the segment names in order when it is absent.
+    """
+
+    async def list_state_dir(self, path: str) -> list[str]:
+        """The file names directly under ``path`` (relative to the .state/ repo root); an absent directory lists nothing."""
+        ...
+
+
+@runtime_checkable
 class AppendingStateRepo(Protocol):
     """OPTIONAL: a repo whose ``commit`` can extend a file by appending (``messages.jsonl`` lines) instead of rewriting it.
 
@@ -160,4 +172,4 @@ class AppendingStateRepo(Protocol):
         ...
 
 
-__all__ = ["AppendingStateRepo", "StateRepo", "StatingStateRepo"]
+__all__ = ["AppendingStateRepo", "ListingStateRepo", "StateRepo", "StatingStateRepo"]
