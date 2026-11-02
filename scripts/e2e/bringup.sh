@@ -170,6 +170,8 @@ worker:
   lease_ttl_seconds: 15
   poll_interval_seconds: 1.0
   drain_timeout_seconds: 30
+  # Segmented session log (seglog): rotate a session's log every 64 KiB so tests/e2e/test_long_session_rotation.py (and any big log) crosses segments.
+  session_log_segment_bytes: 65536
 
 # MCP stdio safety: when set (non-null), MCP toolsets whose stdio
 # command[0] is not in this list are refused at session-open with
