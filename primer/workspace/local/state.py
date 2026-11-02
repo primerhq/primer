@@ -702,6 +702,18 @@ class LocalStateRepo:
             return None
         return info.st_size, info.st_mtime_ns
 
+    async def list_state_dir(self, path: str) -> list[str]:
+        """The file names directly under a directory of ``.state/`` (the segmented session log asks); an absent directory lists nothing."""
+        _validate_relative_path(path)
+
+        def _names() -> list[str]:
+            try:
+                return [e.name for e in os.scandir(self._path / path) if e.is_file()]
+            except (FileNotFoundError, NotADirectoryError):
+                return []
+
+        return await asyncio.to_thread(_names)
+
     # ---- internals -------------------------------------------------------
 
     def _repo_relative(self, p: Path) -> str:

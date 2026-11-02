@@ -738,5 +738,16 @@ class SandboxStateRepo:
         result = await sandbox.state_read([path])
         return result.get(path)
 
+    async def list_state_dir(self, path: str) -> list[str]:
+        """The file names directly under a directory of the state repo, through the sandbox's own ``stat`` and ``list_dir`` (no new runtime
+        message); an absent directory lists nothing."""
+        _validate_relative_path(path)
+        directory = f"{self._state_path.rstrip('/')}/{path}"
+        stat = getattr(self._sandbox, "stat", None)
+        list_dir = getattr(self._sandbox, "list_dir", None)
+        if list_dir is None or (stat is not None and await stat(directory) is None):
+            return []
+        return [e.path.rsplit("/", 1)[-1] for e in await list_dir(directory) if e.kind != "dir"]
+
 
 __all__ = ["SandboxStateRepo"]
