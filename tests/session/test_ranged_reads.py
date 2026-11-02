@@ -5,6 +5,7 @@ import pytest
 
 from primer.channel.session_relay import read_session_final_text
 from primer.session.turns import count_turn_state
+from primer.workspace.segments import SessionLog, WorkspaceSource
 from tests._support.ranged_log import Ws, blob, log, message, rec, turn
 
 SID = "s1"
@@ -143,14 +144,14 @@ async def test_fold_usage_follows_a_growing_log_and_reads_only_what_was_added():
     cache, lines, seq = UsageCache(), log(6000, pad=100)[0], 6000 * 3 + 1
     ws = Ws(blob(lines))
     assert len(ws.data) > 2_000_000
-    first = await fold_usage(ws, "p", cache, "k")
+    first = await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k")
     assert first == session_usage(lines)
     for n in range(3):
         ws.bytes_read = 0
         got, seq = turn(seq, 9000 + n)
         lines += got
         ws.data = blob(lines)
-        assert await fold_usage(ws, "p", cache, "k") == session_usage(lines)
+        assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage(lines)
         assert ws.bytes_read < 2048, ws.bytes_read
 
 
@@ -162,9 +163,9 @@ async def test_fold_usage_counts_a_partial_last_line_without_consuming_it():
     lines = log(4)[0]
     done = rec(99, "done", {"stop_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1}})
     cache, ws = UsageCache(), Ws(blob(lines) + done.encode())             # the last record has no newline yet
-    assert await fold_usage(ws, "p", cache, "k") == session_usage([*lines, done])
+    assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage([*lines, done])
     ws.data = blob([*lines, done])                                          # now it is complete: counted once
-    assert await fold_usage(ws, "p", cache, "k") == session_usage([*lines, done])
+    assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage([*lines, done])
 
 
 @pytest.mark.asyncio
@@ -175,7 +176,7 @@ async def test_fold_usage_falls_back_to_the_whole_log_when_the_log_is_not_a_pure
 
     lines, seq = log(8)
     cache, ws = UsageCache(), Ws(blob(lines))
-    await fold_usage(ws, "p", cache, "k")
+    await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k")
     if how == "rewrite":
         lines = [l.replace("answer", "ANSWER") for l in lines] + turn(seq, 50)[0]
     elif how == "shrink":
@@ -185,9 +186,9 @@ async def test_fold_usage_falls_back_to_the_whole_log_when_the_log_is_not_a_pure
     else:
         lines = [*lines, rec(seq, "compaction_marker", {"summary": "s"}), *turn(seq + 1, 52)[0]]
     ws.data = blob(lines)
-    assert await fold_usage(ws, "p", cache, "k") == session_usage(lines)
+    assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage(lines)
     ws.data = blob([*lines, *turn(seq + 10, 53)[0]])
-    assert await fold_usage(ws, "p", cache, "k") == session_usage([*lines, *turn(seq + 10, 53)[0]])
+    assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage([*lines, *turn(seq + 10, 53)[0]])
 
 
 @pytest.mark.asyncio
@@ -198,5 +199,5 @@ async def test_fold_usage_on_a_workspace_without_ranges_reads_the_whole_log_each
     lines = log(5)[0]
     ws = Ws(blob(lines), ranged=False)
     cache = UsageCache()
-    assert await fold_usage(ws, "p", cache, "k") == session_usage(lines)
-    assert await fold_usage(ws, "p", cache, "k") == session_usage(lines)
+    assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage(lines)
+    assert await fold_usage(SessionLog(WorkspaceSource(ws), "p"), cache, "k") == session_usage(lines)
