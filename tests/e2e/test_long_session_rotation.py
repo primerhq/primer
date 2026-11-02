@@ -19,7 +19,8 @@ import httpx
 import pytest
 
 from tests._support.mock_llm import Rule
-from tests._support.runs import make_local_workspace, make_scripted_agent, start_agent_session
+from tests._support.runs import make_local_workspace, make_scripted_agent, start_agent_session, wait_completed
+from tests._support.session_records import assistant_answers, record_seqs, user_inputs
 
 TURNS = 10
 _FILLER = " ".join(["segment"] * 4000)          # ~28 KB: with the log's own records a turn is ~60 KB, past a 64 KiB threshold every turn or two
@@ -86,6 +87,7 @@ async def test_a_long_session_rotates_and_every_reader_agrees(client: httpx.Asyn
             client, workspace_id=workspace_id, agent_id=agent["agent_id"], instructions="turn-00 begin",
         )
         await _wait_for_answer(client, session_id, 0)
+        await wait_completed(client, session_id)      # the turn's own records are all written: its timeline is final
         before = (await client.get(f"/v1/sessions/{session_id}/turns/0/timeline")).json()
 
         # turns 1 to 7 one at a time, then 8 and 9 back to back (the second steer lands while the first turn's records are being written)
@@ -100,25 +102,37 @@ async def test_a_long_session_rotates_and_every_reader_agrees(client: httpx.Asyn
         names = await _segments(client, workspace_id, session_id)
         assert "messages.jsonl" in names and len(names) >= 3, f"the log never rotated: {names}"
 
+        await wait_completed(client, session_id)
         records = await _records(client, session_id)
-        seqs = [r["seq"] for r in records if isinstance(r.get("seq"), int)]
+        seqs = record_seqs(records)
         assert seqs == sorted(seqs) and len(seqs) == len(set(seqs)), "every record once, in seq order, across the segments"
-        inputs = [r["payload"]["text"] for r in records if r["kind"] == "user_input"]
-        assert sorted(inputs) == sorted(["turn-00 begin", *(f"turn-{n:02d} please" for n in range(1, TURNS))]), f"each steer exactly once: {inputs}"
-        answers = [r for r in records if r["kind"] == "assistant_token"]
+        # the route serves two shapes (see tests/_support/session_records.py): each steer is one user_input record, each answer one assistant Message line
+        assert sorted(user_inputs(records)) == sorted(["turn-00 begin", *(f"turn-{n:02d} please" for n in range(1, TURNS))]), f"each steer exactly once: {user_inputs(records)}"
+        answers = assistant_answers(records)
         for n in range(TURNS):
-            assert sum(f"ANSWER-{n:02d}" in str(r["payload"]["text"]) for r in answers) == 1, f"answer {n} not exactly once"
+            assert sum(f"ANSWER-{n:02d}" in text for text in answers) == 1, f"answer {n} not exactly once"
 
-        # the live tap saw the same records as the messages route, none twice
-        await asyncio.sleep(2.0)
-        tapped = [f["seq"] for f in frames if f.get("session_id") == session_id and isinstance(f.get("seq"), int)]
+        # the live tap saw the same records as the messages route, none twice (give its last frames a moment to arrive)
+        def _tapped() -> list[int]:
+            return [f["seq"] for f in frames if f.get("session_id") == session_id and isinstance(f.get("seq"), int)]
+
+        for _ in range(60):
+            if set(seqs) <= set(_tapped()):
+                break
+            await asyncio.sleep(0.5)
+        tapped = _tapped()
         assert len(tapped) == len(set(tapped)), "the tap repeated a record across a rotation"
         assert set(tapped) == set(seqs), f"the tap and the messages route disagree: only in tap {sorted(set(tapped) - set(seqs))}, only in route {sorted(set(seqs) - set(tapped))}"
 
-        # usage: one turn per input; the first turn's timeline is the same after the rotations as before them
-        row = (await client.get(f"/v1/sessions/{session_id}")).json()
+        # usage: one turn per input and one model call per answer (the row's usage is a fold of the log)
+        for _ in range(40):
+            row = (await client.get(f"/v1/sessions/{session_id}")).json()
+            if row["usage"]["turns"] == TURNS:
+                break
+            await asyncio.sleep(0.5)
         assert row["usage"]["turns"] == TURNS, row["usage"]
         assert row["usage"]["model_calls"] == TURNS, row["usage"]
+        # the first turn's timeline is the same after the rotations as before them
         after = (await client.get(f"/v1/sessions/{session_id}/turns/0/timeline")).json()
         assert after == before, "turn 0's timeline changed when the log rotated"
     finally:
