@@ -110,7 +110,8 @@ class MessageLogCache:
         async with self._lock:
             segments = await log.segments()
             total = sum(s.size for s in segments)
-            if not self.verify and self._total == total and self._consumed == len(self._raw):
+            # An unchanged log is answered from the fold whether or not reads are verified (verify checks what a real read folded, as `_view` does).
+            if self._total == total and self._consumed == len(self._raw):
                 return self._snapshot()
             self.reads += 1
             guard = self._raw[-_GUARD_BYTES:] if self._consumed else b""
