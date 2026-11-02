@@ -116,13 +116,23 @@ async def test_a_long_session_rotates_and_every_reader_agrees(client: httpx.Asyn
         def _tapped() -> list[int]:
             return [f["seq"] for f in frames if f.get("session_id") == session_id and isinstance(f.get("seq"), int)]
 
+        # Every 28 KB answer compacts the history, so the log holds compaction markers; the tap never surfaces them (primer/tap/reader.py _parse_record skips
+        # COMPACTION_MARKER by design: an internal history-management record, not activity). This is the only record kind compared out.
+        kind_of = {r["seq"]: r["kind"] for r in records if isinstance(r.get("seq"), int)}
+        assert "compaction_marker" in kind_of.values(), f"no compaction happened: {sorted(set(kind_of.values()))} (the journey covers compaction under rotation)"
+        shown = {s for s, k in kind_of.items() if k != "compaction_marker"}
         for _ in range(60):
-            if set(seqs) <= set(_tapped()):
+            if shown <= set(_tapped()):
                 break
             await asyncio.sleep(0.5)
         tapped = _tapped()
         assert len(tapped) == len(set(tapped)), "the tap repeated a record across a rotation"
-        assert set(tapped) == set(seqs), f"the tap and the messages route disagree: only in tap {sorted(set(tapped) - set(seqs))}, only in route {sorted(set(seqs) - set(tapped))}"
+        class_of = {f["seq"]: f.get("class") for f in frames if f.get("session_id") == session_id and isinstance(f.get("seq"), int)}
+        assert set(tapped) == shown, (
+            f"the tap and the messages route disagree: only in tap {sorted(set(tapped) - shown)}, "
+            f"only in route (seq: kind) { {s: kind_of[s] for s in sorted(shown - set(tapped))} }; "
+            f"tap delivered (seq: class) {class_of}; route kinds {kind_of}"
+        )
 
         # usage: one turn per input and one model call per answer (the row's usage is a fold of the log)
         for _ in range(40):
