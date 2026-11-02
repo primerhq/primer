@@ -635,12 +635,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         if log_view is not None:
             return await log_view()
         from primer.workspace.message_log import MessageLogCache
+        from primer.workspace.segments import SessionLog, StateRepoSource
 
         cache = self.__dict__.get("_own_log_cache")
         if cache is None:
             cache = self._own_log_cache = MessageLogCache()
-        rel = self._messages_jsonl_rel()
-        return await cache.view(lambda: self._session._state.read_state_file(rel))
+        return await cache.view_log(SessionLog(StateRepoSource(self._session._state), f"sessions/{self._session.session_id}"))
 
     def _messages_jsonl_rel(self) -> str:
         """Return the ``messages.jsonl`` path relative to the state repo root.
