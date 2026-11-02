@@ -279,12 +279,12 @@ def _parse_tail(lines_last_first) -> list[dict]:
     return tail
 
 
-async def _read_final_window(workspace_io, path: str) -> bytes | None:
-    """The end of ``messages.jsonl``, widened until it holds three session terminals (two boundaries, and a graph end that is not one), or ``None`` to read it whole.
+async def _read_final_window(log) -> bytes | None:
+    """The end of the session log (across its segments), widened until it holds three session terminals (two boundaries, and a graph end that is not one).
 
-    ``None`` also when the workspace cannot read a range. The bytes returned start at a line boundary unless they are the whole file.
+    The bytes returned start at a line boundary unless they are the whole log.
     """
-    from primer.workspace.tail_read import read_window, tail_of
+    from primer.workspace.tail_read import read_window
 
     def enough(lines: list[bytes]) -> bool:
         terminals = 0
@@ -299,10 +299,7 @@ async def _read_final_window(workspace_io, path: str) -> bytes | None:
                     return True
         return False
 
-    async def read_tail(max_bytes: int):
-        return await tail_of(workspace_io, path, max_bytes)
-
-    return await read_window(read_tail, enough)
+    return await read_window(log.read_tail, enough)
 
 
 async def read_session_final_text(workspace_io, session_id: str) -> str | None:
@@ -340,14 +337,16 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
                 type(workspace_io).__name__, session_id,
             )
             return None
-        state_path = getattr(workspace_io, "state_path", ".state")
-        path = f"{state_path}/sessions/{session_id}/messages.jsonl"
+        from primer.workspace.segments import session_log_for
+
+        log = session_log_for(workspace_io, session_id)
+        can_range = callable(getattr(workspace_io, "read_file_tail", None)) or callable(getattr(workspace_io, "read_file_from", None))
         try:
-            raw = await _read_final_window(workspace_io, path) or await read_file(path)
+            raw = (await _read_final_window(log) if can_range else None) or await log.read_all()
         except NotFoundError:
-            return None  # no messages.jsonl yet: nothing to relay, and not a fault
+            return None  # no log yet: nothing to relay, and not a fault
         except Exception:
-            _log.warning("session relay: reading %s failed", path, exc_info=True)
+            _log.warning("session relay: reading the log of %s failed", session_id, exc_info=True)
             return None
         lines_last_first = _lines_from_the_end(raw)
 
