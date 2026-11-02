@@ -104,7 +104,7 @@ async def test_old_single_file_session_gets_segment_one_beside_it_and_history_is
     assert "before the threshold existed" in commits and "first rotation" not in commits, "only the old commit touched the old file"
 
 
-@pytest.mark.parametrize("name", sorted(set(SCENARIOS) - {"graph_session", "canvas_records"}))   # the event-row scenarios wait for Task 10
+@pytest.mark.parametrize("name", sorted(SCENARIOS))
 async def test_concatenation_of_segments_equals_the_single_file_run(name, tmp_path):
     set_segment_bytes_default(2048)
     backend, workspace, session = await open_session(tmp_path)

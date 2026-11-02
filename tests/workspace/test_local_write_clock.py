@@ -61,6 +61,9 @@ async def test_the_sandbox_workspace_does_not_count_the_wait_for_the_messages_lo
             return lock
 
     class _Sandbox:
+        async def stat(self, path: str):
+            return None          # no session directory yet: the row starts segment 0
+
         async def append_line(self, path: str, line: bytes) -> None:
             appended.append(line)
 
