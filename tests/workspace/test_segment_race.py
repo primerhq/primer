@@ -30,8 +30,13 @@ def _row(who: str, i: int) -> bytes:
     return (json.dumps({"role": "user", "parts": [{"type": "text", "text": f"{who}-{i:04d}-" + "y" * 90}]}) + "\n").encode()
 
 
-def _writer_main(state_dir: str, workspace_id: str, session_id: str, count: int, ready) -> None:
-    """The other process: its own repo object over the same directory, writing event rows through the real ``append_message_line``."""
+def _writer_main(state_dir: str, workspace_id: str, session_id: str, count: int, ready, first_done, go) -> None:
+    """The other process: its own repo object over the same directory, writing event rows through the real ``append_message_line``.
+
+    The rows go out in ``len(go) + 1`` phases: the first at once (the log has not rotated yet), each later one only after the committing process has
+    rotated the log one more time and said so (``go[k]``); a phase then runs WHILE the parent keeps committing, which is the race. Not timing: under CPU
+    contention the interleaving is the same.
+    """
     import asyncio
 
     from primer.workspace.local.state import LocalStateRepo
@@ -45,8 +50,14 @@ def _writer_main(state_dir: str, workspace_id: str, session_id: str, count: int,
         workspace._template = SimpleNamespace(state_path=Path(state_dir).name)  # noqa: SLF001
         workspace._state = repo  # noqa: SLF001
         ready.set()
+        per_phase = count // (len(go) + 1)
         for i in range(count):
+            if i == per_phase:
+                first_done.set()
+            if i >= per_phase and (i - per_phase) % per_phase == 0:
+                assert go[(i - per_phase) // per_phase].wait(60), "the committing process never rotated the log again"
             await workspace.append_message_line(session_id, _row("event", i))
+        first_done.set()
 
     asyncio.run(main())
 
@@ -59,14 +70,22 @@ async def test_race_append_vs_rotating_commit_across_two_processes(tmp_path):
         slot = state.path / "sessions" / sid
         set_segment_bytes_default(THRESHOLD)
         ctx = multiprocessing.get_context("spawn")
-        ready = ctx.Event()
-        child = ctx.Process(target=_writer_main, args=(str(state.path), "ws-race", sid, ITERATIONS, ready))
+        ready, first_done = ctx.Event(), ctx.Event()
+        go = [ctx.Event() for _ in range(3)]
+        child = ctx.Process(target=_writer_main, args=(str(state.path), "ws-race", sid, ITERATIONS, ready, first_done, go))
         child.start()
         try:
             assert ready.wait(60), "the writer process did not start"
+            assert first_done.wait(60), "the writer never finished its first phase"   # those rows are in segment 0: no commit has rotated the log yet
             for i in range(ITERATIONS):
                 await state.commit(sid, summary=f"turn {i}", op="message", appends={KEY: _row("turn", i)})
+                rotations = len(list(slot.glob("messages*.jsonl"))) - 1
+                for k, event in enumerate(go):
+                    if rotations > k:
+                        event.set()               # the next phase of event rows starts now, while this loop keeps committing
         finally:
+            for event in go:
+                event.set()
             child.join(timeout=90)
             if child.is_alive():
                 child.kill()
