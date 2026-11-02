@@ -122,7 +122,13 @@ async def test_a_long_session_rotates_and_every_reader_agrees(client: httpx.Asyn
             await asyncio.sleep(0.5)
         tapped = _tapped()
         assert len(tapped) == len(set(tapped)), "the tap repeated a record across a rotation"
-        assert set(tapped) == set(seqs), f"the tap and the messages route disagree: only in tap {sorted(set(tapped) - set(seqs))}, only in route {sorted(set(seqs) - set(tapped))}"
+        kind_of = {r["seq"]: r["kind"] for r in records if isinstance(r.get("seq"), int)}
+        class_of = {f["seq"]: f.get("class") for f in frames if f.get("session_id") == session_id and isinstance(f.get("seq"), int)}
+        assert set(tapped) == set(seqs), (
+            f"the tap and the messages route disagree: only in tap {sorted(set(tapped) - set(seqs))}, "
+            f"only in route (seq: kind) { {s: kind_of[s] for s in sorted(set(seqs) - set(tapped))} }; "
+            f"tap delivered (seq: class) {class_of}; route kinds {kind_of}"
+        )
 
         # usage: one turn per input and one model call per answer (the row's usage is a fold of the log)
         for _ in range(40):
