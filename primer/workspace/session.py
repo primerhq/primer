@@ -45,6 +45,8 @@ from primer.model.workspace_session import (
 )
 
 
+from primer.workspace.segments import LOG_NAME
+
 if TYPE_CHECKING:
     from primer.int.state_repo import LogRewrite
     from primer.model.workspace import Op
@@ -72,7 +74,7 @@ def workspace_system_prompt_fragment(session_id: str) -> str:
 
     A function of the session id alone, so a caller with no live session (the manual compaction route,
     which sizes the fixed part of the prompt) renders exactly what the executor does."""
-    return _SYSTEM_PROMPT_TEMPLATE.format(session_id=session_id)
+    return _SYSTEM_PROMPT_TEMPLATE.format(session_id=session_id, log_name=LOG_NAME)
 
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -83,7 +85,10 @@ ls, read, write, edit, glob, grep, exec.
 
 Your conversation state and persistent notes for THIS session live under
 `.state/sessions/{session_id}/`. Every assistant turn is committed to a
-git repo at `.state/`. You can inspect your own history with:
+git repo at `.state/`. The conversation log is `{log_name}` there; a long log
+continues in `messages.0001.jsonl`, `messages.0002.jsonl`, ... (the whole log is
+those files in order; list them with `ls .state/sessions/{session_id}/`).
+You can inspect your own history with:
   exec("git log -- sessions/{session_id}/", workdir=".state")
   exec("git show <sha>", workdir=".state")
 

@@ -58,8 +58,10 @@ from tests._support.off_golden import (
 
 FIXTURE = Path(__file__).parent / "fixtures" / "off_mode_golden.json"
 
-TURN_1_SHA256 = "db143a16830dc2fc1bbdbd1ba83965dcf139b18dc2d844ac9d29ffc3a1432a5b"
-CALL_0_SHA256 = "be1020d85336893f96f58cc246aae02ae88368912c76d756fdc01c80b20508d6"
+# Moved once, with the segmented session log: the workspace system prompt fragment gained a sentence about the log's continuation files
+# (messages.0001.jsonl ...), so the system message of every call is 210 characters longer (1539 -> 1749); the capture's reason is on the fixture's `recaptures`.
+TURN_1_SHA256 = "5741bd7580c90071bb569586d650776a2f26ab0a8c3487d112c65b91b6cc40a0"
+CALL_0_SHA256 = "bab32e71371e7c88794658a46bcd4d0f4b78364d6dd312322034f3207c91a70e"
 
 
 @pytest.fixture(scope="module")

@@ -13,8 +13,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -374,8 +374,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -492,8 +492,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -873,8 +873,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -1124,8 +1124,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -1252,8 +1252,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -1332,8 +1332,8 @@
      "parts": [
       [
        "text",
-       46544,
-       "b36318db09131016"
+       46320,
+       "be3431ce867bcd85"
       ]
      ],
      "role": "user"
@@ -1400,8 +1400,8 @@
      "parts": [
       [
        "text",
-       1539,
-       "6d326d5a73fe0bee"
+       1749,
+       "64cce57096ac79ac"
       ]
      ],
      "role": "system"
@@ -1480,8 +1480,8 @@
      "parts": [
       [
        "text",
-       46548,
-       "8d464fa6da69d397"
+       46324,
+       "8df1813035edfe3b"
       ]
      ],
      "role": "user"
@@ -1537,8 +1537,8 @@
    ]
   }
  ],
- "captured_from": "be8f5271d10075d8bbb61698fe893f0594d57a5b",
- "captured_from_subject": "fix(harness): uninstall and sync deletes purge collections and indexes, and an uninstall that fails keeps what a retry needs (KN-4, KN-5)",
+ "captured_from": "60df52769cd4645a5d4911bc6b376bcdf6337a64",
+ "captured_from_subject": "feat(session-log): the join script for a rollback and the agent prompt sentence about segments",
  "recaptures": [
   {
    "changed_turns": [
@@ -1602,6 +1602,19 @@
    "previous_captured_from": "b0fa229739f0f32abddd1b05f13049ae003ffa61",
    "previous_fixture_sha256": "a17ecf14cd06ccccceedbf567d9abf9e853639e8d6484a23c91ebb4828b469d6",
    "reason": "AG-M6 (task 44): the steers the pre-turn compaction window deferred and its close drained are now in that turn's prompt (they were written after the marker but left out of the answer call); only turn 4's answer call moves, by the two steers"
+  },
+  {
+   "changed_turns": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "previous_captured_from": "be8f5271d10075d8bbb61698fe893f0594d57a5b",
+   "previous_fixture_sha256": "676e6d56f6ed68b920f6392020477949d87768a81c09f03a54d8bca65f69d29e",
+   "reason": "the workspace system prompt fragment names the segmented session log (messages.0001.jsonl, ...), so every prompt is longer"
   }
  ],
  "turns": [
@@ -1810,7 +1823,7 @@
       "len": 120653,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "2157d947030dcd77"
+      "sha": "459fb90a881d70e1"
      },
      {
       "len": 65,
@@ -1822,7 +1835,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3191,
+      "fixed_overhead_tokens": 3247,
       "kept_tail": [
        {
         "len": 76,
@@ -1856,13 +1869,13 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 33260,
-      "tokens_before": 213699,
+      "tokens_after": 33316,
+      "tokens_before": 213755,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "94c37d228d4badb68b381f288001df126e8075c1678e6e8972ec1da65b7d73bb"
+    "sha256": "127a8457d4ec38cb08dd48430ab4ce281abe796e64ea1510fbeff61594d3d46a"
    },
    "llm_calls": 2,
    "turn": "2-tier2-summary"
@@ -1881,7 +1894,7 @@
       "len": 584,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "43264e22cf53ef9b"
+      "sha": "a2b91d8bf084349e"
      },
      {
       "len": 2068,
@@ -1977,7 +1990,7 @@
       "len": 6947,
       "record": "compaction_marker",
       "seq": 2,
-      "sha": "e9ea21bb77255dfc"
+      "sha": "8d4da102b8e042b8"
      },
      {
       "len": 65,
@@ -1989,7 +2002,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3191,
+      "fixed_overhead_tokens": 3247,
       "kept_tail": [
        {
         "len": 80,
@@ -2018,7 +2031,7 @@
      },
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3191,
+      "fixed_overhead_tokens": 3247,
       "kept_tail": [
        {
         "len": 76,
@@ -2076,13 +2089,13 @@
       "seq": 2,
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
-      "tokens_after": 4815,
-      "tokens_before": 6941,
+      "tokens_after": 4871,
+      "tokens_before": 6997,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "d9280668967d780e5e87f65ae68b8827fc8481077f942c7f62f13b97df0e638a"
+    "sha256": "a197b46cf9e920c7fc202311f78863e2b4bfddc8f0f01bc30b4653d231828f24"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"
@@ -2149,7 +2162,7 @@
       "len": 120589,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "21a9b4af4eea6663"
+      "sha": "c35f1356cc7557e9"
      },
      {
       "len": 76,
@@ -2173,7 +2186,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3191,
+      "fixed_overhead_tokens": 3247,
       "kept_tail": [
        {
         "len": 76,
@@ -2201,20 +2214,20 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "eac741dd554ebe61",
-      "tokens_after": 33249,
-      "tokens_before": 123281,
+      "tokens_after": 33305,
+      "tokens_before": 123337,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "5cae8fac999ac26d070aad26391549913bec0c046ebfc64941a9906248dc282b"
+    "sha256": "72a9d6131bf2b6b981b5fbf852f961a58809b2087b25de5deed0f9c2bbeb1106"
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"
   },
   {
    "file": {
-    "bytes": 317386,
+    "bytes": 317162,
     "lines": [
      {
       "len": 56,
@@ -2259,10 +2272,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 46567,
+      "len": 46343,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "18db79a8cf290158"
+      "sha": "03775263e131ef5d"
      },
      {
       "len": 67,
@@ -2272,7 +2285,7 @@
      }
     ],
     "markers": [],
-    "sha256": "b26dbc338120b2582774294078e984feefd9a334e83769f6494019ac01a4e68f"
+    "sha256": "3ca3d285256fccf2dd544445e06628394ed718a418917ee3194bcb735050e45a"
    },
    "llm_calls": 1,
    "target_estimate": 82626,
@@ -2280,7 +2293,7 @@
   },
   {
    "file": {
-    "bytes": 317390,
+    "bytes": 317166,
     "lines": [
      {
       "len": 56,
@@ -2325,10 +2338,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 46571,
+      "len": 46347,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "50d3bbc9cff00610"
+      "sha": "03065b1fb91f393e"
      },
      {
       "len": 67,
@@ -2338,7 +2351,7 @@
      }
     ],
     "markers": [],
-    "sha256": "392f61fde9f7940bdfbc583057633978a549a7fd98fd7cb6c8af5f31c2786b79"
+    "sha256": "316f241e9b0c0a9dc180aaba7e30ecd7bf9d99b1150692d8104d87cd0e010e63"
    },
    "llm_calls": 1,
    "target_estimate": 82627,

@@ -1,7 +1,8 @@
 """Which workspace paths are the runtime's own reserved trees.
 
-``.state`` (the state repo: every session's messages.jsonl, session.json,
-mounts.json) and ``.tmp`` (truncated tool outputs) live inside the
+``.state`` (the state repo: every session's message log (``messages.jsonl``
+and, once it has grown, its continuation files ``messages.0001.jsonl`` ...),
+session.json, mounts.json) and ``.tmp`` (truncated tool outputs) live inside the
 workspace root, so the raw file routes and tools could serve them like any
 user file. The backends refuse WRITES there but must keep reading them,
 because the runtime itself does; the user-facing raw readers call
