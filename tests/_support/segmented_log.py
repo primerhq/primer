@@ -30,7 +30,6 @@ _WHEN = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
 #: Readers that do not yet read a segmented log (they open ``messages.jsonl`` alone). Each seglog task that fixes a reader deletes its name here; a name left
 #: in the list that no longer fails anywhere is itself a test failure, so the list can only shrink.
 KNOWN_SEGMENT_GAPS: frozenset[str] = frozenset({
-    "history", "compaction_state", "max_event_seq", "take_pending", "executor_history",          # Task 3
     "final_text", "open_turn",                                                                  # Task 4
     "usage_totals", "transcript_page", "timeline_parse", "route_text", "memory_loader",         # Task 5
     "tap_since", "tap_batch", "record_by_seq",                                                  # Task 6

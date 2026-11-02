@@ -122,8 +122,13 @@ class StateRepoSource:
 
     def __init__(self, repo: Any) -> None:
         self.target = repo
+        # A repo that cannot stat tells a file's size by reading it. The bytes of that probe are kept for the read that follows, so a log
+        # that must be read anyway is read ONCE per view, as it was before segments (shortcut: one file per source is held; a probe of
+        # another replaces it, and a listing starts afresh).
+        self._probed: tuple[str, bytes] | None = None
 
     async def list_names(self, dir_rel: str) -> list[str]:
+        self._probed = None
         listing = getattr(self.target, "list_state_dir", None)
         if listing is not None:
             return list(await listing(dir_rel))
@@ -139,10 +144,17 @@ class StateRepoSource:
         if stat is not None:
             found = await stat(rel)
             return None if found is None else found[0]
+        if self._probed is not None and self._probed[0] == rel:
+            return len(self._probed[1])
         data = await self.target.read_state_file(rel)
+        if data is not None:
+            self._probed = (rel, data)
         return None if data is None else len(data)
 
     async def read(self, rel: str) -> bytes | None:
+        if self._probed is not None and self._probed[0] == rel:
+            data, self._probed = self._probed[1], None
+            return data
         return await self.target.read_state_file(rel)
 
     async def read_from(self, rel: str, offset: int) -> bytes:
@@ -255,11 +267,11 @@ class SessionLog:
     async def read_all(self) -> bytes:
         return b"".join([await self._read(s) for s in await self.segments()])
 
-    async def read_from(self, offset: int) -> bytes:
-        """The log's bytes from the logical ``offset`` (empty at or past the end)."""
+    async def read_from(self, offset: int, *, segments: list[SegmentInfo] | None = None) -> bytes:
+        """The log's bytes from the logical ``offset`` (empty at or past the end). ``segments`` is a listing the caller just made."""
         out: list[bytes] = []
         start = 0
-        for info in await self.segments():
+        for info in segments if segments is not None else await self.segments():
             end = start + info.size
             if end > offset:
                 if offset <= start:
@@ -287,13 +299,13 @@ class SessionLog:
             remaining -= info.size
         return b"".join(reversed(parts)), False
 
-    async def since_last_marker(self) -> tuple[int, bytes]:
+    async def since_last_marker(self, *, segments: list[SegmentInfo] | None = None) -> tuple[int, bytes]:
         """``(logical start offset, bytes)`` from the newest segment that holds a compaction marker on (the whole log without one).
 
         Everything before the newest marker is replaced by the marker's summary and kept tail, so a history reader needs no earlier segment. The
         test is a substring (a hint: a marker that was rewound away, or a message that quotes the word, only costs one wider read).
         """
-        segments = await self.segments()
+        segments = segments if segments is not None else await self.segments()
         parts: list[bytes] = []
         first = 0
         for info in reversed(segments):

@@ -899,15 +899,11 @@ class AgentSession:
         answer) share one read and parse each new line once.
         """
         from primer.workspace.message_log import MessageLogCache
+        from primer.workspace.segments import SessionLog, StateRepoSource
 
         if self._log_cache is None:
             self._log_cache = MessageLogCache()
-        rel = f"sessions/{self.session_id}/messages.jsonl"
-        stat_state_file = getattr(self._state, "stat_state_file", None)
-        return await self._log_cache.view(
-            lambda: self._state.read_state_file(rel),
-            (lambda: stat_state_file(rel)) if stat_state_file is not None else None,
-        )
+        return await self._log_cache.view_log(SessionLog(StateRepoSource(self._state), f"sessions/{self.session_id}"))
 
     async def take_pending_messages(self) -> list[Message]:
         """Return the messages added since the last assistant turn.
