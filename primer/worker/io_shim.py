@@ -165,6 +165,52 @@ class _WorkspaceIOShim:
         except NotFoundError:
             return b""
 
+    async def _state_target(self, workspace_id: str, state_relative_path: str):
+        if self._registry is None:
+            return None, ""
+        workspace = await self._registry.get_workspace(workspace_id)
+        if workspace is None:
+            raise PrimerError(f"workspace {workspace_id!r} could not be resolved while reading {state_relative_path!r}")
+        return workspace, f"{getattr(workspace, 'state_path', '.state')}/{state_relative_path}"
+
+    async def list_state_dir(self, workspace_id: str, state_relative_path: str) -> list[str] | None:
+        """The names of the files directly under a directory of the workspace's state tree (empty when there is none): the session log's segments.
+
+        ``None`` when the workspace cannot list (a test fake): the caller then reads the log as a single file.
+        """
+        workspace, full_path = await self._state_target(workspace_id, state_relative_path)
+        if workspace is None:
+            return []
+        listing = getattr(workspace, "list_files", None)
+        if listing is None:
+            return None
+        try:
+            return [str(e.path).rsplit("/", 1)[-1] for e in await listing(full_path)]
+        except NotFoundError:
+            return []
+
+    async def state_size(self, workspace_id: str, state_relative_path: str) -> int | None:
+        """The size of a state file, or ``None`` when it is absent."""
+        workspace, full_path = await self._state_target(workspace_id, state_relative_path)
+        if workspace is None:
+            return None
+        info = getattr(workspace, "file_info", None)
+        try:
+            return (await info(full_path)).size_bytes if info is not None else len(await workspace.read_file(full_path))
+        except NotFoundError:
+            return None
+
+    async def read_state_from(self, workspace_id: str, state_relative_path: str, offset: int) -> bytes:
+        """A state file from ``offset`` on (empty when it is absent)."""
+        workspace, full_path = await self._state_target(workspace_id, state_relative_path)
+        if workspace is None:
+            return b""
+        ranged = getattr(workspace, "read_file_from", None)
+        try:
+            return await ranged(full_path, offset) if ranged is not None else (await workspace.read_file(full_path))[offset:]
+        except NotFoundError:
+            return b""
+
     async def read_state_tail(
         self, workspace_id: str, state_relative_path: str, max_bytes: int,
     ) -> tuple[bytes, bool] | None:

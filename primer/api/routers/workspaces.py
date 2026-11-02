@@ -1742,15 +1742,22 @@ async def compact_session_endpoint(
     workspace = await registry.get_workspace(workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace {workspace_id!r} is not available")
-    state_path = getattr(workspace, "state_path", ".state")
-    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    from primer.workspace.segments import session_log_for
+
+    log = session_log_for(workspace, session_id)
+
+    async def _history_text() -> str:
+        # Everything before the newest compaction marker is replaced by the marker's summary and kept tail: the segment that holds it is enough.
+        return (await log.since_last_marker())[1].decode("utf-8", errors="replace")
+
     try:
-        raw = await workspace.read_file(rel)
+        text = await _history_text()
     except Exception as exc:  # noqa: BLE001 - absent log is a 422, not a 5xx
         raise SemanticValidationError(
             "session has no recorded history to compact"
         ) from exc
-    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    if not text:
+        raise SemanticValidationError("session has no recorded history to compact")
     history = reconstruct_compacted_history(text.splitlines())
     if not history:
         raise SemanticValidationError(
@@ -1764,11 +1771,7 @@ async def compact_session_endpoint(
 
     async def _reload():
         """The history as the reader sees it now: a steer can land while the summariser runs."""
-        fresh_raw = await workspace.read_file(rel)
-        fresh_text = (
-            fresh_raw.decode("utf-8", errors="replace") if isinstance(fresh_raw, bytes) else fresh_raw
-        )
-        return reconstruct_compacted_history(fresh_text.splitlines())
+        return reconstruct_compacted_history((await _history_text()).splitlines())
 
     # The fixed part of the prompt, as far as this route can count it: the system prompt as the executor
     # renders it (the agent's own, the workspace fragment it appends, and the workspace's agents.md, read now
@@ -2185,16 +2188,17 @@ async def rewind_session(
     workspace = await registry.get_workspace(workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace {workspace_id!r} is not available")
-    state_path = getattr(workspace, "state_path", ".state")
-    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    from primer.workspace.segments import session_log_for
+
     try:
-        raw = await workspace.read_file(rel)
+        raw = await session_log_for(workspace, session_id).read_all()
     except Exception as exc:  # noqa: BLE001 - absent log is a 422, not a 5xx
         raise SemanticValidationError(
             "session has no recorded history to rewind"
         ) from exc
-    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-    lines = text.splitlines()
+    if not raw:
+        raise SemanticValidationError("session has no recorded history to rewind")
+    lines = raw.decode("utf-8", errors="replace").splitlines()
 
     # Raises ConflictError for the compaction case (amendment C2) and
     # ValidationError for a malformed target; both before any write.

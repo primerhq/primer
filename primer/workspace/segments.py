@@ -73,33 +73,59 @@ class SegmentSource(Protocol):
 
 
 class WorkspaceSource:
-    """A workspace handle (paths relative to the workspace root): the reader routes, the relay, the tap and the usage fold."""
+    """A workspace handle (paths relative to the workspace root): the reader routes, the relay, the tap and the usage fold.
+
+    A minimal handle works too (a test fake with only ``read_file``): it is read as a single file, a size is the length of a read, and
+    a read from an offset slices a whole read. The bytes of a size probe are kept for the read that follows, as in :class:`StateRepoSource`.
+    """
 
     def __init__(self, workspace: Any) -> None:
         self.target = workspace
+        self._probed: tuple[str, bytes] | None = None
 
     async def list_names(self, dir_rel: str) -> list[str]:
+        self._probed = None
+        listing = getattr(self.target, "list_files", None)
+        if listing is None:
+            # shortcut: a handle that cannot list is read as a single-file log (a test fake that serves one file for any path would be probed
+            # forever); upgrade a fake that must serve several segments to a real listing.
+            return [segment_name(0)] if await self.size(f"{dir_rel}/{segment_name(0)}") is not None else []
         try:
-            entries = await self.target.list_files(dir_rel)
+            entries = await listing(dir_rel)
         except NotFoundError:
             return []
         return [str(e.path).rsplit("/", 1)[-1] for e in entries]
 
     async def size(self, rel: str) -> int | None:
-        try:
-            return (await self.target.file_info(rel)).size_bytes
-        except NotFoundError:
-            return None
+        info = getattr(self.target, "file_info", None)
+        if info is not None:
+            try:
+                return (await info(rel)).size_bytes
+            except NotFoundError:
+                return None
+        if self._probed is not None and self._probed[0] == rel:
+            return len(self._probed[1])
+        data = await self.read(rel)
+        if data is not None:
+            self._probed = (rel, data)
+        return None if data is None else len(data)
 
     async def read(self, rel: str) -> bytes | None:
+        if self._probed is not None and self._probed[0] == rel:
+            data, self._probed = self._probed[1], None
+            return data
         try:
-            return await self.target.read_file(rel)
+            data = await self.target.read_file(rel)
         except NotFoundError:
             return None
+        return data.encode("utf-8") if isinstance(data, str) else data    # a test fake may serve text
 
     async def read_from(self, rel: str, offset: int) -> bytes:
+        ranged = getattr(self.target, "read_file_from", None)
+        if ranged is None:
+            return ((await self.read(rel)) or b"")[offset:]
         try:
-            return await self.target.read_file_from(rel, offset)
+            return await ranged(rel, offset)
         except NotFoundError:
             return b""
 
@@ -110,10 +136,55 @@ class WorkspaceSource:
             tail = await tail_of(self.target, rel, max_bytes)
             if tail is not None:
                 return tail
-            data = await self.target.read_file(rel)
         except NotFoundError:
             return b"", True
+        data = (await self.read(rel)) or b""
         return data[-max_bytes:], len(data) <= max_bytes
+
+
+class ShimSource:
+    """The pool's IO shim (state-relative paths, a workspace id): the dispatch layer's turn-exit reads. It needs the shim's listing and ranged reads
+    (``list_state_dir``, ``state_size``, ``read_state_from``); an object without them is a single-file test fake, which the caller keeps reading as before."""
+
+    def __init__(self, shim: Any, workspace_id: str) -> None:
+        self.target = shim
+        self._wid = workspace_id
+
+    @staticmethod
+    def supports(shim: Any) -> bool:
+        return all(callable(getattr(shim, name, None)) for name in ("list_state_dir", "state_size", "read_state_from", "read_state_tail"))
+
+    async def list_names(self, dir_rel: str) -> list[str]:
+        names = await self.target.list_state_dir(self._wid, dir_rel)
+        if names is None:    # the workspace behind the shim cannot list: a single-file log
+            return [segment_name(0)] if await self.size(f"{dir_rel}/{segment_name(0)}") is not None else []
+        return names
+
+    async def size(self, rel: str) -> int | None:
+        return await self.target.state_size(self._wid, rel)
+
+    async def read(self, rel: str) -> bytes | None:
+        if await self.size(rel) is None:
+            return None
+        return await self.target.read_state_file(self._wid, rel)
+
+    async def read_from(self, rel: str, offset: int) -> bytes:
+        return await self.target.read_state_from(self._wid, rel, offset)
+
+    async def read_tail(self, rel: str, max_bytes: int) -> tuple[bytes, bool]:
+        try:
+            tail = await self.target.read_state_tail(self._wid, rel, max_bytes)
+        except NotFoundError:
+            return b"", True
+        if tail is not None:
+            return tail
+        data = (await self.read(rel)) or b""
+        return data[-max_bytes:], len(data) <= max_bytes
+
+
+def session_log_for(workspace: Any, session_id: str) -> "SessionLog":
+    """The log of ``session_id`` read through a workspace handle (the routes, the relay, the tap): ``<state_path>/sessions/<id>``."""
+    return SessionLog(WorkspaceSource(workspace), f"{getattr(workspace, 'state_path', '.state')}/sessions/{session_id}")
 
 
 class StateRepoSource:
@@ -357,6 +428,6 @@ def segment_bytes_default() -> int:
 
 
 __all__ = [
-    "LOG_NAME", "LinesSource", "SEGMENT_RE", "SegmentGap", "SegmentInfo", "SegmentSource", "SessionLog", "StateRepoSource", "WorkspaceSource",
-    "ordered", "parse_segment", "segment_bytes_default", "segment_name", "set_segment_bytes_default",
+    "LOG_NAME", "LinesSource", "SEGMENT_RE", "SegmentGap", "SegmentInfo", "SegmentSource", "SessionLog", "ShimSource", "StateRepoSource", "WorkspaceSource",
+    "ordered", "parse_segment", "segment_bytes_default", "segment_name", "session_log_for", "set_segment_bytes_default",
 ]

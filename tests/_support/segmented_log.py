@@ -30,8 +30,7 @@ _WHEN = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
 #: Readers that do not yet read a segmented log (they open ``messages.jsonl`` alone). Each seglog task that fixes a reader deletes its name here; a name left
 #: in the list that no longer fails anywhere is itself a test failure, so the list can only shrink.
 KNOWN_SEGMENT_GAPS: frozenset[str] = frozenset({
-    "final_text", "open_turn",                                                                  # Task 4
-    "usage_totals", "transcript_page", "timeline_parse", "route_text", "memory_loader",         # Task 5
+    "usage_totals", "transcript_page", "timeline_parse", "memory_loader",                      # Task 5
     "tap_since", "tap_batch", "record_by_seq",                                                  # Task 6
 })
 
@@ -276,8 +275,11 @@ async def r_route_text(env: Env) -> Any:
     """The bytes the manual compaction and rewind routes read (``workspace.read_file`` of the log), as a digest and the history they fold."""
     from primer.workspace.session import reconstruct_compacted_history
 
-    raw = await env.workspace.read_file(env.rel)
-    text = raw.decode("utf-8", errors="replace")
+    from primer.workspace.segments import session_log_for
+
+    log = session_log_for(env.workspace, env.sid)
+    raw = await log.read_all()                                     # the rewind route's read
+    text = (await log.since_last_marker())[1].decode("utf-8", errors="replace")   # the compaction route's read
     return {"sha": hashlib.sha256(raw).hexdigest()[:16], "history": _msgs(reconstruct_compacted_history(text.splitlines()), env.sid)}
 
 
