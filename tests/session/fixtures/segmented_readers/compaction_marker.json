@@ -1,0 +1,648 @@
+{
+ "compaction_state": [
+  100,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "005865a246816b21"
+    ]
+   ],
+   "role": "assistant",
+   "text": "[earlier conversation compacted]\n\nSUMMARY: one/two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "1c15ac53b297f4e0"
+    ]
+   ],
+   "role": "user",
+   "text": "three"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "3e9b6c84630f8b42"
+    ]
+   ],
+   "role": "assistant",
+   "text": "four"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6337473167b20b40"
+    ]
+   ],
+   "role": "user",
+   "text": "after the marker"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d6c204425fcbff77"
+    ]
+   ],
+   "role": "assistant",
+   "text": "noted"
+  }
+ ],
+ "final_text": null,
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "005865a246816b21"
+    ]
+   ],
+   "role": "assistant",
+   "text": "[earlier conversation compacted]\n\nSUMMARY: one/two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "1c15ac53b297f4e0"
+    ]
+   ],
+   "role": "user",
+   "text": "three"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "3e9b6c84630f8b42"
+    ]
+   ],
+   "role": "assistant",
+   "text": "four"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6337473167b20b40"
+    ]
+   ],
+   "role": "user",
+   "text": "after the marker"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d6c204425fcbff77"
+    ]
+   ],
+   "role": "assistant",
+   "text": "noted"
+  }
+ ],
+ "max_event_seq": 1,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "a01dbabd06c5392e"
+    ]
+   ],
+   "role": "user",
+   "text": "one"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "8937718a57a6c787"
+    ]
+   ],
+   "role": "assistant",
+   "text": "two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "1c15ac53b297f4e0"
+    ]
+   ],
+   "role": "user",
+   "text": "three"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "3e9b6c84630f8b42"
+    ]
+   ],
+   "role": "assistant",
+   "text": "four"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6337473167b20b40"
+    ]
+   ],
+   "role": "user",
+   "text": "after the marker"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "d6c204425fcbff77"
+    ]
+   ],
+   "role": "assistant",
+   "text": "noted"
+  }
+ ],
+ "open_turn": {
+  "0": false,
+  "14": false,
+  "4": false,
+  "9": false
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": null,
+  "10": null,
+  "11": null,
+  "12": null,
+  "13": null,
+  "14": null,
+  "15": null,
+  "16": null,
+  "17": null,
+  "18": null,
+  "19": null,
+  "2": null,
+  "3": null,
+  "4": null,
+  "5": null,
+  "6": null,
+  "7": null,
+  "8": null,
+  "9": null
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "005865a246816b21"
+     ]
+    ],
+    "role": "assistant",
+    "text": "[earlier conversation compacted]\n\nSUMMARY: one/two"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "1c15ac53b297f4e0"
+     ]
+    ],
+    "role": "user",
+    "text": "three"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "3e9b6c84630f8b42"
+     ]
+    ],
+    "role": "assistant",
+    "text": "four"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "6337473167b20b40"
+     ]
+    ],
+    "role": "user",
+    "text": "after the marker"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "d6c204425fcbff77"
+     ]
+    ],
+    "role": "assistant",
+    "text": "noted"
+   }
+  ],
+  "sha": "ae78ef93c83067a9"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [],
+   "offsets": {
+    "<sid>": 965
+   },
+   "seqs": {}
+  },
+  "3": {
+   "events": [],
+   "offsets": {
+    "<sid>": 965
+   },
+   "seqs": {}
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [],
+   "next_offset": 965
+  },
+  "mid": {
+   "events": [],
+   "next_offset": 965
+  },
+  "start": {
+   "events": [],
+   "next_offset": 965
+  }
+ },
+ "timeline_parse": [
+  {
+   "children": [],
+   "duration_ms": 0,
+   "ended_at": "2026-11-01T12:00:00+00:00",
+   "started_at": "2026-11-01T12:00:00+00:00",
+   "status": "running",
+   "terminal_seq": null,
+   "turn_no": 0,
+   "waits": []
+  },
+  null,
+  null,
+  null,
+  null
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "one"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "two",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "three"
+     },
+     "seq": -2
+    },
+    {
+     "parts": [
+      {
+       "text": "four",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "kept_tail_messages": [
+       {
+        "parts": [
+         {
+          "text": "three",
+          "type": "text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "parts": [
+         {
+          "text": "four",
+          "type": "text"
+         }
+        ],
+        "role": "assistant"
+       }
+      ],
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: one/two",
+      "tokens_after": 100,
+      "tokens_before": 900,
+      "trigger_tokens": 800,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "after the marker"
+     },
+     "seq": -3
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 8
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "one"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "two",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "three"
+     },
+     "seq": -2
+    },
+    {
+     "parts": [
+      {
+       "text": "four",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "kept_tail_messages": [
+       {
+        "parts": [
+         {
+          "text": "three",
+          "type": "text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "parts": [
+         {
+          "text": "four",
+          "type": "text"
+         }
+        ],
+        "role": "assistant"
+       }
+      ],
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: one/two",
+      "tokens_after": 100,
+      "tokens_before": 900,
+      "trigger_tokens": 800,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "after the marker"
+     },
+     "seq": -3
+    },
+    {
+     "parts": [
+      {
+       "text": "noted",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 8
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "kept_tail_messages": [
+       {
+        "parts": [
+         {
+          "text": "three",
+          "type": "text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "parts": [
+         {
+          "text": "four",
+          "type": "text"
+         }
+        ],
+        "role": "assistant"
+       }
+      ],
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: one/two",
+      "tokens_after": 100,
+      "tokens_before": 900,
+      "trigger_tokens": 800,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "after the marker"
+     },
+     "seq": -3
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 2
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "kept_tail_messages": [
+       {
+        "parts": [
+         {
+          "text": "three",
+          "type": "text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "parts": [
+         {
+          "text": "four",
+          "type": "text"
+         }
+        ],
+        "role": "assistant"
+       }
+      ],
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: one/two",
+      "tokens_after": 100,
+      "tokens_before": 900,
+      "trigger_tokens": 800,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "after the marker"
+     },
+     "seq": -3
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 2
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  }
+ }
+}

@@ -1,0 +1,546 @@
+{
+ "compaction_state": [
+  50,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "d2364db2664d2818"
+    ]
+   ],
+   "role": "assistant",
+   "text": "[earlier conversation compacted]\n\nSUMMARY: long task"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "905c3a55b80468cd"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred one"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "162ce3c412a204ce"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "42f649bdb6e3ecd5"
+    ]
+   ],
+   "role": "assistant",
+   "text": "continued"
+  }
+ ],
+ "final_text": null,
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "d2364db2664d2818"
+    ]
+   ],
+   "role": "assistant",
+   "text": "[earlier conversation compacted]\n\nSUMMARY: long task"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "905c3a55b80468cd"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred one"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "162ce3c412a204ce"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "42f649bdb6e3ecd5"
+    ]
+   ],
+   "role": "assistant",
+   "text": "continued"
+  }
+ ],
+ "max_event_seq": 1,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "a8ef58615ccbbfea"
+    ]
+   ],
+   "role": "user",
+   "text": "long task"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "72ebb5aab38c1148"
+    ]
+   ],
+   "role": "assistant",
+   "text": "on it"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "905c3a55b80468cd"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred one"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "162ce3c412a204ce"
+    ]
+   ],
+   "role": "user",
+   "text": "deferred two"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "42f649bdb6e3ecd5"
+    ]
+   ],
+   "role": "assistant",
+   "text": "continued"
+  }
+ ],
+ "open_turn": {
+  "0": false,
+  "14": false,
+  "4": false,
+  "9": false
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": null,
+  "10": null,
+  "11": null,
+  "12": null,
+  "13": null,
+  "14": null,
+  "15": null,
+  "16": null,
+  "17": null,
+  "18": null,
+  "19": null,
+  "2": null,
+  "3": null,
+  "4": null,
+  "5": null,
+  "6": null,
+  "7": null,
+  "8": null,
+  "9": null
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "d2364db2664d2818"
+     ]
+    ],
+    "role": "assistant",
+    "text": "[earlier conversation compacted]\n\nSUMMARY: long task"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "905c3a55b80468cd"
+     ]
+    ],
+    "role": "user",
+    "text": "deferred one"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "162ce3c412a204ce"
+     ]
+    ],
+    "role": "user",
+    "text": "deferred two"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "42f649bdb6e3ecd5"
+     ]
+    ],
+    "role": "assistant",
+    "text": "continued"
+   }
+  ],
+  "sha": "4f37335f7949baa3"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [],
+   "offsets": {
+    "<sid>": 779
+   },
+   "seqs": {}
+  },
+  "3": {
+   "events": [],
+   "offsets": {
+    "<sid>": 779
+   },
+   "seqs": {}
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [],
+   "next_offset": 779
+  },
+  "mid": {
+   "events": [],
+   "next_offset": 779
+  },
+  "start": {
+   "events": [],
+   "next_offset": 779
+  }
+ },
+ "timeline_parse": [
+  {
+   "children": [],
+   "duration_ms": 0,
+   "ended_at": "2026-11-01T12:00:00+00:00",
+   "started_at": "2026-11-01T12:00:00+00:00",
+   "status": "running",
+   "terminal_seq": null,
+   "turn_no": 0,
+   "waits": []
+  },
+  null,
+  null,
+  null,
+  null
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "long task"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "on it",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: long task",
+      "tokens_after": 50,
+      "tokens_before": 500,
+      "trigger_tokens": 400,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred one"
+     },
+     "seq": -2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred two"
+     },
+     "seq": -3
+    },
+    {
+     "parts": [
+      {
+       "text": "continued",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 7
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "long task"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "on it",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: long task",
+      "tokens_after": 50,
+      "tokens_before": 500,
+      "trigger_tokens": 400,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred one"
+     },
+     "seq": -2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred two"
+     },
+     "seq": -3
+    },
+    {
+     "parts": [
+      {
+       "text": "continued",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 7
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: long task",
+      "tokens_after": 50,
+      "tokens_before": 500,
+      "trigger_tokens": 400,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred one"
+     },
+     "seq": -2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred two"
+     },
+     "seq": -3
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 3
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "created_at": "2026-11-01T12:00:00+00:00",
+      "fixed_overhead_tokens": 0,
+      "model": "golden-model",
+      "outcome": "summarised",
+      "replaced_from_seq": 1,
+      "replaced_to_seq": 0,
+      "summary": "[earlier conversation compacted]\n\nSUMMARY: long task",
+      "tokens_after": 50,
+      "tokens_before": 500,
+      "trigger_tokens": 400,
+      "unreducible": null
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred one"
+     },
+     "seq": -2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "deferred two"
+     },
+     "seq": -3
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 3
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  }
+ }
+}

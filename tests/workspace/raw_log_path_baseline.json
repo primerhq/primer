@@ -1,0 +1,16 @@
+{
+ "primer/agent/base.py": 1,
+ "primer/agent/workspace_executor.py": 6,
+ "primer/api/routers/sessions.py": 4,
+ "primer/api/routers/workspaces.py": 3,
+ "primer/channel/session_relay.py": 1,
+ "primer/graph/workspace_executor.py": 3,
+ "primer/memory/reflect.py": 1,
+ "primer/model/scheduler.py": 2,
+ "primer/model/workspace_session.py": 2,
+ "primer/session/dispatch.py": 4,
+ "primer/tap/reader.py": 1,
+ "primer/toolset/workspaces.py": 2,
+ "primer/workspace/message_log.py": 3,
+ "primer/workspace/session.py": 4
+}
