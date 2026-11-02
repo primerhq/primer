@@ -182,6 +182,16 @@ class ShimSource:
         return data[-max_bytes:], len(data) <= max_bytes
 
 
+async def read_active_segment(repo: Any, session_id: str) -> tuple[str, bytes]:
+    """``(name, bytes)`` of the session log's ACTIVE segment as a state repo holds it: what a whole-file writer reads under the messages lock before
+    it hands ``LogRewrite(name, bytes, new)`` to ``commit``. ``("messages.jsonl", b"")`` for a session with no log yet."""
+    log = SessionLog(StateRepoSource(repo), f"sessions/{session_id}")
+    active = await log.active()
+    if active is None:
+        return LOG_NAME, b""
+    return active.name, (await repo.read_state_file(f"sessions/{session_id}/{active.name}")) or b""
+
+
 def session_log_for(workspace: Any, session_id: str) -> "SessionLog":
     """The log of ``session_id`` read through a workspace handle (the routes, the relay, the tap): ``<state_path>/sessions/<id>``."""
     return SessionLog(WorkspaceSource(workspace), f"{getattr(workspace, 'state_path', '.state')}/sessions/{session_id}")
@@ -433,5 +443,5 @@ def segment_bytes_default() -> int:
 
 __all__ = [
     "LOG_NAME", "LinesSource", "SEGMENT_RE", "SegmentGap", "SegmentInfo", "SegmentSource", "SessionLog", "ShimSource", "StateRepoSource", "WorkspaceSource",
-    "ordered", "parse_segment", "segment_bytes_default", "segment_name", "session_log_for", "set_segment_bytes_default",
+    "ordered", "parse_segment", "read_active_segment", "segment_bytes_default", "segment_name", "session_log_for", "set_segment_bytes_default",
 ]

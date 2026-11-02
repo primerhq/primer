@@ -241,6 +241,7 @@ async def test_create_session_caches_agent_id() -> None:
 @pytest.mark.asyncio
 async def test_commit_issues_state_commit_with_files() -> None:
     sandbox = _make_mock_sandbox()
+    sandbox.stat = AsyncMock(return_value=None)       # the log key in files asks the sandbox whether the log has rotated: it has no segment yet
     repo = _make_repo(sandbox, workspace_id="ws-5")
     repo._agent_by_session["sess-1"] = "agent-1"
 
