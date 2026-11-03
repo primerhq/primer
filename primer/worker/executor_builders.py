@@ -398,13 +398,10 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
 
     # Get the on-disk AgentSession the API allocated at create
     # time (Wave 2). The id matches session.id.
-    agent_session = await workspace.get_session(session.id)
-    if agent_session is None:
-        raise NotFoundError(
-            f"On-disk session slot for {session.id!r} missing on "
-            f"workspace {workspace.id!r}; was it allocated via "
-            "Workspace.start_session(..., id=sid)?"
-        )
+    # A row that has no slot yet (the main operator session of an install that predates its slot allocation at creation) is given one now.
+    from primer.workspace.session_factory import ensure_agent_slot
+
+    agent_session = await ensure_agent_slot(workspace, session, agent)
 
     # Build a workspace-aware ToolExecutionManager. The factory
     # composes the agent's tool surface with the session's
