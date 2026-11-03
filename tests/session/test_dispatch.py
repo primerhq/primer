@@ -2194,6 +2194,40 @@ async def test_write_agent_phase_does_not_revert_a_raced_in_claimable(
 
 
 @pytest.mark.asyncio
+async def test_write_agent_phase_does_not_revert_a_raced_in_pause(fake_storage_provider):
+    """The same gap for the pause flag (the session-pause test that failed once on CI, cross-process): a pause that lands between the phase writer's own
+    read and its write must survive, and the phase must still be stamped. A whole-row write of the stale read put ``pause_requested`` back to false, and
+    the turn then rested WAITING instead of PAUSED."""
+    from primer.session.dispatch import _write_agent_phase
+
+    sess = await _seed_session(fake_storage_provider)  # turn_status="running"
+    real_storage = fake_storage_provider.get_storage(WorkspaceSession)
+    racing_storage = _RaceOnFirstGetStorage(real_storage, {"pause_requested": True})
+
+    await _write_agent_phase(racing_storage, sess.id, sess.turn_no, "executing")
+
+    row = await real_storage.get(sess.id)
+    assert row.pause_requested is True, "the raced-in pause was reverted by the phase writer's stale snapshot"
+    assert row.agent_phase == "executing", "the phase is still stamped: only the three phase fields are written"
+
+
+@pytest.mark.asyncio
+async def test_clear_interrupt_requested_does_not_revert_a_raced_in_pause(fake_storage_provider):
+    from primer.session.dispatch import _clear_interrupt_requested
+
+    sess = await _seed_session(fake_storage_provider)
+    real_storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await real_storage.update((await real_storage.get(sess.id)).model_copy(update={"interrupt_requested": True}))
+    racing_storage = _RaceOnFirstGetStorage(real_storage, {"pause_requested": True})
+
+    await _clear_interrupt_requested(racing_storage, sess.id)
+
+    row = await real_storage.get(sess.id)
+    assert row.pause_requested is True, "the raced-in pause was reverted by the Stop-flag clear's stale snapshot"
+    assert row.interrupt_requested is False
+
+
+@pytest.mark.asyncio
 async def test_clear_turn_running_does_not_revert_a_raced_in_claimable(
     fake_storage_provider,
 ):

@@ -3225,11 +3225,12 @@ async def _clear_interrupt_requested(session_storage, session_id: str) -> None:
     transition so the two writes can't interleave with a racing
     resume/pause/cancel/interrupt API call.
     """
-    fresh = await session_storage.get(session_id)
-    if fresh is not None and fresh.interrupt_requested:
-        await session_storage.update(
-            fresh.model_copy(update={"interrupt_requested": False})
-        )
+    # ONE field-scoped patch_if guarded on the flag being set: no read, and nothing else on the row is written, so a pause, a cancel flag or a park another
+    # process committed in between is never put back (a whole-row write of a read row did, and a pause lost that way rested the turn WAITING).
+    try:
+        await session_storage.patch_if(session_id, {"interrupt_requested": False}, where={"interrupt_requested": [True]})
+    except NotFoundError:
+        return
 
 
 async def clear_interrupt_for_resume(session_storage, session_id: str) -> None:
@@ -3369,18 +3370,21 @@ async def _write_agent_phase(
     one skipped phase transition is harmless - the row already reads
     "claimable", not something the phase field could make more correct.
     """
-    fresh = await session_storage.get(session_id)
-    if fresh is None:
-        return
-    updated = fresh.model_copy(update={
-        "agent_phase": phase,
-        "agent_phase_turn_no": turn_no,
-        "agent_phase_stamped_at": _now(),
-    })
+    # ONE field-scoped patch_if of the three phase fields, guarded on turn_status not being "claimable" (the backend evaluates the guard against the row's
+    # current value in the same statement as the write): no read, and nothing else on the row is written, so a pause flag, a Cancel or a park committed
+    # since is never reverted by a stale snapshot, which a whole-row write did.
     try:
-        await session_storage.update_unless(
-            updated, field="turn_status", forbidden="claimable",
+        await session_storage.patch_if(
+            session_id,
+            {
+                "agent_phase": phase,
+                "agent_phase_turn_no": turn_no,
+                "agent_phase_stamped_at": to_jsonable_python(_now()),
+            },
+            where={"turn_status": ["idle", "arming", "running"]},
         )
+    except NotFoundError:
+        return
     except Exception:  # noqa: BLE001 - best-effort, never block the turn
         logger.exception(
             "session %s: failed to write agent_phase=%r", session_id, phase,
