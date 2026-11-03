@@ -173,6 +173,30 @@ async def test_leaves_a_freshly_created_session_alone(fake_storage_provider):
 
 
 @pytest.mark.asyncio
+async def test_a_session_that_was_never_asked_to_run_is_not_stuck(fake_storage_provider):
+    """A CREATED row (``create_session(auto_start=False)``: the user's main operator session, a session waiting for its first message) has had no worker told
+    to run it, so no first turn was lost: it waits for a person for as long as it takes. A failed START is a row that WAS asked (RUNNING, stamped started_at)."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-waiting", status=SessionStatus.CREATED))
+
+    assert await _sweeper(storage)._tick() == 0
+
+    assert (await storage.get("se-waiting")).status == SessionStatus.CREATED
+
+
+@pytest.mark.asyncio
+async def test_a_session_asked_to_run_whose_first_turn_never_ran_is_still_ended(fake_storage_provider):
+    """What the sweeper exists for: ``auto_start`` flips the row to RUNNING (started_at stamped) and makes it claimable; the claim was lost and nothing ran."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-asked", status=SessionStatus.RUNNING, started_at=datetime.now(timezone.utc) - timedelta(hours=1)))
+
+    assert await _sweeper(storage)._tick() == 1
+
+    ended = await storage.get("se-asked")
+    assert ended.status == SessionStatus.ENDED and ended.ended_detail == "never_started"
+
+
+@pytest.mark.asyncio
 async def test_ignores_already_ended_sessions(fake_storage_provider):
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     await storage.create(

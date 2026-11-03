@@ -336,7 +336,7 @@ _MAX_PAGE = 200
 
 
 class StuckSessionSweeper(_BackgroundTask):
-    """Ends sessions that were created but whose first turn never ran.
+    """Ends sessions that were ASKED to run (status RUNNING, ``auto_start`` or a wake) but whose first turn never ran.
 
     Nothing else reaps these. ``TimeoutSweeper`` only handles parks (a turn that started and
     is waiting), and ``cancel`` merely sets a flag the worker reads on its next step - with no
@@ -506,6 +506,16 @@ class StuckSessionSweeper(_BackgroundTask):
                 right=Value(value=SessionStatus.ENDED.value),
             ),
         )
+        # Rows nobody asked to run (CREATED) are not stuck (``_never_started``): leave them out of the page too, so a workspace's idle sessions cost no read.
+        predicate = Predicate(
+            left=predicate,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="status"),
+                op=Op.NE,
+                right=Value(value=SessionStatus.CREATED.value),
+            ),
+        )
         out: list = []
         offset, page_size = 0, _MAX_PAGE
         while True:
@@ -534,6 +544,11 @@ def _never_started(session, grace_seconds: float) -> bool:
     means its failure exit stamped it and never finished (see the guard below).
     """
     if session.status == SessionStatus.ENDED:
+        return False
+    if session.status == SessionStatus.CREATED:
+        # Never asked to run: ``create_session(auto_start=False)`` leaves the row CREATED with no lease and no worker told, and only a start, a resume or a
+        # wake moves it to RUNNING (``auto_start`` does it in the create itself, stamping ``started_at``). A first turn that never ran is a turn that was ASKED
+        # for; a row nobody asked (the user's main operator session, waiting for its first message) has lost nothing and waits as long as the person does.
         return False
     if session.turn_no > 0:
         return False
