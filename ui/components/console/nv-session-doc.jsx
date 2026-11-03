@@ -147,6 +147,8 @@ function NV_endedLine(session) {
   if ((!detail || detail === "failure_exit_unfinished") && session.last_turn_error && session.last_turn_error.code && session.last_turn_error.code !== "turn_failed") detail = session.last_turn_error.code;
   var codes = {
     failure_exit_unfinished: "the turn failed and the worker stopped before it recorded why",
+    executor_build_failed: "the session could not be set up to run its turn; the error is in the transcript above",
+    executor_unavailable: "no executor could be built for the session; the error is in the transcript above",
     routing_failed: "a conditional edge matched no branch",
     max_iterations_exceeded: "it hit the iteration cap",
     node_failed: "a node failed",
