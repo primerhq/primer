@@ -417,6 +417,28 @@ async def ensure_agent_slot(workspace: Any, session: WorkspaceSession, agent: An
     )
 
 
+async def ensure_session_slot(workspace: Any, session: WorkspaceSession, storage_provider: Any) -> Any | None:
+    """The on-disk slot of a session row, made now when it has none; ``None`` when it cannot be made (an agent binding whose agent is gone).
+
+    For a writer that must put something into the slot BEFORE the turn is built: the API-side steer appends the instruction to the slot's history, and a
+    steer that ran while the slot was missing wrote only the display log, so the model was sent a conversation with no user message. An agent binding
+    uses its snapshot or the stored agent; a graph binding gets the same holder slot :func:`start_workspace_session` gives it.
+    """
+    existing = await workspace.get_session(session.id)
+    if existing is not None:
+        return existing
+    binding = session.binding
+    if isinstance(binding, GraphSessionBinding):
+        return await workspace.start_session(
+            OnDiskAgentBinding(agent_id=f"graph:{binding.graph_id}", agent_name=f"graph:{binding.graph_id}", registered_tool_ids=[]),
+            id=session.id, instructions=None, parent_session_id=session.parent_session_id, name=session.name,
+        )
+    agent = getattr(binding, "agent_snapshot", None) or await storage_provider.get_storage(Agent).get(binding.agent_id)
+    if agent is None:
+        return None
+    return await ensure_agent_slot(workspace, session, agent)
+
+
 async def create_session(
     *,
     workspace_id: str,
