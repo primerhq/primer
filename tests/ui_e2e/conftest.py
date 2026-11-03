@@ -163,6 +163,30 @@ def main_session_exists(base_url: str, install_is_set_up: None) -> None:
     assert r.status_code in (200, 201), f"could not make the test user's main session in {wid}: {r.status_code} {r.text}"
 
 
+@pytest.fixture(autouse=True)
+def main_session_survives_the_test(base_url: str, main_session_exists: None, request: pytest.FixtureRequest) -> Iterator[None]:
+    """After every journey, make sure the test user's main operator session is still open, and say which journey ended it if not.
+
+    ``main_session_exists`` makes the session once per run so every console load answers ``created: false`` (the console opens the main session as
+    a tab, full screen on a phone, only on ``created: true``). A journey that ends or deletes it (an End on the session it happens to have open, a
+    cleanup that sweeps the workspace's sessions) makes the NEXT console load of the run answer ``created: true``: the open lands on whatever that
+    journey was doing, a random later test fails on a view it never asked for. Asking again over REST after each journey restores the session (the
+    route makes one when none is open), so the invariant the harness relies on holds for every journey, and the warning names the culprit.
+    """
+    import warnings
+
+    import httpx as _httpx
+
+    from tests._support.default_workspace import default_workspace_id_sync
+
+    yield
+    wid = default_workspace_id_sync(base_url)
+    with _httpx.Client(base_url=base_url, timeout=60.0) as c:
+        r = c.post(f"/v1/workspaces/{wid}/main_session")
+    if r.status_code in (200, 201) and r.json().get("created") is True:
+        warnings.warn(f"MAIN SESSION ENDED BY {request.node.nodeid}: restored as {r.json().get('id')}", stacklevel=1)
+
+
 # ---------------------------------------------------------------------------
 # LAN-reachable mock LLM (container stacks sit in their own network
 # namespace - a 127.0.0.1-bound mock, like tests/_support/mock_llm_
