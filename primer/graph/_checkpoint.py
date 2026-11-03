@@ -82,6 +82,16 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
 class _CheckpointMixin:
     """Snapshot / restore / park-yield methods for `_BaseGraphExecutor`."""
 
+    def _order_pending(self) -> None:
+        """Put the pending human gates in the node ids' order, whatever order the sibling node tasks reached their park in.
+
+        The entries are appended as each node's task parks, and tasks of one superstep that do any real I/O finish in a different order from run to
+        run. The primary gate (the entry the parked row is keyed on and the Inbox shows), ``event_keys`` and the checkpoint all read the list, so the
+        order must be a function of the graph, not of the scheduler: the same gate is the primary every time, and a replay is reproducible.
+        """
+        self._pending_toolcalls.sort(key=lambda p: (str(p.node_id), str(p.tool_call_id or "")))
+        self._pending_agent_yields.sort(key=lambda p: (str(p.node_id), str(p.tool_call_id or "")))
+
     def _build_pending_park_yield(self) -> "YieldToWorker":
         """Build the outer approval ``YieldToWorker`` for the current
         pending human-interaction set (tool_call approvals + agent-node
@@ -89,6 +99,7 @@ class _CheckpointMixin:
         the worker parks on all of them; used both when a superstep first
         yields and when re-parking on the remaining keys after one reply.
         """
+        self._order_pending()
         all_keys = (
             [p.parked_event_key for p in self._pending_toolcalls]
             + [p.event_key for p in self._pending_agent_yields]
@@ -233,6 +244,7 @@ class _CheckpointMixin:
           "completed" once the park resolves. ``None`` when no failure
           has been discovered yet.
         """
+        self._order_pending()
         ctx_payload: dict[str, Any] | None = None
         if self._context is not None:
             ctx_payload = self._context.model_dump(mode="json")

@@ -146,14 +146,17 @@ def _ask_user_yield(node_id: str, tcid: str) -> YieldToWorker:
     )
 
 
-def _patch_run_agent_turn(monkeypatch, behavior: dict) -> None:
+def _patch_run_agent_turn(monkeypatch, behavior: dict, *, delay: dict[str, float] | None = None) -> None:
     """Monkeypatch primer.graph._agent_node.run_agent_turn so a call
     dispatched for agent id ``k`` raises ``behavior[k]`` (a ToolWaitPark
     or YieldToWorker instance) instead of running a real LLM/tool loop.
     Consumed exactly once per key (pops it) so a SECOND dispatch for the
     same agent (a resumed node's continuation) falls through to a plain
-    completion instead of looping the same park forever.
+    completion instead of looping the same park forever. ``delay`` (agent id -> seconds) makes that agent's node park LATER, so a test
+    can put the siblings in either order of arrival, which real I/O in a node does at random.
     """
+    import asyncio
+
     import primer.graph._agent_node as agent_node_mod
 
     async def _spy(**kwargs):
@@ -161,6 +164,8 @@ def _patch_run_agent_turn(monkeypatch, behavior: dict) -> None:
         exc = behavior.get(agent.id)
         if exc is not None:
             del behavior[agent.id]
+            if delay and delay.get(agent.id):
+                await asyncio.sleep(delay[agent.id])
             raise exc
             yield  # pragma: no cover - unreachable, keeps this a generator
         return

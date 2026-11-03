@@ -106,11 +106,13 @@ def _key_prefix(kind: str) -> str:
 
 async def _answer(
     monkeypatch, kind: str, payload: dict, *, kind_b: str | None = None, answered: str = "B", tcid_a="call_0", tcid_b="call_0", approvers_a=None, approvers_b=None,
-    fired: bool = True,
+    fired: bool = True, late: dict[str, float] | None = None,
 ):
     """``kind`` is A's gate kind (``approval`` or ``ask_user``) and, unless ``kind_b`` says otherwise, B's."""
     kind_b = kind_b or kind
-    _patch_run_agent_turn(monkeypatch, {"agent-a": _yield(kind, "A", GA, tcid_a, approvers_a), "agent-b": _yield(kind_b, "B", GB, tcid_b, approvers_b)})
+    _patch_run_agent_turn(
+        monkeypatch, {"agent-a": _yield(kind, "A", GA, tcid_a, approvers_a), "agent-b": _yield(kind_b, "B", GB, tcid_b, approvers_b)}, delay=late,
+    )
 
     async def _resolve_graph(_gid):
         return None
@@ -238,5 +240,16 @@ async def test_an_approval_of_the_primary_child_sibling_still_decides_the_primar
 async def test_a_row_without_a_fired_key_resumes_the_leaf_as_it_always_did(monkeypatch) -> None:
     """A row flipped before ``resume_event_key`` was stamped (an older build): the leaf, the child's primary, is what is resumed."""
     still, _records, _a, _b, _g = await _answer(monkeypatch, "approval", APPROVED, answered="A", fired=False)
+
+    assert still == ["B"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late", [None, {"agent-a": 0.05}, {"agent-b": 0.05}])
+async def test_the_child_siblings_are_listed_in_one_order_whichever_parks_first(monkeypatch, late) -> None:
+    """The sibling nodes of a superstep park in whatever order their tasks reach the park (real I/O in a node reorders them from run to run), and the
+    pending list, its primary gate (the one the parked row is keyed on) and ``enumerate_pending_gates`` all read that order: the order is the node ids',
+    never the arrival's. ``_answer`` itself asserts A is the primary and both gates are listed A then B."""
+    still, _records, _a, _b, _g = await _answer(monkeypatch, "approval", APPROVED, answered="A", late=late)
 
     assert still == ["B"]
