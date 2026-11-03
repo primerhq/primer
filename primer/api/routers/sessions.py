@@ -48,6 +48,7 @@ from primer.model.except_ import (
 from primer.session.default_binding import resolve_initial_binding
 from primer.model.problem_details import record_without_traceback
 from primer.session.usage_cache import UsageCache, fold_usage
+from primer.workspace.segments import SegmentGap, SegmentInfo, SessionLog, ordered, segment_name, session_log_for
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -900,12 +901,33 @@ USAGE_CACHE = UsageCache()
 TIMELINE_CACHE = TimelineSources()
 
 
+async def _log_identity(workspace, slot: str, *siblings: str) -> tuple[list[SegmentInfo], tuple]:
+    """The segments of the session log in ``slot`` (the session's directory) and an identity for a cache key: ``(name, size, modified_at)`` of
+    every segment and of each of ``siblings`` (other files beside it), from ONE listing of the directory.
+
+    A rotation adds a name, an append grows the active segment, a rewrite moves its time; closed segments never change. A workspace that cannot
+    list is stat'ed file by file and its log is the one file, as the log facade reads it. Raises when there is no log, a file is missing, or the
+    workspace cannot answer: no identity, and the caller does not cache.
+    """
+    listing = getattr(workspace, "list_files", None)
+    if listing is None:
+        names = (segment_name(0), *siblings)
+        entries = dict(zip(names, [await workspace.file_info(f"{slot}/{name}") for name in names]))
+    else:
+        entries = {str(e.path).rsplit("/", 1)[-1]: e for e in await listing(slot)}
+    found = ordered(entries)
+    if not found or [n for n, _ in found] != list(range(len(found))):
+        raise SegmentGap(f"{slot}: no log, or its segments {[n for n, _ in found]} are not 0..n")
+    files = [name for _, name in found] + list(siblings)
+    return [SegmentInfo(n, name, entries[name].size_bytes) for n, name in found], tuple((f, entries[f].size_bytes, entries[f].modified_at) for f in files)
+
+
 async def _session_usage_totals(
     session: WorkspaceSession, workspace_registry,
 ) -> dict[str, int] | None:
     """Best-effort token totals for ``session``: the empty frame when the
     log does not exist yet (a session that never ran a turn wrote no
-    messages.jsonl), or ``None`` if the log is otherwise unreadable -
+    log), or ``None`` if the log is otherwise unreadable -
     mirrors build_usage_frame's own shape (tap.py), the only other place
     session_usage() is assembled into a response."""
     from primer.api.routers.tap import build_usage_frame, usage_frame
@@ -914,26 +936,27 @@ async def _session_usage_totals(
     if workspace is None:
         return None
     state_path = getattr(workspace, "state_path", ".state")
-    rel = f"{state_path}/sessions/{session.id}/messages.jsonl"
-    # The fold is a pure function of the log, so it is kept per log identity (architecture review A-05): the file's size and modification time as
-    # the workspace reports them, and the row's last_seq and turn_no. The stat comes BEFORE the read: a log that grows in between is stored under
-    # the older identity and refolded by the next request, which is safe; the reverse order could file stale totals under a newer identity. A
-    # workspace that cannot stat the file (or has no file_info) is never cached: the full read and fold, as before. The key is sufficient only
-    # because the log GROWS (every writer appends; the state repo's whole-file rewrites keep the earlier content and add the new records), so a
-    # changed log differs in size: a trim, a rotation or any rewrite that keeps or shrinks the size must change this key.
-    key = None
+    # The fold is a pure function of the log, so it is kept per log identity (architecture review A-05): every segment's name, size and
+    # modification time as the workspace lists them (_log_identity), and the row's last_seq and turn_no. The listing comes BEFORE the read: a log
+    # that grows in between is stored under the older identity and refolded by the next request, which is safe; the reverse order could file
+    # stale totals under a newer identity. A workspace that cannot list or stat the log is never cached: the full read and fold, as before. The
+    # key is sufficient only because the log GROWS (every writer appends, a rotation adds a segment and never rewrites a closed one; the state
+    # repo's whole-file rewrites keep the earlier content and add the new records): a trim or any rewrite that keeps or shrinks the size must
+    # change this key.
+    key = segments = None
     try:
-        info = await workspace.file_info(rel)
-        key = (session.workspace_id, session.id, info.size_bytes, info.modified_at, session.last_seq, session.turn_no)
+        segments, identity = await _log_identity(workspace, f"{state_path}/sessions/{session.id}")
+        key = (session.workspace_id, session.id, identity, session.last_seq, session.turn_no)
     except Exception:  # noqa: BLE001 - no identity, no cache; the read below reports the real problem
-        key = None
+        key = segments = None
     if key is not None:
         cached = USAGE_CACHE.get(key)
         if cached is not None:
             return cached
     try:
-        # Folds only what the log gained since the last read of this session when the workspace can read a range (usage_cache.fold_usage).
-        usage = usage_frame(await fold_usage(workspace, rel, USAGE_CACHE, (session.workspace_id, session.id)))
+        # Folds only what the log gained since the last read of this session (usage_cache.fold_usage), from the listing the key was made of.
+        log = session_log_for(workspace, session.id)
+        usage = usage_frame(await fold_usage(log, USAGE_CACHE, (session.workspace_id, session.id), segments=segments))
     except NotFoundError:  # a session that never ran a turn wrote no log: empty, not an error
         logger.debug(
             "session %s has no messages log yet; serving the empty usage frame",
@@ -1288,8 +1311,10 @@ async def _read_log_bytes(
     *,
     workspace_id: str | None = None,
     session_id: str | None = None,
+    log: SessionLog | None = None,
 ) -> bytes:
-    """Read one of a session's log files from its workspace.
+    """Read one of a session's log files from its workspace; with ``log``, the session's message log, every segment in order (``relative_path``
+    then names the session's directory, for the outage log and the errors).
 
     A file that is not there is a log that was never written: empty bytes. A domain error the workspace raised (``BadRequestError``,
     ``ConflictError``, any other ``PrimerError``) is a request it understood and refused, so it keeps its own status. Only a failure of
@@ -1301,7 +1326,7 @@ async def _read_log_bytes(
     """
     key = (workspace_id or "?", relative_path)
     try:
-        data = await workspace.read_file(relative_path)
+        data = await (log.read_all() if log is not None else workspace.read_file(relative_path))
     except NotFoundError:
         _outage_logged_at.pop(key, None)       # the workspace answered: the file is simply not there
         return b""
@@ -1337,8 +1362,9 @@ async def _read_workspace_turn_log(
     fallback_created_at: str | None = None,
     workspace_id: str | None = None,
     session_id: str | None = None,
+    log: SessionLog | None = None,
 ) -> dict:
-    """JSONL-parse the file at ``relative_path`` inside ``workspace``.
+    """JSONL-parse the file at ``relative_path`` inside ``workspace`` (with ``log``, the session's message log: see :func:`_read_log_bytes`).
 
     Missing file is treated as an empty log (a fresh session that's
     written nothing yet); a workspace that cannot be read at all raises
@@ -1370,7 +1396,7 @@ async def _read_workspace_turn_log(
     conversation, not the raw file underneath it.
     """
     raw = await _read_log_bytes(
-        workspace, relative_path, workspace_id=workspace_id, session_id=session_id,
+        workspace, relative_path, workspace_id=workspace_id, session_id=session_id, log=log,
     )
     items: list[dict] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
@@ -1468,10 +1494,10 @@ async def get_session_messages(
     if workspace is None:
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
     state_path = getattr(workspace, "state_path", ".state")
-    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
     return await _read_workspace_turn_log(
         workspace=workspace,
-        relative_path=rel,
+        relative_path=f"{state_path}/sessions/{session_id}",
+        log=session_log_for(workspace, session_id),
         limit=limit,
         offset=offset,
         since_seq=after_seq,
@@ -1523,26 +1549,25 @@ async def get_session_turn_timeline(
             f"Workspace {sess.workspace_id!r} for session {session_id!r} "
             "is unavailable"
         )
-    state_path = getattr(workspace, "state_path", ".state")
+    slot = f"{getattr(workspace, 'state_path', '.state')}/sessions/{session_id}"
 
-    async def _lines(name: str) -> list[str]:
+    async def _lines(rel: str, log: SessionLog | None = None) -> list[str]:
         raw = await _read_log_bytes(
-            workspace, f"{state_path}/sessions/{session_id}/{name}",
-            workspace_id=sess.workspace_id, session_id=session_id,
+            workspace, rel, workspace_id=sess.workspace_id, session_id=session_id, log=log,
         )
         return raw.decode("utf-8", errors="replace").splitlines()
 
-    # The parsed windows and envelopes are kept per log identity (the key of the usage totals, over both files), so the next turn of the same
-    # session reads and parses nothing. A workspace that cannot stat a file is never cached.
+    # The parsed windows and envelopes are kept per log identity (the key of the usage totals: every segment of the message log, and the turn
+    # log), so the next turn of the same session reads and parses nothing. A workspace that cannot stat a file is never cached.
     key = None
     try:
-        infos = [await workspace.file_info(f"{state_path}/sessions/{session_id}/{name}") for name in ("messages.jsonl", "turns.jsonl")]
-        key = (sess.workspace_id, session_id, sess.last_seq, sess.turn_no, *((i.size_bytes, i.modified_at) for i in infos))
+        _, identity = await _log_identity(workspace, slot, "turns.jsonl")
+        key = (sess.workspace_id, session_id, sess.last_seq, sess.turn_no, identity)
     except Exception:  # noqa: BLE001 - no identity, no cache (a missing turns.jsonl lands here too: read below, uncached)
         key = None
     sources = TIMELINE_CACHE.get(key) if key is not None else None
     if sources is None:
-        sources = parse_sources(await _lines("messages.jsonl"), await _lines("turns.jsonl"))
+        sources = parse_sources(await _lines(slot, session_log_for(workspace, session_id)), await _lines(f"{slot}/turns.jsonl"))
         if key is not None:
             TIMELINE_CACHE.put(key, sources)
     timeline = build_turn_timeline_from(sources, turn_no)

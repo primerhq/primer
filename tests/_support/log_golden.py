@@ -205,18 +205,34 @@ def git_shape(state_path: Path, session_id: str) -> list[dict[str, Any]]:
     return commits
 
 
-async def capture(name: str, tmp_path: Path, *, append_only: bool = False) -> dict[str, Any]:
+def segment_paths(slot: Path) -> list[Path]:
+    """The files of a session's log in order: ``messages.jsonl``, ``messages.0001.jsonl`` ..."""
+    from primer.workspace.segments import ordered
+
+    return [slot / name for _, name in ordered(p.name for p in slot.glob("messages*.jsonl"))]
+
+
+async def capture(name: str, tmp_path: Path, *, append_only: bool = False, segment_bytes: int = 0) -> dict[str, Any]:
+    """The golden record of a scenario. With ``segment_bytes`` the log rotates at that size, and the record is of the log as a reader sees it (the
+    segments joined), plus ``"segments"``: their sizes (a key the single-file golden does not have)."""
+    from primer.workspace.segments import set_segment_bytes_default
+
     llm = ScriptedLLM()
+    set_segment_bytes_default(segment_bytes)
     backend, workspace, session = await open_session(tmp_path)
     try:
         llm.session_id = session.session_id
         env = Env(workspace, session, llm, append_only)
         await SCENARIOS[name](env)
-        text = env.messages_path.read_text(encoding="utf-8")
+        slot = env.messages_path.parent
+        parts = segment_paths(slot)
+        text = b"".join(p.read_bytes() for p in parts).decode("utf-8")
         normalised = normalise(text, session.session_id)
         history = await env.executor()._read_messages_jsonl()
         pending = await session.take_pending_messages()
+        extra = {"segments": [p.stat().st_size for p in parts]} if segment_bytes else {}
         return {
+            **extra,
             "messages_jsonl": {"bytes": len(text.encode()), "sha": _digest(normalised), "lines": normalised.splitlines()},
             "git": git_shape(workspace.root / workspace.template.state_path, session.session_id),
             "history": [_fingerprint(m, session.session_id) for m in history],
@@ -224,5 +240,6 @@ async def capture(name: str, tmp_path: Path, *, append_only: bool = False) -> di
             "pending": [_fingerprint(m, session.session_id) for m in pending],
         }
     finally:
+        set_segment_bytes_default(0)
         await session.aclose()
         await backend.aclose()

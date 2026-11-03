@@ -2309,6 +2309,7 @@ def build_workspaces_toolset(
         # refused to non-admins, so this is the same rule and the same
         # reader as GET /v1/sessions/{sid}/messages.
         from primer.api.routers.sessions import _read_workspace_turn_log
+        from primer.workspace.segments import session_log_for
 
         try:
             args = _SessionMessagesArgs.model_validate(arguments)
@@ -2333,7 +2334,8 @@ def build_workspaces_toolset(
             state_path = getattr(ws, "state_path", ".state")
             page = await _read_workspace_turn_log(
                 workspace=ws,
-                relative_path=f"{state_path}/sessions/{args.session_id}/messages.jsonl",
+                relative_path=f"{state_path}/sessions/{args.session_id}",
+                log=session_log_for(ws, args.session_id),
                 limit=args.limit,
                 offset=args.offset,
                 since_seq=args.after_seq,

@@ -24,6 +24,7 @@ from primer.tap.reader import read_batch, read_session_since
 from primer.tap.router import WorkspaceTick
 from primer.tap.selector import TapSelector
 from primer.toolset.workspaces import build_workspaces_toolset
+from tests._support.segmented_io import ListsFiles
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 _WID = "ws-1"
@@ -40,7 +41,7 @@ def _like(pattern: str, op: Op = Op.LIKE, field: str = "payload.text") -> TapSel
     return TapSelector(events=Predicate(left=FieldRef(name=field), op=op, right=Value(value=pattern)))
 
 
-class _IO:
+class _IO(ListsFiles):
     state_path = ".state"
 
     def __init__(self) -> None:

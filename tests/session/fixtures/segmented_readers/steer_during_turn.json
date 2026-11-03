@@ -1,0 +1,539 @@
+{
+ "compaction_state": [
+  null,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c230adf86cf69bcf"
+    ]
+   ],
+   "role": "user",
+   "text": "start"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "467032e6aca22292"
+    ]
+   ],
+   "role": "assistant",
+   "text": "working"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "21dfa4b8c763c999"
+    ]
+   ],
+   "role": "assistant",
+   "text": "done"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "f41f567ce9be7ff8"
+    ]
+   ],
+   "role": "user",
+   "text": "steer: also check Y"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0a64890913aa474c"
+    ]
+   ],
+   "role": "assistant",
+   "text": "saw the steer"
+  }
+ ],
+ "final_text": null,
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c230adf86cf69bcf"
+    ]
+   ],
+   "role": "user",
+   "text": "start"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "467032e6aca22292"
+    ]
+   ],
+   "role": "assistant",
+   "text": "working"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "21dfa4b8c763c999"
+    ]
+   ],
+   "role": "assistant",
+   "text": "done"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "f41f567ce9be7ff8"
+    ]
+   ],
+   "role": "user",
+   "text": "steer: also check Y"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0a64890913aa474c"
+    ]
+   ],
+   "role": "assistant",
+   "text": "saw the steer"
+  }
+ ],
+ "max_event_seq": 0,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c230adf86cf69bcf"
+    ]
+   ],
+   "role": "user",
+   "text": "start"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "467032e6aca22292"
+    ]
+   ],
+   "role": "assistant",
+   "text": "working"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "21dfa4b8c763c999"
+    ]
+   ],
+   "role": "assistant",
+   "text": "done"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "f41f567ce9be7ff8"
+    ]
+   ],
+   "role": "user",
+   "text": "steer: also check Y"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0a64890913aa474c"
+    ]
+   ],
+   "role": "assistant",
+   "text": "saw the steer"
+  }
+ ],
+ "open_turn": {
+  "0": false,
+  "14": false,
+  "4": false,
+  "9": false
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": null,
+  "10": null,
+  "11": null,
+  "12": null,
+  "13": null,
+  "14": null,
+  "15": null,
+  "16": null,
+  "17": null,
+  "18": null,
+  "19": null,
+  "2": null,
+  "3": null,
+  "4": null,
+  "5": null,
+  "6": null,
+  "7": null,
+  "8": null,
+  "9": null
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "083f9a86ebd7dc93"
+     ]
+    ],
+    "role": "user",
+    "text": "hello"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "c230adf86cf69bcf"
+     ]
+    ],
+    "role": "user",
+    "text": "start"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "467032e6aca22292"
+     ]
+    ],
+    "role": "assistant",
+    "text": "working"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "21dfa4b8c763c999"
+     ]
+    ],
+    "role": "assistant",
+    "text": "done"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "f41f567ce9be7ff8"
+     ]
+    ],
+    "role": "user",
+    "text": "steer: also check Y"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "0a64890913aa474c"
+     ]
+    ],
+    "role": "assistant",
+    "text": "saw the steer"
+   }
+  ],
+  "sha": "9ae52e89e2b72e7f"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [],
+   "offsets": {
+    "<sid>": 380
+   },
+   "seqs": {}
+  },
+  "3": {
+   "events": [],
+   "offsets": {
+    "<sid>": 380
+   },
+   "seqs": {}
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [],
+   "next_offset": 380
+  },
+  "mid": {
+   "events": [],
+   "next_offset": 380
+  },
+  "start": {
+   "events": [],
+   "next_offset": 380
+  }
+ },
+ "timeline_parse": [
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "start"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "working",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "text": "done",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "steer: also check Y"
+     },
+     "seq": -2
+    },
+    {
+     "parts": [
+      {
+       "text": "saw the steer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 6
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "start"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "text": "working",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "text": "done",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "steer: also check Y"
+     },
+     "seq": -2
+    },
+    {
+     "parts": [
+      {
+       "text": "saw the steer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 6
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "start"
+     },
+     "seq": -1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "steer: also check Y"
+     },
+     "seq": -2
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 3
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "start"
+     },
+     "seq": -1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "steer: also check Y"
+     },
+     "seq": -2
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 3
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  }
+ }
+}

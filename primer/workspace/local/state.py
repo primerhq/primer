@@ -28,7 +28,7 @@ import asyncio
 import logging
 import os
 import time
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -60,6 +60,15 @@ from primer.workspace.state_helpers import (
     validate_sha as _validate_sha,
 )
 
+
+from primer.int.state_repo import LogRewrite
+from primer.model.except_ import ConflictError
+from primer.workspace.segments import LOG_NAME, ordered, segment_bytes_default, segment_name
+
+try:
+    import fcntl
+except ImportError:  # a platform without flock (Windows): the log guard degrades to a no-op, see log_slot_lock
+    fcntl = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from primer.model.chat import Message
@@ -234,6 +243,7 @@ class LocalStateRepo:
         await asyncio.to_thread(self._path.mkdir, parents=True, exist_ok=True)
         if not (self._path / ".git").exists():
             await self._run_git("init", "--initial-branch=main")
+        await asyncio.to_thread(_exclude_lock_files, self._path)
         await self._scan_existing_sessions()
 
     async def create_session(
@@ -283,8 +293,13 @@ class LocalStateRepo:
         files: dict[str, str | bytes] | None = None,
         delete_files: list[str] | None = None,
         appends: dict[str, bytes] | None = None,
+        log_rewrite: LogRewrite | None = None,
     ) -> str:
         """Stage files under sessions/<session_id>/, commit with trailers.
+
+        The key ``"messages.jsonl"`` in ``appends`` (and a ``log_rewrite``) names the session LOG: it goes to the active segment, or, when that segment
+        already holds ``session_log_segment_bytes`` (``segment_bytes_default()``, 0 = never), to the next one, created and staged in this same commit
+        together with the end of the previous one (design S4). Rotation happens here and nowhere else.
 
         ``appends`` adds bytes to the end of a file instead of replacing it (Task 14 stage 2): the file is extended by an O_APPEND write (a
         missing final newline is supplied first, as the whole-file writers do) and staged, so a commit that only adds lines to
@@ -324,25 +339,48 @@ class LocalStateRepo:
         async with self._commit_lock:
             await asyncio.to_thread(slot.mkdir, parents=True, exist_ok=True)
             staged_paths: list[str] = []
+            files, appends = dict(files or {}), dict(appends or {})
+            touches_log = LOG_NAME in files or LOG_NAME in appends or log_rewrite is not None
+            # The log is resolved, rotated and written under the session's cross-process lock: an event-row writer in another process lists the slot either
+            # before this (and appends to the old segment, which the glob below stages) or after (and appends to the new one).
+            async with AsyncExitStack() as guard:
+                if touches_log:
+                    await guard.enter_async_context(alog_slot_lock(slot))
+                if touches_log:
+                    active, rotate_to = await asyncio.to_thread(_log_target, slot, segment_bytes_default())
+                    if LOG_NAME in files and active != LOG_NAME:
+                        raise ConflictError(f"session {session_id!r} has rotated to {active!r}: rewrite its log with log_rewrite, not files")
+                    if log_rewrite is not None:
+                        if log_rewrite.active_name != active:
+                            raise ConflictError(f"the active segment of session {session_id!r} is {active!r}, not {log_rewrite.active_name!r}: read it again")
+                        if rotate_to is None:
+                            files[active] = log_rewrite.existing + log_rewrite.new
+                        else:
+                            files[rotate_to] = log_rewrite.new
+                    if LOG_NAME in appends:
+                        appends[rotate_to or active] = appends.pop(LOG_NAME)
 
-            # Write files.
-            for rel, content in (files or {}).items():
-                _validate_relative_path(rel)
-                target = slot / rel
-                await asyncio.to_thread(
-                    target.parent.mkdir, parents=True, exist_ok=True
-                )
-                await asyncio.to_thread(_write_atomic, target, content)
-                staged_paths.append(self._repo_relative(target))
+                # Write files.
+                for rel, content in files.items():
+                    _validate_relative_path(rel)
+                    target = slot / rel
+                    await asyncio.to_thread(
+                        target.parent.mkdir, parents=True, exist_ok=True
+                    )
+                    await asyncio.to_thread(_write_atomic, target, content)
+                    staged_paths.append(self._repo_relative(target))
 
-            for rel, data in (appends or {}).items():
-                _validate_relative_path(rel)
-                target = slot / rel
-                await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(_append_bytes, target, data)
-                staged_paths.append(self._repo_relative(target))
+                for rel, data in appends.items():
+                    _validate_relative_path(rel)
+                    target = slot / rel
+                    await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                    await asyncio.to_thread(_append_bytes, target, data)
+                    staged_paths.append(self._repo_relative(target))
 
-            # Stage them.
+            # Stage them. A commit that touches the log stages every segment of the slot: the end of the segment it just closed (event rows appended
+            # since the last commit), and anything a crashed rotation left unstaged.
+            if touches_log:
+                staged_paths.append(self._repo_relative(slot) + "/messages*.jsonl")
             if staged_paths:
                 await self._run_git("add", "--", *staged_paths)
 
@@ -702,6 +740,18 @@ class LocalStateRepo:
             return None
         return info.st_size, info.st_mtime_ns
 
+    async def list_state_dir(self, path: str) -> list[str]:
+        """The file names directly under a directory of ``.state/`` (the segmented session log asks); an absent directory lists nothing."""
+        _validate_relative_path(path)
+
+        def _names() -> list[str]:
+            try:
+                return [e.name for e in os.scandir(self._path / path) if e.is_file()]
+            except (FileNotFoundError, NotADirectoryError):
+                return []
+
+        return await asyncio.to_thread(_names)
+
     # ---- internals -------------------------------------------------------
 
     def _repo_relative(self, p: Path) -> str:
@@ -825,6 +875,74 @@ class LocalStateRepo:
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+
+def _log_target(slot: Path, threshold: int) -> tuple[str, str | None]:
+    """``(active segment name, next segment name or None)`` for a commit to the session log: the next one when rotation is on and the active
+    segment (not empty) has reached ``threshold`` bytes."""
+    names = ordered(os.listdir(slot)) if slot.is_dir() else []
+    if not names:
+        return LOG_NAME, None
+    index, name = names[-1]
+    size = (slot / name).stat().st_size
+    return name, (segment_name(index + 1) if threshold > 0 and size > 0 and size >= threshold else None)
+
+
+#: The per-session advisory lock file next to the log segments, kept out of git through the repo's ``.git/info/exclude``.
+LOCK_NAME = ".log.lock"
+_EXCLUDE_LINE = f"sessions/*/{LOCK_NAME}"
+_warned_no_flock = False
+
+
+def active_log_name(slot: Path) -> str:
+    """The segment an event row is appended to right now: the newest one in the slot, or ``messages.jsonl`` when the session has no log yet."""
+    return _log_target(slot, 0)[0]
+
+
+@contextmanager
+def log_slot_lock(slot: Path):
+    """An exclusive ``flock`` on the session's ``.log.lock``, held around "resolve the active segment + rotate + append" by ``commit`` and around
+    "resolve + append" by the event-row writer, so a writer in ANOTHER process cannot append to a segment a commit has just closed (design 4.4).
+
+    Blocking: call it from a thread, never the event loop (:func:`alog_slot_lock` does). Where ``fcntl`` is unavailable this is a no-op with one warning.
+    """
+    global _warned_no_flock
+    if fcntl is None:
+        if not _warned_no_flock:
+            _warned_no_flock = True
+            logger.warning("flock is not available on this platform: event-row appends and log rotation are not serialised across processes")
+        yield
+        return
+    slot.mkdir(parents=True, exist_ok=True)
+    fd = os.open(slot / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
+@asynccontextmanager
+async def alog_slot_lock(slot: Path):
+    """:func:`log_slot_lock` for the event loop: acquired and released off it, held across the awaits in between."""
+    lock = log_slot_lock(slot)
+    await asyncio.to_thread(lock.__enter__)
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(lock.__exit__, None, None, None)
+
+
+def _exclude_lock_files(repo: Path) -> None:
+    """Add the lock files to ``.git/info/exclude`` (idempotent), so no ``git add`` of a slot ever picks one up."""
+    if not (repo / ".git").is_dir():
+        return
+    info = repo / ".git" / "info"
+    info.mkdir(exist_ok=True)
+    exclude = info / "exclude"
+    text = exclude.read_text() if exclude.exists() else ""
+    if _EXCLUDE_LINE not in text.splitlines():
+        exclude.write_text(text + ("" if not text or text.endswith("\n") else "\n") + _EXCLUDE_LINE + "\n")
 
 
 def _append_bytes(target: Path, data: bytes) -> None:

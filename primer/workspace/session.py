@@ -45,7 +45,10 @@ from primer.model.workspace_session import (
 )
 
 
+from primer.workspace.segments import LOG_NAME
+
 if TYPE_CHECKING:
+    from primer.int.state_repo import LogRewrite
     from primer.model.workspace import Op
     from primer.workspace.message_log import LogView
     from primer.workspace.local.cache import LocalTruncationStore
@@ -71,7 +74,7 @@ def workspace_system_prompt_fragment(session_id: str) -> str:
 
     A function of the session id alone, so a caller with no live session (the manual compaction route,
     which sizes the fixed part of the prompt) renders exactly what the executor does."""
-    return _SYSTEM_PROMPT_TEMPLATE.format(session_id=session_id)
+    return _SYSTEM_PROMPT_TEMPLATE.format(session_id=session_id, log_name=LOG_NAME)
 
 
 _SYSTEM_PROMPT_TEMPLATE = """\
@@ -82,7 +85,10 @@ ls, read, write, edit, glob, grep, exec.
 
 Your conversation state and persistent notes for THIS session live under
 `.state/sessions/{session_id}/`. Every assistant turn is committed to a
-git repo at `.state/`. You can inspect your own history with:
+git repo at `.state/`. The conversation log is `{log_name}` there; a long log
+continues in `messages.0001.jsonl`, `messages.0002.jsonl`, ... (the whole log is
+those files in order; list them with `ls .state/sessions/{session_id}/`).
+You can inspect your own history with:
   exec("git log -- sessions/{session_id}/", workdir=".state")
   exec("git show <sha>", workdir=".state")
 
@@ -558,10 +564,12 @@ class AgentSession:
         call_id: str | None = None,
         files: dict[str, str | bytes] | None = None,
         appends: dict[str, bytes] | None = None,
+        log_rewrite: "LogRewrite | None" = None,
     ) -> str:
         """Commit one turn's writes to this session's slot. Returns SHA.
 
-        ``appends`` (only when :meth:`append_only` is true) adds bytes to the end of a file instead of rewriting it.
+        ``appends`` (only when :meth:`append_only` is true) adds bytes to the end of a file instead of rewriting it. ``log_rewrite`` writes the
+        log's active segment whole (see :class:`primer.int.state_repo.LogRewrite`).
         """
         if self._info.status == SessionStatus.ENDED:
             raise ConflictError(
@@ -575,6 +583,7 @@ class AgentSession:
             call_id=call_id,
             files=files,
             **({"appends": appends} if appends else {}),
+            **({"log_rewrite": log_rewrite} if log_rewrite is not None else {}),
         )
         self._touch_last_activity()
         return sha
@@ -698,7 +707,7 @@ class AgentSession:
             if len(excerpt) > 60:
                 excerpt = excerpt[:59].rstrip() + "…"
             # Hold the session's messages lock across BOTH the read
-            # (_appended_messages_jsonl) and the full-file rewrite (commit),
+            # (read_active_segment) and the full-file rewrite (commit),
             # so a concurrent event-row append (Workspace.append_message_line)
             # or a concurrent full-file rewriter (the executor's _persist_turn)
             # cannot slip into the read->rewrite gap and be truncated. The
@@ -734,13 +743,16 @@ class AgentSession:
                         appends={"messages.jsonl": (message.model_dump_json() + "\n").encode()},
                     )
                 else:
-                    new_messages_jsonl = await self._appended_messages_jsonl(message)
+                    from primer.int.state_repo import LogRewrite
+                    from primer.workspace.segments import read_active_segment
+
+                    name, existing = await read_active_segment(self._state, self.session_id)
+                    if existing and not existing.endswith(b"\n"):
+                        existing += b"\n"
                     await self._state.commit(
                         self.session_id, summary=summary, op="user_instruction",
-                        files={
-                            "messages.jsonl": new_messages_jsonl,
-                            "session.json": updated_info.model_dump_json(indent=2),
-                        },
+                        files={"session.json": updated_info.model_dump_json(indent=2)},
+                        log_rewrite=LogRewrite(name, existing, (message.model_dump_json() + "\n").encode()),
                     )
             self._info = updated_info
             return instruction
@@ -899,15 +911,11 @@ class AgentSession:
         answer) share one read and parse each new line once.
         """
         from primer.workspace.message_log import MessageLogCache
+        from primer.workspace.segments import SessionLog, StateRepoSource
 
         if self._log_cache is None:
             self._log_cache = MessageLogCache()
-        rel = f"sessions/{self.session_id}/messages.jsonl"
-        stat_state_file = getattr(self._state, "stat_state_file", None)
-        return await self._log_cache.view(
-            lambda: self._state.read_state_file(rel),
-            (lambda: stat_state_file(rel)) if stat_state_file is not None else None,
-        )
+        return await self._log_cache.view_log(SessionLog(StateRepoSource(self._state), f"sessions/{self.session_id}"))
 
     async def take_pending_messages(self) -> list[Message]:
         """Return the messages added since the last assistant turn.
@@ -943,19 +951,6 @@ class AgentSession:
         await self.set_status(SessionStatus.ENDED, ended_reason="completed")
 
     # ---- Internals -------------------------------------------------------
-
-    async def _appended_messages_jsonl(self, message: Message) -> str:
-        """Return the new messages.jsonl content with ``message`` appended.
-
-        Uses the :class:`StateRepo` protocol's ``read_state_file`` so
-        this works for both local and sandbox (container/k8s) backends.
-        """
-        rel = f"sessions/{self.session_id}/messages.jsonl"
-        raw: bytes | None = await self._state.read_state_file(rel)
-        existing = raw.decode("utf-8") if raw else ""
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        return existing + message.model_dump_json() + "\n"
 
     def _touch_last_activity(self) -> None:
         """Update last_activity_at on the in-memory SessionInfo only.

@@ -7,13 +7,14 @@ suitable for use in SSE ``Last-Event-ID`` headers and query parameters.
 
 The cursor also carries a per-session **byte offset** (``offsets``) used by
 :func:`~primer.tap.reader.read_batch` to skip already-consumed bytes in the
-append-only ``messages.jsonl`` log.  The offset is a *performance hint only*:
+append-only session log.  The offset is a *performance hint only*:
 ``seq > resume_seq`` remains the authoritative correctness filter, so a stale
 or wrong offset causes at most a harmless re-read of some records, never a
 skip or duplicate.
 
-Assumption: ``messages.jsonl`` is append-only (no rewrite or compaction), so
-byte offsets recorded in the cursor remain valid across calls.
+Assumption: the log is append-only across its segments (no rewrite or compaction), so
+the offsets, which are LOGICAL (into the concatenation of the segments, the bytes the
+single file would hold), recorded in the cursor remain valid across calls and rotations.
 """
 
 from __future__ import annotations

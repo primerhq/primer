@@ -16,6 +16,7 @@ from primer.tap.selector import TapSelector
 from datetime import UTC, datetime
 
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from tests._support.segmented_io import ListsFiles
 
 
 def _msg_path(session_id: str) -> str:
@@ -33,7 +34,7 @@ def _line(seq: int) -> bytes:
     return (json.dumps({"seq": seq, "kind": "assistant_token", "payload": {"text": f"t{seq}"}, "created_at": "2026-06-30T12:00:00+00:00"}) + "\n").encode()
 
 
-class _WholeFileIO:
+class _WholeFileIO(ListsFiles):
     state_path = ".state"
 
     def __init__(self) -> None:

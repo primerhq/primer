@@ -34,6 +34,7 @@ from primer.tap.cursor import TapCursor
 from primer.tap.event import TapEventClass
 from primer.tap.reader import read_batch, read_record_by_seq, read_session_since
 from primer.tap.selector import TapSelector
+from tests._support.segmented_io import ListsFiles
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -43,7 +44,7 @@ _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 
 
-class _FakeWorkspaceIO:
+class _FakeWorkspaceIO(ListsFiles):
     """In-memory workspace IO exposing ``read_file`` + ``state_path``.
 
     ``read_calls`` counts every ``read_file`` invocation and ``bytes_read``
