@@ -256,3 +256,14 @@ def test_the_shell_wires_the_hook_without_a_history_entry() -> None:
     assert "navigatedRef.current = true;" in mark[:mark.index("}, []);")]
     listener = shell[shell.index("function onNav() {"):shell.index("readUrlRef.current = onNav;")]
     assert listener.index("if (current === ownHashRef.current) return;") < listener.index("navigatedRef.current = true;")
+
+
+def test_the_first_tap_or_key_press_counts_as_navigating() -> None:
+    """A phone's tabs and Platform rows change what is shown without a URL change or a verb: the first touch of the page drops the main-session open."""
+    shell = SHELL[SHELL.index("function NV_Shell()"):]
+    effect = shell[shell.index("function touched() {"):]
+    effect = effect[:effect.index("}, []);")]
+    assert "navigatedRef.current = true;" in effect
+    for event in ("pointerdown", "keydown"):
+        assert f'document.addEventListener("{event}", touched, true);' in effect, "capture phase: no handler can stop it first"
+        assert f'document.removeEventListener("{event}", touched, true);' in effect
