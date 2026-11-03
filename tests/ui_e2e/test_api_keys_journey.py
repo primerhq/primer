@@ -33,6 +33,11 @@ def test_an_admin_mints_a_key_that_acts_as_them(page: Page, base_url: str, conso
         wid = default_wid(console_url) or "primer"
         open_view(page, console_url, wid, "system:apikeys")
 
+        # Click only on the settled page: the keys page is the one shown AND the console knows who is signed in (the avatar carries the username's
+        # first two letters, and the dialog's "acts as" line needs the name). A click on a page the console is still sorting out can be lost.
+        expect(page.get_by_test_id("nv-sys-row:apikeys")).to_have_attribute("data-active", "true", timeout=20_000)
+        expect(page.get_by_test_id("nv-profile-btn")).to_have_text(username[:2].lower(), timeout=20_000)
+
         acts_as = page.get_by_test_id("at-acts-as")
         page.get_by_test_id("create-token-btn").click()
         expect(acts_as).to_be_visible(timeout=20_000)
