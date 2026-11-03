@@ -393,6 +393,23 @@ async def start_workspace_session(
     return row
 
 
+async def revive_stale_ended_slot(slot: Any) -> None:
+    """A slot handle that reads ENDED under a row that is alive is a stale mirror: bring it back to what the row says.
+
+    Two ways it goes stale. Another process reopened the session (the API's wake, a sibling worker): the disk says running, this handle never
+    rewinds its ENDED view, so ``adopt_reopen_from_disk``. Or a turn failed and its slot was ended on disk while the row rests: the reopen the
+    failure exit makes did not land, so ``reopen``. Without either, ``WorkspaceAgentExecutor.invoke`` refuses a turn on a live session ("cannot
+    invoke ENDED session"). A slot without these members (a test double) is left alone.
+    """
+    adopt = getattr(slot, "adopt_reopen_from_disk", None)
+    reopen = getattr(slot, "reopen", None)
+    if adopt is None or reopen is None:
+        return
+    await adopt()
+    if await slot.status() == SessionStatus.ENDED:
+        await reopen()
+
+
 async def ensure_agent_slot(workspace: Any, session: WorkspaceSession, agent: Any) -> Any:
     """The on-disk slot of an agent-bound session row on ``workspace``: the one that exists, else a new one allocated now under the row's id.
 
@@ -402,6 +419,8 @@ async def ensure_agent_slot(workspace: Any, session: WorkspaceSession, agent: An
     """
     existing = await workspace.get_session(session.id)
     if existing is not None:
+        if session.status is not SessionStatus.ENDED:
+            await revive_stale_ended_slot(existing)
         return existing
     return await workspace.start_session(
         OnDiskAgentBinding(
