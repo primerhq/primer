@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git CLI not
 @pytest.fixture(autouse=True)
 def _reset_threshold():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 async def _route(h) -> list[tuple[int, str]]:

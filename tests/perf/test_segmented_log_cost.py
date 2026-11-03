@@ -35,7 +35,7 @@ THRESHOLD = MIB
 @pytest.fixture(autouse=True)
 def _reset_threshold():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 def _turn(n: int) -> bytes:

@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import tests._support.off_golden as g
+from tests._support.off_golden import joined_log
 from tests._support.scratch_dir import run_in_scratch_dir
 from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
@@ -124,7 +125,7 @@ class TestTheNextTurnAfterTierTwo:
 
 
 def _file_lines(workspace, session) -> list[dict]:
-    path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+    path = joined_log(workspace, session)
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
@@ -257,7 +258,7 @@ class TestVerdictsAndSteers:
                 await session.append_instruction("STEER-DEFERRED-BY-THE-FIRST-WINDOW")  # drained after marker 1
                 release.set()
                 await asyncio.wait_for(task, timeout=30)
-                path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+                path = joined_log(workspace, session)
                 markers = [r for r in map(json.loads, path.read_text().splitlines()) if r.get("kind") == "compaction_marker"]
                 return [_text(m) for m in await _history(session, llm)], len(markers)
             finally:

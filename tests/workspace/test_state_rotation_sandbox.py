@@ -57,7 +57,7 @@ class Runtime:
 @pytest.fixture(autouse=True)
 def _reset_threshold():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 def make():
@@ -105,6 +105,7 @@ async def test_sandbox_rotation_writes_new_lines_to_the_next_segment():
 
 
 async def test_threshold_zero_never_rotates():
+    set_segment_bytes_default(0)
     runtime, repo = make()
     for n in range(20):
         await add(repo, line(n, 500))

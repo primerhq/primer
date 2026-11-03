@@ -39,7 +39,7 @@ async def rotated(tmp_path):
         (slot / "session.json").write_text(json.dumps(info))
         yield state.path, slot, session.session_id, joined
     finally:
-        set_segment_bytes_default(0)
+        set_segment_bytes_default(None)
         await session.aclose()
         await backend.aclose()
 

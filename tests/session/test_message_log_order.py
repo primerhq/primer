@@ -125,7 +125,9 @@ class _Harness:
         await self.sessions.update(row.model_copy(update={"turn_no": row.turn_no + 1}))
 
     async def lines(self):
-        return (await self.slot._state.read_state_file(f"sessions/{self.sid}/messages.jsonl")).decode().splitlines()
+        from primer.workspace.segments import SessionLog, StateRepoSource
+
+        return (await SessionLog(StateRepoSource(self.slot._state), f"sessions/{self.sid}").read_all()).decode().splitlines()
 
     async def records(self):
         return [(o["seq"], o["kind"]) for o in map(json.loads, await self.lines()) if "seq" in o]

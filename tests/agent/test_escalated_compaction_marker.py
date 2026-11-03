@@ -45,8 +45,11 @@ async def _seed(workspace, session, *, units: int, tag: str) -> None:
 
 
 def _lines(workspace, session) -> list[str]:
-    path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
-    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    from tests._support.log_golden import segment_paths
+
+    slot = workspace.root / workspace.template.state_path / "sessions" / session.session_id
+    text = "".join(p.read_text(encoding="utf-8") for p in segment_paths(slot))     # the log may have rotated: every segment, in order
+    return [line for line in text.splitlines() if line.strip()]
 
 
 def _markers(lines: list[str]) -> list[dict]:

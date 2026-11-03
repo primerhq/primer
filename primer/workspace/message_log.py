@@ -52,18 +52,33 @@ class LogView:
 
 
 _verify_configured = False
-_append_only_configured = False
+_append_only_configured: bool | None = None
 
 
-def set_append_only_default(on: bool) -> None:
-    """``WorkerConfig.session_log_append_only``: write a session's log by appending the new lines (Task 14 stage 2); default OFF."""
+def set_append_only_default(on: bool | None) -> None:
+    """``WorkerConfig.session_log_append_only``: write a session's log by appending the new lines (Task 14 stage 2). ``None`` forgets the configuration."""
     global _append_only_configured
-    _append_only_configured = bool(on)
+    _append_only_configured = None if on is None else bool(on)
 
 
 def append_only_default() -> bool:
-    """The configured flag, or ``PRIMER_SESSION_LOG_APPEND_ONLY=1`` (how a whole test suite is run append-only)."""
-    return _append_only_configured or os.environ.get("PRIMER_SESSION_LOG_APPEND_ONLY", "") not in ("", "0", "false", "False")
+    """Whether a session's log is written by appending: an explicit setting (``set_append_only_default``, or a configuration that is not the default)
+    over ``PRIMER_SESSION_LOG_APPEND_ONLY`` (``0``/``false`` turn it off) over ON."""
+    if _append_only_configured is not None:
+        return _append_only_configured
+    env = os.environ.get("PRIMER_SESSION_LOG_APPEND_ONLY", "")
+    return True if env == "" else env not in ("0", "false", "False")
+
+
+def apply_worker_config(config) -> None:
+    """Apply the session log settings of a ``WorkerConfig`` to this process: the pool does it, and so does an API process with no worker, whose
+    steers are committed in it. The three flags are process-wide because a session's log is written by whichever process holds the work."""
+    from primer.workspace.segments import DEFAULT_SEGMENT_BYTES, set_segment_bytes_default
+
+    # A value that is the default is NOT recorded as a choice: the environment (how a suite is run append-only or segmented) still decides then.
+    set_verify_default(config.session_log_verify_reads)
+    set_append_only_default(None if config.session_log_append_only else False)
+    set_segment_bytes_default(None if config.session_log_segment_bytes == DEFAULT_SEGMENT_BYTES else config.session_log_segment_bytes)
 
 
 def set_verify_default(on: bool) -> None:
@@ -182,4 +197,4 @@ class MessageLogCache:
             raise MessageLogMismatch("the cached highest event-log seq differs from a full parse of messages.jsonl")
 
 
-__all__ = ["LogView", "MessageLogCache", "MessageLogMismatch", "append_only_default", "set_append_only_default", "set_verify_default", "verify_default"]
+__all__ = ["LogView", "MessageLogCache", "MessageLogMismatch", "append_only_default", "apply_worker_config", "set_append_only_default", "set_verify_default", "verify_default"]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests._support.off_golden import joined_log
+
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfileConfig
 
@@ -211,13 +213,7 @@ class TestPersistence:
             await _drain(
                 executor.invoke([Message(role="user", parts=[TextPart(text="hi")])])
             )
-            jsonl_path = (
-                workspace.root
-                / workspace.template.state_path
-                / "sessions"
-                / session.session_id
-                / "messages.jsonl"
-            )
+            jsonl_path = joined_log(workspace, session)
             content = jsonl_path.read_text(encoding="utf-8")
             lines = [ln for ln in content.splitlines() if ln.strip()]
             # Initial instruction "hello" + new user msg + assistant msg.
@@ -580,13 +576,7 @@ class TestPersistTurnInstructionRace:
                 workspace.state_repo.read_state_file = real_read  # type: ignore[assignment]
             await asyncio.gather(*steer_tasks)
 
-            content = (
-                workspace.root
-                / workspace.template.state_path
-                / "sessions"
-                / session.session_id
-                / "messages.jsonl"
-            ).read_bytes()
+            content = joined_log(workspace, session).read_bytes()
             # The steer committed inside the turn's read->rewrite window must
             # survive the rewrite.
             assert b"steer me" in content, content
@@ -622,13 +612,7 @@ def _small_strategy() -> CompactionStrategy:
 
 
 def _messages_path(workspace, session):
-    return (
-        workspace.root
-        / workspace.template.state_path
-        / "sessions"
-        / session.session_id
-        / "messages.jsonl"
-    )
+    return joined_log(workspace, session)
 
 
 def _event_log_records(text: str) -> list[dict]:

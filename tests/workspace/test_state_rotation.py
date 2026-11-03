@@ -25,7 +25,7 @@ KEY = "messages.jsonl"
 @pytest.fixture(autouse=True)
 def _reset_threshold():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 @pytest.fixture
@@ -64,6 +64,7 @@ def line(n: int, size: int = 40) -> bytes:
 
 
 async def test_no_rotation_when_the_threshold_is_zero(world):
+    set_segment_bytes_default(0)
     for n in range(6):
         await world.append(line(n, 3000))
     assert world.names() == [KEY]

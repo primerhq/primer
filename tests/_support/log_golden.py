@@ -31,6 +31,7 @@ from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord, SessionStatus, _UserInputWaiting
 from primer.session.persistence import WorkspaceMessageWriter
 from tests._support.off_golden import (
+    segment_paths,
     Events, FnLLM, ScriptedLLM, assistant_message, make_executor, normalise, open_session, text_events, user_message,
 )
 
@@ -205,13 +206,6 @@ def git_shape(state_path: Path, session_id: str) -> list[dict[str, Any]]:
     return commits
 
 
-def segment_paths(slot: Path) -> list[Path]:
-    """The files of a session's log in order: ``messages.jsonl``, ``messages.0001.jsonl`` ..."""
-    from primer.workspace.segments import ordered
-
-    return [slot / name for _, name in ordered(p.name for p in slot.glob("messages*.jsonl"))]
-
-
 async def capture(name: str, tmp_path: Path, *, append_only: bool = False, segment_bytes: int = 0) -> dict[str, Any]:
     """The golden record of a scenario. With ``segment_bytes`` the log rotates at that size, and the record is of the log as a reader sees it (the
     segments joined), plus ``"segments"``: their sizes (a key the single-file golden does not have)."""
@@ -240,6 +234,6 @@ async def capture(name: str, tmp_path: Path, *, append_only: bool = False, segme
             "pending": [_fingerprint(m, session.session_id) for m in pending],
         }
     finally:
-        set_segment_bytes_default(0)
+        set_segment_bytes_default(None)
         await session.aclose()
         await backend.aclose()
