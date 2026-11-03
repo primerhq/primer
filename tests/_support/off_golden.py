@@ -244,7 +244,7 @@ async def append_prior_marker(workspace, session, *, summary: str, kept_tail: li
     """Seed a compaction that already happened: a ``compaction_marker`` and the tail it kept, written as the
     executor writes one (see ``WorkspaceAgentExecutor._replace_compacted_head``). Everything physically before
     it is folded by the reader, except the kept tail, so the history after it reads ``[summary, *kept_tail]``."""
-    path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+    path = joined_log(workspace, session)
     boundary = max(
         (obj["seq"] for obj in map(json.loads, path.read_text(encoding="utf-8").splitlines())
          if isinstance(obj, dict) and isinstance(obj.get("seq"), int)),
@@ -334,6 +334,33 @@ async def run_turn(
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?")
 
 
+def segment_paths(slot: Path) -> list[Path]:
+    """The files of a session's log in order: ``messages.jsonl``, ``messages.0001.jsonl`` ..."""
+    from primer.workspace.segments import ordered
+
+    return [slot / name for _, name in ordered(p.name for p in slot.glob("messages*.jsonl"))]
+
+
+class JoinedLog:
+    """The session log as ONE readable thing, whatever the number of segments: ``read_text`` and ``read_bytes`` join them in order.
+
+    A test that reads ``messages.jsonl`` alone sees the first segment of a log that rotated (the default size is 1 MiB, and a suite run with
+    ``PRIMER_SESSION_LOG_SEGMENT_BYTES`` rotates constantly); it reads this instead."""
+
+    def __init__(self, slot: Path) -> None:
+        self.slot = slot
+
+    def read_bytes(self) -> bytes:
+        return b"".join(p.read_bytes() for p in segment_paths(self.slot))
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        return self.read_bytes().decode(encoding)
+
+
+def joined_log(workspace, session) -> JoinedLog:
+    return JoinedLog(workspace.root / workspace.template.state_path / "sessions" / session.session_id)
+
+
 def normalise(text: str, session_id: str) -> str:
     return _TIMESTAMP.sub("<ts>", text).replace(session_id, "<sid>")
 
@@ -416,7 +443,7 @@ async def boundary_turn(root: Path, llm: ScriptedLLM, name: str, delta: int) -> 
         llm.extend([Events(text_events("boundary-ok"))])
         before = len(llm.calls)
         await run_turn(session, llm)
-        path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+        path = joined_log(workspace, session)
         return {
             "turn": name,
             "target_estimate": target,
@@ -450,7 +477,7 @@ async def recorded_turn(
             await run_turn(session, llm)
         else:
             await during(workspace, session)
-        path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+        path = joined_log(workspace, session)
         return {
             "turn": name,
             "llm_calls": len(llm.calls) - before,

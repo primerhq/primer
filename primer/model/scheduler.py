@@ -82,21 +82,21 @@ class WorkerConfig(BaseModel):
         ),
     )
     session_log_append_only: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Task 14 stage 2. Write a session's messages.jsonl by appending only the new lines (an O_APPEND write under the session's messages "
             "lock, staged and committed as that file's delta) instead of reading the whole file and writing it back for every turn, steer and "
             "compaction marker. The file's bytes and the commit history (count, subjects, files per commit) are identical either way; "
-            "only the I/O differs. A state repo that cannot append (a sandbox) keeps writing the whole file. Default OFF until it has soaked."
+            "only the I/O differs. A state repo that cannot append (a sandbox) keeps writing the whole file. ON by default; false is the kill switch."
         ),
     )
     session_log_segment_bytes: int = Field(
-        default=0,
+        default=1_048_576,
         ge=0,
         description=(
             "Segment a session's message log: when its active segment file holds at least this many bytes, "
             "the next commit continues the log in a new file, so a closed segment is never written again and each commit stores only the small "
-            "active one. Rotation is only ever done by the state commit, between whole batches of records. 0 (the default) never rotates; existing "
+            "active one. Rotation is only ever done by the state commit, between whole batches of records. 0 is the kill switch: no new segment is started; existing "
             "segments are always read. See docs/superpowers/specs/2026-11-02-segmented-session-log-design.md."
         ),
     )

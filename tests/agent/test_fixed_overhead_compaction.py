@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import tests._support.off_golden as g
+from tests._support.off_golden import joined_log
 from tests._support.scratch_dir import run_in_scratch_dir
 from primer.agent.base import _BaseAgentExecutor
 from primer.agent.compaction import CompactedTurn, CompactionStrategy
@@ -415,7 +416,7 @@ class TestTheExecutor:
                 await g.append_messages(workspace, session, g.user_message("Q"))
                 llm.extend([g.Events(g.text_events("SUMMARY")), g.Events(g.text_events("done"))])
                 await g.run_turn(session, llm)
-                path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+                path = joined_log(workspace, session)
                 (marker,) = [r for r in map(json.loads, path.read_text().splitlines()) if r.get("kind") == "compaction_marker"]
                 return marker["payload"], await g.fixed_overhead(session)
             finally:
@@ -460,7 +461,7 @@ class TestTheExecutor:
                 llm.extend([g.Raise(BadRequestError(OVERFLOW))])
                 with pytest.raises(ContextOverflowUnrecoverable) as failed:
                     await g.run_turn(session, llm, llm_model=_model(4_000))
-                path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+                path = joined_log(workspace, session)
                 markers = [r for r in map(json.loads, path.read_text().splitlines()) if r.get("kind") == "compaction_marker"]
                 return failed.value, len(llm.calls), markers
             finally:

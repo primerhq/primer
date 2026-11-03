@@ -27,7 +27,7 @@ TURNS = 4
 @pytest.fixture(autouse=True)
 def _reset_threshold():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 async def _route_items(h) -> list[dict]:

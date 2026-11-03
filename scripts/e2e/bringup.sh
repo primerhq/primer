@@ -172,6 +172,8 @@ worker:
   drain_timeout_seconds: 30
   # Segmented session log (seglog): rotate a session's log every 64 KiB so tests/e2e/test_long_session_rotation.py (and any big log) crosses segments.
   session_log_segment_bytes: 65536
+  # PR B soak: every cached read of a session log is compared with a full parse across the whole suite; a mismatch raises and fails that flow.
+  session_log_verify_reads: true
 
 # MCP stdio safety: when set (non-null), MCP toolsets whose stdio
 # command[0] is not in this list are refused at session-open with

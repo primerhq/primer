@@ -28,7 +28,7 @@ TURNS = 3
 @pytest.fixture(autouse=True)
 def _reset_threshold():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 def _joined(h) -> list[str]:
