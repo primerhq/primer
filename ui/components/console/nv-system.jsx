@@ -49,6 +49,15 @@ function NV_sysNavsFor(role) {
   return ["profile"];
 }
 
+// The page the System view shows: the requested one when this role has it, else the first of the role's. While the status read has no role (``roleKnown``
+// false: ``role`` is then a stand-in "user") the page ALREADY showing (``shown``) stays: falling back to the profile page for one render would unmount a page
+// that holds form state (the API key dialog) and mount it again empty. A page not yet shown is not offered on the stand-in role, so a non-admin never meets one.
+function NV_sysNavFor(role, roleKnown, requested, shown) {
+  var navs = NV_sysNavsFor(role);
+  if (requested && (navs.indexOf(requested) >= 0 || (roleKnown === false && requested === shown))) return requested;
+  return navs[0];
+}
+
 // --- Dashboard bits --------------------------------------------------------
 
 // notes section 4: "health cards (scheduler, worker pool, sessions
@@ -1024,9 +1033,9 @@ function NV_SysBody(props) {
 function NV_System() {
   var con = NV_useConsole();
   var navs = NV_sysNavsFor(con.role);
-  var nav = con.view.nav && navs.indexOf(con.view.nav) >= 0
-    ? con.view.nav
-    : navs[0];
+  var shownRef = React.useRef(null);
+  var nav = NV_sysNavFor(con.role, con.roleKnown, con.view.nav, shownRef.current);
+  if (con.roleKnown) shownRef.current = nav;
   return (
     <div className="nv-plat" data-testid="nv-system">
       <div className="nv-plat-nav" data-testid="nv-sys-nav">
@@ -1057,6 +1066,7 @@ function NV_System() {
 }
 
 window.NV_sysNavsFor = NV_sysNavsFor;
+window.NV_sysNavFor = NV_sysNavFor;
 window.NV_System = NV_System;
 window.NV_SysSetupCard = NV_SysSetupCard;
 window.NV_resetPrimeInstructions = NV_resetPrimeInstructions;

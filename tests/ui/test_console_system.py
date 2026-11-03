@@ -154,3 +154,30 @@ def test_script_and_css_landed():
     for cls in (".nv-health-card", ".nv-worker-row", ".nv-attn-row",
                 ".nv-sys-identity"):
         assert cls in CSS, cls
+
+
+def test_a_gap_in_the_status_read_does_not_unmount_the_page_that_is_showing():
+    """The status read is the role's only source: while it has no data the role is a stand-in ``user`` and the nav list is just Profile. The page already
+    showing (the API key page, with its dialog open) must stay, or the dialog's state is lost; a page not yet shown is never offered on the stand-in role."""
+    from py_mini_racer import MiniRacer
+
+    start = SYS.index("function NV_sysNavsFor(")
+    end = SYS.index("\n}\n", start) + 2
+    nav_for = SYS[SYS.index("function NV_sysNavFor("):]
+    nav_for = nav_for[: nav_for.index("\n}\n") + 2]
+    ctx = MiniRacer()
+    ctx.eval(SYS[start:end])
+    ctx.eval(nav_for)
+
+    def choose(role, known, requested, shown):
+        return ctx.eval(f"NV_sysNavFor({json.dumps(role)}, {json.dumps(known)}, {json.dumps(requested)}, {json.dumps(shown)})")
+
+    assert choose("admin", True, "apikeys", None) == "apikeys"
+    assert choose("user", True, "apikeys", "apikeys") == "profile", "a known non-admin role is never offered the admin page"
+    assert choose("user", False, "apikeys", "apikeys") == "apikeys", "the gap keeps the page that is showing"
+    assert choose("user", False, "apikeys", None) == "profile", "a page not yet shown is not offered on the stand-in role"
+    assert choose("user", False, "users", "apikeys") == "profile", "a different request waits for the role"
+    assert choose("user", None, "apikeys", "apikeys") == "profile", "an unknown flag (an older context) behaves as before"
+    assert choose("admin", True, None, None) == "dashboard"
+    assert "NV_sysNavFor(con.role, con.roleKnown, con.view.nav, shownRef.current)" in SYS
+    assert "if (con.roleKnown) shownRef.current = nav;" in SYS
