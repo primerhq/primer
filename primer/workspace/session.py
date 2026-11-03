@@ -660,6 +660,22 @@ class AgentSession:
                 if self._info.status != SessionStatus.ENDED:
                     self._info = disk
 
+    async def adopt_reopen_from_disk(self) -> None:
+        """Adopt a REOPEN made through another handle: a handle that reads ENDED while ``session.json`` says it is alive was reopened elsewhere.
+
+        ``refresh_from_disk`` only advances toward ENDED (a cached terminal view is immutable and a hot path), but ``reopen`` is the one sanctioned way
+        out of it, and a process that did not make the reopen (an API wake, a sibling worker) keeps the ENDED mirror it had. Called where a turn
+        is about to run on a session whose row is alive. A no-op for a handle that is not ENDED or when disk has no slot or also says ENDED.
+        """
+        if self._info.status != SessionStatus.ENDED:
+            return
+        disk = await self._state.load_session_info(self.session_id)
+        if disk is None or disk.status == SessionStatus.ENDED:
+            return
+        async with self._lock:
+            if self._info.status == SessionStatus.ENDED:
+                self._info = disk
+
     async def append_instruction(
         self, content: str, *, extra_parts: list[Part] | None = None,
     ) -> Instruction:

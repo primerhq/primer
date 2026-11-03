@@ -142,3 +142,35 @@ async def test_a_graph_session_without_a_slot_gets_one_for_its_first_message(wor
     assert await workspace.get_session(row.id) is None
     slot = await ensure_session_slot(workspace, row, fake_storage_provider)
     assert slot is not None and await workspace.get_session(row.id) is slot
+
+
+async def test_a_handle_that_another_process_reopened_is_not_stale_when_the_turn_is_built(tmp_path, fake_storage_provider):
+    """Two workspace wrappers over one sandbox are two processes. Worker A's turn failed and its handle went ENDED; the API's wake (B) reopened the
+    session on disk and in the row; A's cached handle kept saying ENDED, and the next turn on A died with "cannot invoke ENDED session"."""
+    template = WorkspaceTemplate(id="t1", provider_id="c1", description="", backend=ContainerTemplateConfig(image="python:3.13"))
+    sandbox = FakeSandbox(root=tmp_path)
+
+    async def wrapper():
+        return await SandboxWorkspace.materialise(
+            workspace_id="ws-k3s", template=template, sandbox=sandbox, backend_kind="container",
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://fake/ws", token=SecretStr("fake-token")),
+        )
+
+    agent = await _operator(fake_storage_provider)
+    worker, api = await wrapper(), await wrapper()
+    row = await create_session(
+        workspace_id=WS, binding=AgentSessionBinding(agent_id=RESERVED_OPERATOR_AGENT), initial_instructions=None, graph_input=None, auto_start=False,
+        metadata=None, name="main", session_id="sess-prime-main-1", initiated_by=USER,
+        deps=SessionFactoryDeps(storage_provider=fake_storage_provider, claim_engine=None, scheduler=None, workspace_registry=None),
+    )
+    mine = await ensure_agent_slot(worker, row, agent)
+    await mine.set_status(SessionStatus.ENDED, ended_reason="failed")           # the failed turn, in the worker
+    theirs = await api.get_session(row.id)                                       # the API process rehydrates it ENDED ...
+    await theirs.reopen()                                                        # ... and its wake reopens it: disk says running
+    assert await mine.status() == SessionStatus.ENDED, "the worker's handle is the stale mirror"
+    alive = row.model_copy(update={"status": SessionStatus.RUNNING})
+    rebuilt = await ensure_agent_slot(worker, alive, agent)
+    assert rebuilt is mine and await rebuilt.status() == SessionStatus.RUNNING, "building the turn brings the handle back to what the row says"
+    ended = row.model_copy(update={"status": SessionStatus.ENDED})
+    await mine.set_status(SessionStatus.ENDED, ended_reason="failed")
+    assert await (await ensure_agent_slot(worker, ended, agent)).status() == SessionStatus.ENDED, "a row that IS ended is not revived"
