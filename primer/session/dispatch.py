@@ -400,6 +400,13 @@ async def run_one_session_turn(
                 "session %s failed to build executor; ending failed",
                 session_id,
             )
+            # The console reads the row, and a bare "The turn failed." names nothing: say what could not be built (the class, and a domain
+            # error's own words; any other error's text may hold what it must not, so it stays in the log).
+            reason = f"{type(build_error).__name__}: {str(build_error)[:300]}" if isinstance(build_error, PrimerError) else type(build_error).__name__
+            await record_turn_refusal(
+                session_storage, deps.workspace_io, flipped, event_bus=deps.event_bus,
+                message=f"The turn could not start: the session could not be set up to run ({reason}).", code="executor_build_failed",
+            )
         # Serialize the terminal transition + interrupt-flag clear against
         # a concurrent resume/pause/cancel/interrupt API call (T0432-style
         # lost update; see primer.session.mutation_lock).

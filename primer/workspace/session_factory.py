@@ -393,6 +393,30 @@ async def start_workspace_session(
     return row
 
 
+async def ensure_agent_slot(workspace: Any, session: WorkspaceSession, agent: Any) -> Any:
+    """The on-disk slot of an agent-bound session row on ``workspace``: the one that exists, else a new one allocated now under the row's id.
+
+    A row made by :func:`create_session` alone (the main operator session, before it allocated its slot at creation) has no slot, and a turn cannot be
+    built without one; a sandbox workspace rehydrates a slot from its state repo and finds nothing. The binding is the one :func:`start_workspace_session`
+    writes. Called when a session is created and when its turn is built, so a row that predates the fix is repaired on its next turn.
+    """
+    existing = await workspace.get_session(session.id)
+    if existing is not None:
+        return existing
+    return await workspace.start_session(
+        OnDiskAgentBinding(
+            agent_id=agent.id,
+            agent_name=agent.id,
+            registered_tool_ids=list(agent.tools or []),
+            allow_external_tools=agent.allow_external_tools,
+        ),
+        id=session.id,
+        instructions=None,
+        parent_session_id=session.parent_session_id,
+        name=session.name,
+    )
+
+
 async def create_session(
     *,
     workspace_id: str,

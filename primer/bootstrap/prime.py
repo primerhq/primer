@@ -358,7 +358,8 @@ async def ensure_main_operator_session(
     * **A created session is named ``main`` and runs as the caller.** ``initiated_by`` carries the caller's role, so the
       session clears exactly the caller's role floor (A-20): an admin's main session can call the admin tools through
       the operator, a user's cannot. It is made exactly as the workspace-create seed makes its ``main`` (the plain
-      ``create_session`` with ``auto_start=False``; the on-disk slot arrives when the session first runs).
+      ``create_session`` with ``auto_start=False``) and gets its on-disk slot at once when the deps carry a workspace registry; otherwise
+      the slot is allocated when its first turn is built.
     * **One main session under concurrency.** The id is :func:`main_session_id` with the smallest free ``n`` and the
       create is the claim: a concurrent caller that picks the same id loses the insert and re-reads the row; it returns
       the row only when it is this caller's open operator session, and takes the next free ``n`` otherwise (an ended
@@ -431,12 +432,32 @@ async def ensure_main_operator_session(
                 "prime: created the caller's main operator session",
                 extra={"session_id": candidate_id, "workspace_id": workspace_id},
             )
+            await _allocate_main_slot(storage_provider, deps, row)
             return row, True
         except ConflictError:
             existing = await sessions.get(candidate_id)
             if existing is not None and _is_callers_open_operator(existing):
                 return existing, False
             n += 1
+
+
+async def _allocate_main_slot(storage_provider: Any, deps: Any, row: Any) -> None:
+    """Give the new main session its on-disk slot, as every other session has from its creation (a turn is built from it).
+
+    Not fatal: with no workspace registry (a seed that runs before the workspaces exist) or a workspace that cannot be reached now, the row stands and the
+    slot is allocated when its first turn is built (``ensure_agent_slot``)."""
+    from primer.model.agent import Agent
+    from primer.workspace.session_factory import ensure_agent_slot
+
+    if deps.workspace_registry is None:
+        return
+    try:
+        agent = await storage_provider.get_storage(Agent).get(RESERVED_OPERATOR_AGENT)
+        workspace = await deps.workspace_registry.get_workspace(row.workspace_id)
+        if agent is not None and workspace is not None:
+            await ensure_agent_slot(workspace, row, agent)
+    except Exception:  # noqa: BLE001 - the row is made; the first turn allocates the slot if this could not
+        logger.warning("prime: could not allocate the on-disk slot of %s now; its first turn will", row.id, exc_info=True)
 
 
 def shipped_prime_agents_md() -> bytes:
