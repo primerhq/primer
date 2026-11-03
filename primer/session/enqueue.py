@@ -649,7 +649,11 @@ async def wake_session(
                 async with _workspace_write(
                     deps, workspace_id=workspace_id, what=f"writing session {session_id!r}'s instruction",
                 ):
-                    slot = await ws.get_session(session_id)
+                    # A row made without its slot (the main operator session of an install that predates its allocation at creation) gets it
+                    # HERE, before the instruction: the turn's history is read from the slot, and an instruction appended to nothing never reaches it.
+                    from primer.workspace.session_factory import ensure_session_slot
+
+                    slot = await ensure_session_slot(ws, row, deps.storage_provider)
                     if slot is not None:
                         await _reopen_a_stale_ended_slot(slot)
                         await slot.append_instruction(

@@ -93,3 +93,52 @@ def test_the_executor_builder_allocates_a_missing_slot():
 
     body = inspect.getsource(executor_builders.build_agent_executor)
     assert "ensure_agent_slot(" in body and "On-disk session slot" not in body
+
+
+async def test_the_first_message_of_a_slotless_row_lands_in_the_history_the_turn_sends(workspace, fake_storage_provider):
+    """The owner's k3s: the steer ran while the slot was missing, the instruction reached only the display log, and the model answered 'No user query found'."""
+    await _operator(fake_storage_provider)
+    global_workspace = workspace
+
+    async def run():
+        from primer.session.enqueue import SessionWakeDeps, wake_session
+
+        class Scheduler:
+            async def enqueue(self, session_id):
+                return None
+
+        class Engine:
+            async def upsert(self, *a, **k):
+                return None
+
+        row = await create_session(
+            workspace_id=WS, binding=AgentSessionBinding(agent_id=RESERVED_OPERATOR_AGENT), initial_instructions=None, graph_input=None, auto_start=False,
+            metadata=None, name="main", session_id="sess-prime-main-3", initiated_by=USER,
+            deps=SessionFactoryDeps(storage_provider=fake_storage_provider, claim_engine=None, scheduler=None, workspace_registry=None),
+        )
+        assert await global_workspace.get_session(row.id) is None
+        deps = SessionWakeDeps(storage_provider=fake_storage_provider, scheduler=Scheduler(), claim_engine=Engine(), workspace_registry=Registry(global_workspace))
+        await wake_session(workspace_id=WS, session_id=row.id, instruction="hello", deps=deps, human_intent=True)
+        return row
+
+    row = await run()
+    slot = await workspace.get_session(row.id)
+    assert slot is not None, "the steer made the slot"
+    history = (await slot.log_view()).history
+    assert [(m.role, m.parts[0].text) for m in history] == [("user", "hello")], "what the executor sends has the user's message"
+    agent = await fake_storage_provider.get_storage(Agent).get(RESERVED_OPERATOR_AGENT)
+    assert await ensure_agent_slot(workspace, row, agent) is slot, "building the turn finds that slot and adds nothing"
+
+
+async def test_a_graph_session_without_a_slot_gets_one_for_its_first_message(workspace, fake_storage_provider):
+    from primer.model.workspace_session import GraphSessionBinding
+    from primer.workspace.session_factory import ensure_session_slot
+
+    row = await create_session(
+        workspace_id=WS, binding=GraphSessionBinding(graph_id="g1"), initial_instructions=None, graph_input=None, auto_start=False, metadata=None,
+        session_id="sess-graph-1", initiated_by=USER,
+        deps=SessionFactoryDeps(storage_provider=fake_storage_provider, claim_engine=None, scheduler=None, workspace_registry=None),
+    )
+    assert await workspace.get_session(row.id) is None
+    slot = await ensure_session_slot(workspace, row, fake_storage_provider)
+    assert slot is not None and await workspace.get_session(row.id) is slot
