@@ -7,6 +7,8 @@ then ask for the session's messages lock.
 
 from __future__ import annotations
 
+from tests._support.off_golden import JoinedLog
+
 import asyncio
 import contextlib
 import json
@@ -68,7 +70,7 @@ class LockOrderSpy:
 
 
 async def _lines(env: Env) -> list[dict]:
-    return [json.loads(line) for line in env.messages_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [json.loads(line) for line in JoinedLog(env.messages_path.parent).read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 @pytest.mark.parametrize("append_only", [False, True])

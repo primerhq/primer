@@ -45,6 +45,7 @@ from primer.model.chat import (
 from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable, RateLimitError, SummariserOverflow
 from primer.model.model_profile import ModelProfileConfig
 from primer.model_profile import ResolvedModel
+from tests._support.off_golden import joined_log
 from tests._support.off_golden import (
     CONTEXT_LENGTH, append_messages, assistant_message, make_agent, make_model, open_session, user_message,
 )
@@ -192,7 +193,7 @@ async def _turn(session, llm: _Window, *, tool_access: bool = False) -> list:
 
 
 def _lines(workspace, session) -> list[dict]:
-    path = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+    path = joined_log(workspace, session)
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 

@@ -383,6 +383,10 @@ def _make_lifespan(config: AppConfig):
         app.state.misc_toolset = misc_toolset
         app.state.web_toolset = web_toolset
         app.state.config = config
+        # The session log settings apply to this process whether or not it runs a worker: a steer is committed here.
+        from primer.workspace.message_log import apply_worker_config
+
+        apply_worker_config(config.worker)
 
         # The cookie-signing secret resolved above. Stashed on app.state so
         # the auth router + middleware can sign / verify session cookies

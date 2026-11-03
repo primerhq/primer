@@ -422,26 +422,33 @@ class SessionLog:
 
 # ---- the configured segment size --------------------------------------------------------------------------------------------------------------
 
-_segment_bytes_configured = 0
+#: Rotate a log when its active segment holds this many bytes (1 MiB: small enough that a commit stays cheap, large enough that a typical session stays in one or two files); the built-in default of a process that was never configured.
+DEFAULT_SEGMENT_BYTES = 1_048_576
+_segment_bytes_configured: int | None = None
 
 
-def set_segment_bytes_default(n: int) -> None:
-    """``WorkerConfig.session_log_segment_bytes``: rotate a session's log when its active segment passes this size; 0 (the default) never rotates."""
+def set_segment_bytes_default(n: int | None) -> None:
+    """``WorkerConfig.session_log_segment_bytes``: rotate a session's log when its active segment holds this many bytes; 0 never rotates (the kill
+    switch: existing segments are still read). ``None`` forgets the configuration."""
     global _segment_bytes_configured
-    _segment_bytes_configured = max(0, int(n))
+    _segment_bytes_configured = None if n is None else max(0, int(n))
 
 
 def segment_bytes_default() -> int:
-    """The configured size, or ``PRIMER_SESSION_LOG_SEGMENT_BYTES`` (how a whole test suite is run segmented)."""
-    if _segment_bytes_configured:
+    """An explicit setting (``set_segment_bytes_default``, or a configuration that is not the default) over ``PRIMER_SESSION_LOG_SEGMENT_BYTES`` (how a
+    whole test suite is run segmented) over :data:`DEFAULT_SEGMENT_BYTES`."""
+    if _segment_bytes_configured is not None:
         return _segment_bytes_configured
-    try:
-        return max(0, int(os.environ.get("PRIMER_SESSION_LOG_SEGMENT_BYTES", "") or 0))
-    except ValueError:
-        return 0
+    env = os.environ.get("PRIMER_SESSION_LOG_SEGMENT_BYTES", "").strip()
+    if env:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            pass
+    return DEFAULT_SEGMENT_BYTES
 
 
 __all__ = [
-    "LOG_NAME", "LinesSource", "SEGMENT_RE", "SegmentGap", "SegmentInfo", "SegmentSource", "SessionLog", "ShimSource", "StateRepoSource", "WorkspaceSource",
+    "DEFAULT_SEGMENT_BYTES", "LOG_NAME", "LinesSource", "SEGMENT_RE", "SegmentGap", "SegmentInfo", "SegmentSource", "SessionLog", "ShimSource", "StateRepoSource", "WorkspaceSource",
     "ordered", "parse_segment", "read_active_segment", "segment_bytes_default", "segment_name", "session_log_for", "set_segment_bytes_default",
 ]

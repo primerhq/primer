@@ -32,7 +32,7 @@ SEGMENT_SIZES = (512, 4096)
 @pytest.fixture(autouse=True)
 def _reset():
     yield
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
 
 
 def _golden(name: str) -> dict:
@@ -82,7 +82,7 @@ async def test_every_reader_gives_the_same_answer_on_a_log_the_real_writers_rota
     finally:
         await session.aclose()
         await backend.aclose()
-    set_segment_bytes_default(0)
+    set_segment_bytes_default(None)
     single = await open_env(tmp_path / "single")
     try:
         for stale in single.slot.glob("messages*.jsonl"):

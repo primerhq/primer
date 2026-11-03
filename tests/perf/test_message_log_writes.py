@@ -8,10 +8,17 @@ import shutil
 import pytest
 
 import primer.workspace.local.state as state_mod
+from primer.workspace.segments import set_segment_bytes_default
 from tests._support.log_golden import Env
 from tests._support.off_golden import ScriptedLLM, assistant_message, open_session, user_message
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git CLI not available on PATH")
+
+
+@pytest.fixture(autouse=True)
+def _forget_segment_size():
+    yield
+    set_segment_bytes_default(None)
 
 
 async def _run(tmp_path, append_only: bool, monkeypatch):
@@ -51,6 +58,8 @@ async def _run(tmp_path, append_only: bool, monkeypatch):
 
 
 async def test_an_append_only_turn_writes_its_own_bytes_and_the_same_number_of_git_commands(tmp_path, monkeypatch):
+    # The comparison is of the two write modes on ONE file, so rotation (which also ends the whole-file rewrite of a big log) is off for it.
+    set_segment_bytes_default(0)
     whole_written, whole_git, whole_bytes = await _run(tmp_path / "off", False, monkeypatch)
     monkeypatch.undo()
     appended_written, appended_git, appended_bytes = await _run(tmp_path / "on", True, monkeypatch)
@@ -58,3 +67,13 @@ async def test_an_append_only_turn_writes_its_own_bytes_and_the_same_number_of_g
     assert appended_written["whole"] == 0 and 0 < appended_written["appended"] < 2_000       # only the new lines were written
     assert len(appended_git) == len(whole_git)                                               # and the same git commands ran
     assert appended_bytes.count(b"\n") == whole_bytes.count(b"\n")                             # the same lines (byte identity: the goldens)
+
+
+async def test_a_whole_file_turn_on_a_big_log_writes_only_its_new_lines_once_the_log_rotates(tmp_path, monkeypatch):
+    """The point of segmentation for a repo that cannot append: the 2 MB log is a closed segment and the turn writes just its own lines to the next one."""
+    set_segment_bytes_default(1_048_576)
+    try:
+        written, _, _ = await _run(tmp_path, False, monkeypatch)
+    finally:
+        set_segment_bytes_default(None)
+    assert written["whole"] == 0, "messages.jsonl, the closed segment, was not rewritten"
