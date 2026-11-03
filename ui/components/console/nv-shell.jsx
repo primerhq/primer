@@ -201,7 +201,7 @@ function NV_hasNoTab(model) {
 // same row). This asks for it when the address named no workspace and no document, the shell has picked the FLAGGED default workspace (the route makes a
 // session, so it is never asked of the first-listed fallback), and the tab groups are still empty once the per-user working set is restored (env.ready),
 // and opens it as a tab only when the answer says this call CREATED it (created: true): the user's genuine first login, never a later empty-address load.
-// It asks once per page load, and opens nothing if, by the time the answer comes, the person has navigated (env.navigatedRef: a link, Back, a verb),
+// It asks once per page load, and opens nothing if, by the time the answer comes, the person has navigated or touched the page (env.navigatedRef: a link, Back, a verb, the first tap or key press),
 // selected another workspace or opened a tab. The open is landing state, not a navigation: no history entry, so the URL write replaces. A refused call
 // opens nothing and says nothing (nobody asked for it). The phone shell shares this state, so it lands there too.
 function NV_useMainSessionOpen(env) {
@@ -424,6 +424,18 @@ function NV_Shell() {
   var markPush = React.useCallback(function () {
     pendingPushRef.current = true;
     navigatedRef.current = true;
+  }, []);
+  // The first tap or key press on the page counts as navigating too. A phone's tabs and its Platform rows (and a desktop's panels) change what is shown
+  // without a URL change or a verb, and the first-load open of the main session must not land over a place the person already went to: an answer that
+  // arrives after their first touch is dropped, however the server paced it.
+  React.useEffect(function () {
+    function touched() { navigatedRef.current = true; }
+    document.addEventListener("pointerdown", touched, true);
+    document.addEventListener("keydown", touched, true);
+    return function () {
+      document.removeEventListener("pointerdown", touched, true);
+      document.removeEventListener("keydown", touched, true);
+    };
   }, []);
   // The listener effect below hands its reader to the write effect, which
   // reads an address-bar change it has not seen before it writes over it.
