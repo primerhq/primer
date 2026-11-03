@@ -1,0 +1,1781 @@
+{
+ "compaction_state": [
+  120,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "0affbef5a7bb22ac"
+    ]
+   ],
+   "role": "assistant",
+   "text": "SUMMARY of the first turn"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "813c80c153dfcaa0"
+    ]
+   ],
+   "role": "user",
+   "text": "second question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "07abd495a821c3e5"
+    ]
+   ],
+   "role": "user",
+   "text": "third question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6593e6e7d44c1f08"
+    ]
+   ],
+   "role": "assistant",
+   "text": "third answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "344ac24474f1d4c2"
+    ]
+   ],
+   "role": "user",
+   "text": "fifth question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "51e666023defb35c"
+    ]
+   ],
+   "role": "user",
+   "text": "sixth question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "5a192bc85e463d26"
+    ]
+   ],
+   "role": "assistant",
+   "text": "sixth answer"
+  }
+ ],
+ "final_text": "sixth answer",
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "0affbef5a7bb22ac"
+    ]
+   ],
+   "role": "assistant",
+   "text": "SUMMARY of the first turn"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "813c80c153dfcaa0"
+    ]
+   ],
+   "role": "user",
+   "text": "second question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "07abd495a821c3e5"
+    ]
+   ],
+   "role": "user",
+   "text": "third question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6593e6e7d44c1f08"
+    ]
+   ],
+   "role": "assistant",
+   "text": "third answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "344ac24474f1d4c2"
+    ]
+   ],
+   "role": "user",
+   "text": "fifth question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "51e666023defb35c"
+    ]
+   ],
+   "role": "user",
+   "text": "sixth question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "5a192bc85e463d26"
+    ]
+   ],
+   "role": "assistant",
+   "text": "sixth answer"
+  }
+ ],
+ "max_event_seq": 20,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "64cd696fc2e0e1f7"
+    ]
+   ],
+   "role": "user",
+   "text": "first question"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "2df05c53d0976e51"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "0cef34a8f3371ec9"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "30260afba5232490"
+    ]
+   ],
+   "role": "assistant",
+   "text": "first answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "813c80c153dfcaa0"
+    ]
+   ],
+   "role": "user",
+   "text": "second question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "c8326045b459e1b0"
+    ]
+   ],
+   "role": "assistant",
+   "text": "second answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "07abd495a821c3e5"
+    ]
+   ],
+   "role": "user",
+   "text": "third question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "6593e6e7d44c1f08"
+    ]
+   ],
+   "role": "assistant",
+   "text": "third answer"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "344ac24474f1d4c2"
+    ]
+   ],
+   "role": "user",
+   "text": "fifth question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "51e666023defb35c"
+    ]
+   ],
+   "role": "user",
+   "text": "sixth question"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "5a192bc85e463d26"
+    ]
+   ],
+   "role": "assistant",
+   "text": "sixth answer"
+  }
+ ],
+ "open_turn": {
+  "0": true,
+  "14": true,
+  "4": true,
+  "9": true
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": [
+   "user_input",
+   1
+  ],
+  "10": null,
+  "11": [
+   "user_input",
+   11
+  ],
+  "12": [
+   "assistant_token",
+   12
+  ],
+  "13": [
+   "done",
+   13
+  ],
+  "14": [
+   "user_input",
+   14
+  ],
+  "15": [
+   "rewind_marker",
+   15
+  ],
+  "16": [
+   "user_input",
+   16
+  ],
+  "17": [
+   "error",
+   17
+  ],
+  "18": [
+   "user_input",
+   18
+  ],
+  "19": [
+   "assistant_token",
+   19
+  ],
+  "2": [
+   "reasoning",
+   2
+  ],
+  "3": [
+   "tool_call",
+   3
+  ],
+  "4": [
+   "tool_result",
+   4
+  ],
+  "5": [
+   "assistant_token",
+   5
+  ],
+  "6": [
+   "done",
+   6
+  ],
+  "7": [
+   "user_input",
+   7
+  ],
+  "8": [
+   "assistant_token",
+   8
+  ],
+  "9": [
+   "done",
+   9
+  ]
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "0affbef5a7bb22ac"
+     ]
+    ],
+    "role": "assistant",
+    "text": "SUMMARY of the first turn"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "813c80c153dfcaa0"
+     ]
+    ],
+    "role": "user",
+    "text": "second question"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "c8326045b459e1b0"
+     ]
+    ],
+    "role": "assistant",
+    "text": "second answer"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "07abd495a821c3e5"
+     ]
+    ],
+    "role": "user",
+    "text": "third question"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "6593e6e7d44c1f08"
+     ]
+    ],
+    "role": "assistant",
+    "text": "third answer"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "344ac24474f1d4c2"
+     ]
+    ],
+    "role": "user",
+    "text": "fifth question"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "51e666023defb35c"
+     ]
+    ],
+    "role": "user",
+    "text": "sixth question"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "5a192bc85e463d26"
+     ]
+    ],
+    "role": "assistant",
+    "text": "sixth answer"
+   }
+  ],
+  "sha": "98dc79aaf86f9dda"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:1",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "first question"
+     },
+     "seq": 1,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "reasoning",
+     "cursor": "<sid>:2",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "tool_call",
+     "cursor": "<sid>:3",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "arguments": {
+       "cmd": "ls"
+      },
+      "id": "c1",
+      "name": "exec"
+     },
+     "seq": 3,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "tool_result",
+     "cursor": "<sid>:4",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "id": "c1",
+      "output": "a b"
+     },
+     "seq": 4,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:5",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "first answer"
+     },
+     "seq": 5,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:6",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 6,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:7",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "second question"
+     },
+     "seq": 7,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:8",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "second answer"
+     },
+     "seq": 8,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:9",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 9,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:11",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third question"
+     },
+     "seq": 11,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:12",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third answer"
+     },
+     "seq": 12,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:13",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 13,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:14",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fourth question"
+     },
+     "seq": 14,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "rewind_marker",
+     "cursor": "<sid>:15",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "to_seq": 11
+     },
+     "seq": 15,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:16",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "error",
+     "cursor": "<sid>:17",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:18",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:19",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:20",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "offsets": {
+    "<sid>": 3441
+   },
+   "seqs": {
+    "<sid>": 20
+   }
+  },
+  "3": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:1",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "first question"
+     },
+     "seq": 1,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "reasoning",
+     "cursor": "<sid>:2",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "tool_call",
+     "cursor": "<sid>:3",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "arguments": {
+       "cmd": "ls"
+      },
+      "id": "c1",
+      "name": "exec"
+     },
+     "seq": 3,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "offsets": {
+    "<sid>": 434
+   },
+   "seqs": {
+    "<sid>": 3
+   }
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:11",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third question"
+     },
+     "seq": 11,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:12",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third answer"
+     },
+     "seq": 12,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:13",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 13,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:14",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fourth question"
+     },
+     "seq": 14,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "rewind_marker",
+     "cursor": "<sid>:15",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "to_seq": 11
+     },
+     "seq": 15,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:16",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "error",
+     "cursor": "<sid>:17",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:18",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:19",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:20",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "next_offset": 3441
+  },
+  "mid": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:11",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third question"
+     },
+     "seq": 11,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:12",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third answer"
+     },
+     "seq": 12,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:13",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 13,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:14",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fourth question"
+     },
+     "seq": 14,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "rewind_marker",
+     "cursor": "<sid>:15",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "to_seq": 11
+     },
+     "seq": 15,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:16",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "error",
+     "cursor": "<sid>:17",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:18",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:19",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:20",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "next_offset": 3441
+  },
+  "start": {
+   "events": [
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:1",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "first question"
+     },
+     "seq": 1,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "reasoning",
+     "cursor": "<sid>:2",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "tool_call",
+     "cursor": "<sid>:3",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "arguments": {
+       "cmd": "ls"
+      },
+      "id": "c1",
+      "name": "exec"
+     },
+     "seq": 3,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "tool_result",
+     "cursor": "<sid>:4",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "id": "c1",
+      "output": "a b"
+     },
+     "seq": 4,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:5",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "first answer"
+     },
+     "seq": 5,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:6",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 6,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:7",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "second question"
+     },
+     "seq": 7,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:8",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "second answer"
+     },
+     "seq": 8,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:9",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 9,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:11",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third question"
+     },
+     "seq": 11,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:12",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "third answer"
+     },
+     "seq": 12,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:13",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 13,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:14",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fourth question"
+     },
+     "seq": 14,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "rewind_marker",
+     "cursor": "<sid>:15",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "to_seq": 11
+     },
+     "seq": 15,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:16",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "error",
+     "cursor": "<sid>:17",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "user_input",
+     "cursor": "<sid>:18",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "assistant_token",
+     "cursor": "<sid>:19",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    },
+    {
+     "agent_id": "ag-seg",
+     "class": "done",
+     "cursor": "<sid>:20",
+     "graph_id": null,
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20,
+     "session_id": "<sid>",
+     "ts": "2026-11-01T12:00:00Z",
+     "workspace_id": "ws-seg"
+    }
+   ],
+   "next_offset": 3441
+  }
+ },
+ "timeline_parse": [
+  {
+   "children": [],
+   "duration_ms": null,
+   "ended_at": null,
+   "started_at": null,
+   "status": "running",
+   "terminal_seq": 6,
+   "turn_no": 0,
+   "waits": []
+  },
+  {
+   "children": [],
+   "duration_ms": null,
+   "ended_at": null,
+   "started_at": null,
+   "status": "running",
+   "terminal_seq": 9,
+   "turn_no": 1,
+   "waits": []
+  },
+  {
+   "children": [],
+   "duration_ms": 0,
+   "ended_at": "2026-11-01T12:00:00Z",
+   "started_at": "2026-11-01T12:00:00Z",
+   "status": "running",
+   "terminal_seq": 13,
+   "turn_no": 2,
+   "waits": []
+  },
+  {
+   "children": [
+    {
+     "children": [],
+     "code": null,
+     "kind": "error",
+     "message": "boom",
+     "seq": 17,
+     "ts": "2026-11-01T12:00:00Z"
+    }
+   ],
+   "duration_ms": 0,
+   "ended_at": "2026-11-01T12:00:00Z",
+   "started_at": "2026-11-01T12:00:00Z",
+   "status": "failed",
+   "terminal_seq": 17,
+   "turn_no": 3,
+   "waits": []
+  },
+  {
+   "children": [],
+   "duration_ms": 0,
+   "ended_at": "2026-11-01T12:00:00Z",
+   "started_at": "2026-11-01T12:00:00Z",
+   "status": "completed",
+   "terminal_seq": 20,
+   "turn_no": 4,
+   "waits": []
+  }
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "first question"
+     },
+     "seq": 1
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "reasoning",
+     "node_id": null,
+     "payload": {
+      "text": "thinking"
+     },
+     "seq": 2
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "tool_call",
+     "node_id": null,
+     "payload": {
+      "arguments": {
+       "cmd": "ls"
+      },
+      "id": "c1",
+      "name": "exec"
+     },
+     "seq": 3
+    },
+    {
+     "parts": [
+      {
+       "arguments": {
+        "cmd": "ls"
+       },
+       "id": "c1",
+       "name": "exec",
+       "type": "tool_call"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "tool_result",
+     "node_id": null,
+     "payload": {
+      "id": "c1",
+      "output": "a b"
+     },
+     "seq": 4
+    },
+    {
+     "parts": [
+      {
+       "error": false,
+       "id": "c1",
+       "media": null,
+       "metadata": null,
+       "output": "a b",
+       "type": "tool_result"
+      }
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      {
+       "text": "first answer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 26
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "rewind_marker",
+     "node_id": null,
+     "payload": {
+      "to_seq": 11
+     },
+     "seq": 15
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "error",
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18
+    },
+    {
+     "parts": [
+      {
+       "text": "sixth answer",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "done",
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 26
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "kept_tail_messages": [
+       {
+        "parts": [
+         {
+          "text": "second question",
+          "type": "text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "parts": [
+         {
+          "text": "second answer",
+          "type": "text"
+         }
+        ],
+        "role": "assistant"
+       }
+      ],
+      "summary": "SUMMARY of the first turn",
+      "tokens_after": 120,
+      "tokens_before": 900
+     },
+     "seq": 10
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "third question"
+     },
+     "seq": 11
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "error",
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "done",
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 7
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "compaction_marker",
+     "node_id": null,
+     "payload": {
+      "kept_tail_messages": [
+       {
+        "parts": [
+         {
+          "text": "second question",
+          "type": "text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "parts": [
+         {
+          "text": "second answer",
+          "type": "text"
+         }
+        ],
+        "role": "assistant"
+       }
+      ],
+      "summary": "SUMMARY of the first turn",
+      "tokens_after": 120,
+      "tokens_before": 900
+     },
+     "seq": 10
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "third question"
+     },
+     "seq": 11
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "fifth question"
+     },
+     "seq": 16
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "error",
+     "node_id": null,
+     "payload": {
+      "message": "boom"
+     },
+     "seq": 17
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "sixth question"
+     },
+     "seq": 18
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "assistant_token",
+     "node_id": null,
+     "payload": {
+      "text": "sixth answer"
+     },
+     "seq": 19
+    },
+    {
+     "created_at": "2026-11-01T12:00:00Z",
+     "kind": "done",
+     "node_id": null,
+     "payload": {
+      "stop_reason": "stop"
+     },
+     "seq": 20
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 7
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 1,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 2
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 1,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 2
+  }
+ }
+}

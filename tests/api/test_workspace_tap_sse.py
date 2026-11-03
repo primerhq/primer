@@ -44,6 +44,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.tap.router import WorkspaceTapRouter
+from tests._support.segmented_io import ListsFiles
 
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -79,7 +80,7 @@ class _FakeTemplate:
     state_path = ".state"
 
 
-class _FakeWorkspaceForTap:
+class _FakeWorkspaceForTap(ListsFiles):
     """Minimal workspace exposing read_file + state_path + append_record."""
 
     state_path = ".state"

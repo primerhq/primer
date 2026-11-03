@@ -201,7 +201,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
     async def _persist_turn(self, turn_messages: list[Message]) -> None:
         """Append ``turn_messages`` to ``messages.jsonl`` via ``commit_state``.
 
-        This is itself a read-modify-rewrite: ``_appended_jsonl`` reads the
+        This is itself a read-modify-rewrite: ``_rewrite_log`` reads the
         current file and ``commit_state`` writes the whole thing back. The
         session's messages lock is held across BOTH so a concurrent writer
         (an ``append_instruction`` steer, or a streamed event row) cannot
@@ -330,7 +330,6 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # messages lock itself, so it runs before ours.
         reserved = await self._event_log.reserve_seq() if self._event_log is not None else None
         async with self._session.messages_lock:
-            existing = "" if self._append_only() else await self._read_messages_jsonl_text()
             view = await self._log_view()
             boundary_seq = view.max_seq
             carried = self._lines_after_snapshot(view.history, snapshot)
@@ -377,10 +376,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             if self._append_only():
                 await self._session.commit_state(summary=summary, op="message", appends={"messages.jsonl": (marker.model_dump_json() + "\n").encode()})
             else:
-                if existing and not existing.endswith("\n"):
-                    existing += "\n"
-                new_jsonl = existing + marker.model_dump_json() + "\n"
-                await self._session.commit_state(summary=summary, op="message", files={"messages.jsonl": new_jsonl})
+                await self._rewrite_log(summary=summary, op="message", new_lines=(marker.model_dump_json() + "\n").encode())
         return carried
 
     def _lines_after_snapshot(
@@ -626,7 +622,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             payload = ("\n".join(m.model_dump_json() for m in new_messages) + "\n").encode()
             await self._session.commit_state(summary=summary, op=op, appends={"messages.jsonl": payload})  # type: ignore[arg-type]
         else:
-            await self._session.commit_state(summary=summary, op=op, files={"messages.jsonl": await self._appended_jsonl(new_messages)})  # type: ignore[arg-type]
+            await self._rewrite_log(summary=summary, op=op, new_lines=("\n".join(m.model_dump_json() for m in new_messages) + "\n").encode())
 
     async def _log_view(self):
         """The session's cached view of ``messages.jsonl`` (see :meth:`AgentSession.log_view`); a duck-typed session with no such method
@@ -635,12 +631,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         if log_view is not None:
             return await log_view()
         from primer.workspace.message_log import MessageLogCache
+        from primer.workspace.segments import SessionLog, StateRepoSource
 
         cache = self.__dict__.get("_own_log_cache")
         if cache is None:
             cache = self._own_log_cache = MessageLogCache()
-        rel = self._messages_jsonl_rel()
-        return await cache.view(lambda: self._session._state.read_state_file(rel))
+        return await cache.view_log(SessionLog(StateRepoSource(self._session._state), f"sessions/{self._session.session_id}"))
 
     def _messages_jsonl_rel(self) -> str:
         """Return the ``messages.jsonl`` path relative to the state repo root.
@@ -681,17 +677,23 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         state = (await self._log_view()).compaction
         return state.tokens_after, state.noted
 
-    async def _appended_jsonl(self, new_messages: list[Message]) -> str:
-        existing = await self._read_messages_jsonl_text()
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        return existing + "\n".join(m.model_dump_json() for m in new_messages) + "\n"
-
     async def _read_messages_jsonl_text(self) -> str:
-        raw = await self._session._state.read_state_file(self._messages_jsonl_rel())
-        if not raw:
-            return ""
-        return raw.decode("utf-8")
+        """The whole log as text (every segment)."""
+        from primer.workspace.segments import SessionLog, StateRepoSource
+
+        raw = await SessionLog(StateRepoSource(self._session._state), f"sessions/{self._session.session_id}").read_all()
+        return raw.decode("utf-8") if raw else ""
+
+    async def _rewrite_log(self, *, summary: str, op: str, new_lines: bytes) -> None:
+        """Write the log whole (a repo that cannot append, or the flag off): the active segment as read under the messages lock, plus ``new_lines``;
+        the repo rotates to the next segment when the active one is full (see :class:`primer.int.state_repo.LogRewrite`)."""
+        from primer.int.state_repo import LogRewrite
+        from primer.workspace.segments import read_active_segment
+
+        name, existing = await read_active_segment(self._session._state, self._session.session_id)
+        if existing and not existing.endswith(b"\n"):
+            existing += b"\n"
+        await self._session.commit_state(summary=summary, op=op, log_rewrite=LogRewrite(name, existing, new_lines))  # type: ignore[arg-type]
 
     async def _fetch_last_assistant_text(self) -> str | None:
         """Return the text of the most recent assistant message, or None.

@@ -90,6 +90,16 @@ class WorkerConfig(BaseModel):
             "only the I/O differs. A state repo that cannot append (a sandbox) keeps writing the whole file. Default OFF until it has soaked."
         ),
     )
+    session_log_segment_bytes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Segment a session's message log: when its active segment file holds at least this many bytes, "
+            "the next commit continues the log in a new file, so a closed segment is never written again and each commit stores only the small "
+            "active one. Rotation is only ever done by the state commit, between whole batches of records. 0 (the default) never rotates; existing "
+            "segments are always read. See docs/superpowers/specs/2026-11-02-segmented-session-log-design.md."
+        ),
+    )
     session_log_verify_reads: bool = Field(
         default=False,
         description=(

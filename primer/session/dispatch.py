@@ -2926,6 +2926,15 @@ async def _read_message_lines(workspace_io, row: WorkspaceSession) -> list[str] 
     """
     try:
         async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+            from primer.workspace.segments import ShimSource, SessionLog
+
+            if ShimSource.supports(workspace_io):
+                # The real shim: the log may be several segments; the window widens across them.
+                log = SessionLog(ShimSource(workspace_io, row.workspace_id), f"sessions/{row.id}")
+                window = await window_lines(log.read_tail, row.next_unprocessed_seq)
+                if window is not None:
+                    return window
+                return (await log.read_all()).decode("utf-8", "replace").splitlines()
             read_state_tail = getattr(workspace_io, "read_state_tail", None)
             if read_state_tail is not None:
                 rel = f"sessions/{row.id}/messages.jsonl"

@@ -167,6 +167,24 @@ async def test_a_session_with_no_log_yet_reads_empty():
     assert json.loads(res.output)["items"] == []
 
 
+async def test_session_messages_tool_reads_a_segmented_log_like_the_single_file():
+    """Seglog Task 5: the tool shares the route's reader, so a log cut into segments pages as the single file does (every segment, in order)."""
+    from tests._support.segmented_log import PLANS, full_run, split_log
+
+    ts, provider, io = await _setup()
+    raw = full_run()
+    await _seed_session(provider.store, "s-seg")
+    io.write(_msg_path("s1"), raw)
+    for n, part in enumerate(split_log(raw, PLANS["every_record"](raw))):
+        io.write(_msg_path("s-seg") if n == 0 else _msg_path("s-seg").replace("messages.jsonl", f"messages.{n:04d}.jsonl"), part)
+    for args in ({}, {"limit": 3, "offset": 4}, {"after_seq": 9}, {"tail": True, "limit": 4}, {"tail": True, "limit": 4, "offset": 4}):
+        one = await _call(ts, {"workspace_id": _WID, "session_id": "s1", **args}, _run_in_the_workspace())
+        seg = await _call(ts, {"workspace_id": _WID, "session_id": "s-seg", **args}, _run_in_the_workspace())
+        assert not one.is_error and not seg.is_error, (one.output, seg.output)
+        assert json.loads(seg.output) == json.loads(one.output), args
+    assert json.loads(seg.output)["total"] > 20
+
+
 @pytest.mark.parametrize("ctx", [_run_in_the_workspace(), None], ids=["user-run", "mcp"])
 async def test_the_raw_state_read_is_still_refused(ctx):
     """The guard is not weakened: the raw path stays refused."""

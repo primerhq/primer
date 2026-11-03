@@ -1,8 +1,8 @@
 """A small bounded cache for a session's usage totals (architecture review A-05).
 
-The usage of a session is a pure function of its ``messages.jsonl`` (``primer.session.usage.session_usage``), and the session detail route
-folded the whole log on every read. The route keys this cache on the identity of the log (the file's size and modification time as the
-workspace reports them, and the row's ``last_seq`` and ``turn_no``), so an entry is served only for a log that has not changed. Process
+The usage of a session is a pure function of its log (``primer.session.usage.session_usage``), and the session detail route folded the
+whole log on every read. The route keys this cache on the identity of the log (every segment's name, size and modification time as the
+workspace lists them, and the row's ``last_seq`` and ``turn_no``), so an entry is served only for a log that has not changed. Process
 local and bounded: the entries are a handful of integers, the bound is what keeps a long-running API from keeping one per session it ever served.
 """
 
@@ -11,10 +11,10 @@ from __future__ import annotations
 import copy
 from collections import OrderedDict
 from collections.abc import Hashable
-from typing import Any
 
 from primer.model.except_ import NotFoundError
 from primer.session.usage import SessionUsage, UsageFold, session_usage
+from primer.workspace.segments import SegmentInfo, SessionLog
 
 __all__ = ["UsageCache", "fold_usage"]
 
@@ -61,33 +61,40 @@ class UsageCache:
             self._folds.popitem(last=False)
 
 
-async def fold_usage(workspace: Any, rel: str, cache: UsageCache, key: Hashable) -> SessionUsage:
-    """The usage of the log at ``rel``, folding only what was appended since the last call for ``key`` when the workspace can read a range.
+async def fold_usage(log: SessionLog, cache: UsageCache, key: Hashable, *, segments: list[SegmentInfo] | None = None) -> SessionUsage:
+    """The usage of the session ``log``, folding only what was appended since the last call for ``key``.
 
-    The fold of the lines already seen is kept in ``cache`` with the byte it reached and the last bytes before it; a later call reads from
-    there (``read_file_from``), checks that those bytes are still what it folded (a rewrite or trim makes them differ: the log is then folded
-    whole), and folds the complete new lines. A trailing line with no newline yet is counted in the answer but not consumed. A log with a rewind
-    marker is folded whole each time (``session_usage``), as before. Raises ``NotFoundError`` for a missing log.
+    The fold of the lines already seen is kept in ``cache`` with the LOGICAL offset it reached (into the concatenation of the segments, so it
+    stays valid across a rotation) and the last bytes before it; a later call reads from there (``log.read_from``), checks that those bytes are
+    still what it folded (a rewrite or trim makes them differ: the log is then folded whole), and folds the complete new lines. A trailing line
+    with no newline yet is counted in the answer but not consumed. A log with a rewind marker is folded whole each time (``session_usage``), as
+    before. ``segments`` is a listing the caller just made. Raises ``NotFoundError`` for a log with no segment.
     """
+    segments = segments if segments is not None else await log.segments()
+    if not segments:
+        raise NotFoundError("the session has no log yet")
+
+    async def read_from(offset: int) -> bytes:
+        return await log.read_from(offset, segments=segments)
+
     known, fold = cache.get_fold(key)
-    ranged = getattr(workspace, "read_file_from", None)
     fresh: bytes | None = None
     if known and fold is None:
-        return _whole(await workspace.read_file(rel))
-    if fold is not None and ranged is not None:
+        return _whole(await read_from(0))
+    if fold is not None:
         start = max(0, fold.consumed - len(fold.guard))
-        tail = await ranged(rel, start)
+        tail = await read_from(start)
         if tail[:len(fold.guard)] == fold.guard:
             fresh = tail[len(fold.guard):]
         else:
             fold = None
     if fresh is None:
-        fold, fresh = UsageFold(), await workspace.read_file(rel)
+        fold, fresh = UsageFold(), await read_from(0)
     cut = fresh.rfind(b"\n") + 1
     complete, partial = fresh[:cut], fresh[cut:]
     if not fold.feed(complete.decode("utf-8", errors="replace").splitlines()):
         cache.put_fold(key, None)
-        return _whole(await workspace.read_file(rel))
+        return _whole(await read_from(0))
     fold.consumed += len(complete)
     fold.guard = (fold.guard + complete)[-_GUARD_BYTES:]
     cache.put_fold(key, fold)

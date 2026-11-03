@@ -1,0 +1,651 @@
+{
+ "compaction_state": [
+  null,
+  null
+ ],
+ "executor_history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0e8d8caf30a22566"
+    ]
+   ],
+   "role": "user",
+   "text": "run two things"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "d646c2c9166325a1"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "273ae5fdb30b5cfd"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "cb850a5e3be79d0b"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 1"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "02a16141dc763837"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "ca9524cc69fee182"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "8bb5dd376cc711e4"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 2"
+  }
+ ],
+ "final_text": null,
+ "history": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0e8d8caf30a22566"
+    ]
+   ],
+   "role": "user",
+   "text": "run two things"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "d646c2c9166325a1"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "273ae5fdb30b5cfd"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "cb850a5e3be79d0b"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 1"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "02a16141dc763837"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "ca9524cc69fee182"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "8bb5dd376cc711e4"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 2"
+  }
+ ],
+ "max_event_seq": 0,
+ "memory_loader": [
+  {
+   "parts": [
+    [
+     "text",
+     "083f9a86ebd7dc93"
+    ]
+   ],
+   "role": "user",
+   "text": "hello"
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "0e8d8caf30a22566"
+    ]
+   ],
+   "role": "user",
+   "text": "run two things"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "d646c2c9166325a1"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "273ae5fdb30b5cfd"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "cb850a5e3be79d0b"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 1"
+  },
+  {
+   "parts": [
+    [
+     "tool_call",
+     "02a16141dc763837"
+    ]
+   ],
+   "role": "assistant",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "tool_result",
+     "ca9524cc69fee182"
+    ]
+   ],
+   "role": "tool",
+   "text": ""
+  },
+  {
+   "parts": [
+    [
+     "text",
+     "8bb5dd376cc711e4"
+    ]
+   ],
+   "role": "assistant",
+   "text": "answered 2"
+  }
+ ],
+ "open_turn": {
+  "0": false,
+  "14": false,
+  "4": false,
+  "9": false
+ },
+ "record_by_seq": {
+  "0": null,
+  "1": null,
+  "10": null,
+  "11": null,
+  "12": null,
+  "13": null,
+  "14": null,
+  "15": null,
+  "16": null,
+  "17": null,
+  "18": null,
+  "19": null,
+  "2": null,
+  "3": null,
+  "4": null,
+  "5": null,
+  "6": null,
+  "7": null,
+  "8": null,
+  "9": null
+ },
+ "route_text": {
+  "history": [
+   {
+    "parts": [
+     [
+      "text",
+      "083f9a86ebd7dc93"
+     ]
+    ],
+    "role": "user",
+    "text": "hello"
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "0e8d8caf30a22566"
+     ]
+    ],
+    "role": "user",
+    "text": "run two things"
+   },
+   {
+    "parts": [
+     [
+      "tool_call",
+      "d646c2c9166325a1"
+     ]
+    ],
+    "role": "assistant",
+    "text": ""
+   },
+   {
+    "parts": [
+     [
+      "tool_result",
+      "273ae5fdb30b5cfd"
+     ]
+    ],
+    "role": "tool",
+    "text": ""
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "cb850a5e3be79d0b"
+     ]
+    ],
+    "role": "assistant",
+    "text": "answered 1"
+   },
+   {
+    "parts": [
+     [
+      "tool_call",
+      "02a16141dc763837"
+     ]
+    ],
+    "role": "assistant",
+    "text": ""
+   },
+   {
+    "parts": [
+     [
+      "tool_result",
+      "ca9524cc69fee182"
+     ]
+    ],
+    "role": "tool",
+    "text": ""
+   },
+   {
+    "parts": [
+     [
+      "text",
+      "8bb5dd376cc711e4"
+     ]
+    ],
+    "role": "assistant",
+    "text": "answered 2"
+   }
+  ],
+  "sha": "5a083c53f5441a14"
+ },
+ "take_pending": [],
+ "tap_batch": {
+  "1000": {
+   "events": [],
+   "offsets": {
+    "<sid>": 725
+   },
+   "seqs": {}
+  },
+  "3": {
+   "events": [],
+   "offsets": {
+    "<sid>": 725
+   },
+   "seqs": {}
+  }
+ },
+ "tap_since": {
+  "after_seq": {
+   "events": [],
+   "next_offset": 725
+  },
+  "mid": {
+   "events": [],
+   "next_offset": 725
+  },
+  "start": {
+   "events": [],
+   "next_offset": 725
+  }
+ },
+ "timeline_parse": [
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "transcript_page": {
+  "visible=False,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "run two things"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "arguments": {
+        "cmd": "echo 1"
+       },
+       "id": "call_1",
+       "name": "exec",
+       "type": "tool_call"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "error": false,
+       "id": "call_1",
+       "media": null,
+       "metadata": null,
+       "output": "out 1\n",
+       "type": "tool_result"
+      }
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      {
+       "text": "answered 1",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "arguments": {
+        "cmd": "echo 2"
+       },
+       "id": "call_2",
+       "name": "exec",
+       "type": "tool_call"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "error": false,
+       "id": "call_2",
+       "media": null,
+       "metadata": null,
+       "output": "out 2\n",
+       "type": "tool_result"
+      }
+     ],
+     "role": "tool"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 8
+  },
+  "visible=False,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "run two things"
+     },
+     "seq": -1
+    },
+    {
+     "parts": [
+      {
+       "arguments": {
+        "cmd": "echo 1"
+       },
+       "id": "call_1",
+       "name": "exec",
+       "type": "tool_call"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "error": false,
+       "id": "call_1",
+       "media": null,
+       "metadata": null,
+       "output": "out 1\n",
+       "type": "tool_result"
+      }
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      {
+       "text": "answered 1",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "arguments": {
+        "cmd": "echo 2"
+       },
+       "id": "call_2",
+       "name": "exec",
+       "type": "tool_call"
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "parts": [
+      {
+       "error": false,
+       "id": "call_2",
+       "media": null,
+       "metadata": null,
+       "output": "out 2\n",
+       "type": "tool_result"
+      }
+     ],
+     "role": "tool"
+    },
+    {
+     "parts": [
+      {
+       "text": "answered 2",
+       "type": "text"
+      }
+     ],
+     "role": "assistant"
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 8
+  },
+  "visible=True,tail=False": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "run two things"
+     },
+     "seq": -1
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 2
+  },
+  "visible=True,tail=True": {
+   "items": [
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "hello"
+     },
+     "seq": 0
+    },
+    {
+     "created_at": "2026-11-01T12:00:00+00:00",
+     "kind": "user_input",
+     "node_id": null,
+     "payload": {
+      "text": "run two things"
+     },
+     "seq": -1
+    }
+   ],
+   "limit": 7,
+   "offset": 0,
+   "total": 2
+  }
+ },
+ "usage_totals": {
+  "fold": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  },
+  "totals": {
+   "last_input_tokens": 0,
+   "last_output_tokens": 0,
+   "model_calls": 0,
+   "total_cached_input_tokens": 0,
+   "total_input_tokens": 0,
+   "total_output_tokens": 0,
+   "total_reasoning_tokens": 0,
+   "turns": 0
+  }
+ }
+}

@@ -129,9 +129,30 @@ class FakeWorkspace:
     async def get_session(self, session_id: str) -> FakeAgentSession:
         return FakeAgentSession(session_id)
 
-    async def file_info(self, path: str) -> None:
+    def _log_sid(self, path: str) -> str | None:
+        parts = path.split("/")
+        if len(parts) == 4 and parts[0] == self.state_path and parts[1] == "sessions" and parts[2] in self._records:
+            return parts[2]
+        return None
+
+    async def list_files(self, path: str = ".", **_kw) -> list:
+        from types import SimpleNamespace
+
+        parts = path.split("/")
+        if len(parts) == 3 and parts[0] == self.state_path and parts[1] == "sessions" and parts[2] in self._records:
+            return [SimpleNamespace(path=f"{path}/messages.jsonl", kind="file", size_bytes=0)]
+        return []
+
+    async def read_file_from(self, path: str, offset: int) -> bytes:
+        return (await self.read_file(path))[offset:]
+
+    async def file_info(self, path: str):
+        from types import SimpleNamespace
+
         from primer.model.except_ import NotFoundError
 
+        if path.endswith("/messages.jsonl") and self._log_sid(path) is not None:
+            return SimpleNamespace(size_bytes=len(await self.read_file(path)))
         raise NotFoundError(f"no such file {path!r}")
 
     async def read_file(self, path: str) -> bytes:

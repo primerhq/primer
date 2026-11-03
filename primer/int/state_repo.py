@@ -10,6 +10,7 @@ This module is type-only; it does not import any concrete implementation.
 from __future__ import annotations
 
 import typing
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from primer.model.workspace_session import (
@@ -134,6 +135,32 @@ class StatingStateRepo(Protocol):
 
 
 @runtime_checkable
+class ListingStateRepo(Protocol):
+    """OPTIONAL: a repo that can list a directory of the .state/ tree (the segmented session log asks for its ``messages*.jsonl`` files).
+
+    Callers reach it with ``getattr(repo, "list_state_dir", None)`` and probe the segment names in order when it is absent.
+    """
+
+    async def list_state_dir(self, path: str) -> list[str]:
+        """The file names directly under ``path`` (relative to the .state/ repo root); an absent directory lists nothing."""
+        ...
+
+
+@dataclass(frozen=True)
+class LogRewrite:
+    """A whole-file write of the session log's ACTIVE segment (a repo that cannot append, or the flag off): the caller read ``existing`` (the bytes of
+    segment ``active_name``) under the session's messages lock and adds ``new``.
+
+    The repo writes ``existing + new`` to the active segment, or, when that segment already passed the rotation size, only ``new`` to the next one.
+    A ``ConflictError`` answers a call whose ``active_name`` is no longer the active segment (the log rotated since the caller read it).
+    """
+
+    active_name: str
+    existing: bytes
+    new: bytes
+
+
+@runtime_checkable
 class AppendingStateRepo(Protocol):
     """OPTIONAL: a repo whose ``commit`` can extend a file by appending (``messages.jsonl`` lines) instead of rewriting it.
 
@@ -155,9 +182,14 @@ class AppendingStateRepo(Protocol):
         files: dict[str, str | bytes] | None = None,
         delete_files: list[str] | None = None,
         appends: dict[str, bytes] | None = None,
+        log_rewrite: LogRewrite | None = None,
     ) -> str:
-        """As :meth:`StateRepo.commit`, plus bytes added to the end of the named files under sessions/<session_id>/."""
+        """As :meth:`StateRepo.commit`, plus bytes added to the end of the named files under sessions/<session_id>/.
+
+        The key ``"messages.jsonl"`` in ``appends`` (or a ``log_rewrite``) names the session LOG, not a file: the repo maps it to the active segment and
+        rotates to the next one when the active segment has passed ``session_log_segment_bytes`` (design S4).
+        """
         ...
 
 
-__all__ = ["AppendingStateRepo", "StateRepo", "StatingStateRepo"]
+__all__ = ["AppendingStateRepo", "ListingStateRepo", "StateRepo", "StatingStateRepo"]
