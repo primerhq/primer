@@ -882,6 +882,9 @@ function NV_Shell() {
       refetchWorkspaces: function () { workspaces.refetch(); },
       username: NV_usernameOf(status.data),
       role: (status.data && status.data.role) || "user",
+      // Whether the status has said what the role is: "user" above is a stand-in until it has (a page that holds form state must not be unmounted by a
+      // gap in the status read, see NV_sysNavFor).
+      roleKnown: !!(status.data && status.data.role),
       viewer: status.data && status.data.principal,
       // ACL-P2-T10: the read-only mode of the studio (a "read" level on the open workspace): the composer,
       // the file writes, the terminal and the session controls stay drawn, disabled, with wsRoNote as their

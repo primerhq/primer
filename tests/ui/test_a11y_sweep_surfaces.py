@@ -258,7 +258,7 @@ def test_a_provider_route_waits_for_its_class_to_have_loaded_its_instances_or_sa
 
 
 def test_a_system_view_waits_for_its_own_page_not_the_first_nav_row_it_falls_back_to() -> None:
-    assert 'data-testid={"nv-sys-page:" + nav}' in SYSTEM_JSX and ": navs[0];" in SYSTEM_JSX, "NV_System falls back to the first nav row"
+    assert 'data-testid={"nv-sys-page:" + nav}' in SYSTEM_JSX and "  return navs[0];" in SYSTEM_JSX, "NV_System falls back to the first nav row (NV_sysNavFor)"
     for nav in surfaces.SYSTEM_VIEWS:
         assert surfaces.ready_selectors("system-view", nav) == [f'[data-testid="nv-sys-page:{nav}"]']
 
