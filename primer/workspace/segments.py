@@ -422,7 +422,7 @@ class SessionLog:
 
 # ---- the configured segment size --------------------------------------------------------------------------------------------------------------
 
-#: Rotate a log when its active segment holds this many bytes (the user's 1 MiB); the built-in default of a process that was never configured.
+#: Rotate a log when its active segment holds this many bytes (1 MiB: small enough that a commit stays cheap, large enough that a typical session stays in one or two files); the built-in default of a process that was never configured.
 DEFAULT_SEGMENT_BYTES = 1_048_576
 _segment_bytes_configured: int | None = None
 

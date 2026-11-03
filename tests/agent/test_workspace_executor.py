@@ -520,8 +520,8 @@ class TestPersistTurnInstructionRace:
                 session=session,
             )
 
-            if session.append_only():
-                pytest.skip("an append-only log has no read->rewrite gap to race (tests/session/test_message_log_concurrency.py covers it)")
+            # Whole-file mode, on purpose: append-only (the default) has no read->rewrite gap to race, but the kill switch and every sandbox still rewrite the log.
+            session.session_log_append_only = False
             rel = f"sessions/{session.session_id}/messages.jsonl"
             real_read = workspace.state_repo.read_state_file
             real_persist = executor._persist_turn
