@@ -586,7 +586,7 @@ async def workspace_tap(
             status_code=503,
             detail={
                 "type": "/errors/subsystem-inactive",
-                "title": "Workspace tap router not configured",
+                "message": "The workspace tap router is not configured on this server.",
             },
         )
 
@@ -599,7 +599,7 @@ async def workspace_tap(
             status_code=503,
             detail={
                 "type": "/errors/subsystem-inactive",
-                "title": "Workspace registry not configured",
+                "message": "The workspace registry is not configured on this server.",
             },
         )
     # Resolve the live workspace IO handle (read_file + state_path) the same

@@ -39,6 +39,7 @@ from primer.api.deps import (
     require_user,
 )
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, register_error_handlers
+from primer.api.routers.tap import tap_router
 from primer.model.user import User
 from primer.session.approvers import ADMIN_ONLY_METADATA
 
@@ -49,6 +50,8 @@ SCOPE_REQUIRED = "This API token lacks the required scope."
 APPROVER_MISMATCH = "Only a named approver or an admin may decide this gate."
 SEMANTIC_INACTIVE = "The semantic-search registry is not configured on this server."
 ARTIFACT_INACTIVE = "The artifact storage registry is not configured on this server."
+TAP_ROUTER_INACTIVE = "The workspace tap router is not configured on this server."
+WORKSPACE_REGISTRY_INACTIVE = "The workspace registry is not configured on this server."
 
 
 def _gated_app() -> TestClient:
@@ -282,4 +285,74 @@ def test_artifact_storage_inactive_503_names_the_registry_and_keeps_the_type_uri
     )
     assert body["extensions"]["type"] == "/errors/subsystem-inactive", body
     assert body["extensions"]["message"] == ARTIFACT_INACTIVE, "the reason must sit where the reader looks"
+    assert "title" not in body["extensions"], "the dead title key is where no reader looks"
+
+
+def _principal(request: Request) -> None:
+    """Seed the request principal the real tap route reads before its 503s.
+
+    A ``user``-role account with an actor the Person derives from; the
+    workspace row below grants READ (public), so the route reaches the
+    subsystem-inactive checks."""
+    request.state.user = User.model_construct(id="user-1", username="op", role="user")
+    request.state.actor = SimpleNamespace(type="user", user_id="user-1", role="user")
+
+
+class _TapProbeRowStorage:
+    """Answers the route's one workspace read with a public (READ-granting) row."""
+
+    async def get(self, workspace_id):
+        return SimpleNamespace(access=SimpleNamespace(owners=[], grants={}, public=True))
+
+
+class _TapProbeStorage:
+    """The app.state.storage_provider the real route's require_workspace line reads."""
+
+    def get_storage(self, model):
+        return _TapProbeRowStorage()
+
+
+def _tap_real_route_probe() -> TestClient:
+    """The REAL workspace_tap route (primer/api/routers/tap.py) behind the
+    real problem handler: the pin exercises the actual raising code, not a
+    re-implementation of the condition. The route's pre-503 lines need
+    only what the probe seeds (request.state.user / .actor, an
+    app.state.storage_provider whose row grants READ); the
+    workspace_tap_router / workspace_registry app-state attributes are
+    left unwired, which is exactly the condition under test (a server
+    built without those subsystems)."""
+    app = FastAPI(dependencies=[Depends(_principal)])
+    register_error_handlers(app)
+    app.state.storage_provider = _TapProbeStorage()
+    app.include_router(tap_router)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_workspace_tap_router_inactive_503_names_the_router_and_keeps_the_type_uri():
+    r = _tap_real_route_probe().get("/workspaces/ws-1/tap")
+
+    assert r.status_code == 503, r.text
+    assert r.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE, r.text
+    body = r.json()
+    assert body["detail"] == TAP_ROUTER_INACTIVE, (
+        "the detail is the status title; the router's name never reaches the reader"
+    )
+    assert body["extensions"]["type"] == "/errors/subsystem-inactive", body
+    assert body["extensions"]["message"] == TAP_ROUTER_INACTIVE, "the reason must sit where the reader looks"
+    assert "title" not in body["extensions"], "the dead title key is where no reader looks"
+
+
+def test_workspace_registry_inactive_503_names_the_registry_and_keeps_the_type_uri():
+    probe = _tap_real_route_probe()
+    probe.app.state.workspace_tap_router = object()  # get past the first check
+    r = probe.get("/workspaces/ws-1/tap")
+
+    assert r.status_code == 503, r.text
+    assert r.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE, r.text
+    body = r.json()
+    assert body["detail"] == WORKSPACE_REGISTRY_INACTIVE, (
+        "the detail is the status title; the registry's name never reaches the reader"
+    )
+    assert body["extensions"]["type"] == "/errors/subsystem-inactive", body
+    assert body["extensions"]["message"] == WORKSPACE_REGISTRY_INACTIVE, "the reason must sit where the reader looks"
     assert "title" not in body["extensions"], "the dead title key is where no reader looks"
