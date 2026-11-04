@@ -39,13 +39,16 @@ over env vars (init args > env in pydantic-settings priority).
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import socket
 from pathlib import Path
 from typing import Any
 
 import typer
 import uvicorn
 import yaml
+from pydantic import ValidationError
 
 from primer.api.app import create_app, _build_storage_provider
 from primer.api.config import UVICORN_GRACEFUL_SHUTDOWN_SECONDS, AppConfig
@@ -95,7 +98,16 @@ def _load_config(
         if not resolved.exists():
             raise typer.BadParameter(f"config file not found: {resolved}")
         with resolved.open("r", encoding="utf-8") as fh:
-            loaded = yaml.safe_load(fh)
+            try:
+                loaded = yaml.safe_load(fh)
+            except yaml.YAMLError as exc:
+                # One line: the rich error panel wraps long messages and
+                # would split the "is not valid YAML" phrase across a
+                # line break (the first-touch pin reads the raw text).
+                raise typer.BadParameter(
+                    f"{resolved} is not valid YAML: "
+                    f"{str(exc).replace(chr(10), ' ')}"
+                ) from exc
         if loaded is None:
             data = {}
         elif isinstance(loaded, dict):
@@ -125,7 +137,17 @@ def _load_config(
         )
     # CLI-chosen runtime_mode always wins.
     data["runtime_mode"] = runtime_mode.value
-    return AppConfig(**data)
+    try:
+        return AppConfig(**data)
+    except ValidationError as exc:
+        first = "; ".join(
+            ":".join(str(part) for part in err["loc"]) + ": " + err["msg"]
+            for err in exc.errors()[:3]
+        )
+        source = f"{resolved}" if resolved is not None else "the config (file/env)"
+        raise typer.BadParameter(
+            f"{source} failed to validate: {first}"
+        ) from exc
 
 
 def _apply_logging(config: AppConfig) -> None:
@@ -134,6 +156,39 @@ def _apply_logging(config: AppConfig) -> None:
         json_format=config.log_json,
         file_path=config.log_file,
     )
+
+
+def _preflight_server(config: AppConfig, config_path: Path | None) -> None:
+    """Fail fast, with a one-line hint, on the two first-touch failures
+    that would otherwise print a raw traceback or a bare uvicorn error:
+    the bind port is already taken, or the configured Postgres is not
+    reachable. Both check what the server is about to do (bind the same
+    host:port, connect to the same Postgres) before it does it."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((config.host, config.port))
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            where = f" in {config_path}" if config_path is not None else ""
+            raise typer.BadParameter(
+                f"port {config.port} is already in use on {config.host}; "
+                f"free it, or change the port: set `port:`{where} "
+                "(env: PRIMER_PORT)"
+            ) from exc
+    finally:
+        probe.close()
+    if config.db is not None and config.db.provider.value == "postgres":
+        pg = config.db.config
+        try:
+            with socket.create_connection((pg.hostname, pg.port), timeout=5):
+                pass
+        except OSError as exc:
+            where = f" in {config_path}" if config_path is not None else " (or the PRIMER_DB__* env vars)"
+            raise typer.BadParameter(
+                f"Postgres at {pg.hostname}:{pg.port} is not reachable "
+                f"({exc}); check the db.config block{where}: host, port, "
+                "and that the server is running"
+            ) from exc
 
 
 def _run_uvicorn(config: AppConfig) -> None:  # pragma: no cover
@@ -174,6 +229,7 @@ def run_api(
     mode = RuntimeMode.API if no_worker else RuntimeMode.API_PLUS_WORKER
     cfg = _load_config(config, mode)
     _apply_logging(cfg)
+    _preflight_server(cfg, config)
     _run_uvicorn(cfg)
 
 
@@ -192,6 +248,7 @@ def run_worker(
     """Run the worker pool (with a minimal health/workers HTTP surface)."""
     cfg = _load_config(config, RuntimeMode.WORKER)
     _apply_logging(cfg)
+    _preflight_server(cfg, config)
     _run_uvicorn(cfg)
 
 

@@ -344,6 +344,7 @@ function PC_LimitsFieldset({ value, onChange }) {
           value={limits.request_timeout_seconds == null ? "" : limits.request_timeout_seconds}
           onChange={(e) => set("request_timeout_seconds", e.target.value)}
         />
+        <span className="field-help">Blank: 300 s per-event stall timeout.</span>
       </label>
       <label className="field pc-field">
         <span className="pc-field-label">
@@ -355,6 +356,7 @@ function PC_LimitsFieldset({ value, onChange }) {
           value={limits.connect_timeout_seconds == null ? "" : limits.connect_timeout_seconds}
           onChange={(e) => set("connect_timeout_seconds", e.target.value)}
         />
+        <span className="field-help">Blank: no connect bound - a black-holing upstream holds the concurrency slot indefinitely; set a value to fail fast.</span>
       </label>
     </div>
   );
