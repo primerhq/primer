@@ -164,7 +164,14 @@ def _preflight_server(config: AppConfig, config_path: Path | None) -> None:
     the bind port is already taken, or the configured Postgres is not
     reachable. Both check what the server is about to do (bind the same
     host:port, connect to the same Postgres) before it does it."""
+    # SO_REUSEADDR, like uvicorn's own listener: a bind without it fails
+    # against TIME_WAIT residue of a dead server (the e2e restart path:
+    # the old process is gone, the kernel keeps the port ~60 s) even
+    # though the real listener would start fine. With it, the probe
+    # succeeds on residue-only and still raises EADDRINUSE against a
+    # live listener - the semantics the refusal needs.
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind((config.host, config.port))
     except OSError as exc:
