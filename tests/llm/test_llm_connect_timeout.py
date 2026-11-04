@@ -24,7 +24,11 @@ class TestConnectTimeout:
 
         monkeypatch.setattr(_Wire, "handle", slow)
         wire = _route(monkeypatch, kind, [])
-        prov = _provider(kind, connect_timeout_seconds=0.2, request_timeout_seconds=None, max_retries=0)
+        # D-A3-04: request_timeout_seconds=None (the point of this test: the
+        # stall window must not fire) is a write only while a generation
+        # deadline stays on, so the total budget carries it; at 300 s it
+        # never fires inside the 1.5 s window.
+        prov = _provider(kind, connect_timeout_seconds=0.2, request_timeout_seconds=None, total_timeout_seconds=300.0, max_retries=0)
         with pytest.raises(ProviderTimeoutError) as caught:
             await asyncio.wait_for(_collect(_ADAPTERS[kind](prov), kind), 1.5)
         assert caught.value.code == "connect_timeout"

@@ -28,7 +28,10 @@ def test_the_client_reads_for_the_rows_request_timeout():
     timeout = OpenAIEmbedder(_row(request_timeout_seconds=20))._get_client().timeout
     assert isinstance(timeout, httpx.Timeout) and timeout.read == 20
     assert OpenAIEmbedder(_row())._get_client().timeout.read == 300.0, "the row's default, not the SDK's 600 s"
-    assert OpenAIEmbedder(_row(request_timeout_seconds=None))._get_client().timeout.read is None, "None disables the bound, as the limits document"
+    # D-A3-04: disabling the bound is a write only while a generation
+    # deadline stays on, so the total budget carries it (the embedder
+    # client never reads it).
+    assert OpenAIEmbedder(_row(request_timeout_seconds=None, total_timeout_seconds=300.0))._get_client().timeout.read is None, "None disables the bound, as the limits document"
 
 
 def test_the_connect_phase_follows_the_rows_connect_timeout():

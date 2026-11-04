@@ -765,7 +765,22 @@ async def run_agent_turn(
                 "ending turn without persisting (event_count=%d, error=%s)",
                 len(buffered), exc,
             )
-            return
+            # D-A3-03: this is a failure, not a quiet empty success. A
+            # reasoning model that burns its output thinking (the default
+            # converter drops ReasoningDelta) or one that simply said
+            # nothing used to end the turn with the session looking
+            # healthy; fail it the way the sibling branches above do, and
+            # the existing failure exit stamps last_turn_error.
+            raise TurnStreamFailure(
+                Error(
+                    code="reasoning_only_response",
+                    message="the LLM stream ended without any convertible content "
+                    "(reasoning-only or empty response)",
+                    fatal=True,
+                ),
+                partial_messages=[],
+                rounds_completed=tool_round,
+            ) from no_content
 
         if messages_out is not None:
             messages_out.append(assistant_msg)

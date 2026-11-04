@@ -22,7 +22,10 @@ def _tts(**limits):
 
 @pytest.mark.parametrize("make", [_stt, _tts], ids=["asr", "tts"])
 def test_null_means_no_read_bound(make) -> None:
-    t = make(request_timeout_seconds=None)._timeout()
+    # D-A3-04: a row may disable the read bound only while a generation
+    # deadline stays on, so the total budget carries it (the speech
+    # adapters never read it).
+    t = make(request_timeout_seconds=None, total_timeout_seconds=300.0)._timeout()
     assert t.read is None and t.write is None and t.connect == 5.0
 
 

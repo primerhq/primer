@@ -77,7 +77,11 @@ async def test_one_call_counts_one_ok():
 
 async def test_tokens_split_by_direction():
     import primer.observability.metrics as m
+    # D-A3-03: a zero-content Done stream now fails the turn, so the
+    # metered turn carries one token of content (the Usage event is
+    # explicit, so the split the test pins is unaffected).
     await _drain(_FakeLLM([[
+        TextDelta(text="x", index=0),
         Usage(input_tokens=11, output_tokens=7, cumulative=False),
         Done(stop_reason="stop", raw_reason="stop"),
     ]]))

@@ -31,6 +31,7 @@ from primer.model.agent import Agent, AgentModel
 from primer.model.chat import (
     Done,
     StreamStart,
+    TextDelta,
     Tool,
     ToolCallEnd,
     ToolCallResult,
@@ -340,6 +341,9 @@ async def test_run_subagent_threads_turn_no_into_nested_tool_context():
                     for ev in _tool_call_script("t1__do_it", "call-1"):
                         yield ev
                 else:
+                    # D-A3-03: a zero-content Done stream now fails the turn,
+                    # so the clean stop carries one token of content.
+                    yield TextDelta(text="done", index=0)
                     yield Done(stop_reason="stop", raw_reason="stop")
 
             return _gen()

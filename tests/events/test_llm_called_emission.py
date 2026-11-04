@@ -116,7 +116,10 @@ async def test_error_call_lands_error_event(sp):
 
 
 async def test_recorderless_manager_emits_nothing(sp):
+    # D-A3-03: a zero-content Done stream now fails the turn, so the
+    # turn that ends cleanly carries one token of content.
     await _drain(_FakeLLM([[
+        TextDelta(text="x", index=0),
         Done(stop_reason="stop", raw_reason="stop"),
     ]]), _manager(None))
     assert await sp.get_event_store().read_after(0) == []

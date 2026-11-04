@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field, PlainSerializer, PositiveInt, SecretStr
+from pydantic import BaseModel, Field, PlainSerializer, PositiveInt, SecretStr, ValidationInfo, model_validator
 
-from primer.model.common import SERVING_NON_ADMIN
+from primer.model.common import SERVING_NON_ADMIN, reading_a_stored_row
 from primer.model.masked_url import MaskedUserinfoUrl
 
 
@@ -172,3 +172,21 @@ class Limits(BaseModel):
         ge=0.0,
         description="Ceiling for one retry backoff wait.",
     )
+
+    @model_validator(mode="after")
+    def _a_generation_deadline_is_set(self, info: ValidationInfo) -> Limits:
+        # Read path tolerant, write path strict (reading_a_stored_row): a
+        # provider row stored before this rule with both generation
+        # deadlines off stays readable; the refusal applies to writes.
+        if (
+            not reading_a_stored_row(info)
+            and self.request_timeout_seconds is None
+            and self.total_timeout_seconds is None
+        ):
+            raise ValueError(
+                "at least one generation deadline must be set: "
+                "request_timeout_seconds (the per-event stall window) or "
+                "total_timeout_seconds (the whole-generation ceiling); with "
+                "both None a generation has no bound at all"
+            )
+        return self

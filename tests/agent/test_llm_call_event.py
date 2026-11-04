@@ -103,6 +103,7 @@ async def test_one_event_per_call_with_the_profile_payload():
 
 async def test_the_event_precedes_its_round_done():
     events = await _drain(_ScriptedLLM([[
+        TextDelta(text="x", index=0),
         Usage(input_tokens=1, output_tokens=1, cumulative=False),
         Done(stop_reason="stop", raw_reason="stop"),
     ]]))

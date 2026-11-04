@@ -43,6 +43,7 @@ from primer.model.tool_approval import (
 if TYPE_CHECKING:
     from primer.api.registries.provider_registry import ProviderRegistry
     from primer.int.coordinator import InvalidationBus
+    from primer.int.storage_provider import StorageProvider
     from primer.model.chat import Tool
 
 
@@ -443,6 +444,7 @@ async def _dispatch_llm_judge(
     policy: LlmApprovalConfig,
     context: ApprovalContext,
     provider_registry: "ProviderRegistry",
+    storage_provider: "StorageProvider | None" = None,
 ) -> dict[str, Any]:
     """Invoke the configured LLM judge.
 
@@ -450,8 +452,46 @@ async def _dispatch_llm_judge(
     plus a user message carrying the pretty-printed approval context.
     Asks for structured output matching the verdict schema; returns
     the parsed dict.
+
+    The judge enters the house resolution seam (resolve_llm) instead of
+    calling get_llm direct, so the profile's API-level config and the
+    registry's adapter caching apply to the verdict the way they apply
+    to a turn. The policy still names (provider_id, model) - that is
+    what the console's approval editor writes - so the seam is entered
+    via the ModelProfile row that names that pair; a pair no profile
+    names fails closed through the caller's handler. The storage comes
+    from the caller when it has one, else the registry's own handle
+    (the real registry carries it); a registry with no handle at all
+    keeps the direct get_llm call.
     """
-    llm = await provider_registry.get_llm(policy.provider_id)
+    from primer.model.model_profile import ModelProfile
+    from primer.model_profile import resolve_llm
+    from primer.storage.q import Q
+
+    sp = (
+        storage_provider
+        if storage_provider is not None
+        else getattr(provider_registry, "_sp", None)
+    )
+    if sp is None:
+        llm = await provider_registry.get_llm(policy.provider_id)
+    else:
+        page = await sp.get_storage(ModelProfile).find(
+            Q(ModelProfile)
+            .where("provider_id", policy.provider_id)
+            .where("model_name", policy.model)
+            .build(),
+            OffsetPage(offset=0, length=1),
+        )
+        if not page.items:
+            raise LookupError(
+                f"llm judge for ({policy.provider_id!r}, {policy.model!r}): no model "
+                "profile names that pair; the judge resolves through the profile "
+                "seam, so register one"
+            )
+        llm, _ = await resolve_llm(
+            sp, provider_registry, default_profile_id=page.items[0].id,
+        )
     schema = {
         "type": "object",
         "properties": {
@@ -493,6 +533,7 @@ async def evaluate_approval_gate(
     policy: ToolApprovalPolicy,
     context: ApprovalContext,
     provider_registry: "ProviderRegistry | None",
+    storage_provider: "StorageProvider | None" = None,
 ) -> ApprovalVerdict:
     """Dispatch by approval type. Always fail closed on errors."""
     cfg = policy.approval
@@ -542,6 +583,7 @@ async def evaluate_approval_gate(
             raw = await _dispatch_llm_judge(
                 policy=cfg, context=context,
                 provider_registry=provider_registry,
+                storage_provider=storage_provider,
             )
         except Exception as exc:
             logger.warning(

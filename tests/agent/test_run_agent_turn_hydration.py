@@ -27,6 +27,7 @@ from primer.model.chat import (
     ImagePart,
     Message,
     StreamEvent,
+    TextDelta,
     TextPart,
 )
 
@@ -59,6 +60,9 @@ class _CapturingLLM:
         return self._gen()
 
     async def _gen(self) -> AsyncIterator[StreamEvent]:
+        # D-A3-03: a zero-content Done stream now fails the turn, so the
+        # recording stop carries one token of content.
+        yield TextDelta(text="ok", index=0)
         yield Done(stop_reason="stop", raw_reason="stop")
 
 
