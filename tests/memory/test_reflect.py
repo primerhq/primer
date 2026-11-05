@@ -107,13 +107,13 @@ def llm() -> FakeLLM:
     return FakeLLM()
 
 
-def _deps(sp, llm, messages=None) -> MemoryDeps:
+def _deps(sp, llm, messages=None, store=None) -> MemoryDeps:
     async def load(_job):
         return messages if messages is not None else _transcript()
 
     return MemoryDeps(
         sp=sp, provider_registry=FakeRegistry(llm), semantic_search_registry=None, engine=None, recorder=recorder_for(sp),
-        store=MemoryStore(sp, DocumentService(sp), recorder_for(sp)), now=lambda: NOW, load_messages=load,
+        store=store if store is not None else MemoryStore(sp, DocumentService(sp), recorder_for(sp)), now=lambda: NOW, load_messages=load,
     )
 
 
@@ -279,6 +279,93 @@ async def test_uses_agent_profile_not_session_override(sp, llm) -> None:
     deps = _deps(sp, llm)
     await reflect(deps, job, agent, mem)
     assert deps.provider_registry.asked == ["prov"] and llm.calls[0]["model"] == "m1"
+
+
+class ProcessKilled(Exception):
+    """A simulated SIGKILL: nothing later in the run executes."""
+
+
+class CrashAfterCreditStore(MemoryStore):
+    """The real store, except the process dies right after a credit write completes and before the job is marked."""
+
+    def __init__(self, sp, documents, recorder) -> None:
+        super().__init__(sp, documents, recorder)
+        self._crash_after_credit = True
+
+    async def credit(self, *args, **kwargs):
+        entry = await super().credit(*args, **kwargs)
+        if self._crash_after_credit:
+            self._crash_after_credit = False
+            raise ProcessKilled("killed after the credit write, before the mark")
+        return entry
+
+
+async def _clean_credit_run(tmp_path: Path, llm: FakeLLM) -> dict:
+    """A non-crashed credit run over a fresh provider: the final state a crashed run's replay must equal."""
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "clean.sqlite"))
+    await sp.initialize()
+    await sp.get_content_store().ensure_schema()
+    await sp.get_event_store().ensure_schema()
+    await sp.get_storage(Collection).create(Collection(id=CID, description="memory", memory_of=AGENT))
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(id="p", description="p", provider_id="prov", model_name="m1", context_length=1000)
+    )
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm)
+    await _seed(deps, "Known")
+    await deps.store.approve(AGENT, "Known", actor="user:o")
+    await _lookup_event(sp, turn=2, paths=["active/known"])
+    llm.answers = [{"run_succeeded": True, "deltas": [{"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}]}]
+    await reflect(deps, job, agent, mem)
+    state = {
+        "meta": (await deps.store.get(AGENT, "known")).meta,
+        "reflected_turn": (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn,
+    }
+    await sp.aclose()
+    return state
+
+
+async def test_a_crash_before_the_mark_replays_the_run_as_a_storage_no_op(sp, llm, tmp_path) -> None:
+    """A SIGKILL between a delta application and the mark: the re-claim re-runs the run, and the replay must be a pure no-op at the
+    storage level - the credit applied exactly once, the job marked, and the final memory state equal to the clean non-crashed run's."""
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm, store=CrashAfterCreditStore(sp, DocumentService(sp), recorder_for(sp)))
+    await _seed(deps, "Known")
+    await deps.store.approve(AGENT, "Known", actor="user:o")
+    await _lookup_event(sp, turn=2, paths=["active/known"])
+    credit_delta = {"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}
+    llm.answers = [_run([credit_delta]), _run([credit_delta])]
+
+    with pytest.raises(ProcessKilled):
+        await reflect(deps, job, agent, mem)
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0   # the mark never ran
+
+    report = await reflect(_deps(sp, llm), job, agent, mem)                  # the re-claim re-runs the same job
+    entry = await deps.store.get(AGENT, "known")
+    assert entry.meta["helpful"] == 1                                         # the credit applied exactly once
+    assert (report.written, report.dropped) == (1, 0)
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2  # the job is marked
+
+    clean = await _clean_credit_run(tmp_path, llm)
+    assert entry.meta == clean["meta"]                                        # final state == the clean run's
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == clean["reflected_turn"] == 2
+
+
+async def test_a_clean_reflect_run_is_unchanged_by_the_replay_guard(sp, llm) -> None:
+    """The no-fault run is unchanged: the deltas apply, the job is marked, the credit once (guards the happy path against the guard)."""
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm)
+    await _seed(deps, "Known")
+    await deps.store.approve(AGENT, "Known", actor="user:o")
+    await _lookup_event(sp, turn=2, paths=["active/known"])
+    llm.answers = [_run([{"op": "credit", "name": "known", "verdict": "helpful", "reason": "r"}, _add_delta()])]
+
+    report = await reflect(deps, job, agent, mem)
+
+    assert (await deps.store.get(AGENT, "known")).meta["helpful"] == 1
+    assert [e.name for e in await _entries(deps, "candidates")] == ["retry-github-429"]
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2
+    assert (report.written, report.dropped) == (2, 0)
 
 
 def test_used_entries_reads_search_and_read_document_calls_on_this_collection_only() -> None:
