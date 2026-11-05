@@ -20,6 +20,10 @@ def reject_if_body_sets_field(field_name: str):
                 detail={
                     "error": "managed_field_set",
                     "field": field_name,
+                    "message": (
+                        f"The {field_name} field is set by the managing harness "
+                        f"and cannot be set at create."
+                    ),
                 },
             )
 
