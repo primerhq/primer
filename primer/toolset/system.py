@@ -575,8 +575,9 @@ def build_system_toolset(
         "collection": (_collection_pre_create, _collection_pre_update),
         "graph": (_graph_pre_create, _graph_pre_update),
         # The agent's profile and toolset references are looked up before the write, as the REST route does (A-09); the builder's
-        # ``crud`` toolset takes the same pair from the same function.
-        "agent": agent_pre_checks(storage_provider),
+        # ``crud`` toolset takes the same pair from the same function. The registry resolves the in-process built-in tool lists, so a
+        # scoped tool id whose tool name its toolset does not list is refused here too (exec2-01f).
+        "agent": agent_pre_checks(storage_provider, provider_registry),
         "tool_approval_policy": (_policy_pre_create, _policy_pre_update),
         "toolset": (_toolset_pre_create, _toolset_pre_update),
         "model_profile": (_profile_pre_create, _profile_pre_update),

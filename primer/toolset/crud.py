@@ -222,9 +222,10 @@ def build_crud_toolset(
     _graph_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     # The builder is the principal most likely to name a profile or toolset that does not exist, so its create / update run the
-    # same reference check as the route and the system toolset (A-09).
+    # same reference check as the route and the system toolset (A-09). The registry (passed by the app and test-app call sites) resolves
+    # the in-process built-in tool lists, so a scoped tool id whose tool name its toolset does not list is refused here too (exec2-01f).
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
-        "agent": agent_pre_checks(storage_provider),
+        "agent": agent_pre_checks(storage_provider, provider_registry),
         "graph": (_graph_pre_create, _graph_pre_update),
     }
 
