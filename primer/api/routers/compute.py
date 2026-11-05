@@ -44,6 +44,7 @@ from primer.api.deps import (
     get_graph_storage,
     get_llm_provider_storage,
     get_model_profile_storage,
+    get_provider_registry,
     get_session_storage,
     get_storage_provider,
     get_toolset_storage,
@@ -87,7 +88,12 @@ def _agent_check_as_rest_error(exc: EntityCheckError) -> HTTPException | Request
 
 async def _agent_pre_create(entity: Agent, request: Request) -> None:
     try:
-        await check_agent_on_create(entity, storage_provider=get_storage_provider(request), person=person_from_request(request))
+        await check_agent_on_create(
+            entity,
+            storage_provider=get_storage_provider(request),
+            person=person_from_request(request),
+            provider_registry=get_provider_registry(request),
+        )
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc
 
@@ -95,7 +101,9 @@ async def _agent_pre_create(entity: Agent, request: Request) -> None:
 async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) -> None:
     try:
         await check_agent_on_update(
-            entity, existing, storage_provider=get_storage_provider(request), person=person_from_request(request),
+            entity, existing,
+            storage_provider=get_storage_provider(request), person=person_from_request(request),
+            provider_registry=get_provider_registry(request),
         )
     except EntityCheckError as exc:
         raise _agent_check_as_rest_error(exc) from exc

@@ -11,8 +11,8 @@
   their legacy ``_``-prefixed aliases) or a stored Toolset row;
 * when the check is called with a provider registry (the REST route), a scoped tool id whose tool name the toolset does not list is refused
   (code ``tool_not_found_in_toolset``, field ``tools``): an in-process built-in's tool list is static and known at write time, so a typo'd
-  name was once accepted and then silently dropped at turn time. Toolsets that are stored rows (python / mcp) resolve their tools at turn
-  time, so their names are left to that.
+  name was once accepted and then silently dropped at turn time. On an UPDATE only the ids the update NEWLY names are checked, like the
+  other rules. Toolsets that are stored rows (python / mcp) resolve their tools at turn time, so their names are left to that.
 
 An UPDATE refuses only a reference it ADDS: an agent that already names a toolset which has since been deleted can still have its
 description edited; changing the profile to a missing one, or adding a tool of a missing toolset, is refused.
@@ -99,10 +99,10 @@ async def test_the_profile_is_reported_before_the_toolsets(client, app) -> None:
 @pytest.mark.parametrize(
     "tool",
     [
-        "system__list_agents", "workspaces__read_file", "misc__uuid_v4", "web__web_fetch", "harness__list",
-        "trigger__create", "collections__list_documents", "crud__create_agent",
+        "system__list_agents", "workspaces__read_workspace_file", "misc__uuid_v4", "web__web_fetch", "harness__list",
+        "trigger__create", "collections__collections_list", "crud__create_agent",
         # the legacy underscore-prefixed built-in ids that agents persisted before the rename still carry
-        "_system__list_agents", "_workspaces__read_file", "_misc__uuid_v4",
+        "_system__list_agents", "_workspaces__read_workspace_file", "_misc__uuid_v4",
     ],
 )
 async def test_a_tool_of_an_in_process_built_in_toolset_needs_no_row(client, app, tool: str) -> None:

@@ -10,6 +10,11 @@ asks, asked before the write instead of after it:
   (the toolset is the part before the LAST ``__``); an id with no ``__`` is its own toolset. A toolset resolves when it is an
   in-process built-in (``RESERVED_TOOLSET_IDS``, after a retired ``_system``-style alias is mapped to its current id) or a stored
   Toolset row. ``search`` is a stored row, not a built-in.
+* when the check is given a provider registry (the REST route is), a scoped tool id whose tool name the toolset does not list is refused
+  (code ``tool_not_found_in_toolset``, field ``tools``). An in-process built-in's tool list is static and known at write time, so a
+  typo'd name was once accepted and then silently dropped at turn time. On an UPDATE only the ids the update NEWLY names are checked,
+  like the other rules. Toolsets that are stored rows (python / mcp) resolve their tools at turn time, so their names are left to that;
+  the same for a toolset the registry cannot list (``canvas`` with the feature off).
 
 An UPDATE refuses only a reference it ADDS: an agent that already names a toolset (or a profile) that has since been deleted can
 still have its description edited, while pointing it at a missing profile or adding a tool of a missing toolset is refused. Each
@@ -51,6 +56,7 @@ from primer.model.model_profile import ModelProfile
 from primer.model.provider import Toolset
 
 if TYPE_CHECKING:
+    from primer.api.registries.provider_registry import ProviderRegistry
     from primer.int.storage import Storage
     from primer.int.storage_provider import StorageProvider
 
@@ -219,12 +225,59 @@ async def _unreadable_toolset_ids(tool_ids: Iterable[str], *, storage_provider: 
     return hidden
 
 
-async def check_toolsets_exist(
-    entity: Agent, *, storage_provider: "StorageProvider", existing: Agent | None = None, person: Person | None = None,
-) -> None:
-    """Every toolset the agent's tools name must resolve. With ``existing`` (an update) only the toolsets the update ADDS are checked.
+async def _unknown_tool_names(
+    tool_ids: list[str], missing_toolsets: set[str], provider_registry: "ProviderRegistry",
+) -> str:
+    """The offending scoped tool ids, each with the toolset's actual tools ("" when there is none).
 
-    With a ``person``, a toolset row they hold no level on and none of whose named tools is public counts as missing (spec 9).
+    ``tool_ids`` must already be the scoped ids the write newly names (on an update, the stored agent's own ids are not re-checked). Only
+    in-process built-in toolsets can be checked at write time: the registry holds their providers and their tool lists are static. A
+    stored row (python / mcp) resolves its tools from its provider at turn time, and a toolset the registry cannot list (canvas with the
+    feature off) keeps that turn-time behaviour.
+    """
+    from primer.toolset.internal import InternalToolsetProvider
+
+    by_toolset: dict[str, list[tuple[str, str]]] = {}
+    for tool_id in tool_ids:
+        if "__" not in tool_id:
+            continue  # a bare id is its own toolset and names no tool
+        toolset_id = _resolved_toolset_id(tool_id)
+        if toolset_id in missing_toolsets:
+            continue  # the toolset_not_found refusal already names it
+        by_toolset.setdefault(toolset_id, []).append((tool_id, tool_id.rpartition("__")[2]))
+
+    offenders: list[str] = []
+    for toolset_id in sorted(by_toolset):
+        try:
+            provider = await provider_registry.get_toolset(toolset_id)
+        except Exception:  # noqa: BLE001 - a provider that fails to build is a provider failure, not a bad tool name
+            continue
+        if not isinstance(provider, InternalToolsetProvider):
+            continue  # stored rows (python / mcp): the tools resolve at turn time
+        available = sorted({t.id async for t in provider.list_tools(principal=None)})
+        for tool_id, name in by_toolset[toolset_id]:
+            if name not in available:
+                offenders.append(f"{tool_id!r} (the {toolset_id} toolset has: {', '.join(available)})")
+    return "; ".join(offenders)
+
+
+async def check_toolsets_exist(
+    entity: Agent,
+    *,
+    storage_provider: "StorageProvider",
+    existing: Agent | None = None,
+    person: Person | None = None,
+    provider_registry: "ProviderRegistry | None" = None,
+) -> None:
+    """Every toolset the agent's tools name must resolve, and every scoped tool id the write NEWLY names must name a tool its toolset
+    lists.
+
+    With ``existing`` (an update) only the toolsets the update ADDS are toolset-checked, and only the scoped ids it NEWLY names are
+    tool-name-checked; a tool id the stored agent already names (even a typo'd one, or one of a since-deleted toolset) is not
+    re-checked, so a legacy row is not retroactively refused. With a ``person``, a toolset row they hold no level on and none of whose
+    named tools is public counts as missing (spec 9). With a ``provider_registry``, a scoped id whose tool name an in-process
+    built-in toolset does not list is refused (code ``tool_not_found_in_toolset``); names of stored rows (python / mcp) are left to
+    turn time.
     """
     tool_ids = list(entity.tools)
     if existing is not None:
@@ -243,35 +296,57 @@ async def check_toolsets_exist(
             "tools",
             f"tools name toolsets that do not exist: {names}; create them first or remove those tools",
         )
+    if provider_registry is not None:
+        # The toolset filter above leaves the toolsets the update already named alone (even ones since deleted). The tool-name rule
+        # applies to the scoped ids the update NEWLY names: an agent that already stores a typo'd id keeps its legacy row (no
+        # retroactive refusal) while an update that adds a bad id is refused.
+        already_named = set(existing.tools) if existing is not None else set()
+        new_tool_ids = [t for t in entity.tools if t not in already_named]
+        offenders = await _unknown_tool_names(new_tool_ids, set(missing), provider_registry)
+        if offenders:
+            raise _refuse(
+                "tool_not_found_in_toolset",
+                "tools",
+                f"tools name tools that their toolset does not have: {offenders}; name a tool the toolset lists or remove those tools",
+            )
 
 
-async def check_agent_on_create(entity: Agent, *, storage_provider: "StorageProvider", person: Person | None = None) -> None:
+async def check_agent_on_create(
+    entity: Agent, *, storage_provider: "StorageProvider", person: Person | None = None, provider_registry: "ProviderRegistry | None" = None,
+) -> None:
     """Every pre-write check for a new agent: the id and the description, then the profile, then the toolsets (both as the saving ``person``)."""
     check_agent_fields(entity)
     await check_profile_exists(entity, storage_provider=storage_provider, person=person)
-    await check_toolsets_exist(entity, storage_provider=storage_provider, person=person)
+    await check_toolsets_exist(entity, storage_provider=storage_provider, person=person, provider_registry=provider_registry)
 
 
 async def check_agent_on_update(
     entity: Agent, existing: Agent, *, storage_provider: "StorageProvider", person: Person | None = None,
+    provider_registry: "ProviderRegistry | None" = None,
 ) -> None:
     """Every pre-write check for an edit: a profile the agent already had, and toolsets it already named, are not re-checked."""
     check_agent_fields(entity, existing=existing)
     if entity.model.profile_id != existing.model.profile_id:
         await check_profile_exists(entity, storage_provider=storage_provider, person=person)
-    await check_toolsets_exist(entity, storage_provider=storage_provider, existing=existing, person=person)
+    await check_toolsets_exist(
+        entity, storage_provider=storage_provider, existing=existing, person=person, provider_registry=provider_registry,
+    )
 
 
 def agent_pre_checks(
     storage_provider: "StorageProvider",
+    provider_registry: "ProviderRegistry | None" = None,
 ) -> tuple[Callable[[Agent], Awaitable[None]], Callable[[Agent, Agent], Awaitable[None]]]:
-    """The ``(pre_create, pre_update)`` pair a tool factory takes, bound to ``storage_provider``."""
+    """The ``(pre_create, pre_update)`` pair a tool factory takes, bound to ``storage_provider`` (and, when one is available, the
+    provider registry the tool-name check needs)."""
 
     async def pre_create(entity: Agent, *, person: Person | None = None) -> None:
-        await check_agent_on_create(entity, storage_provider=storage_provider, person=person)
+        await check_agent_on_create(entity, storage_provider=storage_provider, person=person, provider_registry=provider_registry)
 
     async def pre_update(entity: Agent, existing: Agent, *, person: Person | None = None) -> None:
-        await check_agent_on_update(entity, existing, storage_provider=storage_provider, person=person)
+        await check_agent_on_update(
+            entity, existing, storage_provider=storage_provider, person=person, provider_registry=provider_registry,
+        )
         # A new prompt or toolset means new capture topics for an agent with memory on. A tool has no claim engine: the job row is queued and the
         # agent's daily curator run takes it up (primer.memory.jobs.run_curate).
         from datetime import UTC, datetime
