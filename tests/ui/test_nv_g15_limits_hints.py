@@ -71,3 +71,65 @@ def test_request_field_carries_the_blank_semantics_hint():
         "means the 300 s per-event stall timeout, and the form never says so"
     )
     assert label.index(REQUEST_HINT) > label.index("<input")
+
+
+# ---- G15R-02 + G15R-03: the LIVE limits surface and the share-dialog grant levels ---------------------------------
+#
+# G15-06's hint landed only in the dead no-frame fallback above. The live
+# console surface is PC_LimitsSection (ui/components/providers/
+# register-common.jsx), whose help is the PC_LIMIT_HELP map: a blank
+# connect_timeout_seconds writes null (no bound) for the LLM/embedding
+# classes, and with the shipped single slot (max_concurrency 1) one
+# black-holing connect holds the only slot unbounded (primer/llm/
+# _timeout.py). G15R-03: the share dialog's grant-level select (ui/
+# components/shared/share-dialog.jsx) offered bare read/full with the
+# semantics only in docs/dev/architecture/access-control.md:10/:142.
+# Both fixes are COPY ONLY. Polarity: RED at the base (the consequence
+# and the level semantics are absent), GREEN once the copy lands.
+
+LIVE_SRC = (ROOT / "ui" / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
+SHARE_SRC = (ROOT / "ui" / "components" / "shared" / "share-dialog.jsx").read_text(encoding="utf-8")
+
+LIVE_CONNECT_HELP = (
+    "Empty means no connect limit; with one concurrency slot, a black-holing "
+    "connect holds the only slot indefinitely - set a value to fail fast."
+)
+
+GRANT_READ_OPTION = "read: can view and use it"
+GRANT_FULL_OPTION = "full: can also edit it; only owners can delete it or change sharing"
+
+
+def _limit_help_block() -> str:
+    """The PC_LIMIT_HELP map source (the live surface's help strings)."""
+    i = LIVE_SRC.index("const PC_LIMIT_HELP")
+    return LIVE_SRC[i : LIVE_SRC.index("};", i)]
+
+
+def _grant_select_body() -> str:
+    """The grant-level <select>, from its testid to the closing tag."""
+    i = SHARE_SRC.index('shr-grant-level-')
+    j = SHARE_SRC.index("</select>", i)
+    return SHARE_SRC[i : j + len("</select>")]
+
+
+def test_live_connect_help_carries_the_single_slot_consequence():
+    block = _limit_help_block()
+    assert f'connect_timeout_seconds: "{LIVE_CONNECT_HELP}",' in block, (
+        "G15R-02: the live limits surface (PC_LIMIT_HELP) never says the "
+        "single-slot queue-hold consequence of a blank connect timeout - "
+        "the #1005 hint sits in the dead no-frame fallback only"
+    )
+    # The request line keeps its correct live copy (blank writes null = no
+    # stall timeout); the two surfaces' blank semantics differ, so the
+    # fallback hint must not have been copied here.
+    assert 'request_timeout_seconds: "Empty means no stall timeout"' in block
+
+
+def test_share_dialog_grant_levels_carry_their_semantics():
+    select = _grant_select_body()
+    assert f'<option value="read">{GRANT_READ_OPTION}</option>' in select, (
+        "G15R-03: the share dialog offers bare 'read' with no semantics"
+    )
+    assert f'<option value="full">{GRANT_FULL_OPTION}</option>' in select, (
+        "G15R-03: the share dialog offers bare 'full' with no semantics"
+    )
