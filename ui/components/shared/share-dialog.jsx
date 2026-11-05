@@ -478,8 +478,10 @@ function SHR_ShareDialog({ plural, id, title, allowPublicTools, tools, useOnly, 
                         onChange={function (e) { setGrantLevel(uid, e.target.value); }}
                         disabled={readOnly}
                       >
-                        <option value="read">read</option>
-                        <option value="full">full</option>
+                        {/* Semantics per docs/dev/architecture/access-control.md: read for a view, full for an act, owner for delete and sharing. An <option>
+                            takes no children, so the description rides the label (cf. ADM_ROLE_OPTIONS' per-option descriptions). */}
+                        <option value="read">read: can view and use it</option>
+                        <option value="full">full: can also edit it; only owners can delete it or change sharing</option>
                       </select>
                     )}
                     {!readOnly && (

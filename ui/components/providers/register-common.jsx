@@ -241,7 +241,7 @@ const PC_LIMIT_MORE = ["connect_timeout_seconds", "total_timeout_seconds", "retr
 // defaults instead (primer/speech/openai_asr.py and openai_tts.py: 300 s to read, 5 s to connect), so they say that.
 const PC_LIMIT_HELP = {
   request_timeout_seconds: "Empty means no stall timeout",
-  connect_timeout_seconds: "Empty means no connect limit",
+  connect_timeout_seconds: "Empty means no connect limit; with one concurrency slot, a black-holing connect holds the only slot indefinitely - set a value to fail fast.",
   total_timeout_seconds: "Empty means no limit",
 };
 const PC_SPEECH_LIMIT_HELP = {

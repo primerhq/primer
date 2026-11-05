@@ -275,7 +275,8 @@ def test_limits_section_titles_and_fold(ctx) -> None:
         assert row[1]["testid"] == f"pc-limit:{field}"
     help_text = {
         "request_timeout_seconds": "Empty means no stall timeout",
-        "connect_timeout_seconds": "Empty means no connect limit",
+        # G15R-02: the live copy now carries the single-slot queue-hold consequence (the pin moved with the copy).
+        "connect_timeout_seconds": "Empty means no connect limit; with one concurrency slot, a black-holing connect holds the only slot indefinitely - set a value to fail fast.",
         "total_timeout_seconds": "Empty means no limit",
     }
     for field, text in help_text.items():
