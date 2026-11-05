@@ -113,7 +113,7 @@ class TestAgentStatus:
         body = _agent(tools=[
             "web__http_request",
             "web__web_search",
-            "system__list_files",
+            "system__list_channel_bindings",
             "workspaces__create_workspace",
             "workspace_ext__sleep",
             "harness__list",

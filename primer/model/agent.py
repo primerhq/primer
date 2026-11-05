@@ -136,7 +136,7 @@ class Agent(Owned, Describeable):
         default_factory=list,
         description=(
             "Scoped tool ids the agent has access to, each of the form "
-            "``<toolset_id>__<tool_name>`` (e.g. ``system__list_files``). "
+            "``<toolset_id>__<tool_name>`` (e.g. ``system__list_channel_bindings``). "
             "Empty list means the agent has NO tools registered. The "
             "runtime derives the set of toolset providers to resolve "
             "from the unique prefixes of this list, and exposes exactly "
