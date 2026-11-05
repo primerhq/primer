@@ -236,3 +236,17 @@ Invoker-supplied tools ride the tool manager as a per-invocation
 `external` pseudo-toolset that bypasses the agent allowlist and the
 approval gate and always yields; see
 [external-tools](external-tools.md).
+
+## Cross-reference: agent memory
+
+An agent's memory - what it learns between turns, and the notes a turn
+carries into its first model call - is its own subsystem: the
+`primer/memory` package (settings, the entry store, the job queue, the
+reflection and curation runners), the `mem-<agent id>` entry collection,
+the `memory` claim kind that runs those jobs, the
+`/agents/{id}/memory/*` routes and the agent editor's Memory section.
+The turn-input seam the notes ride is `_with_turn_messages`
+(`primer/agent/base.py:477-478`: the base adds nothing; the workspace
+executor's override, `primer/agent/workspace_executor.py:179`, is what a
+surface with `auto_inject` on uses to prepend the notes); see
+[memory](memory.md).

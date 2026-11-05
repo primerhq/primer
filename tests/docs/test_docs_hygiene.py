@@ -38,6 +38,7 @@ SUBSYSTEM_DOCS = [
     "workspaces",
     "sessions",
     "agents",
+    "memory",
     "graphs",
     "channels",
     "knowledge",

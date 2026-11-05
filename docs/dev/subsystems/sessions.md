@@ -802,4 +802,9 @@ continuable fold per session (`usage.UsageFold`, in `UsageCache`) with the byte 
 starts there, folds the complete new lines and, if those bytes changed (a rewrite or trim), a rewind marker is met, or the workspace has
 no ranged read, folds the whole log (`session_usage`) as before. A compaction marker restarts the fold. The turn timeline route keeps the
 parsed windows and envelopes per log identity (`timeline.TimelineSources`, size and mtime of both files, `last_seq`, `turn_no`; 8
-sessions) so the next turn of the same session reads and parses nothing. The default of `session_log_append_only` is unchanged.
+sessions) so the next turn of the same session reads and parses nothing.
+`session_log_append_only` is ON by default (`primer/model/scheduler.py`, `default=True` - the append-only write keeps the file's bytes and commit history identical to the whole-file rewrite and only changes the I/O; a sandbox that cannot append keeps writing the whole file), and `false` is the kill switch.
+
+### Segmented session log
+
+A session's message log rotates into segments: when its active segment holds at least `session_log_segment_bytes` bytes (default 1 MiB, `primer/model/scheduler.py`; `0` is the kill switch - no new segment starts, the existing ones are always read), the next state commit continues the log in a new file, so a closed segment is never written again and each commit stores only the small active one. Rotation happens only by the state commit, between whole batches of records. Segment 0 keeps the legacy name `messages.jsonl`; the others are zero padded to four digits, `messages.NNNN.jsonl` (`SEGMENT_RE` and `segment_name`, `primer/workspace/segments.py`), and readers order them numerically (`ordered`). A missing middle segment raises `SegmentGap` (the log cannot be read whole); the seq gap a crash leaves inside a segment is the one the seq-lease paragraph above says readers tolerate. The size flows from `WorkerConfig.session_log_segment_bytes` through `set_segment_bytes_default` (an explicit setting over the `PRIMER_SESSION_LOG_SEGMENT_BYTES` environment, over `DEFAULT_SEGMENT_BYTES`).

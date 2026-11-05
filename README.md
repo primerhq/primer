@@ -210,7 +210,7 @@ uv run primer api --config config.yaml
 
 Primer is a stack of layers, where each layer keeps the one below it from getting cluttered:
 
-- **Context discipline** - tool selection, meta-tools, and internal collections keep each agent's prompt lean.
+- **Context discipline** - tool selection and meta-tools keep each agent's prompt lean.
 - **State** - workspaces give agents a shared, minimal surface to hand off results without carrying history in-context.
 - **Sequencing** - directed cyclic graphs express multi-step reasoning as structure instead of one giant prompt.
 - **Time** - event-driven park-and-resume frees compute while work waits on a slow tool or a human.

@@ -168,6 +168,9 @@ flowchart TD
 - [agents](subsystems/agents.md) - the runtime that drives one LLM turn end to end:
   prompt assembly, model streaming, tool dispatch, compaction, the approval gate, and
   turn persistence.
+- [memory](subsystems/memory.md) - what an agent learns between turns: the owner-set
+  settings row, the `mem-<agent id>` entry collection, the `memory` claim kind that runs
+  the reflection and curation jobs, and the turn-input seam the notes ride.
 - [graphs](subsystems/graphs.md) - the Pregel-style executor for declarative directed
   graphs of agent nodes, with templated inputs, conditional routing, map-reduce
   fan-out/fan-in, and a tool-approval checkpoint protocol.
@@ -182,8 +185,9 @@ flowchart TD
   bindings to drive actions, while outbound session traffic (gates, lifecycle, final result)
   follows a unified reply binding back to the room.
 - [knowledge](subsystems/knowledge.md) - how documents and the platform's own entities
-  become searchable: the load-split-embed-store ingestion pipeline and the
-  internal-collections semantic index of agents, graphs, collections, and tools.
+  become searchable: the load-split-embed-store ingestion pipeline and the per-entity
+  `/search` routes (the internal-collections bootstrap was removed by D18; its reserved
+  ids and deactivation route remain).
 - [semantic-search](subsystems/semantic-search.md) - the vector-retrieval half of the
   platform: the search-provider entity and registry, the vector-store backends, and
   the cross-encoder-rerank retrieval pipeline.
