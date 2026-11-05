@@ -6,11 +6,17 @@ Promotion and archiving are a document move. Every meta change is a field-scoped
 curator run and a reflection cannot overwrite each other. Each write emits its ``memory.*`` event with ``entity_kind="agent"``.
 
 This is the only writer of the collection besides the curator and the purge; the generic doors refuse it (Task 2).
+
+Crash-replay guard (EXEC2-03): a reflect run that crashes between a delta application and its mark is re-claimed and re-applied, and the credit path is
+not idempotent (a replay double-credits by one). The applies of a run are therefore recorded per entry in ``meta['applied_runs']`` (a map of the run's
+key to the delta keys it applied to that entry), written in the SAME statement as the apply itself, and an already-recorded delta is skipped: a replay
+of a crashed run is a pure no-op at the storage level.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -61,6 +67,21 @@ def _now() -> datetime:
 
 def _worker(agent_id: str) -> str:
     return f"memory:{agent_id}"
+
+
+def _applied_key(meta: dict[str, Any], run_key: str | None, delta_key: str) -> bool:
+    """Whether the reflect run ``run_key`` already applied this delta to an entry with this ``meta`` (the crash-replay guard)."""
+    if run_key is None:
+        return False
+    return delta_key in ((meta.get("applied_runs") or {}).get(run_key) or [])
+
+
+def _record_applied(meta: dict[str, Any], run_key: str, delta_key: str) -> dict[str, list[str]]:
+    """The ``applied_runs`` map of the entry's CURRENT ``meta`` with this delta recorded under this run (written in the same statement as the
+    apply; merged against the latest row on every CAS attempt)."""
+    applied = dict(meta.get("applied_runs") or {})
+    applied[run_key] = [*(applied.get(run_key) or []), delta_key]
+    return applied
 
 
 class MemoryStore:
@@ -142,16 +163,24 @@ class MemoryStore:
             raise NotFoundError(f"document {doc_id!r} does not exist")
         return {"collection_id": [row.collection_id]}
 
-    async def _bump(self, doc_id: str, key: str) -> None:
-        """Increment the counter ``meta[key]`` by compare-and-set, so concurrent credits are not lost."""
+    async def _bump(
+        self, doc_id: str, key: str, extra: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    ) -> None:
+        """Increment the counter ``meta[key]`` by compare-and-set, so concurrent credits are not lost. ``extra`` maps the row's CURRENT ``meta``
+        (fresh on every attempt) to the leaves set in the same statement, so the crash-replay's applied-delta record is merged against the latest
+        row and lands exactly when the counter it guards does."""
         for _ in range(_CAS_ATTEMPTS):
             row = await self._docs.get(doc_id)
             if row is None:
                 raise NotFoundError(f"document {doc_id!r} does not exist")
             current = int((row.meta or {}).get(key, 0) or 0)
+            extra_leaves = extra(row.meta or {}) if extra is not None else {}
             done = await self._docs.patch_if(
                 doc_id,
-                set_paths={("meta", key): current + 1},
+                set_paths={
+                    ("meta", key): current + 1,
+                    **{("meta", k): v for k, v in extra_leaves.items()},
+                },
                 where={("meta", key): [current]},
             )
             if done is not None:
@@ -236,12 +265,19 @@ class MemoryStore:
         return await self._read(agent_id, "candidates", slug)
 
     async def patch(
-        self, agent_id: str, patch: MemoryPatch, *, source: dict
+        self, agent_id: str, patch: MemoryPatch, *, source: dict, run_key: str | None = None
     ) -> MemoryEntry | None:
-        """Apply the item edits as a new revision; None when the entry is missing or archived (it is never created or revived by a patch)."""
+        """Apply the item edits as a new revision; None when the entry is missing or archived (it is never created or revived by a patch).
+
+        ``run_key`` is the crash-replay guard (see :meth:`credit`): a patch this run already applied to the entry is skipped rather than re-applied as a
+        redundant revision, and the record is written with the body it guards.
+        """
         entry = await self._find(agent_id, patch.name)
         if entry is None or entry.status == "archived":
             return None
+        slug = slugify_name(patch.name) or patch.name
+        if _applied_key(entry.meta or {}, run_key, f"patch:{slug}"):
+            return entry
         try:
             content = render_body(apply_edits(entry.body, patch.edits))
         except ValueError:
@@ -251,11 +287,14 @@ class MemoryStore:
                 entry.name,
             )
             return None
+        extra = {"sources": [*entry.meta.get("sources", []), source]}
+        if run_key is not None:
+            extra["applied_runs"] = _record_applied(entry.meta or {}, run_key, f"patch:{slug}")
         if not await self._write_body(
             agent_id,
             entry,
             content,
-            extra={"sources": [*entry.meta.get("sources", []), source]},
+            extra=extra,
         ):
             return None
         await self._emit_event(
@@ -302,17 +341,29 @@ class MemoryStore:
         trial: bool,
         at: datetime,
         trigger_run: bool = False,
+        run_key: str | None = None,
     ) -> MemoryEntry | None:
         """Count the verdict (``trigger_run``: the session was a trigger's, which keeps the entry from going stale; see the curator). A candidate that was helpful in a successful trial run (and needs no approval) is promoted; a harmful candidate is archived.
-        None when the entry is missing or archived."""
+        None when the entry is missing or archived.
+
+        ``run_key`` (the reflect run's ``<job id>:<watermark>``) is the crash-replay guard: a delta this run already applied to the entry is a no-op, so a
+        re-claim after a crash between the apply and the mark cannot double-credit; the record is written in the same statement as the counter, so the
+        guard is durable exactly when the credit is.
+        """
         entry = await self._find(agent_id, name)
         if entry is None or entry.status == "archived":
             return None
         slug = slugify_name(entry.name) or entry.name
+        delta_key = f"credit:{slug}:{verdict}"
+        if _applied_key(entry.meta or {}, run_key, delta_key):
+            return entry
         doc_id = await self._doc_id(agent_id, entry.status, slug)
         if doc_id is None:
             return None
-        await self._bump(doc_id, verdict)
+        if run_key is None:
+            await self._bump(doc_id, verdict)
+        else:
+            await self._bump(doc_id, verdict, extra=lambda meta: {"applied_runs": _record_applied(meta, run_key, delta_key)})
         actor = _worker(agent_id)
         if verdict == "helpful" and entry.status == "active":
             await self._set_meta(doc_id, {"last_validated_at": at.isoformat()})

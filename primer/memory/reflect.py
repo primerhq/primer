@@ -281,6 +281,10 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     trigger_run = bool(ref is not None and ref.type == "trigger")
     needs_approval = settings.promotion == "approve" or (settings.teachers == "owner" and level_of(person, agent.access) != AccessLevel.OWNER)
     source = {"session_id": job.session_id, "from_turn": job.reflected_turn + 1, "to_turn": job.target_turn}
+    # The crash-replay guard (EXEC2-03): a stable key for this reflect run (the job id is stable across the re-claims of the same run; the watermark
+    # keeps the run apart from later runs on the same session). A delta a crashed run already applied to an entry is recorded under this key, so the
+    # re-claim replays as a no-op instead of double-applying (primer/memory/store.py).
+    run_key = f"{job.id}:{job.target_turn}"
     names = await known_names(deps.sp)
     provider = None
     if getattr(model, "provider_id", None):
@@ -293,7 +297,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
             if slug in used:
                 done = await deps.store.credit(
                     agent.id, delta.name, delta.verdict, run_succeeded=output.run_succeeded, trial=slug == trial, at=deps.now(),
-                    trigger_run=trigger_run,
+                    trigger_run=trigger_run, run_key=run_key,
                 )
         elif personal_data_hits(_texts(delta), known_names=names, provider=provider):
             done = None
@@ -302,7 +306,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
                 agent.id, delta, source=source, taught_by=person.user_id or "system", needs_approval=needs_approval,
             )
         else:
-            done = await deps.store.patch(agent.id, delta, source=source)
+            done = await deps.store.patch(agent.id, delta, source=source, run_key=run_key)
         report.written += done is not None
         report.dropped += done is None
     await _mark_reflected(deps, job)

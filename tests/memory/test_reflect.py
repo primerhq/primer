@@ -347,7 +347,8 @@ async def test_a_crash_before_the_mark_replays_the_run_as_a_storage_no_op(sp, ll
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2  # the job is marked
 
     clean = await _clean_credit_run(tmp_path, llm)
-    assert entry.meta == clean["meta"]                                        # final state == the clean run's
+    # the meta must be identical, except the wall-clock created_at the test's own seeding stamped (seeds differ by milliseconds)
+    assert {k: v for k, v in entry.meta.items() if k != "created_at"} == {k: v for k, v in clean["meta"].items() if k != "created_at"}
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == clean["reflected_turn"] == 2
 
 
