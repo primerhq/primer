@@ -19,13 +19,25 @@ from primer.bootstrap.seeded_agents_v1 import (
     SEEDED_AGENTS_AUGUST,
     SEEDED_AGENTS_V1,
     SEEDED_AGENTS_V2,
+    SEEDED_AGENTS_V3,
     SeededDefinition,
     definition_digest,
 )
 
-#: The sha256 of each definition the current factories build (v3: v2 with
-#: the operator's agents.md paragraph reworded).
+#: The sha256 of each definition the current factories build (v4: wiki-first
+#: M1 - the prompts rebuilt around the wiki loop, the operator's guarded
+#: identity block).
 CURRENT_DIGESTS = {
+    "operator": "cc159f97a6d55488666189b366b063bccc28b0f1a1301fd47b64313cdd69975d",
+    "builder": "b6fc3fe467e62801e6892ce55eab103532d70f7cfb18593cb5a070de8a4bdabf",
+    "planner": "40f5bf20f0a6cc4e815ff50b626f5b465312ca5fdfa075f69daf3dabdb04b10b",
+    "explorer": "50f932123849c0e47f83139fe7c8aeebdb5b7038606ac5954b1e5f1068f6413e",
+    "tool-runner": "09faecd91c39b521838833c10a8be9256f0ddea0904e14c600e9fa5bd96b7d3b",
+}
+
+#: The v3 freeze (wiki-first M1's base; migration 30 moves an unedited row
+#: from here to v4).
+_V3_DIGESTS = {
     "operator": "b26e038513e1e952cb4b188fe023fb13fdb55e91d8f0dedd916f55b3d2523de4",
     "builder": "f09b4c2df4612ebf8589731c1a48cabb9d329338a68ac8ed71fcb4a44bf49d97",
     "planner": "0f8739cd3a84e5d1adc16a518ea1a6fbda0273b243a274a7925f45bd4a5574e3",
@@ -111,7 +123,7 @@ def test_v2_is_the_core_kit_definition_migration_11_wrote():
 
 
 def test_previous_shipped_holds_every_shipped_definition_once_in_shipping_order():
-    builds = (*SEEDED_AGENTS_AUGUST.values(), SEEDED_AGENTS_V1, SEEDED_AGENTS_V2)
+    builds = (*SEEDED_AGENTS_AUGUST.values(), SEEDED_AGENTS_V1, SEEDED_AGENTS_V2, SEEDED_AGENTS_V3)
     assert set(PREVIOUS_SHIPPED) == set(SEEDED_AGENT_FACTORIES)
     for agent_id, lineage in PREVIOUS_SHIPPED.items():
         expected: list[str] = []
@@ -121,20 +133,34 @@ def test_previous_shipped_holds_every_shipped_definition_once_in_shipping_order(
         assert [definition_digest(d) for d in lineage] == expected, agent_id
 
 
-def test_v3_changes_only_the_operator_s_agents_md_paragraph():
-    """v3 rewords one operator paragraph; every other definition is still v2."""
-    from primer.bootstrap.operator_defaults import WORKSPACE_INSTRUCTIONS_PROMPT_PART
+def test_v3_is_frozen_as_the_v4_base():
+    """The v3 definitions (migration 30's before half) are pinned verbatim."""
+    assert {k: definition_digest(v) for k, v in SEEDED_AGENTS_V3.items()} == _V3_DIGESTS
+
+
+def test_v4_carries_the_wiki_loop_and_keeps_the_agents_md_part():
+    """v4 (wiki-first M1): every seeded prompt names the purpose-mapped index
+    and the no-raw-API rule; the operator keeps the agents.md part (the
+    heading contract the workspace framing test pins) and adds the guarded
+    identity block."""
+    from primer.bootstrap.operator_defaults import (
+        WORKSPACE_INSTRUCTIONS_PROMPT_PART,
+        operator_agent,
+    )
 
     current = _current()
-    v2 = SEEDED_AGENTS_V2["operator"]
-    (old,) = [p for p in v2.system_prompt if "agents.md" in p]
-    expected = tuple(
-        WORKSPACE_INSTRUCTIONS_PROMPT_PART if p == old else p for p in v2.system_prompt
+    for agent_id, definition in current.items():
+        joined = "\n\n".join(definition.system_prompt)
+        assert "purpose-map" in joined, agent_id
+        assert "raw REST API" in joined, agent_id
+    assert current["operator"].description == SEEDED_AGENTS_V3["operator"].description
+    assert (
+        WORKSPACE_INSTRUCTIONS_PROMPT_PART in operator_agent("p").system_prompt
     )
-    assert current["operator"] == SeededDefinition(v2.description, expected, v2.tools)
-    assert current["operator"] != v2
+    assert current["operator"].tools == SEEDED_AGENTS_V3["operator"].tools
     for agent_id in ("builder", "planner", "explorer", "tool-runner"):
-        assert current[agent_id] == SEEDED_AGENTS_V2[agent_id], agent_id
+        assert current[agent_id].description == SEEDED_AGENTS_V3[agent_id].description
+        assert current[agent_id].tools == SEEDED_AGENTS_V3[agent_id].tools
 
 
 def test_the_current_definitions_are_pinned():

@@ -131,9 +131,9 @@ async def test_the_lock_is_released_on_every_exit_path(two_boots, monkeypatch: p
 
 async def test_a_lower_stamp_never_moves_the_version_back(two_boots) -> None:
     a, _ = two_boots
+    await a.set_schema_version(30)
     await a.set_schema_version(29)
-    await a.set_schema_version(28)
-    assert (await a.get_system_state()).schema_version == 29
+    assert (await a.get_system_state()).schema_version == 30
 
 
 async def test_a_lagging_boot_does_not_rerun_m028_on_a_new_private_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,18 +161,18 @@ async def test_a_lagging_boot_does_not_rerun_m028_on_a_new_private_provider(tmp_
         boot_a = asyncio.create_task(mig.run_migrations(sp, is_fresh_install=False))
         await asyncio.wait({boot_a}, timeout=0.5)
         gate.set()
-        assert await asyncio.wait_for(boot_b, 10) == 29
+        assert await asyncio.wait_for(boot_b, 10) == 30
 
         # B serves; an admin creates a provider, private by default.
         await sp.get_storage(LLMProvider).create(
             LLMProvider.model_validate({"id": "prov-private", "provider": "anthropic", "config": {"api_key": "k"}, "limits": {"max_concurrency": 1}})
         )
-        assert await asyncio.wait_for(boot_a, 10) == 29
+        assert await asyncio.wait_for(boot_a, 10) == 30
 
         after = await sp.get_storage(LLMProvider).get("prov-private")
         assert not after.access.public and after.access.members == []
         assert len(calls) == 1, "m028 ran exactly once"
-        assert stamps == [28, 29]
+        assert stamps == [28, 29, 30]
     finally:
         await sp.aclose()
 
