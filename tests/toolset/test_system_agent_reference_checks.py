@@ -27,13 +27,33 @@ from tests.toolset.test_system_crud_guards import _call, world  # noqa: F401  (w
 SURFACES = ["system", "crud"]
 
 
-async def _call_surface(surface: str, sp, system_toolset, name: str, **args):
-    """``(is_error, answer)`` for one tool on the ``system`` toolset or on the builder's ``crud`` toolset."""
+def _misc_registry(sp):
+    """A provider registry that resolves the real in-process built-in providers (as the app's does): the tool-name check reads the toolset's
+    tool list from it, so the ``misc`` built-in must be the real provider, not the dummy factory's ``object()``."""
+    from primer.api.registries.provider_registry import ProviderRegistry
+    from primer.toolset.misc import build_misc_toolset
+
+    registry = ProviderRegistry(
+        sp,
+        llm_factory=lambda p: object(),
+        embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(),
+        toolset_factory=lambda t: object(),
+    )
+    registry._misc_toolset_provider = build_misc_toolset()  # noqa: SLF001
+    return registry
+
+
+async def _call_surface(surface: str, sp, system_toolset, name: str, registry=None, **args):
+    """``(is_error, answer)`` for one tool on the ``system`` toolset or on the builder's ``crud`` toolset.
+
+    The ``crud`` surface builds its toolset here; pass the ``registry`` the tool-name check resolves the built-in tool lists from (the system
+    surface's toolset carries the world fixture's registry, which resolves the real ``misc`` provider the same way)."""
     if surface == "system":
         return await _call(system_toolset, name, **args)
     import json
 
-    crud = build_crud_toolset(storage_provider=sp)
+    crud = build_crud_toolset(storage_provider=sp, provider_registry=registry)
     result = await crud.call(tool_name=name, arguments=args, ctx=ADMIN_CALLER)
     try:
         return result.is_error, json.loads(result.output)
@@ -132,3 +152,46 @@ async def test_an_agent_that_already_names_a_deleted_toolset_can_still_be_edited
 
     assert not is_error, answer
     assert (await sp.get_storage(Agent).get("ag-1")).description == "edited"
+
+
+# ---- a scoped tool id must name a tool its toolset lists (exec2-01f: the tool surfaces carry the registry) --------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", SURFACES)
+async def test_a_typoed_tool_name_in_a_built_in_toolset_is_refused_by_the_tool(world, surface: str) -> None:
+    """``misc__sleep`` names a tool ``misc`` does not list (``sleep`` is a ``workspace_ext`` tool): before the registry wiring the tool path
+    accepted it and the tool was silently dropped at turn time; it is refused like the REST route, naming the offending id and the
+    toolset's actual tools."""
+    sp, toolset, _ = world
+    await _store(sp, profile_row("mp-1"))
+
+    is_error, answer = await _call_surface(
+        surface, sp, toolset, "create_agent",
+        entity=agent_body("ag-1", tools=["misc__sleep"]),
+        registry=None if surface == "system" else _misc_registry(sp),
+    )
+
+    assert is_error and answer["type"] == "validation-error", answer
+    assert answer["message"].startswith("tools: "), answer
+    assert "'misc__sleep'" in answer["message"] and "the misc toolset has" in answer["message"], answer
+    assert "uuid_v4" in answer["message"]
+    assert await sp.get_storage(Agent).get("ag-1") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", SURFACES)
+async def test_a_valid_scoped_tool_name_is_accepted_by_the_tool(world, surface: str) -> None:
+    """A scoped id whose tool name the toolset lists is accepted on both tool surfaces (the check validates against the toolset's actual
+    list and does not refuse the built-ins wholesale)."""
+    sp, toolset, _ = world
+    await _store(sp, profile_row("mp-1"))
+
+    is_error, answer = await _call_surface(
+        surface, sp, toolset, "create_agent",
+        entity=agent_body("ag-1", tools=["misc__uuid_v4"]),
+        registry=None if surface == "system" else _misc_registry(sp),
+    )
+
+    assert not is_error, answer
+    assert await sp.get_storage(Agent).get("ag-1") is not None

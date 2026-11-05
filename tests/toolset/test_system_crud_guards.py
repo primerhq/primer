@@ -39,6 +39,7 @@ from primer.model.provider import (
     Toolset,
 )
 from primer.model.tool_approval import ToolApprovalPolicy
+from primer.toolset.misc import build_misc_toolset
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.system import build_system_toolset
 from tests._support.caller import ADMIN_CALLER
@@ -69,6 +70,9 @@ async def world(tmp_path: Path):
     registry.invalidate_aggregated_llm = spy  # type: ignore[method-assign]
     toolset = build_system_toolset(storage_provider=sp, provider_registry=registry)
     registry._system_toolset_provider = toolset
+    # The tool-name check (exec2-01f) resolves the in-process built-in tool lists from this registry: ``misc`` must be the real provider,
+    # not the dummy factory's ``object()``.
+    registry._misc_toolset_provider = build_misc_toolset()  # noqa: SLF001
     yield sp, toolset, invalidated
     await sp.aclose()
 
