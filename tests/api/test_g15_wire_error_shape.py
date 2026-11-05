@@ -52,6 +52,7 @@ SEMANTIC_INACTIVE = "The semantic-search registry is not configured on this serv
 ARTIFACT_INACTIVE = "The artifact storage registry is not configured on this server."
 TAP_ROUTER_INACTIVE = "The workspace tap router is not configured on this server."
 WORKSPACE_REGISTRY_INACTIVE = "The workspace registry is not configured on this server."
+MANAGED_FIELD_SET = "The harness_id field is set by the managing harness and cannot be set at create."
 
 
 def _gated_app() -> TestClient:
@@ -355,4 +356,33 @@ def test_workspace_registry_inactive_503_names_the_registry_and_keeps_the_type_u
     )
     assert body["extensions"]["type"] == "/errors/subsystem-inactive", body
     assert body["extensions"]["message"] == WORKSPACE_REGISTRY_INACTIVE, "the reason must sit where the reader looks"
+    assert "title" not in body["extensions"], "the dead title key is where no reader looks"
+
+
+# ---- G15R-01: the last bare-code member of G15-01 (primer/api/routers/_managed.py) --------------------------------------
+
+
+def _managed_agent_body() -> dict:
+    """A real agent-create body that sets the harness-managed field."""
+    from primer.model.agent import Agent, AgentModel
+
+    return Agent(
+        id="new-agent-g15r",
+        description="g15r pin",
+        model=AgentModel(profile_id="llm-1--gpt-4o"),
+        harness_id="h-pin",
+    ).model_dump(mode="json")
+
+
+async def test_managed_field_set_422_ships_the_field_sentence_with_the_code_in_extensions(client):
+    r = await client.post("/v1/agents", json=_managed_agent_body())
+
+    assert r.status_code == 422, r.text
+    assert r.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE, r.text
+    body = r.json()
+    assert body["detail"] == MANAGED_FIELD_SET, (
+        "the wire detail is the bare code where a sentence belongs"
+    )
+    assert body["extensions"]["error"] == "managed_field_set", body
+    assert body["extensions"]["field"] == "harness_id", body
     assert "title" not in body["extensions"], "the dead title key is where no reader looks"
