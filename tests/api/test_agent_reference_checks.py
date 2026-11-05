@@ -8,7 +8,11 @@
 * ``model.profile_id`` must name a stored ModelProfile;
 * every toolset a tool id names (the part before the last ``__``; a tool id with no ``__`` is its own toolset) must resolve: either an
   in-process built-in (``system``, ``workspaces``, ``misc``, ``web``, ``harness``, ``trigger``, ``collections``, ``crud``, including
-  their legacy ``_``-prefixed aliases) or a stored Toolset row.
+  their legacy ``_``-prefixed aliases) or a stored Toolset row;
+* when the check is called with a provider registry (the REST route), a scoped tool id whose tool name the toolset does not list is refused
+  (code ``tool_not_found_in_toolset``, field ``tools``): an in-process built-in's tool list is static and known at write time, so a typo'd
+  name was once accepted and then silently dropped at turn time. Toolsets that are stored rows (python / mcp) resolve their tools at turn
+  time, so their names are left to that.
 
 An UPDATE refuses only a reference it ADDS: an agent that already names a toolset which has since been deleted can still have its
 description edited; changing the profile to a missing one, or adding a tool of a missing toolset, is refused.
@@ -95,10 +99,10 @@ async def test_the_profile_is_reported_before_the_toolsets(client, app) -> None:
 @pytest.mark.parametrize(
     "tool",
     [
-        "system__list_agents", "workspaces__read_file", "misc__sleep", "web__web_fetch", "harness__list_harnesses",
-        "trigger__create_trigger", "collections__list_documents", "crud__create_agent",
+        "system__list_agents", "workspaces__read_file", "misc__uuid_v4", "web__web_fetch", "harness__list",
+        "trigger__create", "collections__list_documents", "crud__create_agent",
         # the legacy underscore-prefixed built-in ids that agents persisted before the rename still carry
-        "_system__list_agents", "_workspaces__read_file", "_misc__sleep",
+        "_system__list_agents", "_workspaces__read_file", "_misc__uuid_v4",
     ],
 )
 async def test_a_tool_of_an_in_process_built_in_toolset_needs_no_row(client, app, tool: str) -> None:
@@ -244,6 +248,68 @@ async def test_an_agent_whose_profile_was_deleted_can_keep_that_profile_on_an_ed
     assert r.status_code == 200, r.text
 
 
+# ---- a scoped tool id must name a tool its toolset lists -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_agent_with_a_typoed_tool_name_in_a_built_in_toolset_is_refused_and_not_stored(client, app) -> None:
+    """``misc__sleep`` names a tool ``misc`` does not list (``sleep`` is a tool of ``workspace_ext``): it used to be accepted and then
+    silently dropped at turn time; it is now a 422 naming the offending id and the toolset's actual tools."""
+    await _seed(app, profile_row("mp-1"))
+
+    r = await client.post("/v1/agents", json=agent_body("ag-1", tools=["misc__sleep"]))
+
+    assert r.status_code == 422, r.text
+    assert "tool_not_found_in_toolset" in r.text
+    assert "'misc__sleep'" in r.text and "the misc toolset has" in r.text and "uuid_v4" in r.text
+    assert await app.state.storage_provider.get_storage(Agent).get("ag-1") is None
+
+
+@pytest.mark.asyncio
+async def test_an_agent_with_a_valid_scoped_tool_name_is_created(client, app) -> None:
+    """A scoped id whose tool name the toolset lists is accepted: the check validates against the toolset's actual list and does not
+    refuse the built-ins wholesale."""
+    await _seed(app, profile_row("mp-1"))
+
+    r = await client.post("/v1/agents", json=agent_body("ag-1", tools=["misc__uuid_v4", "workspace_ext__sleep"]))
+
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.asyncio
+async def test_an_agent_with_a_bare_toolset_id_is_created(client, app) -> None:
+    """A tool id with no ``__`` is its own toolset and names no tool, so the tool-name check does not apply: ``misc`` stays a valid id."""
+    await _seed(app, profile_row("mp-1"))
+
+    r = await client.post("/v1/agents", json=agent_body("ag-1", tools=["misc"]))
+
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.asyncio
+async def test_an_update_that_adds_a_typoed_tool_name_in_a_built_in_toolset_is_refused_and_leaves_the_row(client, app) -> None:
+    await _seed(app, profile_row("mp-1"))
+    await _seed_agent_directly(app, agent_body("ag-1", tools=["misc__uuid_v4"]))
+
+    r = await client.put("/v1/agents/ag-1", json=agent_body("ag-1", tools=["misc__uuid_v4", "misc__sleep"]))
+
+    assert r.status_code == 422 and "tool_not_found_in_toolset" in r.text and "'misc__sleep'" in r.text, r.text
+    assert (await app.state.storage_provider.get_storage(Agent).get("ag-1")).tools == ["misc__uuid_v4"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_that_already_names_a_typoed_tool_can_still_be_edited(client, app) -> None:
+    """The rule refuses only a reference the update ADDS: an agent stored before the rule keeps its old (typo'd) tool name on an edit."""
+    await _seed(app, profile_row("mp-1"))
+    await _seed_agent_directly(app, agent_body("ag-1", tools=["misc__sleep"]))
+    edited = {**agent_body("ag-1", tools=["misc__sleep"]), "description": "a new description"}
+
+    r = await client.put("/v1/agents/ag-1", json=edited)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["description"] == "a new description"
+
+
 # ---- the create check and /status ask the same question -------------------------------------------------------------------------
 
 
@@ -252,7 +318,7 @@ STATUS_CASES = {
     "missing profile": ("ghost-profile", []),
     "missing toolset": ("mp-1", ["ghost-ts__x"]),
     "built-in toolsets": ("mp-1", ["system__list_agents", "web__web_fetch"]),
-    "legacy alias": ("mp-1", ["_system__list_agents", "_misc__sleep"]),
+    "legacy alias": ("mp-1", ["_system__list_agents", "_misc__uuid_v4"]),
     "bare tool id": ("mp-1", ["bare-tool"]),
 }
 
