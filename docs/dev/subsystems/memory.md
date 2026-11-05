@@ -19,9 +19,9 @@ to read and steer it. Memory is off until the agent's owner turns it on.
   agent's private collection `mem-<agent id>` (`memory_collection_id`,
   `primer/memory/collection.py:35`); `folder` is one of `active`,
   `candidates`, `archived` (the three folders are the entry's status,
-  `primer/memory/store.py:34`). An entry's title is its name and its body
+  `primer/memory/store.py:40`). An entry's title is its name and its body
   is three item lists - `steps`, `pitfalls`, `example`
-  (`MemoryEntry`, `primer/memory/store.py:41`).
+  (`MemoryEntry`, `primer/memory/store.py:47`).
 - **Jobs** - a `MemoryJob` row (one of the kinds `reflect`, `curate`,
   `topics`) plus its lease on the `memory` claim kind
   (`ClaimKind.MEMORY` -> `MemoryClaimAdapter` over the `memoryjob` table,
