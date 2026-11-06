@@ -841,7 +841,7 @@ async def test_is_dead_without_storage_says_no() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_release_returns_none_when_sibling_still_outstanding() -> None:
+async def test_on_release_returns_post_commit_candidate_when_sibling_still_outstanding() -> None:
     batch = ["b:tool:0:1", "b:tool:0:2"]
     releasing = _make_task("b:tool:0:1", batch_task_ids=batch)
     sibling_still_queued = _make_task(
@@ -853,7 +853,12 @@ async def test_on_release_returns_none_when_sibling_still_outstanding() -> None:
     result = await adapter.on_release(
         conn=None, entity_id="b:tool:0:1", outcome=_release("b:tool:0:1", success=True, drop_lease=True),
     )
-    assert result is None
+    assert result == PostReleaseWake(
+        session_id="sess-1",
+        event_key="tool_wait:sess-1:0:b",
+        payload={"tool_wait_ready": True},
+        required_terminal_task_ids=tuple(batch),
+    )
     # The releasing task's own row IS updated to DONE regardless - only
     # the WAKE is deferred, not this task's own terminal state.
     updated = await storage.get("b:tool:0:1")
@@ -879,6 +884,7 @@ async def test_on_release_returns_wake_signal_when_last_sibling() -> None:
         session_id="sess-1",
         event_key="tool_wait:sess-1:0:b",
         payload={"tool_wait_ready": True},
+        required_terminal_task_ids=tuple(batch),
     )
 
 
@@ -938,10 +944,11 @@ async def test_a_malformed_id_on_the_last_sibling_commits_the_release_and_wakes_
 
 @pytest.mark.asyncio
 async def test_on_release_wake_signal_treats_failed_as_terminal() -> None:
-    """A sibling that FAILED (not just DONE) still counts as terminal for
-    the purposes of "is the batch finished" - the batch is done either
-    way, the resume coordinator is what decides how to represent a
-    failed sibling's result."""
+    """A terminal failure returns the same post-commit batch candidate as success.
+
+    The factory hook performs the fresh DONE/FAILED sibling check; the
+    resume coordinator decides how to represent a failed task's result.
+    """
     batch = ["b:tool:0:1", "b:tool:0:2"]
     releasing = _make_task("b:tool:0:1", batch_task_ids=batch)
     sibling_failed = _make_task(
@@ -959,12 +966,8 @@ async def test_on_release_wake_signal_treats_failed_as_terminal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_release_reads_siblings_via_get_not_find() -> None:
-    """The whole point of returning a signal instead of writing directly
-    is a conn-scoped read - prove the sibling check goes through
-    storage.get (which accepts conn) for every OTHER id in batch_task_ids,
-    never a bulk find(). The releasing row itself comes back from the
-    fenced write, so it is not read at all."""
+async def test_on_release_defers_sibling_reads_to_the_post_commit_hook() -> None:
+    """The adapter carries the ids and does not decide readiness pre-commit."""
     batch = ["b:tool:0:1", "b:tool:0:2", "b:tool:0:3"]
     releasing = _make_task("b:tool:0:1", batch_task_ids=batch)
     sibling_a = _make_task("b:tool:0:2", state=ToolCallTaskState.DONE, batch_task_ids=batch)
@@ -972,7 +975,9 @@ async def test_on_release_reads_siblings_via_get_not_find() -> None:
     storage = FakeStorage(releasing, sibling_a, sibling_b)
     adapter = ToolCallClaimAdapter(task_storage=storage)
 
-    await adapter.on_release(
+    signal = await adapter.on_release(
         conn=None, entity_id="b:tool:0:1", outcome=_release("b:tool:0:1", success=True, drop_lease=True),
     )
-    assert sorted(storage.get_calls) == ["b:tool:0:2", "b:tool:0:3"]
+    assert signal is not None
+    assert signal.required_terminal_task_ids == tuple(batch)
+    assert storage.get_calls == []

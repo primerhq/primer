@@ -1271,8 +1271,9 @@ async def run_one_session_turn(
                     )
             # 01a0518b (mixed-park wake seam review): the FUNCTIONAL wake key, a pure function of a task id of the
             # batch (see tool_wait_event_key). The batch's ids are stamped on every row as batch_task_ids (the key
-            # itself is not stored), so ToolCallClaimAdapter.on_release's last-sibling branch recomputes it with no
-            # session-row read. Distinct from tool_wait.event_key (observability-only: the turn log and the audit
+            # itself is not stored), so a terminal release can return a PostReleaseWake candidate whose factory hook
+            # re-reads the batch after commit and wakes only when every row is DONE or FAILED. Distinct from
+            # tool_wait.event_key (observability-only: the turn log and the audit
             # emit above, never parked_event_key). A graph park keys on its first batch that parses (the
             # materializer drops a malformed one); a park with no wake key at all is never written: it would have
             # no parked_event_key, hence no timeout backstop either.
