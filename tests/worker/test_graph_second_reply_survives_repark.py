@@ -27,7 +27,8 @@ from tests.conftest import _FakeStorageProvider
 
 
 @pytest.mark.asyncio
-async def test_second_reply_landing_mid_resume_survives_the_repark(monkeypatch):
+@pytest.mark.parametrize("initial_status", [SessionStatus.RUNNING, SessionStatus.CREATED])
+async def test_second_reply_landing_mid_resume_survives_the_repark(monkeypatch, initial_status):
     sid = "sess-g1-multi"
     key_a = f"tool_approval:{sid}:node-a:tc-a"
     key_b = f"tool_approval:{sid}:node-b:tc-b"
@@ -45,7 +46,7 @@ async def test_second_reply_landing_mid_resume_survives_the_repark(monkeypatch):
     ).to_jsonable()
     await sessions.create(WorkspaceSession(
         id=sid, workspace_id="ws-1", binding=GraphSessionBinding(kind="graph", graph_id="g-1"),
-        status=SessionStatus.RUNNING, created_at=datetime.now(timezone.utc),
+        status=initial_status, created_at=datetime.now(timezone.utc),
         parked_status="parked", parked_event_key=key_a, parked_event_keys=[key_a, key_b],
         parked_until=parked_at + timedelta(seconds=3600), parked_at=parked_at, parked_state=blob,
     ))
@@ -56,8 +57,11 @@ async def test_second_reply_landing_mid_resume_survives_the_repark(monkeypatch):
     lease = next(l for l in await engine.claim_due("wrk-g1", max_count=10) if l.entity_id == sid)
 
     b_accepted = {}
+    resume_runs = 0
 
     async def _resume_graph_engine(session, parked):
+        nonlocal resume_runs
+        resume_runs += 1
         # While A's resume runs, the human approves B: accepted on the resumable multi-event row.
         b_accepted["did"] = await durably_mark_session_resumable(
             await sessions.get(sid), event_key=key_b, payload={"decision": "approved"}, session_storage=sessions, engine=engine,
@@ -79,3 +83,7 @@ async def test_second_reply_landing_mid_resume_survives_the_repark(monkeypatch):
     payloads = (row.parked_state or {}).get("resume_event_payloads") or {}
     assert [e.get("event_key") for e in payloads.values()] == [key_b]
     assert await engine.has_lease(ClaimKind.SESSION, sid)
+    next_leases = await engine.claim_due("wrk-g2", max_count=10)
+    assert [lease.entity_id for lease in next_leases] == [sid]
+    assert await engine.claim_due("wrk-g3", max_count=10) == []
+    assert resume_runs == 1, "the dropped old lease must not run its resume handler again"
