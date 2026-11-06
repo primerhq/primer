@@ -176,8 +176,14 @@ a one-line reason; it may not simply be omitted.
 
 - Update the relevant subsystem doc under `docs/dev/subsystems/` and any
   architecture doc whose contract shifted.
-- Update the agent-usage doc under `docs/agents/<feature>.md` when the
-  agent-visible behaviour changes.
+- Update the agent-facing wiki page under `docs/wiki/` when the agent-visible
+  behaviour changes. `docs/wiki/` is the platform wiki source the boot-time
+  build writes into the `system` collection behind the version stamp; it
+  replaces the legacy `docs/agents/` agent-usage docs, which the same build
+  still writes into the `system` collection's `docs/` subtree as its legacy
+  layer (see `docs/agents/_README.md`) until the queued retirement (the pivot
+  P4 content slice) lands. Until that retirement lands both trees are live, so
+  keep them consistent whenever the agent-visible behaviour moves.
 - The operator-facing docs now live in a separate external repo (the
   `primerhq.github.io` Pages site); update them there when an operator-visible
   surface changes.

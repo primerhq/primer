@@ -5,7 +5,7 @@ trigger dispatcher (Plan §5.4) can reach the same wake path without
 going through HTTP. Spec §5.4.
 
 The yielding-tools surface parks a session on
-``sessions.parked_state`` (or ``chats.parked_state``); the row carries
+``sessions.parked_state``; the row carries
 an ``event_key`` inside ``parked_state['yielded']``. Resuming the
 yield consists of publishing a payload onto that key — the event bus
 listener inside each worker pool catches the publish and atomically
@@ -21,9 +21,9 @@ helper consolidates the lookup + validation + publish so:
 * Future yielding-tool resume callers (e.g. MCP bridge, in-process
   unit tests) don't have to re-implement the parked_state walk.
 
-The helper is intentionally tolerant of both Session and Chat parks
-— the parked_state shape is identical across both entities — but the
-trigger dispatcher only targets workspace sessions today.
+The helper targets workspace sessions only: ``respond_to_yield`` reads
+the ``WorkspaceSession`` row and nothing else (the Chat parks it once
+tolerated are gone with the chat engine).
 """
 
 from __future__ import annotations

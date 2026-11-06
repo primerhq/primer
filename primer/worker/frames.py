@@ -19,9 +19,10 @@ captures exactly what a single layer needs to be rehydrated:
 * :class:`GraphFrame` - a child-graph invocation: the graph id, the
   child graph-session id (``gsid``), and the graph executor checkpoint.
 
-Behaviour (``apply_leaf``, ``frame.resume``) is intentionally left as a
-stub here - this task delivers only the model + JSON serialisation.
-Later tasks fill the stubs in.
+The resume walk is implemented in this module: each frame kind provides
+``resume_leaf`` / ``resume`` (the agent frame rehydrates the subagent
+turn, the graph frame the child graph executor checkpoint) and the
+stack is walked leaf-first up to the root.
 
 Style mirrors :mod:`primer.worker.yield_runtime`: plain dataclasses with
 ``to_jsonable`` / ``from_jsonable`` round-tripping, I/O kept at the edges.

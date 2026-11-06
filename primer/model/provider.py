@@ -5,18 +5,12 @@ backend they talk to, which models are permitted, the provider-specific
 connection details, and the rate limits the application should enforce
 against them.
 
-Three top-level provider kinds are supported:
-
-* :class:`LLMProvider` — chat / completion backends.
-* :class:`EmbeddingProvider` — vector-embedding backends.
-* :class:`Toolset` — tool sources (internal registry or MCP server).
-
 This module is a thin re-export facade. The provider models now live in
-focused per-family submodules under :mod:`primer.model.providers`; they
-are re-exported here so that the long-standing public interface
-``from primer.model.provider import X`` keeps working unchanged for every
-provider family (storage, vector / semantic-search, llm, embedding,
-cross-encoder, toolset / MCP, secret, artifact-storage).
+focused per-family submodules under :mod:`primer.model.providers`, and
+every provider family (artifact-storage, cross-encoder, embedding, llm,
+secret, speech, storage, toolset / MCP, vector / semantic-search) is
+re-exported here so the long-standing public interface
+``from primer.model.provider import X`` keeps working unchanged.
 """
 
 from __future__ import annotations

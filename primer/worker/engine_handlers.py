@@ -1,7 +1,7 @@
 """Per-kind engine claim handlers for the worker pool.
 
 Extracted verbatim from :mod:`primer.worker.pool` (no behaviour change). One
-function per non-session claim kind (harness / trigger); each takes the
+function per non-session claim kind (harness, memory, trigger, tool_call); each takes the
 :class:`~primer.worker.pool.WorkerPool` instance as ``pool`` and reads the same
 bound deps the original methods did (``pool._storage`` / ``pool._engine`` /
 ``pool._event_bus`` / ...). The pool keeps thin delegating methods
@@ -14,7 +14,7 @@ The SESSION handler (``_run_engine_session``) intentionally stays in
 (``patch("primer.worker.pool.run_one_session_turn")``).
 
 Per-kind dispatch imports stay lazy inside each function so importing this
-module (and ``pool``) doesn't pull the harness / trigger dependency
+module (and ``pool``) doesn't pull a kind's dependency
 trees at startup — mirroring the original methods.
 """
 
