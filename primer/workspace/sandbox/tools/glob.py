@@ -12,7 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
-from primer.int.sandbox import FileStat, Sandbox
+from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.glob import GlobArgs
@@ -111,10 +111,6 @@ def _matches(rel: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(rel, pattern) or fnmatch.fnmatchcase(
         rel.rsplit("/", 1)[-1], pattern
     )
-
-
-def _ignored() -> FileStat:  # pragma: no cover -- pure import-typing helper
-    raise NotImplementedError
 
 
 __all__ = ["SandboxGlob"]

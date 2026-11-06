@@ -32,7 +32,7 @@ import re
 from datetime import datetime
 from decimal import Decimal, localcontext
 from enum import Enum
-from typing import Annotated, Any, ClassVar, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,

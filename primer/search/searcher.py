@@ -25,7 +25,6 @@ moved to :class:`CollectionSearchConfig`.
 from __future__ import annotations
 
 import logging
-import math
 from typing import TYPE_CHECKING
 
 from primer.model.chat import TextPart
