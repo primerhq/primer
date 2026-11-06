@@ -135,6 +135,15 @@ class PostReleaseWake:
     row snapshotted INSIDE the now-committed transaction could itself
     already be stale by the time the hook actually runs.
 
+    ``required_terminal_task_ids`` is the optional post-commit readiness
+    fence used by tool-call batches. The adapter cannot safely decide that
+    it released the last sibling inside its READ COMMITTED transaction:
+    two final siblings can each still see the other's uncommitted row. It
+    therefore returns the batch ids with every terminal release, and the
+    factory-bound hook re-reads them after commit before waking the session.
+    An empty tuple keeps the original unconditional-wake contract for any
+    other producer.
+
     Every adapter OTHER than ``ToolCallClaimAdapter`` returns ``None``
     (the default for a function with no ``return`` statement) - this is
     purely additive, no other adapter's ``on_release`` contract changes.
@@ -177,6 +186,7 @@ class PostReleaseWake:
     session_id: str
     event_key: str
     payload: dict[str, Any]
+    required_terminal_task_ids: tuple[str, ...] = ()
 
 
 class EligibilityReadError(Exception):
