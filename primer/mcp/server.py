@@ -38,7 +38,6 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
-    INVALID_PARAMS,
     ListToolsResult,
     METHOD_NOT_FOUND,
     PaginatedRequestParams,
@@ -266,11 +265,6 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                     "error_code": error_code,
                 },
             )
-
-    # Silence unused-import warnings on INVALID_PARAMS — kept in scope
-    # so future handlers (e.g. session-init validation) can reuse the
-    # same import block without re-touching this file.
-    _ = INVALID_PARAMS
 
     return Server("primer", on_list_tools=_list, on_call_tool=_call)
 

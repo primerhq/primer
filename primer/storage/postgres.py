@@ -48,7 +48,6 @@ Pagination supports both styles required by :class:`primer.int.Storage`:
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -111,7 +110,6 @@ from primer.storage._patch import (
 from primer.storage._cursor import (
     _decode_cursor_for,
     _encode_cursor_for,
-    _resolve_dotted,
 )
 from primer.storage._predicate import _PredicateTranslator, _render_field_expr, render_order_by
 

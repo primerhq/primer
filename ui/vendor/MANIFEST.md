@@ -15,14 +15,19 @@ transitive resolution, no surprise additions.
 | Path | Origin | Version / commit | sha256 | License | Date added |
 |---|---|---|---|---|---|
 | highlight-python.js | hand-written, no upstream | n/a | `3a01e309ca889135224055ed7b4a83a046909094f5976d053ff85f4db8c34db8` | MIT (this repo) | 2026-05-16 |
-| highlight-json.js   | hand-written, no upstream | n/a | `813aaa2046f5ddcf0f71f3c74a4dc68dec7a24bbb4a538f76fe14e3b55e2729a` | MIT (this repo) | 2026-05-16 |
+| highlight-json.js   | hand-written, no upstream | n/a | `7f3b2b8d93c7e7251a66d4f73cae3cec855b82597fb741583824cb9dc4722b62` | MIT (this repo) | 2026-05-16 |
 | highlight-code.js   | hand-written, no upstream | n/a | `ad2ca5f36a503d1475f26b964f9854c489407bf5853dcb708863d30d55134d38` | MIT (this repo) | 2026-07-05 |
-| sparkline.js        | hand-written, no upstream | n/a | `b37449b0745995d38484eaa2facaf06258bd1dbd7c3b6586c3f7c05fc7a1fdda` | MIT (this repo) | 2026-05-16 |
-| auto-layout.js      | hand-written, no upstream | n/a | `bb5944d5aea3a8d91c6e9c3bff64ccb06848c191450030805e285c6971c63f90` | MIT (this repo) | 2026-05-17 |
+| highlight-curl.js   | hand-written, no upstream | n/a | `a6e835901b75391ab7224791ebf9fc2da1c68b5fc2c773b78848d419cdfdcaaf` | MIT (this repo) | 2026-06-04 |
+| highlight-jsx.js    | hand-written, no upstream | n/a | `feabf4b43a5dcb5a3ec10802ed037fa6f24f8ac7640470140670292e655ea82e` | MIT (this repo) | 2026-06-04 |
+| markdown.jsx        | hand-written, no upstream | n/a | `aeb569ca5a1f774820cd653861cd8c7df85c002e1f7f743a0fab309977470bf6` | MIT (this repo) | 2026-05-26 |
+| sparkline.js        | hand-written, no upstream | n/a | `6b013eaffb3acf457b9237c7e105eb7561beb386d89f3ec95413eaec29473722` | MIT (this repo) | 2026-05-16 |
+| auto-layout.js      | hand-written, no upstream | n/a | `9b7ee4a59f35e9e1b9e4e0350453ebaa86b32936959d9694b346eba323a49a8a` | MIT (this repo) | 2026-05-17 |
 | react.min.js        | https://unpkg.com/react@18.3.1/umd/react.production.min.js | 18.3.1 (production build) | `d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd` | MIT | 2026-05-29 |
 | react-dom.min.js    | https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js | 18.3.1 (production build) | `35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d` | MIT | 2026-05-29 |
 | babel.min.js        | https://unpkg.com/@babel/standalone@7.29.0/babel.min.js | 7.29.0 | `2623a9e22809915ce789b4461154e277ddce520d5a4320c14d44332a5d0dcea0` | MIT | 2026-05-29 |
 | html2canvas.min.js  | https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.10/dist/html2canvas-pro.min.js | html2canvas-pro 1.5.10 (drop-in fork with oklch/oklab/lab/lch support) | `a55a357587e4634f9c456e8dc7adf186a9bda945280e5f23c311873015f5ac18` | MIT | 2026-06-02 |
+| g6.min.js           | https://unpkg.com/@antv/g6@5.1.1/dist/g6.min.js | 5.1.1 (UMD build) | `3e091a94fd08994a383ff34bfba256bb8e382e4be4042197a206d2ecc0957331` | MIT | 2026-06-28 |
+| mermaid.min.js      | https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js | 10.9.6 | `eda3a0ad572bbe69a318c1be0163e8233dd824f3f12939e5168feba207767151` | MIT | 2026-06-04 |
 | fonts/IBMPlexSans-VF-latin.woff2 | Google Fonts subset of @ibm/plex@v23 (latin, variable weight 100-700) | v23 | `e2291e842cf5af167122a22881a740c7f2dda7716f1e8cd76680264f4a859470` | SIL OFL 1.1 | 2026-05-29 |
 | fonts/IBMPlexMono-Regular-latin.woff2 | Google Fonts subset of @ibm/plex@v20 (latin, weight 400) | v20 | `08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7` | SIL OFL 1.1 | 2026-05-29 |
 | fonts/IBMPlexMono-Medium-latin.woff2  | Google Fonts subset of @ibm/plex@v20 (latin, weight 500) | v20 | `01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22` | SIL OFL 1.1 | 2026-05-29 |
