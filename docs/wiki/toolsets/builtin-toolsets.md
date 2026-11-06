@@ -8,7 +8,7 @@ related: [toolsets/list-and-describe-tools, start-here/calling-tools]
 A built-in toolset is a group of tools that ships inside primer, under a fixed id. You reach every one of them through `system__call_tool`, or call a tool directly when your agent's `tools` list grants its scoped id (`<toolset>__<tool>`).
 
 ## Concepts
-The ten built-in toolsets:
+The eleven built-in toolsets:
 
 | Toolset | What it is for | Pages | Needs a workspace session | Pauses the turn |
 |---|---|---|---|---|
@@ -22,6 +22,7 @@ The ten built-in toolsets:
 | `misc` | The time, UUIDs, hashes, arithmetic and `misc__inform_user`. | [time, ids, hashes and math](utilities/time-ids-hashes-math), [inform the user](human-in-the-loop/inform-user) | none | none |
 | `crud` | Create and update agents, graphs, triggers and Python toolsets. Every tool in it is approval-gated by default. | [agents](agents/create-and-edit), [graphs](graphs/create-and-edit), [triggers](triggers/triggers), [Python toolsets](toolsets/python-toolsets) | none | none |
 | `canvas` | The session canvas toolset, on by default now that the canvas panel ships (an operator can switch it off with the setting `canvas.agent_tools_enabled`). | [the canvas](human-in-the-loop/canvas) | every tool | `canvas__canvas_wait` |
+| `internal_collections` | The internal-collections subsystem's admin surface: read and write the subsystem config, bootstrap, deactivate and read the bootstrap state (mirrors the admin REST routes 1:1). | [enable the subsystem](runbooks/configure-internal-collections) | none | none |
 
 Three more ids are scopes, not toolsets. You cannot reach them through `system__call_tool`:
 - `workspace`: the seven session file tools (`workspace__ls` to `workspace__exec`). They are always on in a workspace session and you call them directly. See [in-session file tools](workspaces/in-session-file-tools).

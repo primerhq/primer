@@ -108,6 +108,16 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
         id=CANVAS_SETTINGS_ID, agent_tools_enabled=True,
     )
 
+    # The internal-collections toolset (wiki-first M2): the lifespan builds it
+    # after the collections toolset; the same assignment here (its tools are
+    # all admin-role, so the exposable set is unaffected - this pin keeps the
+    # registry complete against RESERVED_TOOLSET_IDS).
+    from primer.toolset.internal_collections import build_internal_collections_toolset
+
+    registry._internal_collections_toolset_provider = build_internal_collections_toolset(  # noqa: SLF001
+        storage_provider=fake_storage_provider, provider_registry=registry, semantic_search_registry=None,
+    )
+
     # search.py only needs a subsystem for its handlers (call()); list_tools()
     # never touches it, so a bare mock is a faithful stand-in here.
 

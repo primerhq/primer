@@ -691,7 +691,7 @@ async def test_the_catalogue_lists_canvas_last_and_opens_it_when_enabled(client,
 
     await _enable_canvas_tools(fake_storage_provider)
     ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
-    assert ids[-1] == "canvas" and len(ids) == 10
+    assert ids[-1] == "canvas" and len(ids) == 11
     detail = (await client.get("/v1/toolsets/canvas")).json()
     assert detail["builtin"] is True and detail["description"] == "Show controls, media and HTML above the chat, and read the user's clicks"
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
@@ -747,4 +747,4 @@ async def test_the_tool_catalog_lists_the_canvas_tools():               # the wi
 
 def test_the_console_names_the_canvas_toolset_last():
     source = (Path(__file__).resolve().parents[2] / "ui" / "components" / "toolsets.jsx").read_text(encoding="utf-8")
-    assert re.search(r'const TS_BUILTIN_RESERVED_IDS = \[[^\]]*, "crud", "canvas"\];', source)
+    assert re.search(r'const TS_BUILTIN_RESERVED_IDS = \[[^\]]*, "crud", "internal_collections", "canvas"\];', source)

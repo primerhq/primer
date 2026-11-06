@@ -21,12 +21,13 @@ from primer.model.chat import Tool
 
 @lru_cache(maxsize=1)
 def built_in_providers() -> dict[str, ToolsetProvider]:
-    """The ten reserved toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
+    """The eleven reserved toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
     from primer.api.registries import ProviderRegistry
     from primer.toolset.canvas import build_canvas_toolset
     from primer.toolset.collections import build_collections_toolset
     from primer.toolset.crud import build_crud_toolset
     from primer.toolset.harness import build_harness_toolset_provider
+    from primer.toolset.internal_collections import build_internal_collections_toolset
     from primer.toolset.misc import build_misc_toolset
     from primer.toolset.system import build_system_toolset
     from primer.toolset.trigger import build_trigger_toolset_provider
@@ -63,6 +64,9 @@ def built_in_providers() -> dict[str, ToolsetProvider]:
         ),
         "misc": build_misc_toolset(),
         "canvas": build_canvas_toolset(storage_provider=sp),
+        "internal_collections": build_internal_collections_toolset(
+            storage_provider=sp, provider_registry=registry, semantic_search_registry=MagicMock(),
+        ),
     }
     return providers
 

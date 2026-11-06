@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 # The toolsets' ids, spelled out: this module is imported by the toolsets it names (the completeness test pins them against the live builds).
 _SYSTEM = "system"
 _HARNESS = "harness"
+_INTERNAL_COLLECTIONS = "internal_collections"
 
 #: The tool approval policy writes. A gate an admin-run model can delete is no gate.
 POLICY_WRITES: tuple[tuple[str, str], ...] = (
@@ -70,6 +71,14 @@ HARNESS_LIFECYCLE: tuple[tuple[str, str], ...] = (
     (_HARNESS, "install"),
     (_HARNESS, "sync"),
     (_HARNESS, "uninstall"),
+)
+
+#: The internal-collections subsystem writes (wiki-first M2): the config write, the deactivation and the bootstrap. Each vectorises or rewrites the
+#: platform's own document corpus - platform administration a run at an admin's rank must not make ungated (the lead's ruling, wiki-first M2 step 0).
+INTERNAL_COLLECTIONS_WRITES: tuple[tuple[str, str], ...] = (
+    (_INTERNAL_COLLECTIONS, "set_config"),
+    (_INTERNAL_COLLECTIONS, "delete_config"),
+    (_INTERNAL_COLLECTIONS, "bootstrap"),
 )
 
 #: The shipped gate on ``system::create_toolset`` and ``system::update_toolset`` (see the module docstring). Migration 16 keeps its own copy of
@@ -100,6 +109,7 @@ ADMIN_GATES: Mapping[tuple[str, str], RequiredApprovalConfig | PolicyApprovalCon
     **{key: RequiredApprovalConfig() for key in POLICY_WRITES},
     **{key: PolicyApprovalConfig(policy=HOST_CODE_TOOLSET_POLICY) for key in HOST_CODE_TOOLSET_WRITES},
     **{key: RequiredApprovalConfig() for key in HARNESS_LIFECYCLE},
+    **{key: RequiredApprovalConfig() for key in INTERNAL_COLLECTIONS_WRITES},
 })
 
 
@@ -125,6 +135,13 @@ PREVIEW_ARGS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_HARNESS, "install"): ("id", "overrides"),
     (_HARNESS, "sync"): ("id", "overrides"),
     (_HARNESS, "uninstall"): ("id",),
+    # The IC config write shows the vector-space choice a person approves (wiki-first M2); the no-argument writes declare an empty card - there is nothing to withhold and nothing to show.
+    (_INTERNAL_COLLECTIONS, "set_config"): (
+        "embedding_provider_id", "embedding_model", "search_provider_id",
+        "cross_encoder.provider_id", "cross_encoder.model",
+    ),
+    (_INTERNAL_COLLECTIONS, "delete_config"): (),
+    (_INTERNAL_COLLECTIONS, "bootstrap"): (),
 })
 
 # What each card draws FIRST (``Tool.preview_lead``), before its one-line preview cuts a long entity, and never cut itself: what the person

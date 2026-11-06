@@ -293,6 +293,20 @@ def _make_lifespan(config: AppConfig):
             semantic_search_registry=semantic_search_registry,
         )
         provider_registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
+        # Always-on internal-collections toolset (wiki-first M2): the
+        # subsystem's admin REST routes mirrored 1:1 as tools, so the
+        # enable-internal-collections runbook is walkable by an operator
+        # agent. Built after the collections toolset (no extra deps).
+        from primer.toolset.internal_collections import (
+            build_internal_collections_toolset,
+        )
+        provider_registry._internal_collections_toolset_provider = (  # noqa: SLF001
+            build_internal_collections_toolset(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            )
+        )
         # Bootstrap web-search reserved rows BEFORE building the toolset.
         await _bootstrap_web_search(storage_provider)
         logger.info("bootstrap: web-search rows materialised")

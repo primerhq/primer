@@ -74,11 +74,16 @@ _GATES: tuple[tuple[str, str, dict[str, Any]], ...] = (
     ("harness", "harness__install", _REQUIRED),
     ("harness", "harness__sync", _REQUIRED),
     ("harness", "harness__uninstall", _REQUIRED),
+    # The internal-collections subsystem writes (wiki-first M2): the config write, the
+    # deactivation and the bootstrap - admin-tier platform writes the live table gates (ADMIN_GATES).
+    ("internal_collections", "set_config", _REQUIRED),
+    ("internal_collections", "delete_config", _REQUIRED),
+    ("internal_collections", "bootstrap", _REQUIRED),
 )
 
 # Every id a policy for these toolsets may be stored under: ``_system`` is the retired spelling of ``system`` (frozen; the live map is
 # ``primer.common.toolset_ids``).
-_SPELLINGS: dict[str, tuple[str, ...]] = {"system": ("system", "_system"), "harness": ("harness",)}
+_SPELLINGS: dict[str, tuple[str, ...]] = {"system": ("system", "_system"), "harness": ("harness",), "internal_collections": ("internal_collections",)}
 
 
 class ToolApprovalPolicy(Identifiable):  # noqa: N801 - the class name selects the table

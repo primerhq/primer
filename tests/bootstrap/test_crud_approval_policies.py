@@ -19,7 +19,7 @@ async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)
     twin = await store.get(default_policy_id("system", "update_agent"))
     assert (twin.toolset_id, twin.tool_name, twin.enabled, twin.approval.type.value) == ("system", "update_agent", True, "required")
-    assert len(CRUD_GATED_TOOL_NAMES) == 8 and len(CRUD_TWINS) == 9 and len(ADMIN_GATES) == 8 and len(set(created)) == 25
+    assert len(CRUD_GATED_TOOL_NAMES) == 8 and len(CRUD_TWINS) == 9 and len(ADMIN_GATES) == 11 and len(set(created)) == 28
     for (toolset_id, tool_name), shipped in ADMIN_GATES.items():
         row = await store.get(default_policy_id(toolset_id, tool_name))
         assert (row.toolset_id, row.tool_name, row.enabled, row.approval) == (toolset_id, tool_name, True, shipped)

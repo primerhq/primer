@@ -7,8 +7,8 @@ import pytest
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.api.routers import providers
 
-# The built-in toolsets an agent can bind by default, in catalogue order (platform revamp, design section 11). The canvas toolset is on by default now that the canvas panel ships; it is the tenth, and an operator can switch it off via CanvasSettings.agent_tools_enabled.
-BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "canvas"]
+# The built-in toolsets an agent can bind by default, in catalogue order (platform revamp, design section 11). The canvas toolset is on by default now that the canvas panel ships; it is the eleventh (last, the console's fixed position), and an operator can switch it off via CanvasSettings.agent_tools_enabled. The internal-collections toolset (wiki-first M2) is the tenth: the IC subsystem's admin surface, admin-role, with the shipped required gates on its three writes.
+BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "internal_collections", "canvas"]
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,7 @@ async def test_builtin_toolsets_lists_every_toolset_an_agent_can_bind(client):
 
 def test_the_catalogue_is_exactly_the_reserved_toolset_ids():
     ids = [spec["id"] for spec in providers._BUILTIN_TOOLSETS]
-    assert len(ids) == len(set(ids)) == 10
+    assert len(ids) == len(set(ids)) == len(RESERVED_TOOLSET_IDS)
     assert set(ids) == RESERVED_TOOLSET_IDS
 
 

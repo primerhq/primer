@@ -559,13 +559,14 @@ async def test_t0711_mcp_http_transport_tools_unreachable_url_clean(
 
 @pytest.mark.asyncio
 async def test_the_builtin_catalogue_lists_every_wired_toolset_with_its_tools(client: httpx.AsyncClient) -> None:
-    """The live server wires ten built-in toolsets (the unit test app wires six): each catalogue id lists tools and opens its detail.
+    """The live server wires eleven built-in toolsets (the unit test app wires six): each catalogue id lists tools and opens its detail.
 
-    The tenth, ``canvas``, is on by default now that the canvas panel ships (an operator can switch it off via
+    The tenth, ``internal_collections``, is the subsystem's admin surface (wiki-first M2). The
+    eleventh (last, the console's fixed position), ``canvas``, is on by default now that the canvas panel ships (an operator can switch it off via
     ``canvas.agent_tools_enabled``).
     """
     ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
-    assert ids == ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "canvas"]
+    assert ids == ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "internal_collections", "canvas"]
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
     for tid in ids:
         assert grouped[tid]["available"] is True, grouped[tid]

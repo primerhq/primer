@@ -15,9 +15,10 @@ One row per runbook as it lands; the purpose-mapped index ([purpose-map](purpose
 | [runbooks/access-policy](runbooks/access-policy) | change the access policy on an entity (who it is shared with) |
 | [runbooks/approval-policy](runbooks/approval-policy) | change the approval policy on a tool (its gate, its approvers, its timeout) |
 | [runbooks/configure-provider](runbooks/configure-provider) | configure a provider (LLM provider row, model check, model profile, bind) |
+| [runbooks/configure-internal-collections](runbooks/configure-internal-collections) | enable the internal collections subsystem (the platform's own wiki store: model choice, config write, bootstrap, verify) |
 | [runbooks/change-search-engine](runbooks/change-search-engine) | change the semantic search engine (the vector store provider) |
 
-The how-to set a runbook set grows: pending rows (internal collections, the moderator and bookkeeper flows) are named in the purpose-mapped index with the milestone that lands them, and appear here when they land.
+The how-to set a runbook set grows: pending rows (the moderator and bookkeeper flows) are named in the purpose-mapped index with the milestone that lands them, and appear here when they land.
 
 ## Related
 - [purpose-map](purpose-map): "I want to do X" -> the page that says how.
