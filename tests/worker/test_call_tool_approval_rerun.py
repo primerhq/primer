@@ -220,20 +220,21 @@ def _delegate_park() -> dict[str, Any]:
     }
 
 
-async def test_an_approved_inner_tool_that_pauses_inside_a_nested_run_fails_closed_on_the_session_path():
-    """The coordinator's flat re-park keeps no frames, so the answer to a nested run's question would be delivered to the nested run's call and the
-    ``call_tool`` call would never be answered. On the session path (``_resume_tool_approval``) such a pause is refused with an error result (what
-    every pause got before this path let one through) instead of being parked wrongly. The behaviour a fix must reach is pinned by the strict xfail
-    in ``tests/worker/test_approval_yield_repark.py``."""
-    part = await _resume_tool_approval(blob=_delegate_park(), payload={"decision": "approved"}, tool_manager=_Manager(_NestedPause(), USER))
-    assert part.error is True and part.id == "call-outer"
-    body = json.loads(part.output)
-    assert body["is_error"] is True and body["tool_name"] == "delegate" and "nested" in body["reason"], body
+async def test_an_approved_inner_tool_that_pauses_inside_a_nested_run_bubbles_with_its_frames():
+    """The session coordinator must receive the nested pause intact so its
+    re-park can serialize the continuation stack."""
+    with pytest.raises(YieldToWorker) as paused:
+        await _resume_tool_approval(
+            blob=_delegate_park(),
+            payload={"decision": "approved"},
+            tool_manager=_Manager(_NestedPause(), USER),
+        )
+    assert paused.value.tool_call_id == "child-call"
+    assert [frame.tool_call_id for frame in paused.value.frames] == ["call-outer"]
 
 
 async def test_the_rerun_hands_a_nested_pause_on_with_its_frames():
-    """The refusal above belongs to the session path, whose re-park is the one that drops frames. The re-run itself hands the pause on, frames intact,
-    so the nested walk (``apply_leaf``), whose re-park keeps every frame, can park the whole chain again."""
+    """The inner dispatcher also hands the pause on with its frames intact."""
     with pytest.raises(YieldToWorker) as paused:
         await resume_call_tool_dispatch(
             via={"toolset_id": "rec", "tool_name": "delegate"},
