@@ -1052,6 +1052,11 @@ class WorkerPool:
                     outcome = ReleaseOutcome(success=True, drop_lease=True)
                 elif session_row.cancel_requested:
                     outcome = await self._end_session(session_row, reason="cancelled")
+                elif session_row.status == SessionStatus.PAUSED:
+                    # The carried-reply bridge reads before it re-arms. A pause can land between that read and
+                    # ``mark_resumable``, so the resulting claim must take the same park-preserving exit as a
+                    # pause request instead of running the resume handler.
+                    outcome = await self._pause_session(session_row)
                 elif session_row.pause_requested:
                     # Pause-while-parked: the operator paused a resumable
                     # session. Transition to PAUSED and preserve the park
