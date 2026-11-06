@@ -2,8 +2,9 @@
 
 A graph run writes each node's answer and its ``done`` as the nodes finish, and the End node then writes its OWN
 ``assistant_token`` record (``payload.end_node_id`` set) from its ``output_template``, AFTER the last node's ``done``.
-That record is the graph's canonical output. A pass-through template writes no record at all (it would duplicate the
-preceding answer), so the last node's answer stands in. The records here come from ``translate_stream_event``, the
+That record is the graph's canonical output. A pass-through template after an ordinary assistant token writes no record
+(it would duplicate the preceding answer), so the last node's answer stands in. A nested graph End has different provenance,
+so an identical parent End still writes its top-level result. The records here come from ``translate_stream_event``, the
 translator production uses, so the shape cannot drift from what a real run writes.
 """
 
@@ -121,23 +122,22 @@ def test_a_nested_subgraph_end_is_not_joined_into_the_parents_result() -> None:
     assert derive_session_final_text(records) == "Outer: Inner: raw"
 
 
-def test_a_passthrough_parent_end_after_a_nested_end_keeps_the_nested_text_as_the_result() -> None:
-    """The parent's End echoes the subgraph's output: its record is suppressed as a duplicate of the nested one that
-    immediately precedes it, so the nested record's text IS the parent End's output, not the inner agent's raw answer."""
+def test_a_passthrough_parent_end_after_a_nested_end_writes_the_top_level_result() -> None:
+    """A nested record is a child's result, so it cannot suppress the identical parent result."""
     state = _CoalesceState()
     records = [
         USER, *_node(state, "worker", "raw"),
         *_end(state, "inner-exit", "Inner: raw", nested=True), *_end(state, "exit", "Inner: raw"),
     ]
 
-    assert [r["kind"] for r in records].count("assistant_token") == 2, "the pass-through End was written"
+    assert [r["payload"].get("nested") for r in records if r["kind"] == "assistant_token"][1:] == [True, None]
     assert derive_session_final_text(records) == "Inner: raw"
 
 
-def test_a_passthrough_parent_over_two_nested_levels_keeps_the_nearest_levels_text_as_the_result() -> None:
+def test_a_passthrough_parent_over_two_nested_levels_writes_the_top_level_result() -> None:
     """Three levels: the innermost graph's End ('G: raw') is forwarded by the middle graph, whose own End ('C: G: raw')
-    is forwarded by the outer graph, whose pass-through End writes nothing. Both forwards are nested; the run's result
-    is the LAST one (the level just below the outer graph), not the first (the innermost level's text)."""
+    is forwarded by the outer graph. Both forwards are nested; the identical outer End still writes its own top-level
+    result, and the relay excludes the two nested records."""
     state = _CoalesceState()
     records = [
         USER, *_node(state, "worker", "raw"),
@@ -145,10 +145,21 @@ def test_a_passthrough_parent_over_two_nested_levels_keeps_the_nearest_levels_te
         *_end(state, "exit", "C: G: raw"),
     ]
 
-    assert [r["payload"].get("nested") for r in records if r["kind"] == "assistant_token"][1:] == [True, True], (
-        "the pass-through outer End was written, or a nested record is not marked: this test would be vacuous"
+    assert [r["payload"].get("nested") for r in records if r["kind"] == "assistant_token"][1:] == [True, True, None], (
+        "the nested provenance or top-level End record is missing: this test would be vacuous"
     )
     assert derive_session_final_text(records) == "C: G: raw"
+
+
+def test_a_legacy_nested_end_without_a_top_level_record_remains_the_result_fallback() -> None:
+    """Logs written before 01a10b4e may have suppressed the identical parent End."""
+    state = _CoalesceState()
+    records = [
+        USER, *_node(state, "worker", "raw"),
+        *_end(state, "inner-exit", "Inner: raw", nested=True),
+    ]
+
+    assert derive_session_final_text(records) == "Inner: raw"
 
 
 def test_two_top_level_ends_around_a_nested_one_are_joined_without_the_nested_text() -> None:

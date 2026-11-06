@@ -175,8 +175,14 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # written BEFORE it and, for a pass-through End, the last node's answer, so the windows below are read as if it were not there. Only the FINAL one is dropped: an earlier
     # invocation's end still separates that invocation's text from this one's.
     end_only = False
+    end_output_start = last_done + 1
     if is_graph_end(records[last_done]):
         boundaries = boundaries[:-1]
+        previous_graph_end = next(
+            (i for i in reversed(boundaries) if is_graph_end(records[i])),
+            -1,
+        )
+        end_output_start = previous_graph_end + 1
         last_done = boundaries[-1] if boundaries else -1
         # The new last boundary was not checked above: with ``on_failure: collect`` the worker that finishes last may have FAILED, and its partial text is not the graph's result. Then only an End
         # output (the graph's own result, rendered after the nodes) counts, and a pass-through End relays nothing.
@@ -194,14 +200,23 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # top-level End output was written at all, the last nested one stands in, because the parent's End that
     # echoed it was suppressed as a duplicate of it (see persistence's _GraphEndOutputEvent branch), so it
     # carries exactly that End's text.
-    end_outputs: list[str] = []
-    nested_outputs: list[str] = []
+    # First validate the unfinished tail after the last node terminal. End
+    # outputs before later completed nodes are still canonical graph results,
+    # so they are collected separately from the whole current invocation.
     for r in records[last_done + 1:]:
         if r.get("kind") != "assistant_token":
             continue
         payload = r.get("payload") or {}
         if not payload.get("end_node_id"):
             return None
+    end_outputs: list[str] = []
+    nested_outputs: list[str] = []
+    for r in records[end_output_start:]:
+        if r.get("kind") != "assistant_token":
+            continue
+        payload = r.get("payload") or {}
+        if not payload.get("end_node_id"):
+            continue
         text = payload.get("text")
         if isinstance(text, str) and text.strip():
             (nested_outputs if payload.get("nested") else end_outputs).append(text.strip())
@@ -242,18 +257,17 @@ def _lines_from_the_end(raw: "bytes | str"):
 def _parse_tail(lines_last_first) -> list[dict]:
     """Parse ``messages.jsonl`` lines, last first, only as far back as the final-text window reaches; return them in file order.
 
-    ``derive_session_final_text`` looks at the records from the second-to-last terminal record on (the window of the last
-    completed turn is the rows between the previous terminal record and the final ``done``, and what follows the final one), and
-    ignores everything before. Parsing stops once two terminal records have been seen, with the second one INCLUDED, so the
-    result has the same last two boundaries as the whole file would and the same answer; if the file has fewer than two it is
-    parsed whole. A graph run's own end, when it is the last terminal, is the verdict and not a boundary (the text windows are the nodes'),
-    so it is not counted. The cost is the size of the last window, not of the session's history (a relay-every-turn session read and parsed
-    all of it after every turn). Lines that are blank, do not parse, or parse to something that is not a record are skipped
-    (the last kind used to reach ``derive_session_final_text`` and raise ``AttributeError`` there).
+    Ordinary sessions stop once two terminal records have been seen, with the
+    second included. When the newest terminal is a graph-final End, every End
+    output in that graph invocation is part of the result, even when later
+    nodes wrote terminal records. That scan instead stops after including the
+    nearest preceding graph-final End, ``user_input``, or
+    ``invocation_divider``. Lines that are blank, malformed, or not records
+    are skipped.
     """
     tail: list[dict] = []
     boundaries = 0
-    seen_terminal = False
+    final_is_graph: bool | None = None
     for line in lines_last_first:
         if isinstance(line, bytes):
             line = line.decode("utf-8", "replace")
@@ -267,11 +281,17 @@ def _parse_tail(lines_last_first) -> list[dict]:
         if not isinstance(record, dict):
             continue  # a line that is valid JSON but not a record (a stray number or list): skipped like an unparseable one
         tail.append(record)
-        if is_session_terminal(record):
-            if not seen_terminal and is_graph_end(record):
-                seen_terminal = True          # the final graph end is the verdict, not a boundary (see derive_session_final_text): the two boundaries are the nodes' before it
+        if final_is_graph is None:
+            if not is_session_terminal(record):
                 continue
-            seen_terminal = True
+            final_is_graph = is_graph_end(record)
+            if not final_is_graph:
+                boundaries = 1
+            continue
+        if final_is_graph:
+            if is_graph_end(record) or record.get("kind") in {"user_input", "invocation_divider"}:
+                break
+        elif is_session_terminal(record):
             boundaries += 1
             if boundaries == 2:
                 break
@@ -280,22 +300,35 @@ def _parse_tail(lines_last_first) -> list[dict]:
 
 
 async def _read_final_window(log) -> bytes | None:
-    """The end of the session log (across its segments), widened until it holds three session terminals (two boundaries, and a graph end that is not one).
+    """Read enough of the segmented log to contain the final relay window.
 
     The bytes returned start at a line boundary unless they are the whole log.
     """
     from primer.workspace.tail_read import read_window
 
     def enough(lines: list[bytes]) -> bool:
-        terminals = 0
+        boundaries = 0
+        final_is_graph: bool | None = None
         for line in reversed(lines):
             try:
                 record = json.loads(line)
             except (ValueError, TypeError):
                 continue
-            if isinstance(record, dict) and is_session_terminal(record):
-                terminals += 1
-                if terminals == 3:
+            if not isinstance(record, dict):
+                continue
+            if final_is_graph is None:
+                if not is_session_terminal(record):
+                    continue
+                final_is_graph = is_graph_end(record)
+                if not final_is_graph:
+                    boundaries = 1
+                continue
+            if final_is_graph:
+                if is_graph_end(record) or record.get("kind") in {"user_input", "invocation_divider"}:
+                    return True
+            elif is_session_terminal(record):
+                boundaries += 1
+                if boundaries == 2:
                     return True
         return False
 
@@ -308,10 +341,12 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
     Reads the per-session ``messages.jsonl`` through whichever read surface the
     workspace IO exposes (the concrete backends offer ``read_file`` over the
     state path; test fakes expose ``read_lines``), parses the records of the
-    last window (see :func:`_parse_tail`: from the second-to-last terminal
-    record on, not the whole history), and runs
-    :func:`derive_session_final_text`. Returns ``None`` and never raises on any
-    read/parse error so the relay degrades silently.
+    last window, and runs :func:`derive_session_final_text`. When the newest
+    terminal is ordinary, that window starts at the second-to-last terminal.
+    When the newest terminal is graph-final, it retains the whole current
+    graph invocation back to the nearest prior graph final, ``user_input``, or
+    ``invocation_divider`` (see :func:`_parse_tail`). Returns ``None`` and never
+    raises on any read/parse error so the relay degrades silently.
 
     A workspace that can read a range gives only the end of the file (see
     :func:`_read_final_window`), so the bytes that cross a docker or k8s runtime
