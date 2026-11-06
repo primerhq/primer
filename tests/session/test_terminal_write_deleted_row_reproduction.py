@@ -1,17 +1,16 @@
-"""A turn's terminal write that races a DELETED row raises ``NotFoundError`` out of the helper (ticket 01a1134b).
+"""A turn's terminal write treats a concurrently deleted row as already absent (ticket 01a1134b).
 
-Reproduction only: the fix is held for the independent verifiers (the terminal write is on the session core path). The
-REST of a turn (a WAITING write, or PAUSED under a pause) is no longer an ``update_unless``: since ticket 01a16d9f it is a
-field-scoped ``patch_if`` of ``status`` that takes a vanished row as the read-time absence is taken, so its row of the
-helper test passes now and is no longer marked; the ENDED writes still carry the gap.
+The rest of a turn (a WAITING write, or PAUSED under a pause) uses a field-scoped ``patch_if`` of ``status`` and already
+treats a vanished row like read-time absence (ticket 01a16d9f). ENDED writes use ``update_unless`` so the first terminal
+reason wins; they must provide the same missing-row behavior without swallowing any other storage failure.
 
 ``_transition_session_status`` reads the row, decides, and then writes with ``update_unless`` (a conditional write that
 refuses an ENDED row). A row that is DELETED between that read and the write is neither "ended" nor "absent" as far as
 the helper's own snapshot knows, and the backends answer the write the way they answer any write to a missing row:
 ``update_unless`` raises ``NotFoundError`` (Postgres and SQLite alike, see their ``if not exists: raise NotFoundError``).
-Nothing in the helper catches it, although the very same situation one step earlier (the read finds no row) is handled
-quietly: ``if fresh is None: return _TerminalWrite(False, new_status, ended_reason)``. A force-delete on another API
-process does not serialize with this worker (the lifecycle lock is process-local), so the window is real.
+The helper catches that specific ``NotFoundError`` and reports that nothing landed, just as when its initial read finds
+no row. A force-delete on another API process does not serialize with this worker (the lifecycle lock is process-local),
+so the window is real.
 
 Two layers, so the tests do not know the helper's internals more than they must: the helper itself, and a whole turn
 through ``run_one_session_turn`` (its completion exit and its failure exit), where the control is the SAME turn with the
@@ -43,21 +42,9 @@ from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by n
 )
 from tests.session.test_dispatch_interrupt import _build_returning, _StopAwareExecutor
 
-xfail_the_race = pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="01a1134b: update_unless raises NotFoundError for a row deleted between the helper's read and its write, "
-    "and nothing in _transition_session_status catches it (the read-time absence is handled)",
-)
-
 WRITES = [
     pytest.param(SessionStatus.ENDED, "completed", id="completion"),
     pytest.param(SessionStatus.ENDED, "failed", id="failure"),
-    pytest.param(SessionStatus.WAITING, None, id="rest-waiting"),
-]
-#: The same writes, the ENDED ones still marked with the held gap; the rest handles a vanished row since ticket 01a16d9f.
-WRITES_WITH_THE_GAP = [
-    pytest.param(SessionStatus.ENDED, "completed", id="completion", marks=xfail_the_race),
-    pytest.param(SessionStatus.ENDED, "failed", id="failure", marks=xfail_the_race),
     pytest.param(SessionStatus.WAITING, None, id="rest-waiting"),
 ]
 
@@ -116,19 +103,16 @@ async def test_scenario_the_row_is_deleted_between_the_helpers_read_and_its_writ
     await _running_row(storage, sid)
     seen = _delete_the_row_between_the_helpers_read_and_write(storage, sid)
 
-    try:
-        await dispatch._transition_session_status(
-            storage, SimpleNamespace(id=sid, workspace_id="w1"), new_status=new_status, ended_reason=reason,
-        )
-    except NotFoundError:
-        pass  # today's behaviour; the behaviour test below is the one that says it must not escape
+    await dispatch._transition_session_status(
+        storage, SimpleNamespace(id=sid, workspace_id="w1"), new_status=new_status, ended_reason=reason,
+    )
 
     assert seen["deleted"], "the race never happened: the helper did not reach its conditional write"
     assert isinstance(seen["raised"], NotFoundError), "the store did not refuse the write to a missing row"
     assert await storage.get(sid) is None, "the row must still be gone"
 
 
-@pytest.mark.parametrize("new_status, reason", WRITES_WITH_THE_GAP)
+@pytest.mark.parametrize("new_status, reason", WRITES)
 async def test_a_row_deleted_between_the_read_and_the_write_is_reported_like_a_row_that_was_already_gone(
     seeded_session, fake_storage_provider, new_status, reason,
 ) -> None:
@@ -290,14 +274,11 @@ async def test_scenario_the_row_is_deleted_under_the_turns_terminal_write(
     assert await storage.get(seeded_session.id) is None, "the row must still be gone"
 
 
-@xfail_the_race
 @pytest.mark.parametrize("exit_", ["completion", "failure"])
 async def test_a_turn_whose_row_is_deleted_under_its_terminal_write_ends_like_one_whose_row_was_already_gone(
     seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, exit_,
 ) -> None:
-    """Today the NotFoundError escapes ``run_one_session_turn`` itself: no release outcome is returned, so the pool logs
-    "raised unexpectedly" and its ``finally`` releases with the outcome it pre-set (``success=False``,
-    ``primer/worker/pool.py`` ~992-1071), and no terminal event is published."""
+    """The write-time deletion matches a row absent before the terminal helper read."""
     race = await _run_turn(
         seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
         exit_=exit_, row_gone="between",
