@@ -79,6 +79,39 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _pending_agent_yield_record(p: _PendingAgentYield) -> dict[str, Any]:
+    """The canonical checkpoint record for one pending agent-node yield."""
+    return {
+        "node_id": p.node_id,
+        "tool_call_id": p.tool_call_id,
+        "event_key": p.event_key,
+        "tool_name": p.tool_name,
+        "resume_metadata": dict(p.resume_metadata),
+        "llm_messages": list(p.llm_messages),
+        "iteration": p.iteration,
+        "frames": list(p.frames),
+        "leaf": dict(p.leaf) if p.leaf is not None else None,
+        "scoped_tool_call_id": p.scoped_tool_call_id,
+        "completed_results": list(p.completed_results),
+        "remaining_calls": list(p.remaining_calls),
+        "remaining_scoped_call_ids": dict(p.remaining_scoped_call_ids),
+        "deadline": p.deadline,
+    }
+
+
+def _pending_agent_yield_matches_record(
+    pending: _PendingAgentYield, record: dict[str, Any]
+) -> bool:
+    """Whether ``pending`` is the exact serialized entry ``record`` names.
+
+    Only keys present in the stored record are compared so a checkpoint from
+    before a newer optional field existed still selects its original entry.
+    Required identity fields such as ``node_id`` are always present.
+    """
+    current = _pending_agent_yield_record(pending)
+    return all(current.get(key) == value for key, value in record.items())
+
+
 class _CheckpointMixin:
     """Snapshot / restore / park-yield methods for `_BaseGraphExecutor`."""
 
@@ -323,27 +356,7 @@ class _CheckpointMixin:
                 for p in self._pending_toolcalls
             ],
             "pending_agent_yields": [
-                {
-                    "node_id": p.node_id,
-                    "tool_call_id": p.tool_call_id,
-                    "event_key": p.event_key,
-                    "tool_name": p.tool_name,
-                    "resume_metadata": dict(p.resume_metadata),
-                    "llm_messages": list(p.llm_messages),
-                    "iteration": p.iteration,
-                    # Unified nested-yield: the in-flight subagent chain (root-
-                    # first) + deeper leaf when the node yielded from inside a
-                    # nested invoke_agent. Empty / None for an ordinary park.
-                    "frames": list(p.frames),
-                    "leaf": dict(p.leaf) if p.leaf is not None else None,
-                    # 01a0690a: see _PendingAgentYield's docstring.
-                    "scoped_tool_call_id": p.scoped_tool_call_id,
-                    # Ticket 01a15327: the tool round the park left unfinished (see _PendingAgentYield).
-                    "completed_results": list(p.completed_results),
-                    "remaining_calls": list(p.remaining_calls),
-                    "remaining_scoped_call_ids": dict(p.remaining_scoped_call_ids),
-                    "deadline": p.deadline,
-                }
+                _pending_agent_yield_record(p)
                 for p in self._pending_agent_yields
             ],
             "pending_tool_waits": [

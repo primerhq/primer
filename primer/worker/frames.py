@@ -390,7 +390,12 @@ class GraphFrame:
             node_tcid=data.get("node_tcid"),
         )
 
-    def answered_entry(self, leaf: Any, fired_key: str | None) -> tuple[str | None, str | None]:
+    def answered_entry(
+        self,
+        leaf: Any,
+        fired_key: str | None,
+        gate_id: str | None = None,
+    ) -> tuple[str | None, str | None]:
         """``(tool_call_id, event_key)`` of the child's pending entry a reply answered.
 
         The leaf is the child's PRIMARY projection (its first pending entry), but the child may have several gates pending and every one of them is offered to
@@ -398,13 +403,53 @@ class GraphFrame:
         ``resume_event_key``) names the entry that was answered, and its own ``tool_call_id`` is the one to resume; when it names none of the child's pending
         entries (a row flipped before the key was stamped, a key that belongs to an outer frame) the leaf decides, as it always did.
         """
-        if fired_key:
-            from primer.session.pending_gates import enumerate_pending_gates
+        if fired_key or gate_id:
+            from primer.session.pending_gates import resolve_pending_gate
 
-            for entry in enumerate_pending_gates({"graph_checkpoint": self.checkpoint}):
-                if entry.get("event_key") == fired_key:
-                    return entry.get("tool_call_id") or self.node_tcid, fired_key
+            entry = resolve_pending_gate(
+                {"graph_checkpoint": self.checkpoint},
+                tool_call_id=self.node_tcid or getattr(leaf, "tool_call_id", None) or "",
+                event_key=fired_key,
+                gate_id=gate_id,
+            )
+            if entry is not None:
+                return entry.get("tool_call_id") or self.node_tcid, entry.get("event_key")
         return self.node_tcid, getattr(leaf, "event_key", None)
+
+    def _nested_answered_entry(
+        self,
+        *,
+        node_tcid: str | None,
+        answered_key: str | None,
+        gate_id: str | None,
+    ) -> dict[str, Any] | None:
+        """The selected child entry when it carries a deeper continuation."""
+        from primer.model.yield_ import gate_id_of
+        from primer.session.gate_token import gate_token_matches
+        from primer.session.pending_gates import pending_entries
+
+        matches = pending_entries(
+            self.checkpoint,
+            "pending_agent_yields",
+            tool_call_id=node_tcid,
+            event_key=answered_key,
+        )
+        if gate_id is not None:
+            matches = [
+                entry
+                for entry in matches
+                if gate_token_matches(
+                    gate_id_of(entry.get("resume_metadata")), gate_id
+                )
+            ]
+        return next(
+            (
+                entry
+                for entry in matches
+                if entry.get("frames") and entry.get("leaf")
+            ),
+            None,
+        )
 
     async def resume_leaf(
         self,
@@ -421,14 +466,19 @@ class GraphFrame:
         classified one, which no longer carries it) and handed to the child's resume: sibling gates can share the key, and a gated inner call runs with the approval bypassed (security review of #724, round 3).
 
         The leaf belongs to a node INSIDE this child graph, so only the graph's
-        own resume can resolve it: rehydrate the child executor
-        (``services.resolve_graph`` + ``services.build_child_graph_executor``),
+        own resume can resolve it. Rehydrate the child executor
+        (``services.resolve_graph`` + ``services.build_child_graph_executor``).
+        When the selected pending agent entry carries its own ``frames`` and
+        ``leaf``, run that nested continuation first and deliver only its
+        completed ``invoke_agent`` result into the graph node; a re-yield
+        advances that entry's checkpoint without resuming the node. Otherwise
         compute the node's ``agent_tool_result`` from the raw ``payload`` via
-        ``services.graph_agent_tool_result`` (None for approval/verdict leaves),
-        and hand BOTH the raw ``payload`` and that ``agent_tool_result`` to
-        :func:`resume_invoke_graph`, with the session and toolset resolver the
-        ``services`` bundle carries (the ``ResumeContext`` of a value-yielding
-        ``tool_call`` node inside the child).
+        ``services.graph_agent_tool_result`` (None for approval/verdict leaves).
+        Then hand BOTH the raw ``payload`` and completed
+        ``agent_tool_result`` to :func:`resume_invoke_graph`, with the session
+        and toolset resolver the ``services`` bundle carries (the
+        ``ResumeContext`` of a value-yielding ``tool_call`` node inside the
+        child).
 
         Returns a :class:`Reparked` if the child graph raised a fresh yield,
         else a :class:`Completed` carrying a :class:`ToolResultPart` (keyed by
@@ -441,10 +491,42 @@ class GraphFrame:
         child = await services.build_child_graph_executor(graph, self.gsid)
         # WHICH gate of the child this reply answers: two siblings of the child's superstep can share ``node_tcid``, and a raw id alone resumed every one of
         # them (C-033 round 2); the leaf is the child's primary, so a reply for another sibling needs the key it fired (round 3, ticket 01a11fc6-0cce).
-        node_tcid, answered_key = self.answered_entry(leaf, fired_key)
-        agent_tool_result = await services.graph_agent_tool_result(
-            self.checkpoint, node_tcid, payload, event_key=answered_key,
+        node_tcid, answered_key = self.answered_entry(leaf, fired_key, gate_id)
+        nested_entry = self._nested_answered_entry(
+            node_tcid=node_tcid,
+            answered_key=answered_key,
+            gate_id=gate_id,
         )
+        if nested_entry is not None:
+            from primer.model.chat import Message
+            from primer.worker.continuation import (
+                Repark,
+                checkpoint_with_reparked_agent_yield,
+                resume_pending_agent_yield,
+            )
+
+            nested = await resume_pending_agent_yield(
+                nested_entry,
+                payload,
+                services,
+                fired_key=answered_key,
+                gate_id=gate_id,
+            )
+            if isinstance(nested, Repark):
+                advanced = checkpoint_with_reparked_agent_yield(
+                    self.checkpoint, nested_entry, nested
+                )
+                child.restore_state(advanced)
+                return self._repark_with_advanced_frame(
+                    child._build_pending_park_yield()
+                )
+            agent_tool_result = Message(
+                role="tool", parts=[nested.tool_result]
+            )
+        else:
+            agent_tool_result = await services.graph_agent_tool_result(
+                self.checkpoint, node_tcid, payload, event_key=answered_key,
+            )
         try:
             out, repark = await resume_invoke_graph(
                 child=child,
@@ -453,6 +535,11 @@ class GraphFrame:
                 resumed_tcid=node_tcid,
                 resumed_event_key=answered_key,
                 **({"resumed_gate_id": gate_id} if gate_id is not None else {}),
+                **(
+                    {"resumed_agent_entry": nested_entry}
+                    if nested_entry is not None
+                    else {}
+                ),
                 agent_tool_result=agent_tool_result,
                 resume_session_id=services.session_id,
                 resolve_provider=services.resolve_provider,
