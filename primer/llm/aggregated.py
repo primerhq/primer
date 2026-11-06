@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -206,6 +207,17 @@ class AggregatedLLM(LLM):
         self._resolve = resolve_member
         self._cursor = 0
         self._cursor_lock = asyncio.Lock()
+        self._rejecting_context: ContextVar[tuple[object, int] | None] = ContextVar(
+            "aggregated_rejecting_context",
+            default=None,
+        )
+
+    def rejecting_context_length(self, rejection: object) -> int | None:
+        """Return the exact member window recorded for ``rejection`` in this call context."""
+        recorded = self._rejecting_context.get()
+        if recorded is None or recorded[0] is not rejection:
+            return None
+        return recorded[1]
 
     async def _member_order(self) -> list[str]:
         members = self._members
@@ -259,12 +271,15 @@ class AggregatedLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        # Each Task gets its own ContextVar value. Clearing at call entry also
+        # prevents a prior call in the same Task from supplying stale metadata.
+        self._rejecting_context.set(None)
         failover_point = self._failover_point
         failover_on = self._failover_on
         errors: list[str] = []
         # One BadRequestError per member that failed because the PROMPT did not fit (see the
         # exhaustion branch at the end). A member that failed any other way adds to ``errors`` only.
-        overflows: list[BadRequestError] = []
+        overflows: list[tuple[BadRequestError, int]] = []
         for member_id in await self._member_order():
             try:
                 llm, resolved = await self._resolve(member_id)
@@ -313,30 +328,49 @@ class AggregatedLLM(LLM):
                     self._log_failover(member_id, "empty stream")
                     continue
                 except (ProviderError, NetworkError) as exc:
+                    if isinstance(exc, BadRequestError) and is_context_overflow(exc):
+                        # The aggregate profile's resolved window is the minimum across
+                        # members, but recovery needs this call's exact rejecting member.
+                        # ContextVar + identity preserves the original exception object
+                        # without shared mutable state, even when a fake reuses an object.
+                        rejection = (exc, resolved.context_length)
+                        self._rejecting_context.set(rejection)
                     if _exc_eligible(exc, failover_on):
                         errors.append(f"{member_id}: {type(exc).__name__}")
                         if isinstance(exc, BadRequestError) and is_context_overflow(exc):
-                            overflows.append(exc)
+                            overflows.append(rejection)
                         self._log_failover(member_id, f"connect {type(exc).__name__}: {exc}")
                         continue
                     raise
                 # --- first event in hand ---
-                if (
-                    isinstance(first, ChatError)
-                    and first.fatal
-                    and _yielded_eligible(first.code, failover_on)
-                ):
-                    errors.append(f"{member_id}: first-event Error code={first.code}")
-                    if is_context_overflow_error(first):
-                        # A lazily-opened member (Ollama, Gemini) YIELDS its 400: build the exception.
-                        overflows.append(BadRequestError(first.message, code=first.code, status_code=400))
-                    self._log_failover(member_id, f"first-event Error code={first.code}")
-                    continue
+                if isinstance(first, ChatError) and first.fatal:
+                    first_is_overflow = is_context_overflow_error(first)
+                    if first_is_overflow:
+                        # A strict policy surfaces this Error unchanged; the agent loop
+                        # later rebuilds it as a BadRequestError. Record the Error's
+                        # identity now so that reconstruction can carry the exact window.
+                        self._rejecting_context.set((first, resolved.context_length))
+                    if _yielded_eligible(first.code, failover_on):
+                        errors.append(f"{member_id}: first-event Error code={first.code}")
+                        if first_is_overflow:
+                            # An eligible lazily-opened member (Ollama, Gemini) YIELDS
+                            # its 400: build the exception used by exhaustion recovery.
+                            overflow = BadRequestError(first.message, code=first.code, status_code=400)
+                            rejection = (overflow, resolved.context_length)
+                            self._rejecting_context.set(rejection)
+                            overflows.append(rejection)
+                        self._log_failover(member_id, f"first-event Error code={first.code}")
+                        continue
                 # commit to this member: nothing has been yielded downstream yet.
                 yield first
                 # --- stream the rest ---
                 try:
                     async for ev in agen:
+                        if isinstance(ev, ChatError) and is_context_overflow_error(ev):
+                            # StreamStart and Usage are non-content to the agent loop,
+                            # which may still intercept this Error and rebuild it.
+                            # Record before the unchanged failover/surface decision.
+                            self._rejecting_context.set((ev, resolved.context_length))
                         if (
                             failover_point == FailoverPoint.MID_STREAM
                             and isinstance(ev, ChatError)
@@ -356,6 +390,8 @@ class AggregatedLLM(LLM):
                     # openchat.py:284 / anthropic.py:760). We already committed
                     # tokens, so only MID_STREAM may restart on the next member;
                     # BEFORE_FIRST_TOKEN cannot fail over post-commit -> propagate.
+                    if isinstance(exc, BadRequestError) and is_context_overflow(exc):
+                        self._rejecting_context.set((exc, resolved.context_length))
                     if (
                         failover_point == FailoverPoint.MID_STREAM
                         and _exc_eligible(exc, failover_on)
@@ -378,7 +414,9 @@ class AggregatedLLM(LLM):
             # later", and the executor's overflow recovery keys on it. Re-raise the last member's own
             # BadRequestError instead of wrapping it. A pool with ANY other failure (a rate limit, a
             # missing member) stays a RateLimitError: it may fit once that member recovers.
-            raise overflows[-1]
+            rejection = overflows[-1]
+            self._rejecting_context.set(rejection)
+            raise rejection[0]
         raise RateLimitError(
             f"all {len(errors)} aggregated members failed: {'; '.join(errors)}",
         )
