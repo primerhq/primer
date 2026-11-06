@@ -145,11 +145,12 @@ async def run_raising(tmp_path, storage, io, bus, tl: TurnLogs, *, after: int = 
 
 
 async def release(storage, outcome) -> WorkspaceSession:
-    """What ``SessionClaimAdapter.on_release`` does to ``turn_no`` on a success (a bump); a park or a failure leaves it."""
+    """What ``SessionClaimAdapter.on_release`` does to ``turn_no`` on a success (a bump); a park or a failure leaves it. The committed non-park
+    branch also clears the park stash (``pending_park``) with the park columns, so the simulation does too."""
     sessions = storage.get_storage(WorkspaceSession)
     row = await sessions.get(SID)
     if outcome.success and outcome.park is None:
-        row = row.model_copy(update={"turn_no": row.turn_no + 1})
+        row = row.model_copy(update={"turn_no": row.turn_no + 1, "pending_park": None})
         await sessions.update(row)
     return row
 
@@ -194,8 +195,11 @@ async def park(tmp_path, storage, io, bus, tl: TurnLogs, monkeypatch, *, scripts
 
     parked = await run_one_session_turn(_make_lease(SID), deps(storage, io, bus, await executor(), tl))
     sessions = storage.get_storage(WorkspaceSession)
+    # The real adapter's park branch writes the park columns AND clears the stash (``pending_park``) in one
+    # transaction; the simulation mirrors it, so a committed park release leaves no stash behind.
     row = (await sessions.get(SID)).model_copy(update={
         "parked_status": "parked", "parked_state": parked.park.parked_state, "parked_at": datetime.now(UTC), "parked_event_key": ask.yielded.event_key,
+        "pending_park": None,
     })
     await sessions.update(row)
     return ask, parked, executor

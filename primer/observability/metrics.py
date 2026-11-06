@@ -336,6 +336,14 @@ session_resume_noop_total = Counter(
     registry=registry,
 )
 
+session_park_stash_applied_total = Counter(
+    "session_park_stash_applied_total",
+    "Session claims that found the previous attempt's park stashed (pending_park) but its release never "
+    "committed (abandoned or rolled back), and applied that park without running the turn again. Each one "
+    "is a model call that would otherwise have run twice over a dangling question.",
+    registry=registry,
+)
+
 message_write_abandoned_total = Counter(
     "message_write_abandoned_total",
     "Batches of session message records the workspace did not accept within the write bound "
@@ -460,6 +468,7 @@ def reset_for_test() -> None:
     global session_interrupt_publish_failures_total  # noqa: PLW0603
     global session_completed_turn_noop_total  # noqa: PLW0603
     global session_resume_noop_total  # noqa: PLW0603
+    global session_park_stash_applied_total  # noqa: PLW0603
     global message_write_abandoned_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
     global llm_prompt_estimate_ratio  # noqa: PLW0603
@@ -707,6 +716,13 @@ def reset_for_test() -> None:
         "running the resume handler again. Each one would otherwise have injected the reply, or run an approved tool, twice.",
         registry=registry,
     )
+    session_park_stash_applied_total = Counter(
+        "session_park_stash_applied_total",
+        "Session claims that found the previous attempt's park stashed (pending_park) but its release never "
+        "committed (abandoned or rolled back), and applied that park without running the turn again. Each one "
+        "is a model call that would otherwise have run twice over a dangling question.",
+        registry=registry,
+    )
     message_write_abandoned_total = Counter(
         "message_write_abandoned_total",
         "Batches of session message records the workspace did not accept within the write bound "
@@ -766,6 +782,7 @@ __all__ = [
     # Completed-turn re-claim guard
     "session_completed_turn_noop_total",
     "session_resume_noop_total",
+    "session_park_stash_applied_total",
     # Message log writes
     "message_write_abandoned_total",
     # Tool-call claims

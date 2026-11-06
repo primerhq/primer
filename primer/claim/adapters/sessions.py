@@ -151,7 +151,7 @@ class SessionClaimAdapter(ClaimAdapter):
         """Write the fields the release owns, and nothing else.
 
         Every branch is ONE field-scoped ``Storage.patch_if`` of only its own fields (the park columns,
-        and on a successful turn ``turn_no`` / ``last_turn_at``; the claim-time ``last_worker_id`` stamp
+        ``pending_park``, and on a successful turn ``turn_no`` / ``last_turn_at``; the claim-time ``last_worker_id`` stamp
         is not cleared here). It never writes
         ``turn_status``, ``status``, the cursor or the request flags, and it writes ``last_seq`` only to
         ADVANCE it past the failure marker it appends (``_write_terminal_record``): a whole-document
@@ -178,7 +178,10 @@ class SessionClaimAdapter(ClaimAdapter):
         # drops the lease (drop_lease=True), so the parked row has no lease
         # and is not re-claimed until the resume event re-arms it via
         # engine.mark_resumable. The claim-time worker stamp is not cleared:
-        # the parked session still shows the worker that ran its turn.
+        # the parked session still shows the worker that ran its turn. The
+        # park arm stashed this park on the row (``pending_park``) before the
+        # release so one that rolls back does not lose it; this transaction
+        # writes the columns and clears the stash together.
         if outcome.park is not None:
             p = outcome.park
             owned = {
@@ -188,6 +191,7 @@ class SessionClaimAdapter(ClaimAdapter):
                 "parked_until": p.parked_until,
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
+                "pending_park": None,
             }
             if p.drained_reply_keys is None:
                 await self._patch_owned(entity_id, sess, conn, owned, bump=False)
@@ -204,7 +208,9 @@ class SessionClaimAdapter(ClaimAdapter):
         # one writes nothing at all (nothing else is owned here).
         if outcome.preserve_park:
             if outcome.success:
-                await self._patch_owned(entity_id, sess, conn, {}, bump=True)
+                # A pause may overtake recovery of a park whose first release rolled back. The pause wins, so its
+                # successful release retires that stash while preserving any already-committed park columns.
+                await self._patch_owned(entity_id, sess, conn, {"pending_park": None}, bump=True)
             return
 
         # Non-park release: clear any park columns. Only bump turn_no /
@@ -219,6 +225,7 @@ class SessionClaimAdapter(ClaimAdapter):
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,
+            "pending_park": None,
         }, bump=outcome.success)
         if written is None:
             return
