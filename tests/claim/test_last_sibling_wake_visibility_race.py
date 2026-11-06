@@ -1,41 +1,11 @@
-"""7a gate verdict unverified item B - concurrent last-two-siblings wake
-MISS (the inverse of the double-fire the existing idempotency test
-covers).
+"""Post-commit readiness tests for concurrent final tool-call siblings.
 
-``ToolCallClaimAdapter._last_sibling_wake_signal`` reads every OTHER
-sibling via ``storage.get(sibling_id, conn=conn)`` - deliberately
-conn-scoped so it observes state inside THIS release's own transaction
-(see that method's own docstring). Under Postgres's default READ
-COMMITTED isolation, a conn-scoped read only sees OTHER transactions'
-COMMITTED writes - if the LAST TWO siblings release concurrently, each
-one's own self-update is inside its OWN still-open transaction when the
-OTHER's sibling-check runs, so EACH one observes the OTHER as not-yet-
-terminal and returns None. Neither concludes "I am last": the wake is
-lost entirely, not merely delayed or double-fired.
-
-Confirmed NOT reachable this way for InMemoryClaimEngine: its storage
-fakes have no internal suspension point, so ``asyncio.gather`` always
-runs one release to full completion before the other starts (proven by
-running the SAME concurrent-release scenario against the in-memory
-engine at the bottom of this file and observing exactly one wake, never
-zero) - the race is specific to a storage layer with genuine
-per-connection write visibility, which this file simulates directly
-rather than requiring a live database.
-
-PINNED LIMITATION, not a regression test: the leader-adjudicated
-disposition for this finding is accept-and-document rather than fix now
-(the real fix moves the "am I last" decision to a post-commit re-check -
-an architectural change to WHEN the decision happens, out of scope for
-a local patch). ``test_concurrent_last_two_releases_under_read_
-committed_isolation_lose_the_wake`` below therefore asserts the CURRENT
-lossy behavior on purpose, not the desired one - see
-``_last_sibling_wake_signal``'s own docstring for the full trace and
-task 01a07c06 (recovery-boot reconciliation, upgraded to a flag-on
-prerequisite by this finding) for the eventual fix. When that lands,
-flip this test's assertions from "wake lost" to "wake recovered" rather
-than deleting it - the scenario it sets up (both transactions open,
-each observing the other as non-terminal) is exactly the case the fix
-needs to handle.
+The storage double below gives each connection its own uncommitted view,
+matching Postgres READ COMMITTED closely enough to reproduce the final-two
+release ordering without a database. Every terminal release now returns a
+candidate signal. The factory hook evaluates its batch fence after commit,
+so a non-final release cannot wake early and the later commit cannot miss
+the sibling that committed first.
 """
 
 from __future__ import annotations
@@ -46,6 +16,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+from primer.claim.factory import _post_release_wake_ready
 from primer.int.claim import ReleaseOutcome
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -110,49 +81,8 @@ class _PerConnVisibilityStorage:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_last_two_releases_under_read_committed_isolation_lose_the_wake() -> None:
-    """Both releases run inside their OWN open (uncommitted) transaction
-    when the OTHER's sibling-check reads run - each sees the other as
-    still non-terminal, both return None, and committing afterward does
-    not retroactively fire anything. This is the concrete mechanism
-    behind item B: a genuine wake loss, not a double-fire."""
-    batch = ["A", "B"]
-    storage = _PerConnVisibilityStorage({
-        "A": _task("A", batch), "B": _task("B", batch),
-    })
-    adapter = ToolCallClaimAdapter(task_storage=storage)
-    conn_a, conn_b = object(), object()
-
-    signal_a = await adapter.on_release(conn_a, "A", outcome=_release("A"))
-    signal_b = await adapter.on_release(conn_b, "B", outcome=_release("B"))
-
-    # Neither release observed the other as terminal - the exact race.
-    # PINNED, not desired: accept-and-document disposition (7a gate
-    # review item B). Flip to "wake recovered" when task 01a07c06
-    # (recovery-boot reconciliation) lands.
-    assert signal_a is None
-    assert signal_b is None
-
-    # Both transactions now commit (as they would in production) - the
-    # damage is already done: nothing re-checks after the fact.
-    storage.commit(conn_a)
-    storage.commit(conn_b)
-    assert storage._committed["A"].state == ToolCallTaskState.DONE
-    assert storage._committed["B"].state == ToolCallTaskState.DONE
-    # No signal was ever produced for either release, so
-    # ClaimEngine._post_release_hook (and therefore
-    # durably_mark_session_resumable) never runs - the session stays
-    # parked forever, absent the park-timeout backstop or a future
-    # recovery-boot reconciliation pass (task 01a07c06).
-
-
-@pytest.mark.asyncio
-async def test_sequential_releases_do_not_race_the_second_one_fires() -> None:
-    """Control case: when the second release's OWN transaction starts
-    strictly after the first one's has already committed (the common,
-    non-concurrent case), the race does not occur - the second sibling
-    correctly observes the first as terminal and fires. (The ids are real
-    scoped task ids: the wake key is parsed from them.)"""
+async def test_concurrent_last_two_commits_recover_the_wake_post_commit() -> None:
+    """The later commit sees the complete batch even when neither transaction did."""
     a, b = "s1/x:tool:0:1", "s1/x:tool:0:2"
     batch = [a, b]
     storage = _PerConnVisibilityStorage({
@@ -162,19 +92,83 @@ async def test_sequential_releases_do_not_race_the_second_one_fires() -> None:
     conn_a, conn_b = object(), object()
 
     signal_a = await adapter.on_release(conn_a, a, outcome=_release(a))
-    storage.commit(conn_a)  # A's transaction commits before B's even starts.
     signal_b = await adapter.on_release(conn_b, b, outcome=_release(b))
 
-    assert signal_a is None
+    assert signal_a is not None
     assert signal_b is not None
+    assert signal_a.required_terminal_task_ids == tuple(batch)
+    assert signal_b.required_terminal_task_ids == tuple(batch)
+    assert not await _post_release_wake_ready(signal_a, storage)
+
+    # The first commit is still not enough, so there is no premature wake.
+    storage.commit(conn_a)
+    assert not await _post_release_wake_ready(signal_a, storage)
+
+    # The second commit makes either candidate ready. In production each
+    # engine invokes its hook immediately after its own commit; therefore
+    # the later commit always supplies at least one ready candidate.
+    storage.commit(conn_b)
+    assert await _post_release_wake_ready(signal_a, storage)
+    assert await _post_release_wake_ready(signal_b, storage)
+    assert storage._committed[a].state == ToolCallTaskState.DONE
+    assert storage._committed[b].state == ToolCallTaskState.DONE
 
 
 @pytest.mark.asyncio
-async def test_in_memory_engine_concurrent_release_never_loses_the_wake() -> None:
-    """Confirms the race is NOT reachable for InMemoryClaimEngine: its
-    storage fakes have no internal suspension point, so asyncio.gather
-    always runs one release to completion before the other starts -
-    exactly one of the two concludes "I am last," never zero."""
+async def test_sequential_non_final_then_final_release_wakes_only_when_ready() -> None:
+    a, b = "s1/x:tool:0:1", "s1/x:tool:0:2"
+    batch = [a, b]
+    storage = _PerConnVisibilityStorage({
+        a: _task(a, batch), b: _task(b, batch),
+    })
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    conn_a, conn_b = object(), object()
+
+    signal_a = await adapter.on_release(conn_a, a, outcome=_release(a))
+    assert signal_a is not None
+    storage.commit(conn_a)
+    assert not await _post_release_wake_ready(signal_a, storage)
+
+    signal_b = await adapter.on_release(conn_b, b, outcome=_release(b))
+    assert signal_b is not None
+    assert not await _post_release_wake_ready(signal_b, storage)
+    storage.commit(conn_b)
+
+    assert await _post_release_wake_ready(signal_b, storage)
+
+
+@pytest.mark.asyncio
+async def test_single_task_batch_is_ready_only_after_its_commit() -> None:
+    task_id = "s1/x:tool:0:1"
+    storage = _PerConnVisibilityStorage({task_id: _task(task_id, [task_id])})
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    conn = object()
+
+    signal = await adapter.on_release(conn, task_id, outcome=_release(task_id))
+
+    assert signal is not None
+    assert not await _post_release_wake_ready(signal, storage)
+    storage.commit(conn)
+    assert await _post_release_wake_ready(signal, storage)
+
+
+@pytest.mark.asyncio
+async def test_retry_release_never_creates_a_wake_candidate() -> None:
+    task_id = "s1/x:tool:0:1"
+    storage = _PerConnVisibilityStorage({task_id: _task(task_id, [task_id])})
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+
+    signal = await adapter.on_release(
+        object(),
+        task_id,
+        outcome=ReleaseOutcome(success=False, claim_token=_token(task_id)),
+    )
+
+    assert signal is None
+
+
+@pytest.mark.asyncio
+async def test_in_memory_engine_post_commit_check_wakes_exactly_once() -> None:
     from primer.claim.in_memory import InMemoryClaimEngine
     from primer.int.claim import ClaimKind
 
@@ -211,7 +205,8 @@ async def test_in_memory_engine_concurrent_release_never_loses_the_wake() -> Non
     signals: list = []
 
     async def _hook(signal) -> None:
-        signals.append(signal)
+        if await _post_release_wake_ready(signal, storage):
+            signals.append(signal)
 
     engine.bind_post_release_hook(_hook)
 
@@ -220,4 +215,4 @@ async def test_in_memory_engine_concurrent_release_never_loses_the_wake() -> Non
         for tid in batch
     ])
 
-    assert len(signals) >= 1
+    assert len(signals) == 1

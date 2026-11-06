@@ -174,15 +174,14 @@ class ToolCallTask(Identifiable):
     # batch as this row, THIS row's own id included (01a0518b, mixed-park
     # wake seam). The SAME list on every row in a batch - not a "first" /
     # "last" pick, so this stays consistent with the no-primary-projection
-    # discipline pending_gates.py established. ToolCallClaimAdapter.
-    # on_release's terminal branch reads every id here via individual
-    # storage.get(id, conn=conn) calls (NOT Storage.find, which has no
-    # conn param and would read outside this release's own transaction)
-    # to determine "am I the last sibling to go terminal" - a genuinely
-    # NEW piece of information each row needs (which OTHER ids share its
+    # discipline pending_gates.py established. ToolCallClaimAdapter's
+    # terminal branch puts this list on a PostReleaseWake candidate. After
+    # the release commits, ClaimEngineFactory's hook re-reads every id and
+    # wakes the session only when every row is DONE or FAILED. This is the
+    # genuinely new information each row needs (which OTHER ids share its
     # batch), unlike a wake KEY, which is a pure function of the row's own
-    # id (see primer.session.yields.tool_wait_event_key) and is
-    # deliberately NOT stored here for exactly that reason.
+    # id (see primer.session.yields.tool_wait_event_key) and is deliberately
+    # NOT stored here for exactly that reason.
     batch_task_ids: list[str] = Field(default_factory=list)
 
     # Set only while state == GATED (approval-required or a yielding tool
