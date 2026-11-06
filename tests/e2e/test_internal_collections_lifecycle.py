@@ -2316,3 +2316,151 @@ async def test_new_agent_is_searchable_through_the_system_collection(
             await client.delete(f"/v1/llm_providers/{llm_id}")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
         await client.delete(f"/v1/ssp/{ssp_id}")
+
+# ============================================================================
+# WIKI-FIRST M2 (D1) - the enable-IC flow on a clean install's seeded rows
+# ============================================================================
+#
+# A fresh install seeds the reserved local embedder (provider id
+# `huggingface`, model BAAI/bge-small-en-v1.5) and the reserved `lance`
+# SSP. The wiki-first D1 runbook walks exactly this flow, so this test is
+# the CI form of the D1 acceptance: verify the seeded rows, write the
+# config with them (NO new embedding provider or SSP is created),
+# bootstrap, verify the status row, run a real query round-trip, and
+# deactivate.
+
+
+@pytest.mark.asyncio
+async def test_m2_enable_flow_on_seeded_rows_roundtrip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """M2 D1 (CI form) - the operator's enable-IC flow mechanics.
+
+    Pins the clean-install precondition the runbook's step 1 reads (the
+    reserved `huggingface` embedder + the reserved `lance` SSP exist
+    before anything is configured - the reserved-guard test below pins
+    their create=409 / delete=403 behaviour), then walks the flow
+    end to end: config write -> bootstrap -> status ready -> a real
+    semantic query round-trip -> deactivation.
+
+    The bootstrap pass runs on the small tier (the documented safe pick,
+    OQ-2): the seeded bge-small model would make this test's embedding
+    pass run past the e2e lane's per-test ceiling, and the flow
+    mechanics the test pins are model-independent (the seeded-default
+    acceptance itself is the D1 probe evidence: the M1 RED prompt walked
+    to a verified state on the seeded rows).
+    """
+    # The seeded reserved rows, verified as the flow's step 1 would.
+    emb = await client.get("/v1/embedding_providers/huggingface")
+    assert emb.status_code == 200, (
+        f"the seeded reserved embedder must exist on a clean install; "
+        f"got {emb.status_code}: {emb.text}"
+    )
+    emb_models = [m["name"] for m in emb.json()["models"]]
+    assert "BAAI/bge-small-en-v1.5" in emb_models, (
+        f"the seeded embedder carries the small/mid reference model; "
+        f"got: {emb_models!r}"
+    )
+    ssp = await client.get("/v1/ssp/lance")
+    assert ssp.status_code == 200, (
+        f"the seeded reserved lance SSP must exist on a clean install; "
+        f"got {ssp.status_code}: {ssp.text}"
+    )
+
+    # The small tier: registered the way the flow registers any chosen
+    # model (the runbook's check -> register path), then the config
+    # write - with the seeded SSP, no new search provider.
+    embedder_id = f"emb-m2-small-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        # Clean start (idempotent), then the flow's config write.
+        await client.delete("/v1/internal_collections/config")
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id, ssp_id="lance"),
+        )
+        assert put.status_code == 200, put.text
+        try:
+            boot = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=_BOOTSTRAP_TIMEOUT,
+            )
+            assert boot.status_code == 200, (
+                f"bootstrap answers 200 with its terminal outcome; got "
+                f"{boot.status_code}: {boot.text}"
+            )
+            outcome = boot.json()
+            assert outcome["status"] == "succeeded", outcome
+            assert outcome["state"] == "ready", outcome
+
+            # The verify step's durable state: the bootstrap status row.
+            st = await client.get("/v1/internal_collections/bootstrap/status")
+            assert st.status_code == 200, st.text
+            st_row = st.json()
+            assert st_row["state"] == "ready", st_row
+            assert st_row["documents_indexed"] > 0, st_row
+            assert st_row["documents_indexed"] == st_row["documents_total"], st_row
+
+            # And the behavioral check: a real query round-trip through
+            # the system collection's semantic search.
+            search = await client.post(
+                f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
+                json={"query": "the platform wiki runbook internal collections", "top_k": 5},
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            hits = search.json()["hits"]
+            assert hits, (
+                "a semantic query against a freshly bootstrapped system "
+                f"collection must return hits; got: {search.text!r}"
+            )
+        finally:
+            await client.delete("/v1/internal_collections/config")
+
+        # Deactivated again: the config is gone and the status row reports it.
+        gone = await client.get("/v1/internal_collections/config")
+        assert gone.status_code == 404, gone.text
+        st2 = await client.get("/v1/internal_collections/bootstrap/status")
+        assert st2.status_code == 200, st2.text
+        assert st2.json()["state"] == "disabled", st2.text
+    finally:
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+async def test_m2_reserved_seeded_rows_are_guarded(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """The reserved ids the runbook's precondition cites.
+
+    The `huggingface` embedder id is reserved: bootstrap seeds the local
+    embedder under it, a create with that id answers 409, and its delete
+    answers 403 (the row must survive the install). Pins the precondition
+    the enable-IC runbook reads before step 1.
+    """
+    create = await client.post(
+        "/v1/embedding_providers",
+        json={
+            "id": "huggingface",
+            "provider": "huggingface",
+            "models": [{"name": "sentence-transformers/all-MiniLM-L6-v2"}],
+            "config": {"token": ""},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert create.status_code == 409, (
+        f"creating the reserved embedder id must be refused; got "
+        f"{create.status_code}: {create.text}"
+    )
+    delete = await client.delete("/v1/embedding_providers/huggingface")
+    assert delete.status_code == 403, (
+        f"deleting the reserved seeded embedder must be refused; got "
+        f"{delete.status_code}: {delete.text}"
+    )
+    still = await client.get("/v1/embedding_providers/huggingface")
+    assert still.status_code == 200, (
+        f"the seeded embedder must survive the refused delete; got "
+        f"{still.status_code}: {still.text}"
+    )

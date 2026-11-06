@@ -189,6 +189,9 @@ _COLLECTIONS_TOOLSET_ID = "collections"
 _CRUD_TOOLSET_ID = "crud"
 # The session canvas (pivot P5, design 8.3): canvas_get, canvas_apply and canvas_wait.
 _CANVAS_TOOLSET_ID = "canvas"
+# The internal-collections subsystem's admin surface (wiki-first M2): the
+# five REST routes of /v1/internal_collections mirrored 1:1, admin-only.
+_INTERNAL_COLLECTIONS_TOOLSET_ID = "internal_collections"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
@@ -204,6 +207,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _COLLECTIONS_TOOLSET_ID,
     _CRUD_TOOLSET_ID,
     _CANVAS_TOOLSET_ID,
+    _INTERNAL_COLLECTIONS_TOOLSET_ID,
 })
 
 
@@ -364,6 +368,7 @@ class ProviderRegistry:
         workspace_ext_toolset_provider: ToolsetProvider | None = None,
         crud_toolset_provider: ToolsetProvider | None = None,
         canvas_toolset_provider: ToolsetProvider | None = None,
+        internal_collections_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
         retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
@@ -430,6 +435,13 @@ class ProviderRegistry:
         # Reserved id ``canvas`` resolves to the always-on session-canvas toolset built at app startup (pivot P5): its tools act
         # on the calling workspace session's canvas, so they are dropped from chat contexts like ``workspace_ext``'s.
         self._canvas_toolset_provider = canvas_toolset_provider
+        # Reserved id ``internal_collections`` resolves to the always-on
+        # admin toolset that mirrors the internal-collections REST routes
+        # 1:1 (wiki-first M2): the enable-internal-collections runbook is
+        # walkable with these tools instead of unauthenticated raw REST.
+        self._internal_collections_toolset_provider = (
+            internal_collections_toolset_provider
+        )
 
         self._retirement = AdapterRetirement(retire_idle_seconds)
         self._llm_cache: dict[str, LLM] = {}
@@ -609,6 +621,14 @@ class ProviderRegistry:
             and toolset_id == _COLLECTIONS_TOOLSET_ID
         ):
             return self._collections_toolset_provider
+        # Reserved id `internal_collections` resolves to the always-on
+        # admin toolset that mirrors the internal-collections REST routes
+        # 1:1 (wiki-first M2).
+        if (
+            self._internal_collections_toolset_provider is not None
+            and toolset_id == _INTERNAL_COLLECTIONS_TOOLSET_ID
+        ):
+            return self._internal_collections_toolset_provider
         # Reserved id `web` resolves to the always-on web toolset
         # built at app startup.
         if (

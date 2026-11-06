@@ -87,6 +87,9 @@ GATED: list[tuple[str, str, str, dict[str, Any], str]] = [
     ("install-a-harness", "harness", "install", {"id": "hns-draft", "overrides": {}}, "required"),
     ("sync-a-harness", "harness", "sync", {"id": "hns-installed", "overrides": {}}, "required"),
     ("uninstall-a-harness", "harness", "uninstall", {"id": "hns-installed"}, "required"),
+    ("ic-set-config", "internal_collections", "set_config", {"embedding_provider_id": "huggingface", "embedding_model": "BAAI/bge-small-en-v1.5", "search_provider_id": "lance"}, "required"),
+    ("ic-delete-config", "internal_collections", "delete_config", {}, "required"),
+    ("ic-bootstrap", "internal_collections", "bootstrap", {}, "required"),
 ]
 
 #: ``(case, tool_name, arguments)``: toolset writes whose body runs no code on the server host; an admin-role run makes them ungated.
@@ -101,6 +104,8 @@ UNGATED_TOOLSET_WRITES: list[tuple[str, str, dict[str, Any]]] = [
 _DOORS = {
     "system": ["direct", "through-call-tool", "direct-as-_system", "through-call-tool-as-_system"],
     "harness": ["through-call-tool"],
+    # The internal-collections writes are admin-tier platform writes (wiki-first M2): reached through call_tool like the harness tools.
+    "internal_collections": ["through-call-tool"],
 }
 
 # The tools the table must cover, by name, in every built-in toolset: a policy write, a toolset write, a harness lifecycle operation.
@@ -155,12 +160,15 @@ async def _world(tmp_path: Path, kind: str):
     harness = build_harness_toolset_provider(storage_provider=sp)
     crud = build_crud_toolset(storage_provider=sp)
     trigger = build_trigger_toolset_provider(storage_provider=sp)
+    from primer.toolset.internal_collections import build_internal_collections_toolset
+    ic = build_internal_collections_toolset(storage_provider=sp, provider_registry=registry)
     registry._system_toolset_provider = system  # type: ignore[attr-defined]
     registry._harness_toolset_provider = harness  # type: ignore[attr-defined]
     registry._crud_toolset_provider = crud  # type: ignore[attr-defined]
     registry._trigger_toolset_provider = trigger  # type: ignore[attr-defined]
+    registry._internal_collections_toolset_provider = ic  # type: ignore[attr-defined]
     # The harness toolset is the registry's only: the tool manager cannot mount it (see the module docstring).
-    toolsets = {"system": system, "_system": system, "crud": crud, "trigger": trigger}
+    toolsets = {"system": system, "_system": system, "crud": crud, "trigger": trigger, "internal_collections": ic}
     return sp, registry, toolsets, resolver
 
 
@@ -353,7 +361,8 @@ async def test_the_table_is_every_policy_toolset_and_harness_lifecycle_write_in_
         async for tool in provider.list_tools():
             if _GATED_NAME.match(tool.id):
                 found.add((toolset_id, tool.id))
-    assert found == {(t, n) for _, t, n, _, _ in GATED}
+    # The internal_collections writes (wiki-first M2) are a fourth admin-tier category the name detector does not claim: they are in the table (and gated) but the detector scopes to the three write kinds above.
+    assert found == {(t, n) for _, t, n, _, _ in GATED if t != "internal_collections"}
     assert found <= set(DEFAULT_GATED_TOOLS)
 
 

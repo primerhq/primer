@@ -345,6 +345,19 @@ def create_test_app(
             semantic_search_registry=_test_ssp_registry,
         )
         provider_registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
+    # Always-on internal-collections toolset (wiki-first M2): the
+    # subsystem's admin REST routes mirrored 1:1. Un-guarded: the build
+    # takes no content store (the handlers resolve storage lazily).
+    from primer.toolset.internal_collections import (
+        build_internal_collections_toolset,
+    )
+    provider_registry._internal_collections_toolset_provider = (  # noqa: SLF001
+        build_internal_collections_toolset(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            semantic_search_registry=_test_ssp_registry,
+        )
+    )
     # Always-on harness and trigger toolsets. No event bus or claim
     # engine in the test app; both tolerate that (the lifespan builds
     # them after the bus exists, so their session tools capture it).

@@ -123,6 +123,7 @@ from primer.toolset.canvas import CANVAS_TOOLSET_ID
 from primer.toolset.collections import COLLECTIONS_TOOLSET_ID
 from primer.toolset.crud import CRUD_TOOLSET_ID
 from primer.toolset.harness import HARNESS_TOOLSET_ID
+from primer.toolset.internal_collections import INTERNAL_COLLECTIONS_TOOLSET_ID
 from primer.toolset.trigger import TRIGGER_TOOLSET_ID
 from primer.toolset.workspace_ext import WORKSPACE_EXT_TOOLSET_ID
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID
@@ -191,9 +192,17 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     # pivot P2 task 10: Workspace.write_file of prime's agents.md, which a local workspace runs in a thread under its scope lock (the
     # hazard of write_workspace_file above)
     (SYSTEM_TOOLSET_ID, "reset_prime_instructions"),
+    # wiki-first M2: the IC deactivate is a disable (the search config), then the four reserved collection drops, then the config row -
+    # several durable writes with no single transaction; a Stop between them leaves a half-deactivated subsystem (a Stop must wait)
+    (INTERNAL_COLLECTIONS_TOOLSET_ID, "delete_config"),
+    # wiki-first M2: the IC bootstrap stamps activated_at, then runs the whole embedding pass (the search config write + every document
+    # row indexed) inline; a Stop mid-pass leaves a partially indexed collection
+    (INTERNAL_COLLECTIONS_TOOLSET_ID, "bootstrap"),
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {
+    # wiki-first M2: examined; one guarded config-row write (create or update), no second durable write - a Stop loses at most the call
+    (INTERNAL_COLLECTIONS_TOOLSET_ID, "set_config"),
     (SYSTEM_TOOLSET_ID, "move_document"),
     (SYSTEM_TOOLSET_ID, "refresh_collection"),
     (COLLECTIONS_TOOLSET_ID, "read_document"),
