@@ -154,6 +154,14 @@ def refuse_compaction_summaries(messages: "list[Message]", where: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _OverflowRejection:
+    """The normalized overflow plus the exact rejecting window, when the adapter knows it."""
+
+    error: BadRequestError
+    context_length: int | None = None
+
+
 @dataclass
 class _TurnRecord:
     """What one ``invoke`` has produced so far, shared by its attempts.
@@ -496,7 +504,8 @@ class _BaseAgentExecutor(ABC):
                 if overflow is None:
                     raise
                 async for ev in self._recover_from_overflow(
-                    overflow,
+                    overflow.error,
+                    rejecting_context_length=overflow.context_length,
                     history=history,
                     messages=messages,
                     response_format=response_format,
@@ -519,6 +528,7 @@ class _BaseAgentExecutor(ABC):
         self,
         exc: BadRequestError,
         *,
+        rejecting_context_length: int | None,
         history: list[Message],
         messages: list[Message],
         response_format: type[BaseModel] | dict[str, Any] | None,
@@ -536,30 +546,32 @@ class _BaseAgentExecutor(ABC):
         built on the compacted history, with the turn's tool budget carried over, under a prompt
         guard that reduces what it sends. Nothing the turn already ran runs again.
 
-        Not when the agent's own ``max_output_tokens`` is not below the model's context window: no history,
+        Not when the agent's own ``max_output_tokens`` is not below the rejecting model's context window: no history,
         however short, fits beside that cap, so the rejection is the cap talking and a compaction would only
         rewrite the persisted history into a summary before the replay is rejected the same way. This is
         decided from the configuration, before anything else, so it holds whatever the provider's rejection
         says (a provider code, or a text the classifier takes for an input overflow, is no proof the history
         is what is too big); the message-level arithmetic of the classifier only covers providers that state
-        both numbers. The rounds the turn completed are not lost: nothing was folded, so they stay in the
-        record and the chokepoint writes them on the way out.
+        both numbers. For an aggregated profile, the adapter exposes the exact rejecting member's window for this
+        exception instead of using the aggregate profile's minimum. The rounds the turn completed are not lost:
+        nothing was folded, so they stay in the record and the chokepoint writes them on the way out.
         """
         max_output = self._agent.max_output_tokens
-        if output_cap_never_fits(max_output, self._model.context_length):
+        rejecting_context_length = rejecting_context_length or self._model.context_length
+        if output_cap_never_fits(max_output, rejecting_context_length):
             logger.warning(
                 "AgentExecutor: hard-overflow detected, but the agent's output cap fills the context window; "
                 "not compacting",
                 extra={
                     "agent_id": self._agent.id,
                     "max_output_tokens": max_output,
-                    "context_length": self._model.context_length,
+                    "context_length": rejecting_context_length,
                     "error": str(exc),
                 },
             )
             raise ContextOverflowUnrecoverable(
                 f"the model rejected the prompt as too large, but the agent's max_output_tokens ({max_output}) "
-                f"is not below the model's context window ({self._model.context_length}): no history, however "
+                f"is not below the model's context window ({rejecting_context_length}): no history, however "
                 f"short, fits beside that cap, so compaction cannot help; lower max_output_tokens or use a "
                 f"model with a larger window",
                 cause=exc,
@@ -779,9 +791,10 @@ class _BaseAgentExecutor(ABC):
             ):
                 yield ev
         except (BadRequestError, TurnStreamOverflow) as caught:
-            replay_exc = self._overflow_of(caught)
-            if replay_exc is None:
+            replay_overflow = self._overflow_of(caught)
+            if replay_overflow is None:
                 raise
+            replay_exc = replay_overflow.error
             logger.warning(
                 "AgentExecutor: the replay after a forced compaction overflowed too; recording the "
                 "tool rounds the turn ran and failing the turn",
@@ -796,19 +809,26 @@ class _BaseAgentExecutor(ABC):
                 persisted_rounds=self._persisted_rounds(record),
             ) from replay_exc
 
-    @staticmethod
-    def _overflow_of(caught: BaseException) -> BadRequestError | None:
+    def _overflow_of(self, caught: BaseException) -> _OverflowRejection | None:
         """The overflow ``caught`` stands for, as the ``BadRequestError`` the recovery works on; ``None`` if it
         is not one. A raised ``BadRequestError`` is itself, when the classifier says it is a context overflow.
         A ``TurnStreamOverflow`` is the same 400 delivered as a yielded ``Error`` (already classified by the
         loop), rebuilt as the exception a raising adapter would have sent: its message and code are the
-        provider's, and it is what the typed failure carries as ``__cause__``."""
+        provider's, and it is what the typed failure carries as ``__cause__``. An aggregated adapter records
+        the exact member window against the escaping exception or yielded Error identity; capture it here,
+        before rebuilding changes that identity, and carry it explicitly into recovery."""
+        rejection_lookup = getattr(self._llm, "rejecting_context_length", None)
         if isinstance(caught, TurnStreamOverflow):
-            return BadRequestError(
-                caught.error.message, code=caught.error.code or "bad_request", status_code=400,
+            context_length = rejection_lookup(caught.error) if callable(rejection_lookup) else None
+            error = BadRequestError(
+                caught.error.message,
+                code=caught.error.code or "bad_request",
+                status_code=400,
             )
+            return _OverflowRejection(error, context_length)
         if isinstance(caught, BadRequestError) and is_context_overflow(caught):
-            return caught
+            context_length = rejection_lookup(caught) if callable(rejection_lookup) else None
+            return _OverflowRejection(caught, context_length)
         return None
 
     @staticmethod

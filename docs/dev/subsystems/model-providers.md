@@ -236,8 +236,15 @@ The one exception is a pool in which EVERY member failed because the prompt
 did not fit the context window (`primer.common.context_overflow`): that is
 not "rate limited, retry later", and the executor's overflow recovery keys on
 it, so the last member's own `BadRequestError` is re-raised instead (for a
-member that YIELDED its 400, one is built from the `Error`). Any other mix of
-failures, a rate limit or a missing member among them, stays the aggregated
+member that YIELDED its 400, one is built from the `Error`). The rejection's
+identity and exact member window are recorded together in a per-Task
+`ContextVar`. The adapter records every fatal yielded overflow before its
+unchanged failover-or-surface decision, including one after non-content
+`StreamStart` or `Usage` events, and records a raised overflow before it
+propagates after an earlier event. The executor captures that window before
+rebuilding a yielded error and carries it into the output-cap recovery guard,
+rather than using the aggregate profile's minimum. Any other mix of failures,
+a rate limit or a missing member among them, stays the aggregated
 `RateLimitError`. An overflow on a single member still fails over to the next.
 Because the re-raised `BadRequestError` is what the executor's hard-overflow
 recovery catches, an aggregated pool takes the same recovery as an eager
