@@ -31,7 +31,9 @@ Task 3.3b). The frames themselves reach those callables via
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from primer.model.chat import ToolResultPart
@@ -197,9 +199,82 @@ async def resume_continuation(
     return Deliver(tool_result=result)
 
 
+async def resume_pending_agent_yield(
+    entry: dict[str, Any],
+    payload: Any,
+    services: InvocationServices,
+    *,
+    fired_key: str | None = None,
+    gate_id: str | None = None,
+) -> Deliver | Repark:
+    """Resume the nested continuation carried by one graph agent entry.
+
+    Graph sessions and invoked child graphs persist the same
+    ``pending_agent_yields`` shape.  Keeping its frame/leaf decoding and walk
+    in one helper prevents the child-graph path from bypassing the nested
+    subagent before it resumes the graph node.
+    """
+    from primer.model.yield_ import Yielded
+    from primer.worker.frames import frames_from_jsonable
+
+    frames = frames_from_jsonable(list(entry.get("frames") or []))
+    leaf_raw = entry.get("leaf")
+    assert frames and leaf_raw, "nested pending agent yield requires frames and leaf"
+    return await resume_continuation(
+        frames,
+        Yielded.from_jsonable(leaf_raw),
+        payload,
+        services,
+        fired_key=fired_key,
+        leaf_tool_call_id=entry.get("tool_call_id"),
+        **({"gate_id": gate_id} if gate_id is not None else {}),
+    )
+
+
+def checkpoint_with_reparked_agent_yield(
+    checkpoint: dict[str, Any],
+    entry: dict[str, Any],
+    outcome: Repark,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return ``checkpoint`` with ``entry`` advanced to ``outcome``.
+
+    The graph itself has not advanced when the nested continuation re-yields;
+    only the selected pending entry's frame stack, leaf and wait metadata do.
+    Matching by node plus the old event key preserves sibling selection when
+    provider call ids collide.
+    """
+    from primer.model.yield_ import wait_deadline
+    from primer.worker.frames import frames_to_jsonable
+
+    leaf = outcome.leaf
+    stamped_at = now or datetime.now(timezone.utc)
+    updated = deepcopy(checkpoint)
+    for pending in updated.get("pending_agent_yields") or []:
+        if (
+            pending.get("node_id") == entry.get("node_id")
+            and pending.get("event_key") == entry.get("event_key")
+        ):
+            pending["frames"] = frames_to_jsonable(list(outcome.frames))
+            pending["leaf"] = leaf.to_jsonable()
+            pending["event_key"] = leaf.event_key
+            pending["tool_name"] = leaf.tool_name
+            pending["resume_metadata"] = dict(leaf.resume_metadata or {})
+            if outcome.tool_call_id is not None:
+                pending["tool_call_id"] = outcome.tool_call_id
+            pending["deadline"] = wait_deadline(leaf.timeout, stamped_at)
+            break
+    else:
+        raise RuntimeError("the nested graph entry being resumed is no longer pending")
+    return updated
+
+
 __all__ = [
+    "checkpoint_with_reparked_agent_yield",
     "Deliver",
     "InvocationServices",
     "Repark",
     "resume_continuation",
+    "resume_pending_agent_yield",
 ]

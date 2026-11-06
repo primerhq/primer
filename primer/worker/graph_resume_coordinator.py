@@ -575,9 +575,7 @@ async def resume_graph_continuation(
     """
     from dataclasses import dataclass
     from primer.model.chat import Message
-    from primer.worker.continuation import Repark, resume_continuation
-    from primer.worker.frames import frames_from_jsonable
-    from primer.model.yield_ import Yielded
+    from primer.worker.continuation import Repark, resume_pending_agent_yield
 
     @dataclass
     class _ContResult:
@@ -591,14 +589,10 @@ async def resume_graph_continuation(
     services = pool._build_invocation_services(
         session, workspace, executor, None,
     )
-    frames = frames_from_jsonable(list(ay.get("frames") or []))
-    leaf = Yielded.from_jsonable(ay["leaf"])
-    outcome = await resume_continuation(
-        frames,
-        leaf,
+    outcome = await resume_pending_agent_yield(
+        ay,
         payload,
         services,
-        leaf_tool_call_id=ay.get("tool_call_id"),
         **({"gate_id": gate_id} if gate_id is not None else {}),
     )
     if isinstance(outcome, Repark):
@@ -629,32 +623,15 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
     leaf, and park on the new leaf's event key. Mirrors
     :meth:`_repark_graph_outcome` for the ParkRequest / timeout shape.
     """
-    from copy import deepcopy
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
-    from primer.model.yield_ import wait_deadline
-    from primer.worker.frames import frames_to_jsonable
+    from primer.worker.continuation import checkpoint_with_reparked_agent_yield
 
     leaf = outcome.leaf
     now = datetime.now(timezone.utc)
-    new_ck = deepcopy(checkpoint)
-    for e in new_ck.get("pending_agent_yields") or []:
-        # The entry the reply resolved: its node and its event key. The raw tool_call_id is not unique (two fan-out siblings parked inside a nested
-        # invoke_agent can share the outer one), and rewriting the first entry that carries it re-pointed the OTHER sibling at this node's deeper leaf.
-        if e.get("node_id") == ay.get("node_id") and e.get("event_key") == ay.get("event_key"):
-            e["frames"] = frames_to_jsonable(list(outcome.frames))
-            e["leaf"] = leaf.to_jsonable()
-            # The node still awaits the same invoke_agent result through its
-            # outer frame, while this pending entry follows the deeper leaf.
-            # Re-point its event, metadata, and leaf call id together.
-            e["event_key"] = leaf.event_key
-            e["tool_name"] = leaf.tool_name
-            e["resume_metadata"] = dict(leaf.resume_metadata or {})
-            if outcome.tool_call_id is not None:
-                e["tool_call_id"] = outcome.tool_call_id
-            # ... and its deadline is the new leaf's wait, which the park below waits on (GR-4).
-            e["deadline"] = wait_deadline(leaf.timeout, now)
-            break
+    new_ck = checkpoint_with_reparked_agent_yield(
+        checkpoint, ay, outcome, now=now
+    )
 
     timeout = leaf.timeout if leaf.timeout is not None else 3600.0
     parked_state = ParkedState(

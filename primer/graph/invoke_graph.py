@@ -209,7 +209,7 @@ async def run_invoke_graph(
 
 async def resume_invoke_graph(
     *, child, checkpoint, payload, resumed_tcid=None, resumed_event_key=None, resumed_gate_id=None, agent_tool_result=None,
-    resume_session_id=None, resolve_provider=None,
+    resumed_agent_entry=None, resume_session_id=None, resolve_provider=None,
 ):
     """Resume a parked child graph from its checkpoint, returning
     ``(output_text, repark)``. ``output_text`` is the graph's final text once
@@ -228,6 +228,11 @@ async def resume_invoke_graph(
 
     ``resumed_gate_id`` is the gate the decision named, read from the RAW wake (the ``payload`` here is the classified one, which no longer carries it): two siblings can share the key, and a
     gated inner call runs with the approval bypassed, so the child resumes only the entry of THAT gate (security review of #724, round 3, B1-r2a).
+
+    ``resumed_agent_entry`` is the exact serialized pending agent entry an
+    outer continuation already resolved. It prevents the child executor from
+    also applying that completed result to a same-key sibling. Ordinary graph
+    resumes pass none and retain their existing key/id/gate selection.
 
     ``payload`` also reaches the child as ``toolcall_payload``: a
     value-yielding ``tool_call`` node inside the child (``ask_user``, a python
@@ -261,6 +266,7 @@ async def resume_invoke_graph(
         async for ev in child.resume_from_checkpoint(
             checkpoint, resumed_tcid=resumed_tcid, resumed_event_key=resumed_event_key,
             **({"resumed_gate_id": resumed_gate_id} if resumed_gate_id is not None else {}),     # only when the wake named one: a caller with no gate resumes exactly as before
+            **({"resumed_agent_entry": resumed_agent_entry} if resumed_agent_entry is not None else {}),
             **({} if decision == "approved" else {"approved": False}),                           # the no-gate rule is for approvals: a timeout, a rejection or a cancel rejects what it selects
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload,
