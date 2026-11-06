@@ -255,14 +255,14 @@ def test_a_cancel_after_the_end_is_not_a_completed_turn() -> None:
 # ---- the tail the relay parses ------------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_tail_the_relay_parses_reaches_the_node_before_the_last_one() -> None:
-    """Parsing stops after two TEXT boundaries; the graph's end is the verdict and is not one, so the window of the last node is still in the tail."""
+def test_the_tail_the_relay_parses_reaches_the_graph_invocation_boundary() -> None:
+    """A graph-final relay keeps the whole invocation even when it contains several node terminals."""
     records = seqd([USER, tok("first", "w0"), node_done("w0"), tok("second", "w1"), node_done("w1"), tok("third", "w2"), node_done("w2"), end()])
     reversed_lines = list(reversed(lines(records)))
 
     tail = _parse_tail(iter(reversed_lines))
 
-    assert [r["seq"] for r in tail] == [5, 6, 7, 8]            # from the second-to-last node's done: its window's text (6) and the last node's done (7) and the end (8)
+    assert [r["seq"] for r in tail] == list(range(1, 9))
     assert derive_session_final_text(tail) == "third"
 
 

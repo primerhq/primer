@@ -31,7 +31,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import TypeAdapter
 
@@ -484,6 +484,24 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class _LastAssistantToken:
+    """Fingerprint and provenance of the last durable assistant-token record."""
+
+    turn_no: int
+    text: str
+    source: Literal["ordinary", "graph_end_nested", "graph_end_top_level"]
+
+
+@dataclass(frozen=True)
+class _SuppressedGraphEnd:
+    """A pass-through End kept until the stream proves it has a sibling End."""
+
+    turn_no: int
+    record: SessionMessageRecord
+    nested: bool
+
+
 @dataclass
 class _CoalesceState:
     """Holds the in-progress TextDelta buffer so consecutive deltas
@@ -580,17 +598,29 @@ class _CoalesceState:
     # "unknown" string that would silently produce an unexecutable
     # ToolCallTask row.
     tool_call_record_name: dict[str, str] = field(default_factory=dict)
-    # (turn_no, coalesced text) of the most recent ASSISTANT_TOKEN record
-    # actually written to the log, whichever node produced it — a plain
-    # global tracker, not per-node, because "the immediately preceding
-    # ASSISTANT_TOKEN" is a messages.jsonl-order concept, not a graph-
-    # topology one. Live finding 01a064d3: a graph's End node renders its
-    # own ASSISTANT_TOKEN from output_template (see the _GraphEndOutputEvent
-    # branch below); when that template is a passthrough of the immediately
-    # preceding node's answer, the two records are byte-identical and the
-    # transcript shows the same paragraph twice. Set wherever a real
-    # ASSISTANT_TOKEN record is emitted, consulted only by that branch.
-    last_assistant_token: tuple[int, str] | None = None
+    # Fingerprint and provenance of the most recent ASSISTANT_TOKEN record
+    # actually written to the log, whichever node produced it. This is a
+    # global tracker, not per-node, because "the preceding ASSISTANT_TOKEN"
+    # is a messages.jsonl-order concept, not a graph-topology one. A graph's
+    # End node suppresses a byte-identical pass-through only when this names
+    # an ordinary token. A nested End is a child's result, not proof that the
+    # parent's identical top-level result is redundant; several top-level
+    # Ends are independent results too. Keep provenance in the same immutable
+    # value as text and turn number so no assignment can leave it stale.
+    last_assistant_token: _LastAssistantToken | None = None
+    # A byte-identical End is omitted while it is the run's only top-level
+    # result: the preceding ordinary token already carries the same answer.
+    # Keep the complete suppressed record, though. If another top-level End
+    # arrives in the same turn, the first one is an independent result and
+    # must be emitted immediately before its sibling. A suppressed nested End
+    # is tracked too, then replaced if its parent top-level End is suppressed;
+    # nested results are never promoted into the parent's result set.
+    suppressed_graph_end: _SuppressedGraphEnd | None = None
+    # The turn whose stream has actually emitted a TOP-LEVEL End record.
+    # Ordinary text may be written later by an interleaved graph node and
+    # replace ``last_assistant_token``; it must not make a later top-level End
+    # look like the run's sole pass-through result. Nested Ends never set this.
+    top_level_graph_end_emitted_turn_no: int | None = None
 
 
 class _DeltaSink(Protocol):
@@ -743,21 +773,6 @@ def translate_stream_event(
         # answer bubble.
         if not event.text:
             return None
-        # (a) A passthrough output_template (the common case: End just
-        # echoes the last node's answer) renders byte-identical text to
-        # the ASSISTANT_TOKEN immediately preceding it in THIS turn - the
-        # worker's answer IS the graph's result, so a second record adds
-        # no information, only a visible duplicate paragraph. Compare the
-        # final COALESCED text (state.last_assistant_token), never raw
-        # deltas, and only within the same turn_no - a genuine
-        # transformation (the template actually changes the text) still
-        # gets its own finish-attributed record, which is semantically
-        # correct. Fragility bound, accepted: a template that changes
-        # only whitespace still writes both records (byte equality, not
-        # a semantic diff).
-        if state.last_assistant_token == (turn_no, event.text):
-            return None
-        state.last_assistant_token = (turn_no, event.text)
         end_payload: dict[str, Any] = {
             "text": event.text,
             "parsed": event.parsed,
@@ -766,13 +781,90 @@ def translate_stream_event(
         if event.nested:
             # A subgraph's End output forwarded by its parent: kept in the transcript, but not the run's result.
             end_payload["nested"] = True
-        return SessionMessageRecord(
+        record = SessionMessageRecord(
             seq=1,  # WorkspaceMessageWriter overwrites
             kind=SessionMessageKind.ASSISTANT_TOKEN,
             payload=end_payload,
             node_id=event.end_node_id,
             created_at=now,
         )
+        suppressed = state.suppressed_graph_end
+        if suppressed is not None and suppressed.turn_no != turn_no:
+            # A coalesce state normally lives for one turn, but tests and
+            # defensive callers may reuse one. Never recover an old turn's
+            # deferred End into a later turn.
+            state.suppressed_graph_end = None
+            suppressed = None
+        if (
+            state.top_level_graph_end_emitted_turn_no is not None
+            and state.top_level_graph_end_emitted_turn_no != turn_no
+        ):
+            state.top_level_graph_end_emitted_turn_no = None
+        top_level_end_emitted = state.top_level_graph_end_emitted_turn_no == turn_no
+        # (a) A passthrough output_template (the common case: End just
+        # echoes the last node's answer) renders byte-identical text to an
+        # ordinary ASSISTANT_TOKEN in THIS turn. The worker's answer IS the
+        # graph's result, so a second record adds no information. A graph-End
+        # record is different: a nested End is a child's result and cannot
+        # stand for a parent's top-level result when another top-level End is
+        # present, while multiple top-level Ends are independent results.
+        # Compare final COALESCED text, never raw deltas. Fragility bound,
+        # accepted: a whitespace-only transformation still writes both.
+        previous = state.last_assistant_token
+        ordinary_duplicate = (
+            previous is not None
+            and previous.turn_no == turn_no
+            and previous.text == event.text
+            and previous.source == "ordinary"
+        )
+        if event.nested:
+            if ordinary_duplicate:
+                # A later parent End with the same text may itself need to
+                # be recovered if another top-level End follows. Remember
+                # this semantic event without claiming it was durable.
+                if suppressed is None or suppressed.nested:
+                    state.suppressed_graph_end = _SuppressedGraphEnd(
+                        turn_no=turn_no, record=record, nested=True,
+                    )
+                return None
+            if suppressed is not None and suppressed.nested:
+                state.suppressed_graph_end = None
+            state.last_assistant_token = _LastAssistantToken(
+                turn_no=turn_no,
+                text=event.text,
+                source="graph_end_nested",
+            )
+            return record
+
+        if suppressed is not None and not suppressed.nested:
+            # This is a second independent top-level End. The earlier
+            # pass-through was only redundant while it was the sole result;
+            # emit it first so the writer preserves graph result order.
+            state.suppressed_graph_end = None
+            state.top_level_graph_end_emitted_turn_no = turn_no
+            state.last_assistant_token = _LastAssistantToken(
+                turn_no=turn_no,
+                text=event.text,
+                source="graph_end_top_level",
+            )
+            return [suppressed.record, record]
+
+        if suppressed is not None and suppressed.nested:
+            # The parent's End supersedes a suppressed child result. If this
+            # parent is itself a pass-through, defer the parent record below.
+            state.suppressed_graph_end = None
+        if ordinary_duplicate and not top_level_end_emitted:
+            state.suppressed_graph_end = _SuppressedGraphEnd(
+                turn_no=turn_no, record=record, nested=False,
+            )
+            return None
+        state.top_level_graph_end_emitted_turn_no = turn_no
+        state.last_assistant_token = _LastAssistantToken(
+            turn_no=turn_no,
+            text=event.text,
+            source="graph_end_top_level",
+        )
+        return record
 
     if isinstance(event, Usage):
         # Accumulate so the DONE record can carry a usage envelope.  Providers
@@ -867,7 +959,11 @@ def translate_stream_event(
                 )
             )
             state.text_buffers[node_id] = ""
-            state.last_assistant_token = (turn_no, buffered)
+            state.last_assistant_token = _LastAssistantToken(
+                turn_no=turn_no,
+                text=buffered,
+                source="ordinary",
+            )
         # 01a0518f: the durable TOOL_CALL id is the SCOPED id minted at
         # ToolCallStart (was the raw provider id verbatim, which
         # restarts at the same value every llm.stream() call and can
@@ -1055,7 +1151,11 @@ def translate_stream_event(
                 )
             )
             state.text_buffers[node_id] = ""
-            state.last_assistant_token = (turn_no, buffered)
+            state.last_assistant_token = _LastAssistantToken(
+                turn_no=turn_no,
+                text=buffered,
+                source="ordinary",
+            )
         done_payload: dict = {"stop_reason": event.stop_reason, "raw_reason": event.raw_reason}
         last_usage = state.last_usage_by.get(node_id)
         if last_usage is not None:
