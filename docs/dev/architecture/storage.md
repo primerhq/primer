@@ -64,16 +64,22 @@ A provider is constructed once per process at lifespan start, `initialize`-d, th
 - `get_system_state()` returns the singleton `system_state` row (`primer/model/system_state.py`), guaranteed non-null because the row is inserted during `initialize`.
 - `set_bootstrap_completed(ts)` stamps `bootstrap_completed_at` on the singleton row; consumed by first-boot auto-bootstrap.
 - `set_session_secret(secret)` persists the cookie-signing HMAC secret on the singleton row so sessions survive restarts.
+- `get_event_store()` returns the backend's `EventStore` (`primer/int/event_store.py`): the append-only platform event log. Both backends append a `<kind>.created` / `<kind>.updated` / `<kind>.deleted` row to it on every `Storage` write of a model with a registered event kind (`primer.events.registry.kind_for_model`). The store exposes append and ordered reads (`read_after`, `read_horizon`, `max_id`), per-subscriber cursors (`get_cursor`, `set_cursor`, their batched twins, `delete_cursor`, and `active_cursor_floor`), and `prune` for the retention sweeper.
 
-`Storage[ModelT]` (`primer/int/storage.py`, `ModelT` bound to `Identifiable`) exposes eight operations:
+The two concrete providers additionally expose `transaction()`, the backend-agnostic atomic-write entry point (it is intentionally a structural capability rather than a method on the `StorageProvider` ABC). The async context manager opens one transaction, using a pooled Postgres connection or the shared SQLite connection, and yields it so the caller threads it through the `conn` keyword of `Storage` and `DocumentContentStore` writes. It commits on clean exit and rolls back on any exception.
+
+`Storage[ModelT]` (`primer/int/storage.py`, `ModelT` bound to `Identifiable`) exposes eleven operations:
 
 - `get(id)` returns the entity or `None` if missing; backend errors propagate rather than collapsing to `None`.
 - `create(entity)` inserts and returns the stored entity; raises `ConflictError` on duplicate id.
 - `update(entity)` replaces the row matching `entity.id`; raises `NotFoundError` if absent.
 - `update_unless(entity, field=, forbidden=)` is `update` that the backend atomically skips when the row's CURRENT `field` already equals `forbidden`; returns `None` when skipped, raises `NotFoundError` if absent.
 - `patch_if(id, patch, where=, set_paths=)` is the field-scoped compare-and-set, see below.
+- `patch_if_or_current(id, patch, where=, set_paths=)` is `patch_if` that answers a rejected write with the row as it stands: `(written, None)` when applied, `(None, current)` when the guard refused (the backends hand back the row their rejection probe already read). Raises exactly what `patch_if` raises, `NotFoundError` for a missing row included.
 - `delete(id)` removes by id; raises `NotFoundError` if absent (callers wanting idempotent semantics suppress it).
 - `list(page, order_by)` paginated enumeration of every row.
+- `count_by(field, values, predicate=None)` returns `{value: matching row count}` for each of `values` of a text `field` (values with no matching row are absent) in one grouped query on the SQL backends.
+- `find_ids(predicate)` returns `(id, access)` for every row matching `predicate`, ordered by id, without decoding the rows: the two columns a sharing check needs; the backends answer it with one keyset-paged column select.
 - `find(predicate, page, order_by)` paginated query filtered by a `Predicate` tree; `predicate=None` is equivalent to `list`. Raises `BadRequestError` when the predicate references an untranslatable field or an unsupported operand layout.
 
 **A stored row that no longer decodes fails the read, and never names the stored value (ticket 01a1261f-07e0).** A backend decodes a row in `_from_row` (parse the JSON, then `model_validate` against the bound model). A row whose shape drifted (a schema change, a hand edit), or that holds JSON that is not an object, or invalid JSON, raises `primer.model.except_.RowDecodeError` from `get` / `list` / `find` and from the `create` / `update` / `update_unless` read-back of the row the write produced (a `PrimerError`: 500 `/errors/internal`). On `list` / `find` one undecodable row fails the whole page: the backend decodes the page before it returns it. The message names the model and the row id and never the stored values: pydantic's own text carries the input, and the input is the stored document (a Base URL with its password, a config with its key), so the same no-input rule the 422 handler applies to the caller's input applies here; the decode failure stays on `cause` for the server-side traceback. `patch_if` is the one operation that decodes through the raw path: there the unreadable document is the one the caller's own patch produced, and it is reported as the raw `pydantic.ValidationError`, as itself (see the `patch_if` paragraph). `primer/storage/references.py` recognizes `RowDecodeError` as a row decode failure: an undecodable graph row is a delete blocker (`UnreadableRow`), not a pass.
@@ -84,7 +90,7 @@ Pagination is bidirectional and discriminated on a `kind` tag (`primer/model/sto
 
 **A secret-bearing field is not queryable, and a cursor is bound to its request (ticket 01a1212a).** A row is stored with its secrets in clear (`dump_for_storage`) and served with them masked, so a predicate, an `order_by` key or a cursor seek key, which every backend compares against the STORED document, would answer questions about the value a read hides: a `LIKE` prefix match, a sort, or a `>=` comparison on such a field is an oracle on the clear secret. `primer.storage.secret_fields.holds_secret(model, path)` classifies a (possibly dotted) field as secret-bearing when its type tree carries a masked type ANYWHERE, inside lists, dicts, nested models, unions and `Optional`: a pydantic secret (`SecretStr` / `SecretBytes` / `Secret[...]`), a URL whose serializer masks the password of its userinfo, a `@field_serializer`, or a self-serializing model. The whole field is compared as one JSON value, so a secret nested below a plain top-level field (a `list[FileMount]` whose source URL is masked, a `dict[str, SecretStr]`) taints the field above it. `refuse_secret_fields(model, predicate=, order_by=)` is called by the REST list / find routes and by the system and workspaces list / find tools before they query (it raises `ValidationError`, which the REST surface answers 422 and the tools report as `type=validation-error`); both backend field renderers (`_render_field_expr` in `primer/storage/_predicate.py` and `primer/storage/_sqlite_predicate.py`) call `refuse_secret_path` as the backstop, so no internal caller can reach the stored document through a secret path either. The opaque cursor (`primer/storage/_cursor.py`) carries only the SERVED values of the keys the request sorts by plus the `id` tiebreaker, never the storage form (a client can decode it); `_decode_cursor_for(cursor, order_by, model)` accepts a cursor only when its keys are exactly the ones `_encode_cursor_for` would emit for THIS request's `order_by` (the same fields, in the same order and directions, then `id`), each a JSON scalar. The value is also checked against the key's declared type, for the plain types only: a `bool`, `int` or `float` field takes that type (an `Optional` of one counts), a `str`, `str`-enum, date or time field takes a string, and every `id` key (the tiebreaker and an explicit `id` sort key) takes a string. Any other key, an extra or missing key, a wrong direction, a key that names another field, or a value of the wrong type for a checked key is refused as a bad cursor (`BadRequestError`, a 400), where a mistyped value would otherwise bind against the backend's typed column expression and answer a 5xx on Postgres (and silently no rows on SQLite). The check does not cover every key: a `Literal`, an `Optional[Annotated[int, ...]]` (such as `PositiveInt | None`), a union or a dotted path falls back to any scalar, and on Postgres a non-string value on such a key still answers a 502. That gap, and the same 502 through a predicate value, is ticket 01a125c7-d883-7753-a93e-4c0967ca733c; the Postgres text comparison of `Optional[PositiveInt]` keys is ticket 01a125c7-e8c5-7d12-a4fe-30ca0c2e989c. A checked key can still answer a 502 for a value its type allows but the backend cannot bind: an integer outside the 64-bit range, or a string (on any key that takes one, the `id` keys included) holding a lone surrogate (both backends) or a NUL (Postgres); that is ticket 01a125c7-d883-7753-a93e-4c0967ca733c too. This closes the forged-cursor seek (a client-chosen key would be a search on a field the client never sorted by) and removes the masked-vs-stored seek mismatch (a secret can no longer be an `order_by` key, so a cursor never carries one, and every allowed key's served and stored forms are equal).
 
-The predicate language (`primer/model/storage.py`) is a strictly binary expression tree of `Predicate` nodes whose operands are `Predicate`, `FieldRef`, or `Value` (discriminated on `kind`). `Op` covers comparison (`EQ`, `NE`, `LIKE`, `GT`, `LT`, `GE`, `LE`), set membership (`IN`), null checks (`IS_NULL`, `IS_NOT_NULL`), and logical joins (`AND`, `OR`). `Value` is constrained to JSON-compatible scalars (or a list of scalars for `IN`) so the tree round-trips losslessly through any wire format.
+The predicate language (`primer/model/storage.py`) is a strictly binary expression tree of `Predicate` nodes whose operands are `Predicate`, `FieldRef`, or `Value` (discriminated on `kind`, so Pydantic parses an operand from an untyped dict without ambiguity). `Op` covers comparison (`EQ`, `NE`, `LIKE`, `ILIKE`, `GT`, `LT`, `GE`, `LE`), set membership (`IN`), array membership (`CONTAINS`), null checks (`IS_NULL`, `IS_NOT_NULL`), and logical joins (`AND`, `OR`). `Value` is constrained to JSON-compatible scalars (or a list of scalars for `IN`) so the tree round-trips losslessly through any wire format. `ILIKE` is the case-insensitive `LIKE` (the backends render it with an explicit escape clause); `CONTAINS` tests whether a JSON array field holds a scalar (Postgres `jsonb ?`, SQLite `json_each`). `IdsOf` is a `Value` subclass the SERVER builds for an `IN` semi-join: `field IN IdsOf(model, where)` renders as `field IN (SELECT id FROM <model's table> WHERE <where>)`, so the id set never leaves the database (for example "the sessions whose binding agent is in this readable set"). It is not a wire operand: the `Operand` union carries no tag for it, so no request body can build one. Its `value` is always the empty list, so an evaluator that does not know it reads `field IN ()` and matches nothing (fail closed); the SQL backends render the subquery and say so with the `Storage.supports_ids_of` capability flag.
 
 `Q[ModelT]` (`primer/storage/q.py`) is the type-safe builder for assembling a `Predicate`. It validates every field name against `model_cls.model_fields` at `where` / `where_in` / `where_null` / `where_not_null` / `where_op` call time (raising `KeyError` on an unknown field), supports dotted JSONB paths whose top segment must exist on the model and whose subsequent segments must match `^[A-Za-z_][A-Za-z0-9_]*$` (`ValueError` otherwise), folds multiple clauses into a left-leaning AND tree via `build()`, and offers a `Q.or_(*qs)` classmethod that requires at least two `Q` instances sharing the same `model_cls`. `Q` is purely additive: hand-written `Predicate` construction still works for the rare dynamic-field-name case, but `Q` makes the field-name injection vector structurally impossible for its callers.
 
@@ -92,8 +98,8 @@ The predicate language (`primer/model/storage.py`) is a strictly binary expressi
 
 A new backend (for example MongoDB) ships two classes plus a factory branch:
 
-1. Subclass `StorageProvider`. Implement `initialize` (open the pool, run eager schema setup, create the `system_state` singleton row), `aclose`, `get_storage` (construct and cache a per-model handle), and the three `system_state` helpers (`get_system_state`, `set_bootstrap_completed`, `set_session_secret`).
-2. Subclass `Storage[ModelT]`. Implement the six operations. Derive the table/collection name with the shared rule (see section 5), serialise via `dump_for_storage` so `SecretStr` fields round-trip as plaintext rather than the masked default, and translate `Predicate` trees and `OrderBy` lists into the backend's native query shape while preserving the same logical semantics.
+1. Subclass `StorageProvider` (`primer/int/storage_provider.py`). Implement its fourteen abstract operations: the five lifecycle/store operations `initialize` (open the pool, run eager schema setup, create the `system_state` singleton row), `aclose`, `get_storage` (construct and cache a per-model handle), `get_content_store` (the document content-store handle) and `get_event_store` (the platform event-log store); the eight singleton-row state operations `get_system_state`, `set_default_agent_id`, `set_default_workspace_id`, `set_bootstrap_completed`, `set_schema_version`, `set_session_secret`, `set_sso_jit_enabled` and `set_sso_default_access`; and the cross-process `migration_lock` that guards the migration chain stamping `schema_version` (the concrete `ping` defaults to `get_system_state`, so it needs no override).
+2. Subclass `Storage[ModelT]`. Implement the eight abstract operations (`get`, `create`, `update`, `update_unless`, `patch_if`, `delete`, `list`, `find`). Derive the table/collection name with the shared rule (see section 5), serialise via `dump_for_storage` so `SecretStr` fields round-trip as plaintext rather than the masked default, and translate `Predicate` trees and `OrderBy` lists into the backend's native query shape while preserving the same logical semantics.
 3. Reuse the shared cursor helpers (`primer/storage/_cursor.py`): `_encode_cursor_for(entity, order_by)` and `_decode_cursor(cursor)` produce and parse the opaque base64-JSON payload; only the keyset-seek `WHERE` fragment that consumes the decoded keys is backend-specific.
 4. Add a discriminated config arm. Extend `StorageProviderType` and the `StorageProviderConfig.config` union (`primer/model/provider.py`), and add a `model_validator` arm pairing the new provider discriminator to the new config class.
 5. Add the dispatch branch in `StorageProviderFactory.create` (`primer/storage/factory.py`), importing the concrete provider lazily inside the branch so its dependency stays off the cold path of the other backends. Unknown provider values raise `ConfigError`.
@@ -105,9 +111,58 @@ The contract test in `tests/storage/test_storage_contract.py` runs the same scen
 
 Two backends are live.
 
-`PostgresStorageProvider` / `PostgresStorage` (`primer/storage/postgres.py`) own an asyncpg pool sized by `PoolConfig`. Each model lives in its own JSONB table: `id` (text) is hoisted out of the document to be the primary key, everything else lives under a `data` jsonb column, plus `created_at` / `updated_at` timestamps. Each table gets a GIN index `<table>_data_gin ON ... USING gin (data jsonb_path_ops)` so containment-style predicate scans stay fast. `initialize` is the only eager DDL: it creates the schema, the coordinator `rate_limit_lease` and `leader_lease` tables, the claim-engine `leases` table (plus its partial `leases_claim_order` index), and the `system_state` singleton; per-model tables defer to first handle use. The schema name comes from `PostgresConfig.db_schema` (named `db_schema` to avoid shadowing Pydantic's `BaseModel.schema()`), is sanitised against a safe-identifier regex, and isolates two deployments that share a cluster.
+`PostgresStorageProvider` / `PostgresStorage` (`primer/storage/postgres.py`) own an asyncpg pool sized by `PoolConfig`. Each model lives in its own JSONB table: `id` (text) is hoisted out of the document to be the primary key, everything else lives under a `data` jsonb column, plus `created_at` / `updated_at` timestamps. Each table gets a GIN index `<table>_data_gin ON ... USING gin (data jsonb_path_ops)` so containment-style predicate scans stay fast. `initialize` is the only eager DDL: it creates the schema, the coordinator `rate_limit_lease` and `leader_lease` tables, the claim-engine `leases` table (plus its two partial indexes `leases_unclaimed_by_kind` and `leases_expiry_by_kind`, and drops the legacy `leases_claim_order` index where an older build created it; the SQLite backend still creates `leases_claim_order`), and the `system_state` singleton; per-model tables defer to first handle use. The schema name comes from `PostgresConfig.db_schema` (named `db_schema` to avoid shadowing Pydantic's `BaseModel.schema()`), is sanitised against a safe-identifier regex, and isolates two deployments that share a cluster.
 
-A GIN over `jsonb_path_ops` accelerates containment (`@>`) but NOT the scalar `data->>'field' = $1` equality fragments the predicate translator emits, so a few fields queried on hot paths get a dedicated B-tree expression index on the extracted scalar. These live in the `_HOT_FIELD_INDEXES` registry in `primer/storage/postgres.py`, keyed by table name, and `_ensure_table` creates them in the same transaction as the base table + GIN index. Current entries: `apitoken_token_hash_uniq` (UNIQUE, `((data->>'token_hash'))`) for the bearer-auth lookup that runs on every authenticated request; `sessions_status` (`((data->>'status'))`) for startup recovery and the live-session sweeps; and `channel_provider_external` (`((data->>'provider_id'), (data->>'external_id'))`) for inbound-channel routing. `user_username_uniq` (UNIQUE, `((data->>'username'))`) stops two concurrent creates of one username; like `serviceversion_service_version_uniq` it is created over possibly-dirty rows under a savepoint (SQLite: the same pair in `_DUP_TOLERANT_UNIQUE_INDEXES`), so a database that already holds duplicate usernames boots, logs a warning and runs without the index until an admin renames one and the process restarts. They mirror the JSONB expression-index style already used by the `channelcorrelation` UNIQUE index in `primer/channel/correlation.py`. All are `CREATE INDEX IF NOT EXISTS` (idempotent on existing DBs), **plain not `CONCURRENTLY`**: `CREATE INDEX CONCURRENTLY` cannot run inside a transaction and the table-create path is deliberately transactional (atomic table+indexes commit, which the cold-start race handling in `primer/storage/_ddl.py` depends on). On a fresh table the build is instant and lock-free because the table is empty; the tradeoff is that adding one of these indexes for the first time to an already-large pre-existing table briefly locks the table for the build. To add a hot-field index to a large production table without blocking writes, pre-create it out-of-band with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (same name + expression) before the upgrade; the in-path `IF NOT EXISTS` then no-ops.
+A GIN over `jsonb_path_ops` accelerates containment (`@>`) but NOT the scalar
+`data->>'field' = $1` equality fragments the predicate translator emits, so
+fields queried on hot paths get dedicated expression indexes. These live in
+the `_HOT_FIELD_INDEXES` registry in `primer/storage/postgres.py`, keyed by
+table name, and `_ensure_table` creates them in the same transaction as the
+base table and its broad GIN index. The scalar and compound entries cover:
+
+- bearer auth (`apitoken.token_hash`, UNIQUE), services (`service.name`,
+  UNIQUE), usernames (`user.username`, UNIQUE), artifact locations
+  (`artifactlocation.provider_id`), user identities (`provider_id` plus
+  `subject`, UNIQUE, and `user_id`), and service-version publishing
+  (`service_id` plus `version`, UNIQUE);
+- session recovery, claiming and lists (`status`, `workspace_id`,
+  `parent_session_id`, `last_worker_id`, the binding agent/graph ids,
+  `turn_status`, `parked_status`, and the default `created_at DESC, id`
+  ordering);
+- inbound channel routing (`channel.provider_id` plus `external_id`),
+  collection and trigger children (`document.collection_id`,
+  `subscription.trigger_id`), and the boot sweep of
+  `webhookdelivery.status` (delivery retention remains a follow-up);
+- cross-workspace tool lists (`toolapprovalrecord.workspace_id` and
+  `externaltoolcall.workspace_id`) and the UNIQUE
+  `toolapprovalrecord.gate_event_key` that makes competing decision writes
+  converge on one record.
+
+The same registry carries GIN membership indexes over `access.members` on
+the sixteen sharing-bearing tables: `agent`, `workspace`, `collection`,
+`trigger`, `channel`, `graph`, `toolset`, `workspacetemplate`, `harness`, and
+the seven infrastructure tables (`modelprofile` plus the LLM, embedding,
+cross-encoder, semantic-search, workspace and channel providers).
+
+The three UNIQUE indexes that may meet dirty legacy rows
+(`serviceversion_service_version_uniq`, `user_username_uniq`, and
+`service_name_uniq`) are created under a savepoint; SQLite lists the same
+three in `_DUP_TOLERANT_UNIQUE_INDEXES`. A database that already holds a
+duplicate boots, logs a warning and runs without that index until an admin
+repairs the rows and the process restarts. Beside those, `_TRIGRAM_FIELDS`
+gives `modelprofile`, `service`, `agent` and `graph` a `pg_trgm` GIN over the
+exact `ILIKE '%...%'` expression their router `?q=` search renders. A role
+that may not create the extension gets one log line and the search stays a
+scan; these indexes never fail a boot.
+
+The expression indexes mirror the style of the `channelcorrelation` UNIQUE
+index in `primer/channel/correlation.py`. They use `CREATE INDEX IF NOT
+EXISTS`, plain rather than `CONCURRENTLY`, because the table-create path is
+transactional (the cold-start race handling in `primer/storage/_ddl.py`
+depends on that). On a fresh table the build is instant because the table is
+empty. To avoid blocking writes when adding one to a large existing table,
+pre-create it out of band with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`
+using the same name and expression; the in-path statement then no-ops.
 
 Startup session recovery (`primer/api/app.py` lifespan) re-arms the claim engine from persisted `WorkspaceSession` rows after a restart. It uses `find()` with a `status IN (<every non-ENDED status>)` predicate (built via `Q`) rather than `list()`-ing every row and dropping ENDED in Python, so it never loads the full session history into memory at scale; the `sessions_status` index keeps that scan cheap. The IN-set is computed as "all statuses except `ENDED`" so a newly added live status is recovered (fail-safe) rather than silently skipped.
 
@@ -149,10 +204,12 @@ whether a reserved row exists yet. Three properties keep it safe:
 
 `schema_version = N` means migrations 1..N have been applied. The column
 defaulted to `1` long before the runner existed, which correctly describes
-every pre-runner install: `m001` wraps `migrate_document_content`, whose
-ad-hoc lifespan call was unconditional on every boot. A fresh install
-baselines straight to `LATEST_VERSION` rather than running the chain
-against an empty database.
+every pre-runner install; `m001` is the retired no-op that kept the chain
+starting at 1 (its legacy document-body move was replaced by the S2 clean
+break, so it moves nothing and exists only so existing installs keep their
+`SystemState.schema_version` accounting). A fresh install baselines
+straight to `LATEST_VERSION` rather than running the chain against an
+empty database.
 
 To add one: create `mNNN_<slug>.py` exposing a class with `version`,
 `description`, and `async apply(sp)`, then append an instance to
@@ -213,6 +270,43 @@ not decode. It removes the key from every stored channel's
 `config.chats` through a migration-local `Channel` view
 (`extra="allow"`, `config` as a plain dict or null, so a row stored before the live model's default reads). It reads every row before
 it writes any, and a row without the key is left alone.
+`m020_harness_policy_rekey.py` rekeys the stored harness tool references
+from the scoped id to the bare tool id (the approval gates' `tool_name`,
+the MCP exposure allowlist, and the agent tool grants), so a harness
+install keeps working after the harness rows moved to bare ids.
+`m021_entity_ownership.py` gives seeded agents and the seeded workspace
+template public access, and gives other unset agents, graphs, toolsets,
+workspace templates and channels to the first enabled admin by
+`created_at`. `m022_workspace_ownership.py` gives every unset workspace
+to that first admin. Both leave a row alone when no eligible admin exists.
+`m023_admin_default_workspace.py` records the install-wide default
+workspace on the first admin's `User.default_workspace_id`.
+`m024_cross_workspace_list_field.py` stamps `workspace_id` onto stored
+external tool calls and tool approval records, taken from each row's
+session, so the cross-workspace lists can filter on the column.
+`m025_collection_ownership.py` makes the `system` wiki collection public,
+keeps `_internal_*` collections ownerless and admin-only, and gives other
+unset collections to the first admin. `m026_trigger_ownership.py` prefers
+the enabled user behind a trigger's run-as principal, falling back to the
+first admin; it also gives each ownerless subscription its trigger's
+run-as principal (or the first admin) and disables the subscription for
+review. `m027_harness_ownership.py` gives unset harnesses to the first
+admin and copies each harness's access onto the agents, graphs, toolsets
+and collections it installed.
+`m028_infrastructure_public.py` makes the seven infrastructure tables
+public (model profiles and the LLM, embedding, cross-encoder,
+semantic-search, workspace and channel providers): a row with no sharing
+of its own becomes public through migration-local `extra="allow"` views,
+paged by id.
+`m029_mcp_oauth_per_user.py` turns the MCP OAuth browser token sets
+into the sign-in of the person who connected them: every per-person
+row is copied under the `u-<sha256(toolset NUL user)>` key, the
+bare toolset row is stamped and kept as the shared copy, the
+client-credentials rows stay shared, and every pending sign-in is
+dropped. `m030_seeded_agents_v4.py` is the next application of
+`m011`'s rule: the frozen "previously shipped" set grows with the
+v3 builds, and an unedited row still equal to a shipped definition
+is rewritten to the current one.
 
 ### The `document_content` table
 

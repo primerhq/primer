@@ -63,7 +63,7 @@ erDiagram
 | `primer/graph/router.py` | `RouterRegistry`, `_resolve_path`, `evaluate_branch_condition`, `first_matching_branch`. |
 | `primer/graph/template.py` | `render_input_template`, `render_template_safely`, the shared `SandboxedEnvironment`. |
 | `primer/graph/__init__.py` | Public re-exports for the graph package. |
-| `primer/model/turn_log.py` | `TurnLogEvent` union (eight kinds), `TurnLogRecord` storage entity. |
+| `primer/model/turn_log.py` | `TurnLogEvent` union (nine kinds, including `phase`), `TurnLogRecord` storage entity. |
 | `primer/model/chat.py` | `_GraphNodeEvent` on the `ExtendedStreamContent` union. |
 | `primer/model/workspace_session.py` | `SessionStatus`, `GraphSessionBinding`. |
 | `primer/worker/graph_resume.py` | `resume_graph_from_checkpoint` resume adapter for the ToolCall approval flow. |

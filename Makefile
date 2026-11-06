@@ -26,7 +26,7 @@ help: ## Show this help
 setup: ## Install dependencies (uv sync --all-extras)
 	uv sync --all-extras
 
-test: ## Run the narrowed unit sweep (excludes e2e/distributed/ui_e2e/integration/llm)
+test: ## Run the narrowed unit sweep (excludes e2e/distributed/ui_e2e/integration)
 	uv run pytest tests/ -q $(PYTEST_IGNORES) --tb=short
 
 lint: ## Lint with ruff (matches the CI lint job)

@@ -22,7 +22,7 @@ class _CancelScope:
     The cancellation propagates through the awaitable chain via
     :class:`asyncio.CancelledError`. ``msg`` is best-effort: passed to
     ``Task.cancel`` on Python 3.9+; silently dropped on older versions
-    (primer targets 3.13 so this fallback is defensive).
+    (primer targets 3.12 so this fallback is defensive).
 
     :meth:`cancel` is UNCONDITIONAL: every call delivers another cancel. That is
     what the forced paths need (a lease lost mid-turn, the drain timeout aborting

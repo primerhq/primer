@@ -143,8 +143,12 @@ claim engine. A job that raises is dropped, never looped (section 4). The
 `_mark_reflected` marker is the at-most-once boundary of a reflection: a
 crash between the per-delta writes and the marker re-runs the LLM call on
 the next trigger, and the name-keyed `add_candidate` suppresses duplicate
-entries (a credit can double-count by one - known, see the sweep ledger
-G15-iter7 / EXEC-2 EXEC2-03).
+entries. The credit path is replay-safe too (EXEC2-03, sweep ledger
+G15-iter7): each apply records its delta key under the run's key in the
+entry's `meta['applied_runs']` in the same statement as the apply
+(`primer/memory/store.py`), and an already-recorded delta is skipped, so a
+replay of a crashed run is a no-op at the storage level where before it
+double-credited by one.
 
 ## 10. Testing patterns
 

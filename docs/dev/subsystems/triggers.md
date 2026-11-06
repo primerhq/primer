@@ -48,6 +48,7 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 | --- | --- |
 | `primer/model/trigger.py` | `Trigger`, `Subscription`, the four `TriggerConfig` and four `SubscriptionConfig` variants, slug validation. |
 | `primer/trigger/service.py` | The single mutation path: trigger/subscription CRUD, `fire_now`, typed exceptions, claim-lease upsert and drop (a save that disables, and a delete, drop the lease; ticket 01a16ede). |
+| `primer/trigger/row_writes.py` | Field-scoped writes of a stored trigger row (a fire's `last_fired_*` bookkeeping, the claim release's next-fire fields), so a platform writer never rewrites the fields another writer changed in between. |
 | `primer/trigger/dispatch.py` | `fire_trigger` orchestrator + `FireResult`; force-imports the four dispatchers. |
 | `primer/trigger/cron.py` | `validate_cron`, `validate_timezone`, `next_fire_at`, `previous_fire_at`, `iter_missed_fires`, `scheduled_ticks_to_fire` (the ticks one claim fires under its `catchup`), `CATCHUP_LIMIT` (timezone-aware croniter wrapper). |
 | `primer/trigger/payload.py` | `render_payload` (Jinja2 `SandboxedEnvironment`, `StrictUndefined`, `tojson`); `PayloadTemplateError`. |
@@ -56,11 +57,13 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 | `primer/trigger/fire_id.py` | `make_fire_id` (deterministic `fire-{trigger_id}-{ms}`). |
 | `primer/trigger/sources/` | `DelayedSource`, `ScheduledSource`, `WebhookSource`, `ChannelSource`, the `SOURCES` registry and `get_source`. Sources compute `next_fire_at` and build the `fire_context`. |
 | `primer/channel/event_dispatch.py` | `ChannelEventRouter`: correlation-first inbound precedence then fires matching `channel` triggers via `fire_trigger`. |
+| `primer/trigger/channel_access.py` | The channel READ a channel trigger needs on the channel it fires from; every save door calls it, and a provider-wide config (no `channel_id`) is admin-only. |
 | `primer/api/routers/webhooks.py` | Public `POST /v1/webhooks/{token}` endpoint (no auth dep); HMAC verification; per-token rate limit; body cap; fire-and-forget dispatch. |
+| `primer/trigger/hold.py` | The interactive webhook hold: opens a bus subscription before firing, then awaits the fired runs' terminals on the completion bus (never a poll). |
 | `primer/trigger/subscribers/__init__.py` | `Dispatcher` protocol, `SubscriptionDispatchResult`, `DispatchDeps`, `register` / `get_dispatcher`. |
-| `primer/trigger/subscribers/chat_message.py` | Appends a user message to a `Chat` and pulses `ClaimKind.CHAT`. |
 | `primer/trigger/subscribers/agent_fresh_session.py` | Creates a fresh agent-bound `WorkspaceSession` via the session factory. |
 | `primer/trigger/subscribers/graph_fresh_session.py` | Parses the payload as a JSON object and creates a fresh graph-bound session. |
+| `primer/trigger/subscribers/session_append.py` | Feeds an EXISTING session: the rendered payload becomes a user message on it, delivered through `deliver_steer`. |
 | `primer/trigger/subscribers/parked_session.py` | Wakes a parked session through `respond_to_yield`; one-shot delete. |
 | `primer/claim/adapters/triggers.py` | `TriggerClaimAdapter`: eligibility SQL + `on_release` next-fire recompute. |
 | `primer/worker/engine_handlers.py` | `run_engine_trigger` (behind `WorkerPool._run_engine_trigger`): fires a claimed `TRIGGER` lease's ticks through `fire_trigger`, each with its `scheduled_for` (`_clock_ticks`). |
@@ -201,7 +204,7 @@ A trigger is an owned row (`Trigger` mixes in `Owned`, migration 26): read to se
 
 ## 10. Testing patterns
 
-Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron.py`), the three sources and the source registry (`test_sources_delayed.py`, `test_sources_scheduled.py`, `test_sources_registry.py`, `test_webhook_trigger.py`), payload rendering (`test_payload.py`), the claim adapter (`test_claim_adapter.py`), the fire orchestrator (`test_dispatch.py`), each dispatcher (`test_subscribers_chat_message.py`, `test_subscribers_fresh_session.py`, `test_subscribers_parked_session.py`), the model (`test_model.py`), and the end-to-end park-fire-resume path (`test_parked_session_e2e.py`). The REST surface is covered by `tests/api/test_triggers_router.py`; the webhook endpoint by `tests/api/test_webhook_endpoint.py`; the `subscribe_to_trigger` yielding tool by `tests/toolset/test_subscribe_to_trigger.py`. E2E coverage lives in `tests/e2e/test_webhook_trigger_e2e.py`. UI static tests live at `tests/ui/test_triggers_list_page.py`, `test_triggers_create_dialog.py`, `test_triggers_detail_page.py`, and `test_triggers_sub_dialog.py`. The common pattern is to drive the service or dispatcher directly with a `ServiceDeps` / `DispatchDeps` built over in-memory storage and an in-memory event bus, asserting on the structured `SubscriptionDispatchResult` / `FireResult` envelopes rather than on side-effect logs.
+Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron.py`), the three sources and the source registry (`test_sources_delayed.py`, `test_sources_scheduled.py`, `test_sources_registry.py`, `test_webhook_trigger.py`), payload rendering (`test_payload.py`), the claim adapter (`test_claim_adapter.py`), the fire orchestrator (`test_dispatch.py`), each dispatcher (`test_subscribers_fresh_session.py`, `test_subscribers_session_append.py`, `test_subscribers_parked_session.py`), the deleted subscription kinds (`test_deleted_chat_kinds.py`), the model (`test_model.py`), and the end-to-end park-fire-resume path (`test_parked_session_e2e.py`). The REST surface is covered by `tests/api/test_triggers_router.py`; the webhook endpoint by `tests/api/test_webhook_endpoint.py`; the `subscribe_to_trigger` yielding tool by `tests/toolset/test_subscribe_to_trigger.py`. E2E coverage lives in `tests/e2e/test_webhook_trigger_e2e.py`. UI static tests live at `tests/ui/test_triggers_list_page.py`, `test_triggers_create_dialog.py`, `test_triggers_detail_page.py`, and `test_triggers_sub_dialog.py`. The common pattern is to drive the service or dispatcher directly with a `ServiceDeps` / `DispatchDeps` built over in-memory storage and an in-memory event bus, asserting on the structured `SubscriptionDispatchResult` / `FireResult` envelopes rather than on side-effect logs.
 
 ## 11. Historical decisions
 

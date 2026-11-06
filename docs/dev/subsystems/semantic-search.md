@@ -350,7 +350,7 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
 - **SSP registry race contract**: `get_provider` constructs outside the lock;
   concurrent gets for the same id may build twice but only one wins the cache and
   the loser is `aclose()`-ed.
-- **Reserved ids**: `RESERVED_SSP_IDS = {'lance'}` and
+- **Reserved ids**: `RESERVED_SSP_IDS = {'lance', 'pgvector'}` and
   `RESERVED_CROSS_ENCODER_IDS = {'huggingface-ce'}`
   (`primer/api/registries/provider_registry.py`) gate the router create / delete
   paths.
