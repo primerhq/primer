@@ -3692,9 +3692,15 @@ async def _transition_session_status(
     # this worker), and the reconciler and the pool's _end_session do not take it at all, so the row can be
     # ended between that read and this write. The backend refuses the write in the same statement if the
     # stored status is ENDED.
-    landed = await session_storage.update_unless(
-        fresh.model_copy(update=updates), field="status", forbidden=SessionStatus.ENDED.value,
-    )
+    try:
+        landed = await session_storage.update_unless(
+            fresh.model_copy(update=updates), field="status", forbidden=SessionStatus.ENDED.value,
+        )
+    except NotFoundError:
+        # A force-delete can remove the row after the fresh read above. Treat
+        # that write-time absence exactly like a read-time absence: the turn's
+        # outcome did not land, and there is no row or slot to update.
+        return _TerminalWrite(False, new_status, ended_reason)
     if landed is None:
         ended_now = await session_storage.get(session.id)
         if ended_now is None:
