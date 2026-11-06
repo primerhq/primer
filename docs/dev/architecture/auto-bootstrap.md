@@ -107,15 +107,17 @@ five per-kind `Storage[T]` handles (`embedder_storage`, `ssp_storage`,
 and a `root_dir: Path` used to resolve tilde paths in the factory specs.
 
 The state contract lives on the `StorageProvider` ABC
-(`primer/int/storage_provider.py`): `get_system_state()` (never raises, always
-returns the singleton row), `set_bootstrap_completed(ts)`, and `set_session_secret(secret)`.
+(`primer/int/storage_provider.py`), the operations over the singleton `system_state` row: `get_system_state()` (never raises, always returns the singleton row), `set_bootstrap_completed(ts)` (idempotent; a later stamp overwrites), `set_schema_version(version, *, migrated_at=None)` (never lowers the stored version, so a crash mid-chain resumes from the last completed migration), `set_session_secret(secret)` (writes only when no secret is stored, so processes that boot a fresh install together keep the first one), `set_default_agent_id(agent_id)` and `set_default_workspace_id(workspace_id)` (`None` clears the record), and `set_sso_jit_enabled(enabled)` / `set_sso_default_access(access)` (the SSO JIT-provisioning switch and the default role for JIT-provisioned users).
 The `SystemState` model (`primer/model/system_state.py`) carries `id` (default
 `'singleton'`), `bootstrap_completed_at`, `schema_version` (default 1),
-`last_migration_at`, and `session_secret`.
+`last_migration_at`, `session_secret`, `default_agent_id` (the agent a
+binding-less session create runs; unset refuses rather than guesses),
+`default_workspace_id` (the install-wide default workspace the ensure pass
+records), `sso_jit_enabled`, and `sso_default_access`.
 
 The reserved-id sets surfaced for router guards live in
 `primer/api/registries/provider_registry.py`:
-`RESERVED_EMBEDDER_IDS={'huggingface'}`, `RESERVED_SSP_IDS={'lance'}`,
+`RESERVED_EMBEDDER_IDS={'huggingface'}`, `RESERVED_SSP_IDS={'lance','pgvector'}`,
 `RESERVED_CROSS_ENCODER_IDS={'huggingface-ce'}`,
 `RESERVED_WORKSPACE_PROVIDER_IDS={'local'}`, and
 `RESERVED_LLM_IDS=frozenset()` (empty, defined for router symmetry).

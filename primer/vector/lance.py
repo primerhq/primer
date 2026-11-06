@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -45,7 +44,6 @@ from primer.model.except_ import (
     ConfigError,
     ConflictError,
     ProviderError,
-    ServerError,
 )
 from primer.model.provider import LanceConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
@@ -74,38 +72,6 @@ def _similarity(distance_metric: str, raw_distance: float) -> float:
     if distance_metric == "dot":
         return 1.0 - float(raw_distance)
     return float(raw_distance)
-
-
-def _meta_predicate(meta: dict[str, Any]) -> str | None:
-    """Build a SQL filter expression that matches ``meta``.
-
-    NOTE: LanceDB 0.30.2's ``json_extract`` only accepts ``LargeBinary``
-    columns, which is incompatible with the ``utf8`` schema used for
-    ``meta``. This function returns ``None`` unconditionally so that
-    ``search_by_meta`` fetches all rows and applies the predicate in
-    Python. The helper is kept for API completeness and future-compat.
-    """
-    return None  # client-side filtering applied in search_by_meta
-
-
-def _walk_meta(value: Any, *, path: str, out: list[str]) -> None:
-    """Recursively collect leaf-level match clauses for ``value``."""
-    if isinstance(value, dict):
-        for k, v in value.items():
-            _walk_meta(v, path=f"{path}.{k}", out=out)
-        return
-    if isinstance(value, str):
-        escaped = value.replace("'", "''")
-        out.append(f"json_extract(meta, '{path}') = '{escaped}'")
-    elif isinstance(value, bool):
-        out.append(f"json_extract(meta, '{path}') = {str(value).lower()}")
-    elif isinstance(value, (int, float)):
-        out.append(f"CAST(json_extract(meta, '{path}') AS DOUBLE) = {value}")
-    elif value is None:
-        out.append(f"json_extract(meta, '{path}') IS NULL")
-    else:
-        encoded = json.dumps(value).replace("'", "''")
-        out.append(f"json_extract(meta, '{path}') = '{encoded}'")
 
 
 def _meta_matches(row_meta_json: str, filter_meta: dict[str, Any]) -> bool:

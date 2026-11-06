@@ -10,12 +10,15 @@ configuration that drives them.
 Tool catalog
 ------------
 
-Per-entity CRUD set (10 entities × 6 tools = 60 tools) for:
-    llm_provider, embedding_provider, cross_encoder_provider, toolset,
-    agent, graph, collection, document, graph_thread,
-    semantic_search_provider
+Per-entity CRUD set (15 entities × 6 tools = 90 tools) for:
+    llm_provider, model_profile, embedding_provider,
+    cross_encoder_provider, toolset, agent, graph, collection,
+    document, graph_thread, semantic_search_provider,
+    artifact_storage_provider, tool_approval_policy,
+    channel_provider, channel
 
-Plus entity-specific operations:
+Plus entity-specific operations, grouped here by purpose rather than as
+an exhaustive count (some tools depend on optional build dependencies):
 * ``fetch_llm_provider_models``, ``fetch_embedding_provider_models``,
   ``fetch_cross_encoder_provider_models`` — live model lists.
 * ``check_huggingface_models`` - look Hugging Face Hub models up with a token
@@ -27,7 +30,6 @@ Plus entity-specific operations:
 * ``list_toolset_tools`` — enumerate the tools a toolset exposes.
 * ``call_tool`` — meta-dispatch: invoke any tool from any toolset.
 * ``describe_tool`` - one tool's schema, role, live approval gate and a call example.
-* Graph threads CRUD — ``list/get/create/update/delete_graph_thread``.
 * Collection extras — ``list_collection_documents``,
   ``find_collection_documents_by_meta``, ``search_collection``,
   ``refresh_collection``.
@@ -36,8 +38,14 @@ Plus entity-specific operations:
   in the content store).
 * ``get_/set_web_search_active_config``, ``get_/set_web_fetch_active_config`` -
   the deployment's web search and web fetch choice.
+* Provider probes, artifact-store operations, entity-access tools, memory
+  tools, canvas settings, model-profile choices, wiki read/search, reply and
+  channel bindings, agent delegation and binding switches, and the yielding
+  ``ask_user`` / ``wait_for_event`` tools.
+* Workspace-backed document-content and prime-instruction reset tools when a
+  workspace registry is supplied.
 
-Total: ~75 tools. ``search_collection`` runs real semantic search over
+``search_collection`` runs real semantic search over
 a collection's indexed document contents (same embedder + vector-store
 path the console / ``POST /v1/collections/{id}/search`` route uses).
 ``refresh_collection`` is stubbed with ``is_error=True`` until the

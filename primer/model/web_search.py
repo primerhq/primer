@@ -19,7 +19,7 @@ for the full design rationale.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,

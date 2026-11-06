@@ -2,7 +2,7 @@
 
 A job is a ``MemoryJob`` row (the claim entity) plus its lease on the ``memory`` claim kind. Reflection is debounced by the lease: every completed
 turn re-arms ``next_attempt_at`` to ``idle_minutes`` later, and an ended session makes it due at once. The jobs themselves (reflect, curate, topics)
-are the runners of Tasks 7, 8 and 9; until they land each is a stub that raises ``NotImplementedError`` behind the gates.
+are the runners of Tasks 7, 8 and 9 (``run_reflect``, ``run_curate``, ``run_topics``), run behind the same gates.
 """
 
 from __future__ import annotations
