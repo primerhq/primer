@@ -779,6 +779,7 @@ async def test_every_member_overflowing_re_raises_the_last_members_bad_request()
 
     assert caught.value is last, "the last member's own exception, not a wrapper"
     assert is_context_overflow(caught.value)
+    assert agg.rejecting_context_length(caught.value) == 8192
 
 
 @pytest.mark.asyncio
@@ -798,6 +799,7 @@ async def test_every_member_yielding_an_overflow_raises_a_bad_request_too():
 
     assert is_context_overflow(caught.value)
     assert _OVERFLOW_TEXT in caught.value.message
+    assert agg.rejecting_context_length(caught.value) == 8192
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
-"""The output-cap guard reads the MIN member window of an aggregated profile, which is the wrong window under some
-failover policies (01a10c6b item 1). Reproduction only: the fix is held for the independent verifiers.
+"""The output-cap guard once read the MIN member window of an aggregated profile, which was wrong under some
+failover policies; these regressions pin the per-member fix for 01a10c6b item 1.
 
 ``_recover_from_overflow`` refuses to compact when ``output_cap_never_fits(max_output_tokens, context_length)``: an
 output cap that alone is not below the window means no history fits beside it, so a compaction could only rewrite the
@@ -17,12 +17,12 @@ depends on the pool's failover policy (``AggregatedLLM.stream``):
 
 Per wrong case there is a plain scenario test (the harness really created the situation: which members were asked, that
 the oversized history fits none, and that a compacted prompt WOULD have been answered) and a behaviour test of what a
-correct fix must do, marked ``xfail(strict=True, raises=AssertionError)``. The fix PR deletes the markers. Two plain
-pins hold the cases where the veto is right today and must stay so.
+correct fix must do. Two plain pins hold the cases where the veto is right today and must stay so.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -30,7 +30,7 @@ import pytest
 
 from primer.common.context_overflow import is_context_overflow
 from primer.llm.aggregated import AggregatedLLM
-from primer.model.chat import Done, Message, StreamEvent, TextDelta, TextPart
+from primer.model.chat import Done, Error as ChatError, Message, StreamEvent, StreamStart, TextDelta, TextPart
 from primer.model.except_ import BadRequestError, ContextOverflowUnrecoverable
 from primer.model.model_profile import FailoverClasses, ModelProfile, ModelProfileConfig, RoutingStrategy
 from primer.model_profile import ResolvedModel, resolve_model
@@ -41,6 +41,7 @@ SMALL, LARGE = 8_192, 32_768
 CAP = 10_000  # above the small window, below the large one: min < cap < max
 CAP_ABOVE_EVERY_WINDOW = 40_000
 HISTORY_WORDS = 24_000  # does not fit beside CAP in the large window (24_000 + 10_000 > 32_768); a summary does
+OVERFLOW_TEXT = "This model's maximum context length is 32768 tokens; the prompt contains too many tokens."
 
 
 def _words(messages: list[Message]) -> int:
@@ -54,11 +55,24 @@ class _Member:
 
     window: int
     asked: list[tuple[int, int | None]] = field(default_factory=list)  # (prompt words, output cap) per call
+    rejection: BadRequestError | None = None
+    failure_channel: str = "raise-connect"
 
     async def stream(self, *, messages: list[Message], max_output_tokens: int | None = None, **_kw) -> AsyncIterator[StreamEvent]:
         prompt = _words(messages)
         self.asked.append((prompt, max_output_tokens))
         if prompt + (max_output_tokens or 0) > self.window:
+            if self.failure_channel == "yield-first":
+                yield ChatError(code="bad_request", message=OVERFLOW_TEXT, fatal=True)
+                return
+            if self.failure_channel == "yield-after-start":
+                yield StreamStart(model=f"window-{self.window}")
+                yield ChatError(code="bad_request", message=OVERFLOW_TEXT, fatal=True)
+                return
+            if self.failure_channel == "raise-after-start":
+                yield StreamStart(model=f"window-{self.window}")
+            if self.rejection is not None:
+                raise self.rejection
             raise BadRequestError("Something went wrong", code="context_length_exceeded", status_code=400)
         yield TextDelta(text="all good", index=0)
         yield Done(stop_reason="stop", raw_reason="stop")
@@ -84,7 +98,12 @@ class _Pool:
     members: dict[str, _Member]
 
 
-async def _pool(order: list[str], *, failover_on: FailoverClasses) -> _Pool:
+async def _pool(
+    order: list[str],
+    *,
+    failover_on: FailoverClasses,
+    strategy: RoutingStrategy = RoutingStrategy.SEQUENTIAL,
+) -> _Pool:
     members = {"small": _Member(SMALL), "large": _Member(LARGE)}
     rows = {
         name: ModelProfile(
@@ -93,7 +112,7 @@ async def _pool(order: list[str], *, failover_on: FailoverClasses) -> _Pool:
         for name, m in members.items()
     }
     rows["agg"] = ModelProfile(
-        id="agg", description="agg", kind="aggregated", members=order, strategy=RoutingStrategy.SEQUENTIAL,
+        id="agg", description="agg", kind="aggregated", members=order, strategy=strategy,
         failover_on=failover_on,
     )
 
@@ -139,10 +158,10 @@ async def _run(pool: _Pool, *, cap: int) -> _Run:
     return _Run(events, None, spy, executor)
 
 
-async def _ask(pool: _Pool, *, words: int) -> list[StreamEvent]:
+async def _ask(pool: _Pool, *, words: int, cap: int = CAP) -> list[StreamEvent]:
     """One call straight at the pool: a prompt of ``words`` words and the cap the executor would send."""
     prompt = [Message(role="user", parts=[TextPart(text="word " * words)])]
-    return [ev async for ev in pool.llm.stream(model="agg", messages=prompt, max_output_tokens=CAP)]
+    return [ev async for ev in pool.llm.stream(model="agg", messages=prompt, max_output_tokens=cap)]
 
 
 def _compaction_and_replay_problems(run: _Run) -> list[str]:
@@ -171,6 +190,7 @@ async def test_scenario_every_member_rejected_the_history_and_a_summary_would_ha
         await _ask(pool, words=HISTORY_WORDS)
 
     assert is_context_overflow(rejected.value), "the pool re-raises the last member's own overflow rejection"
+    assert pool.llm.rejecting_context_length(rejected.value) == LARGE
     assert [len(m.asked) for m in pool.members.values()] == [1, 1], "both members were tried"
     # The larger member rejected because the history does not fit beside the cap: a summary does.
     assert HISTORY_WORDS + CAP > LARGE and 40 + CAP <= LARGE
@@ -178,11 +198,6 @@ async def test_scenario_every_member_rejected_the_history_and_a_summary_would_ha
     assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="01a10c6b item 1: the output-cap guard compares the cap with the MIN member window; under "
-    "TRANSIENT_AND_CONFIG the larger member rejected the HISTORY, and compaction would have fixed it",
-)
 async def test_every_member_rejecting_the_history_still_compacts_when_the_cap_fits_the_larger_window() -> None:
     pool = await _pool(["small", "large"], failover_on=FailoverClasses.TRANSIENT_AND_CONFIG)
 
@@ -202,17 +217,13 @@ async def test_scenario_the_first_member_rejected_alone_and_a_summary_would_have
         await _ask(pool, words=HISTORY_WORDS)
 
     assert is_context_overflow(rejected.value)
+    assert pool.llm.rejecting_context_length(rejected.value) == LARGE
     assert [len(m.asked) for m in pool.members.values()] == [0, 1], "only the first member (large) was asked"
     events = await _ask(pool, words=40)
     assert "all good" in "".join(e.text for e in events if isinstance(e, TextDelta))
     assert [len(m.asked) for m in pool.members.values()] == [0, 2], "the replay goes to the same first member"
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="01a10c6b item 1: under strict TRANSIENT the rejecting member is the first one (the LARGER window), "
-    "but the guard still compares the cap with the profile's MIN window",
-)
 async def test_a_larger_first_member_rejecting_the_history_still_compacts() -> None:
     pool = await _pool(["large", "small"], failover_on=FailoverClasses.TRANSIENT)
 
@@ -220,6 +231,42 @@ async def test_a_larger_first_member_rejecting_the_history_still_compacts() -> N
 
     problems = _compaction_and_replay_problems(run)
     assert not problems, "\n".join(problems)
+
+
+async def test_a_larger_first_member_yielding_the_overflow_still_compacts() -> None:
+    """The surfaced Error crosses TurnStreamOverflow reconstruction without losing its member window."""
+    pool = await _pool(["large", "small"], failover_on=FailoverClasses.TRANSIENT)
+    pool.members["large"].failure_channel = "yield-first"
+
+    run = await _run(pool, cap=CAP)
+
+    problems = _compaction_and_replay_problems(run)
+    assert not problems, "\n".join(problems)
+    assert [len(m.asked) for m in pool.members.values()] == [0, 2]
+
+
+async def test_a_larger_member_raising_after_stream_start_still_compacts() -> None:
+    """A non-content commit followed by a raised overflow keeps the current member window."""
+    pool = await _pool(["large", "small"], failover_on=FailoverClasses.TRANSIENT)
+    pool.members["large"].failure_channel = "raise-after-start"
+
+    run = await _run(pool, cap=CAP)
+
+    problems = _compaction_and_replay_problems(run)
+    assert not problems, "\n".join(problems)
+    assert [len(m.asked) for m in pool.members.values()] == [0, 2]
+
+
+async def test_a_larger_member_yielding_after_stream_start_still_compacts() -> None:
+    """A non-content commit followed by a yielded overflow keeps the Error's member window."""
+    pool = await _pool(["large", "small"], failover_on=FailoverClasses.TRANSIENT)
+    pool.members["large"].failure_channel = "yield-after-start"
+
+    run = await _run(pool, cap=CAP)
+
+    problems = _compaction_and_replay_problems(run)
+    assert not problems, "\n".join(problems)
+    assert [len(m.asked) for m in pool.members.values()] == [0, 2]
 
 
 # --- the cases where the veto is right today, and must stay right under any fix --------------------------------
@@ -248,3 +295,39 @@ async def test_a_cap_above_every_member_window_still_vetoes_the_compaction() -> 
     assert (run.unrecoverable.forced_compaction, run.unrecoverable.replay_attempted) == (False, False)
     assert run.spy.forced == 0 and run.executor.replaced == [], "the persisted history must be left alone"
     assert [len(m.asked) for m in pool.members.values()] == [1, 1], "every member was tried once and rejected"
+
+
+async def test_concurrent_rejections_keep_each_calls_exact_member_window() -> None:
+    """Even a reused exception object gets the right per-Task round-robin member window."""
+    pool = await _pool(
+        ["small", "large"],
+        failover_on=FailoverClasses.TRANSIENT,
+        strategy=RoutingStrategy.ROUND_ROBIN,
+    )
+    shared = BadRequestError("shared overflow", code="context_length_exceeded", status_code=400)
+    for member in pool.members.values():
+        member.rejection = shared
+
+    async def reject() -> tuple[BadRequestError, int | None]:
+        try:
+            await _ask(pool, words=HISTORY_WORDS)
+        except BadRequestError as exc:
+            return exc, pool.llm.rejecting_context_length(exc)
+        raise AssertionError("the oversized call unexpectedly succeeded")
+
+    rejected = await asyncio.gather(reject(), reject())
+
+    assert all(exc is shared for exc, _window in rejected)
+    assert sorted(window for _exc, window in rejected if window is not None) == [SMALL, LARGE]
+    assert [len(m.asked) for m in pool.members.values()] == [1, 1]
+
+
+async def test_next_call_clears_stale_rejection_provenance() -> None:
+    pool = await _pool(["small", "large"], failover_on=FailoverClasses.TRANSIENT)
+
+    with pytest.raises(BadRequestError) as rejected:
+        await _ask(pool, words=HISTORY_WORDS)
+    assert pool.llm.rejecting_context_length(rejected.value) == SMALL
+
+    await _ask(pool, words=40, cap=1_000)
+    assert pool.llm.rejecting_context_length(rejected.value) is None
