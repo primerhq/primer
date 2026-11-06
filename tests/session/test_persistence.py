@@ -1042,6 +1042,176 @@ def test_graph_end_output_suppresses_a_passthrough_duplicate() -> None:
     assert rec is None
 
 
+def test_graph_end_output_keeps_a_top_level_echo_after_a_nested_end() -> None:
+    """A child's End record cannot stand in for the identical parent result."""
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    nested = translate_stream_event(
+        _GraphEndOutputEvent(
+            text="same result", parsed=None, end_node_id="child-end", nested=True,
+        ),
+        state,
+        turn_no=3,
+    )
+    top_level = translate_stream_event(
+        _GraphEndOutputEvent(
+            text="same result", parsed=None, end_node_id="parent-end",
+        ),
+        state,
+        turn_no=3,
+    )
+
+    assert isinstance(nested, SessionMessageRecord)
+    assert nested.payload["nested"] is True
+    assert isinstance(top_level, SessionMessageRecord)
+    assert top_level.payload["end_node_id"] == "parent-end"
+    assert "nested" not in top_level.payload
+
+
+def test_second_top_level_end_recovers_a_suppressed_first_end_in_order() -> None:
+    """A pass-through is redundant only while it is the sole top-level result."""
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.model.chat import Done, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        TextDelta(text="X", index=0), state, node_id="worker", turn_no=3,
+    )
+    translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"),
+        state,
+        node_id="worker",
+        turn_no=3,
+    )
+    first = translate_stream_event(
+        _GraphEndOutputEvent(text="X", parsed=None, end_node_id="e1"),
+        state,
+        turn_no=3,
+    )
+    second = translate_stream_event(
+        _GraphEndOutputEvent(text="Y", parsed=None, end_node_id="e2"),
+        state,
+        turn_no=3,
+    )
+
+    assert first is None
+    assert isinstance(second, list)
+    assert [record.payload["end_node_id"] for record in second] == ["e1", "e2"]
+
+
+def test_a_suppressed_graph_end_is_never_recovered_into_a_later_turn() -> None:
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.model.chat import Done, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(TextDelta(text="old", index=0), state, turn_no=1)
+    translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state, turn_no=1,
+    )
+    assert translate_stream_event(
+        _GraphEndOutputEvent(text="old", parsed=None, end_node_id="old-end"),
+        state,
+        turn_no=1,
+    ) is None
+
+    current = translate_stream_event(
+        _GraphEndOutputEvent(text="new", parsed=None, end_node_id="new-end"),
+        state,
+        turn_no=2,
+    )
+
+    assert isinstance(current, SessionMessageRecord)
+    assert current.payload["end_node_id"] == "new-end"
+
+
+def test_an_emitted_top_level_end_does_not_disable_dedup_in_a_later_turn() -> None:
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.model.chat import Done, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    assert isinstance(translate_stream_event(
+        _GraphEndOutputEvent(text="old", parsed=None, end_node_id="old-end"),
+        state,
+        turn_no=1,
+    ), SessionMessageRecord)
+    translate_stream_event(TextDelta(text="X", index=0), state, turn_no=2)
+    translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state, turn_no=2,
+    )
+
+    assert translate_stream_event(
+        _GraphEndOutputEvent(text="X", parsed=None, end_node_id="new-end"),
+        state,
+        turn_no=2,
+    ) is None
+
+
+def test_a_nested_end_does_not_disable_single_end_passthrough_dedup() -> None:
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.model.chat import Done, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    assert isinstance(translate_stream_event(
+        _GraphEndOutputEvent(
+            text="nested", parsed=None, end_node_id="child-end", nested=True,
+        ),
+        state,
+        turn_no=3,
+    ), SessionMessageRecord)
+    translate_stream_event(TextDelta(text="X", index=0), state, turn_no=3)
+    translate_stream_event(
+        Done(stop_reason="stop", raw_reason="stop"), state, turn_no=3,
+    )
+
+    assert translate_stream_event(
+        _GraphEndOutputEvent(text="X", parsed=None, end_node_id="parent-end"),
+        state,
+        turn_no=3,
+    ) is None
+
+
+def test_tool_call_text_flush_refreshes_graph_end_dedup_provenance() -> None:
+    """An ordinary token written after a nested End restores pass-through dedup."""
+    from primer.graph.base import _GraphEndOutputEvent
+    from primer.model.chat import TextDelta, ToolCallEnd
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        _GraphEndOutputEvent(
+            text="nested result", parsed=None, end_node_id="child-end", nested=True,
+        ),
+        state,
+        turn_no=3,
+    )
+    translate_stream_event(
+        TextDelta(text="ordinary answer", index=0), state, node_id="worker", turn_no=3,
+    )
+    flushed = translate_stream_event(
+        ToolCallEnd(id="call_0", arguments={}, index=0),
+        state,
+        node_id="worker",
+        turn_no=3,
+    )
+    passthrough = translate_stream_event(
+        _GraphEndOutputEvent(
+            text="ordinary answer", parsed=None, end_node_id="parent-end",
+        ),
+        state,
+        turn_no=3,
+    )
+
+    assert isinstance(flushed, list)
+    assert flushed[0].kind == SessionMessageKind.ASSISTANT_TOKEN
+    assert passthrough is None
+
+
 def test_graph_end_output_keeps_a_genuine_transformation() -> None:
     """The other half of ruling (a): when output_template actually
     transforms the text (not a bare passthrough), the End record is
