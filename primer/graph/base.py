@@ -146,7 +146,10 @@ from primer.graph._node_refs import (  # noqa: E402
     _resolve_toolcall_arguments,
     await_tool_dispatch_barrier,
 )
-from primer.graph._checkpoint import _CheckpointMixin  # noqa: E402
+from primer.graph._checkpoint import (  # noqa: E402
+    _CheckpointMixin,
+    _pending_agent_yield_matches_record,
+)
 from primer.graph._agent_node import _AgentNodeMixin  # noqa: E402
 from primer.graph._node_identity import (  # noqa: E402
     reset_current_graph_node_id,
@@ -445,6 +448,7 @@ class _BaseGraphExecutor(
         resolve_provider: "Callable[[str], Awaitable[Any]] | None" = None,
         resumed_event_key: str | None = None,
         resumed_gate_id: str | None = None,
+        resumed_agent_entry: dict[str, Any] | None = None,
         wake_only: bool = False,
         approved: bool = True,
     ) -> AsyncIterator[StreamEvent]:
@@ -509,6 +513,13 @@ class _BaseGraphExecutor(
         ``original_call`` with the approval bypassed. That includes an entry whose gate id is missing or cannot be read: when the wake names a gate, an entry that cannot be shown to be
         it is not run (round 3, N1). When the wake names NO gate (a wake from before gates had ids, the key-less drain) and more than one selected entry would run an inner call, the
         decision cannot be shown to be any one of them: none of those runs and all stay pending (round 3, N2); a single such entry, and every entry that runs the node's own call, are as before.
+
+        ``resumed_agent_entry`` is the exact raw ``pending_agent_yields``
+        record already selected by an outer child-graph continuation. It
+        narrows this cycle to that one agent entry before anything is removed
+        or resumed, even when siblings share the same raw id, event key and
+        decision. ToolCall entries on that shared key stay pending. Ordinary
+        graph resumes leave it ``None`` and keep the existing selection rules.
 
         ``approved`` (round 4, R3-B2): whether the decision being applied is an approval. The no-gate rule above is about APPROVALS: one that names no gate and selects several inner-call entries is refused, because an approval
         cannot be shown to be any one of them. A timeout, a rejection or a cancel that names no gate rejects every selected entry, as before: the deadline sweeper publishes a gate-less timeout on the park's key,
@@ -582,6 +593,15 @@ class _BaseGraphExecutor(
             # A key that names no entry (a park written before keys were node-scoped): the raw id decides, as it always did.
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
+        if resumed_agent_entry is not None:
+            tc_pending = []
+            ay_pending = [
+                entry
+                for entry in ay_pending
+                if _pending_agent_yield_matches_record(
+                    entry, resumed_agent_entry
+                )
+            ]
         # The agent node's OWN approval gates that no answer was delivered for are answered below by the node's own manager, which RUNS the gated call on an approval (``_resume_agent_node``):
         # they are entries that run a gated call just as a ToolCall entry that runs an inner call is, and one decision judges them together.
         answering = [e for e in ay_pending if agent_tool_result is None and e.is_own_approval_gate]
