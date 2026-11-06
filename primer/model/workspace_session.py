@@ -585,6 +585,25 @@ class WorkspaceSession(Identifiable):
             "row without it reads None, and an older build ignores the key."
         ),
     )
+    pending_park: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The park a turn is about to release, stashed so a release that never commits does not lose it: "
+            "``{\"turn_no\": n, \"park\": <the ParkRequest as JSON>}``. Written by the two park arms of "
+            "run_one_session_turn (the yielding-tool park and the tool_wait batch park) after their last durable "
+            "write (records, ToolCallTask rows, last_seq) and BEFORE the release, as one field-scoped write fenced on "
+            "``turn_no``. Cleared by the release itself: the park branch of ``SessionClaimAdapter.on_release`` writes "
+            "the park columns and clears it in the same transaction, and the non-park branch clears it too. A claim "
+            "that finds a stash whose ``turn_no`` equals the row's knows the previous attempt parked and its release "
+            "never committed (abandoned or rolled back): it returns that park as its outcome instead of running the "
+            "turn again. Its release applies the park only while the row remains in the exact live status it read "
+            "(CREATED, RUNNING or WAITING) without a current pause or Cancel. A status or flag change after that read "
+            "refuses that attempt; a retry may commit from a fresh stable CREATED, RUNNING or WAITING row. A PAUSED or "
+            "ENDED row, or a current request flag, refuses the release for the canonical lifecycle exit to handle on reclaim. "
+            "A stash for another ``turn_no`` is stale and ignored. "
+            "Additive/optional, no migration: a row without it reads None, and an older build ignores the key."
+        ),
+    )
     last_worker_id: str | None = Field(default=None)
     peer_hops: int = Field(
         default=0,

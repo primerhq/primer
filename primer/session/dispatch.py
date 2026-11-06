@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -312,6 +312,15 @@ async def run_one_session_turn(
     noop = await _noop_if_turn_already_completed(deps, session_storage, session_id)
     if noop is not None:
         return noop
+
+    # ------------------------------------------------------------------
+    # 1.45 A park whose release never committed is applied, not re-run.
+    # ------------------------------------------------------------------
+    # The park arms stash their park on the row before the release (ticket 01a10b54-3212). A claim that finds a stash
+    # for its own turn hands that park on as its outcome: no executor, no model call, no second record.
+    stashed = await _apply_pending_park_if_stashed(deps, session_storage, session_id)
+    if stashed is not None:
+        return stashed
 
     # ------------------------------------------------------------------
     # 1.5 Consume the claimable signal before running the turn.
@@ -1065,16 +1074,6 @@ async def run_one_session_turn(
             session_id, yielded.tool_name, yielded.event_key, timeout,
         )
 
-        # A park doesn't touch session.status, but a stale interrupt_requested
-        # (e.g. an interrupt fired but the executor parked on a tool before
-        # the cancel_event check ran, so the disambiguation branch below
-        # never got a chance to consume it) must not leak into the turn
-        # that eventually resumes this park.
-        async with session_lifecycle_lock().acquire(session_id):
-            await _clear_interrupt_requested(session_storage, session_id)
-            await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
-
-        _observe_turn(session, "parked", _turn_started_at)
         # 01a0518b: fold any co-pending tool_wait batches' own wake keys
         # into event_keys so the multi-event accumulation mechanism
         # recognizes them too - see the materialization step above. An
@@ -1084,17 +1083,26 @@ async def run_one_session_turn(
         # more than one thing this session can wake on.
         combined_event_keys = list(getattr(yielded, "event_keys", None) or [])
         combined_event_keys.extend(extra_wake_keys)
-        return ReleaseOutcome(
-            success=True,
-            drop_lease=True,
-            park=ParkRequest(
-                parked_state=parked_state.to_jsonable(),
-                parked_event_key=yielded.event_key,
-                parked_event_keys=combined_event_keys or None,
-                parked_until=parked_until,
-                parked_at=parked_at,
-            ),
+        park_request = ParkRequest(
+            parked_state=parked_state.to_jsonable(),
+            parked_event_key=yielded.event_key,
+            parked_event_keys=combined_event_keys or None,
+            parked_until=parked_until,
+            parked_at=parked_at,
         )
+        # A park doesn't touch session.status, but a stale interrupt_requested
+        # (e.g. an interrupt fired but the executor parked on a tool before
+        # the cancel_event check ran, so the disambiguation branch below
+        # never got a chance to consume it) must not leak into the turn
+        # that eventually resumes this park.
+        async with session_lifecycle_lock().acquire(session_id):
+            await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
+            # LAST, after every durable write of the park (ticket 01a10b54-3212).
+            await _stash_pending_park(session_storage, session_id, session.turn_no, park_request)
+
+        _observe_turn(session, "parked", _turn_started_at)
+        return ReleaseOutcome(success=True, drop_lease=True, park=park_request)
 
     except ToolWaitPark as tool_wait:
         # ------------------------------------------------------------------
@@ -1303,22 +1311,21 @@ async def run_one_session_turn(
             len(notifying_task_ids), wake_key,
         )
 
+        park_request = ParkRequest(
+            parked_state=parked_state.to_jsonable(),
+            parked_event_key=wake_key,
+            parked_event_keys=per_node_wake_keys or None,
+            parked_until=parked_until,
+            parked_at=parked_at,
+        )
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq, writer)
+            # LAST, after every durable write of the park (ticket 01a10b54-3212).
+            await _stash_pending_park(session_storage, session_id, session.turn_no, park_request)
 
         _observe_turn(session, "parked", _turn_started_at)
-        return ReleaseOutcome(
-            success=True,
-            drop_lease=True,
-            park=ParkRequest(
-                parked_state=parked_state.to_jsonable(),
-                parked_event_key=wake_key,
-                parked_event_keys=per_node_wake_keys or None,
-                parked_until=parked_until,
-                parked_at=parked_at,
-            ),
-        )
+        return ReleaseOutcome(success=True, drop_lease=True, park=park_request)
 
     except asyncio.CancelledError as preempt:
         # The pool hard-cancelled this task wherever it was awaiting. A user Cancel reaches a turn blocked in a long model call
@@ -2665,6 +2672,133 @@ async def _noop_if_turn_already_completed(
         session_id, fresh.turn_no, work or "no unanswered input",
     )
     return ReleaseOutcome(success=True, drop_lease=True)
+
+
+async def _stash_pending_park(session_storage, session_id: str, turn_no: int, park: ParkRequest) -> None:
+    """Stash ``park`` on the row (``WorkspaceSession.pending_park``) so a release that never commits does not lose it.
+
+    Called by the two park arms as the LAST write of the turn, inside the lifecycle lock they already hold for the
+    ``last_seq`` write, and before the release whose transaction writes the park columns and clears the stash. One
+    field-scoped ``patch_if`` fenced on the turn's own ``turn_no``: it writes nothing else, and nothing if the row has
+    moved on to another turn. Best-effort, like ``completed_turn_no``: a rejected fence or a storage error is logged and
+    never fails the park (without the stash a rolled-back release re-runs the turn, as it did before).
+    """
+    stash = {"turn_no": turn_no, "park": to_jsonable_python(asdict(park))}
+    try:
+        written = await session_storage.patch_if(session_id, {"pending_park": stash}, where={"turn_no": [turn_no]})
+    except Exception:  # noqa: BLE001 - best-effort; the park's own outcome stands
+        logger.warning(
+            "session %s: could not stash the park of turn %d; a rolled-back release would run the turn again",
+            session_id, turn_no, exc_info=True,
+        )
+        return
+    if written is None:
+        logger.warning(
+            "session %s: turn_no is no longer %d, so its park is not stashed", session_id, turn_no,
+        )
+
+
+def _park_from_stash(stash: dict) -> ParkRequest:
+    """The :class:`ParkRequest` a park arm stashed (``to_jsonable_python`` of the dataclass, read back)."""
+    park = stash["park"]
+    until = park.get("parked_until")
+    return ParkRequest(
+        parked_state=park["parked_state"],
+        parked_event_key=park["parked_event_key"],
+        parked_until=datetime.fromisoformat(until) if until else None,
+        parked_at=datetime.fromisoformat(park["parked_at"]),
+        parked_event_keys=park.get("parked_event_keys"),
+        drained_reply_keys=(
+            None
+            if park.get("drained_reply_keys") is None
+            else frozenset(park["drained_reply_keys"])
+        ),
+    )
+
+
+async def _apply_pending_park_if_stashed(
+    deps: "SessionDispatchDeps", session_storage, session_id: str,
+) -> ReleaseOutcome | None:
+    """The outcome of a claim whose previous attempt parked but whose release never committed; ``None`` means run the turn.
+
+    A park arm commits everything the park needs BEFORE its release (the YIELDED record, a tool_wait batch's ToolCallTask
+    rows, ``last_seq``, then the ``pending_park`` stash); only the park columns are written inside the release
+    transaction. A release abandoned at the pool's bound, or raising, rolls that back and leaves the lease claimed until
+    it expires, and the re-claim used to run a NEW turn over a log that ends in a dangling ``yielded`` record: a second
+    model call at the same ``turn_no`` that never waits for the question the operator was asked and, with tool calls as
+    claims on, record seqs that differ from the batch's, which ends the session ``failed``.
+
+    The decision is made from a fresh row under the lifecycle lock. A stash that names that row's ``turn_no`` and has
+    no current Cancel or pause is exactly the lost-release state, so this claim returns ``success=True`` with the
+    stashed park and its own release writes the park columns and clears the stash. A Cancel that arrived after the
+    dispatch's first read takes the claim-time cancel exit instead; a pause that arrived in that window writes PAUSED
+    and takes the usual preserve-park pause outcome. In particular, a pause cannot leave the row RUNNING with both
+    ``parked_status='parked'`` and ``pause_requested=True``, which would be ineligible and impossible to resume.
+
+    A stash for another ``turn_no`` is stale and ignored (the turn's own release clears it); a settled row takes its
+    settled release outcome. A row that is gone and a stash that cannot be read return ``None``, so the rest of the
+    turn judges them as it always did.
+
+    Not covered: a resume event that fired between the rolled-back release and this claim found no park to resume
+    (``mark_resumable`` needs the park columns).
+    """
+    cancel_requested = False
+    park: ParkRequest | None = None
+    async with session_lifecycle_lock().acquire(session_id):
+        # A conditional pause write can be refused by a writer in another process. Re-read and decide that row instead
+        # of applying a park chosen from an older snapshot.
+        # Two refused pause CAS writes get one final fresh decision. That last read never falls through to the running
+        # flip while a pause is still current: it hands the lease back entity-neutral instead.
+        for attempt in range(3):
+            fresh = await session_storage.get(session_id)
+            if fresh is None or fresh.pending_park is None:
+                return None
+            stash = fresh.pending_park
+            if stash.get("turn_no") != fresh.turn_no:
+                return None
+            if fresh.status in _SETTLED_STATUSES:
+                return await _settled_release(session_storage, fresh)
+            if fresh.cancel_requested:
+                cancel_requested = True
+                break
+            if fresh.pause_requested:
+                if attempt == 2:
+                    return ReleaseOutcome(
+                        success=False,
+                        requeue_after=timedelta(seconds=1),
+                        last_error="the pending-park pause transition was refused twice",
+                        entity_noop=True,
+                    )
+                paused = await session_storage.patch_if(
+                    session_id,
+                    to_jsonable_python({"status": SessionStatus.PAUSED}),
+                    where={
+                        "status": [raw_generation(fresh, "status")],
+                        "pause_requested": [True],
+                        "cancel_requested": [False],
+                    },
+                )
+                if paused is None:
+                    continue
+                await _clear_interrupt_requested(session_storage, session_id)
+                await _clear_turn_running(session_storage, session_id)
+                return ReleaseOutcome(success=True, drop_lease=True, preserve_park=True)
+            try:
+                park = _park_from_stash(stash)
+            except Exception:  # noqa: BLE001 - an unreadable stash is no stash: run the turn, as before the stash existed
+                logger.warning("session %s: its stashed park is unreadable; running the turn", session_id, exc_info=True)
+                return None
+            break
+    if cancel_requested:
+        return await _end_cancelled_at_claim(deps, session_storage, session_id)
+    assert park is not None
+    _metrics.session_park_stash_applied_total.inc()
+    logger.warning(
+        "session %s: turn %d already parked but its release never committed; applying the park without running the "
+        "turn again (event_key=%r)",
+        session_id, fresh.turn_no, park.parked_event_key,
+    )
+    return ReleaseOutcome(success=True, drop_lease=True, park=park)
 
 
 def _drop_vanished_row(session_id: str, where: str = "under the completed-turn guard") -> ReleaseOutcome:

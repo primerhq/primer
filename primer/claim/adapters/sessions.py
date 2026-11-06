@@ -9,6 +9,7 @@ from pydantic_core import to_jsonable_python
 from primer.int.claim import ClaimAdapter, ClaimKind, Lease, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.workspace_session import SessionStatus
 from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.storage import raw_generation
 
@@ -18,6 +19,12 @@ if TYPE_CHECKING:
     from primer.model.workspace_session import WorkspaceSession
 
 logger = logging.getLogger(__name__)
+
+_PARK_RELEASE_LIVE_STATUSES = {
+    SessionStatus.CREATED,
+    SessionStatus.RUNNING,
+    SessionStatus.WAITING,
+}
 
 
 class SessionClaimAdapter(ClaimAdapter):
@@ -151,7 +158,7 @@ class SessionClaimAdapter(ClaimAdapter):
         """Write the fields the release owns, and nothing else.
 
         Every branch is ONE field-scoped ``Storage.patch_if`` of only its own fields (the park columns,
-        and on a successful turn ``turn_no`` / ``last_turn_at``; the claim-time ``last_worker_id`` stamp
+        ``pending_park``, and on a successful turn ``turn_no`` / ``last_turn_at``; the claim-time ``last_worker_id`` stamp
         is not cleared here). It never writes
         ``turn_status``, ``status``, the cursor or the request flags, and it writes ``last_seq`` only to
         ADVANCE it past the failure marker it appends (``_write_terminal_record``): a whole-document
@@ -178,7 +185,10 @@ class SessionClaimAdapter(ClaimAdapter):
         # drops the lease (drop_lease=True), so the parked row has no lease
         # and is not re-claimed until the resume event re-arms it via
         # engine.mark_resumable. The claim-time worker stamp is not cleared:
-        # the parked session still shows the worker that ran its turn.
+        # the parked session still shows the worker that ran its turn. The
+        # park arm stashed this park on the row (``pending_park``) before the
+        # release so one that rolls back does not lose it; this transaction
+        # writes the columns and clears the stash together.
         if outcome.park is not None:
             p = outcome.park
             owned = {
@@ -188,9 +198,12 @@ class SessionClaimAdapter(ClaimAdapter):
                 "parked_until": p.parked_until,
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
+                "pending_park": None,
             }
             if p.drained_reply_keys is None:
-                await self._patch_owned(entity_id, sess, conn, owned, bump=False)
+                await self._patch_owned(
+                    entity_id, sess, conn, owned, bump=False, protect_park_lifecycle=True,
+                )
             else:
                 await self._repark_carrying_replies(entity_id, sess, conn, owned, p)
             return
@@ -204,7 +217,9 @@ class SessionClaimAdapter(ClaimAdapter):
         # one writes nothing at all (nothing else is owned here).
         if outcome.preserve_park:
             if outcome.success:
-                await self._patch_owned(entity_id, sess, conn, {}, bump=True)
+                # A pause may overtake recovery of a park whose first release rolled back. The pause wins, so its
+                # successful release retires that stash while preserving any already-committed park columns.
+                await self._patch_owned(entity_id, sess, conn, {"pending_park": None}, bump=True)
             return
 
         # Non-park release: clear any park columns. Only bump turn_no /
@@ -219,6 +234,7 @@ class SessionClaimAdapter(ClaimAdapter):
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,
+            "pending_park": None,
         }, bump=outcome.success)
         if written is None:
             return
@@ -246,6 +262,7 @@ class SessionClaimAdapter(ClaimAdapter):
         """
         keys = set(park.parked_event_keys or [park.parked_event_key])
         for attempt in range(2):
+            lifecycle = self._park_release_lifecycle_fence(entity_id, sess)
             state = sess.parked_state or {}
             kept = {
                 leaf: entry for leaf, entry in (state.get("resume_event_payloads") or {}).items()
@@ -260,6 +277,7 @@ class SessionClaimAdapter(ClaimAdapter):
                     "resume_event_key": last["event_key"], "resume_event_payload": last.get("payload"),
                 }
             where = {
+                **lifecycle,
                 "workspace_id": [raw_generation(sess, "workspace_id")],
                 ("parked_state", "resume_event_key"): [state.get("resume_event_key")],
             }
@@ -278,7 +296,40 @@ class SessionClaimAdapter(ClaimAdapter):
                     return
         raise ConflictError(f"session {entity_id!r}: replies landed under the re-park twice; the release is not applied")
 
-    async def _patch_owned(self, entity_id: str, sess, conn, owned: dict, *, bump: bool):
+    @staticmethod
+    def _park_release_lifecycle_fence(entity_id: str, sess) -> dict:
+        """The lifecycle shape in which a park may commit.
+
+        A pause, Cancel or transition out of the live status set can land after dispatch chose a park and before the
+        release transaction. The adapter owns none of those fields and must not duplicate their lifecycle paths.
+        Refusing the release leaves its transaction and lease intact; the later claim takes the canonical dispatch exit.
+        """
+        if (
+            sess.status not in _PARK_RELEASE_LIVE_STATUSES
+            or sess.pause_requested
+            or sess.cancel_requested
+        ):
+            raise ConflictError(
+                f"session {entity_id!r}: its lifecycle no longer permits the park release"
+            )
+        # Fence the exact live state read. CREATED, RUNNING and WAITING may all be stable recovery rows, but a
+        # transition after this read must refuse this attempt so the retry decides the fresh lifecycle instead.
+        return {
+            "status": [raw_generation(sess, "status")],
+            "pause_requested": [raw_generation(sess, "pause_requested")],
+            "cancel_requested": [raw_generation(sess, "cancel_requested")],
+        }
+
+    async def _patch_owned(
+        self,
+        entity_id: str,
+        sess,
+        conn,
+        owned: dict,
+        *,
+        bump: bool,
+        protect_park_lifecycle: bool = False,
+    ):
         """One ``patch_if`` of the branch's ``owned`` fields (plus the fenced ``turn_no`` bump).
 
         Returns the row as written, or ``None`` when the row is gone (nothing to write). Raises
@@ -292,6 +343,8 @@ class SessionClaimAdapter(ClaimAdapter):
                 where = {"turn_no": [raw_generation(sess, "turn_no")]}
             else:
                 where = {"workspace_id": [raw_generation(sess, "workspace_id")]}
+                if protect_park_lifecycle:
+                    where.update(self._park_release_lifecycle_fence(entity_id, sess))
             try:
                 written = await self._storage.patch_if(
                     entity_id, to_jsonable_python(patch), where=where, conn=conn,
@@ -308,8 +361,9 @@ class SessionClaimAdapter(ClaimAdapter):
                 sess = await self._storage.get(entity_id, conn=conn)
                 if sess is None:
                     return None
+        changed = "lifecycle" if protect_park_lifecycle else "turn_no"
         raise ConflictError(
-            f"session {entity_id!r}: turn_no changed under the release twice; the release is not applied"
+            f"session {entity_id!r}: {changed} changed under the release twice; the release is not applied"
         )
 
     async def _write_terminal_record(
