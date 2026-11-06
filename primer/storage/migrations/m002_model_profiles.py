@@ -28,17 +28,15 @@ import logging
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
-from primer.storage.migrations._rows import iter_rows, read_all
+from primer.storage.migrations._rows import iter_rows
 from primer.model.common import Identifiable
 from primer.model.model_profile import ModelProfile
-from primer.model.storage import OffsetPage
 
 logger = logging.getLogger(__name__)
 
-_PAGE = 200
 _UNSAFE = re.compile(r"[^a-z0-9-]+")
 
 

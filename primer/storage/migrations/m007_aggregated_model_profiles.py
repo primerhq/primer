@@ -53,7 +53,7 @@ from typing import Any
 from pydantic import ConfigDict, Field
 
 from primer.int.storage_provider import StorageProvider
-from primer.storage.migrations._rows import iter_rows, read_all
+from primer.storage.migrations._rows import iter_rows
 from primer.model.common import Identifiable
 from primer.model.model_profile import (
     FailoverClasses,
@@ -61,12 +61,9 @@ from primer.model.model_profile import (
     ModelProfile,
     RoutingStrategy,
 )
-from primer.model.storage import OffsetPage
 from primer.storage.migrations.m002_model_profiles import synth_profile_id
 
 logger = logging.getLogger(__name__)
-
-_PAGE = 200
 
 # Defensive fallback ONLY: every real member should already have a real
 # ModelProfile with its own context_length (either from m002 or from
