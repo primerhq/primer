@@ -38,7 +38,7 @@ from primer.int.claim import ClaimKind
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Message, Tool, ToolCallPart, ToolResultPart
 from primer.model.scheduler import WorkerConfig
-from primer.model.tool_approval import ToolApprovalPolicy
+from primer.model.tool_approval import ToolApprovalPolicy, ToolApprovalRecord
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
@@ -47,6 +47,7 @@ from primer.model.workspace_session import (
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.toolset.system import build_system_toolset
 from primer.worker.frames import AgentFrame, AgentResumeContext
+from primer.worker.continuation import InvocationServices
 from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
 
@@ -120,6 +121,11 @@ def _make_approval_parked_session(
     llm_messages: list,
     scoped_tool_call_id: str | None = None,
     yielded: Yielded | None = None,
+    binding_epoch: int | None = None,
+    client_tools_attached: bool = False,
+    completed_results: list[dict] | None = None,
+    remaining_calls: list[dict] | None = None,
+    remaining_scoped_call_ids: dict[str, str] | None = None,
 ) -> WorkspaceSession:
     """A session parked (phase 1) on an approval gate guarding a yielding
     tool. resume_metadata carries the original_call so the approved resume
@@ -148,6 +154,11 @@ def _make_approval_parked_session(
         tool_call_id=tool_call_id,
         resume_event_payload=resume_event_payload,
         scoped_tool_call_id=scoped_tool_call_id,
+        binding_epoch=binding_epoch,
+        client_tools_attached=client_tools_attached,
+        completed_results=completed_results,
+        remaining_calls=remaining_calls,
+        remaining_scoped_call_ids=remaining_scoped_call_ids,
     )
     return WorkspaceSession(
         id=sid,
@@ -156,6 +167,7 @@ def _make_approval_parked_session(
         status=SessionStatus.RUNNING,
         created_at=datetime.now(timezone.utc),
         turn_no=0,
+        binding_epoch=binding_epoch or 0,
         parked_status="resumable",
         parked_event_key=yielded.event_key,
         parked_until=parked_at + timedelta(seconds=600),
@@ -506,7 +518,7 @@ async def test_a_gated_ask_user_through_call_tool_reparks_and_the_answer_lands_o
     assert done is not None and done.parked_status is None and done.status != SessionStatus.ENDED
 
 
-# ---- an approved tool whose CHILD run pauses (held: strict xfail) -----------------------------------------------------------------------------------
+# ---- an approved tool whose CHILD run pauses --------------------------------------------------------------------------------------------------------
 
 
 class _DelegatesAndPauses(ToolsetProvider):
@@ -589,13 +601,22 @@ async def _approve_a_tool_whose_child_run_pauses(monkeypatch, *, through_call_to
         resume_event_payload={"decision": "approved"},
         llm_messages=[Message(role="assistant", parts=[outer_call]).model_dump(mode="json")],
         yielded=yielded,
+        scoped_tool_call_id="scoped-outer",
+        binding_epoch=7,
+        client_tools_attached=True,
+        completed_results=[],
+        remaining_calls=[],
+        remaining_scoped_call_ids={},
     ))
     executor = _RecordingExecutor(tool_manager=manager)
     monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(_NoopPersist()))
     monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(executor))
 
     await pool._run_engine_session(await _claim_session(engine, sid))
-    return await session_storage.get(sid), executor, provider, outer
+    return (
+        await session_storage.get(sid), executor, provider, outer,
+        storage_provider, session_storage, engine, pool, manager,
+    )
 
 
 _NESTED_PAUSE_SHAPES = pytest.mark.parametrize(
@@ -608,7 +629,9 @@ _NESTED_PAUSE_SHAPES = pytest.mark.parametrize(
 async def test_an_approved_tool_whose_child_run_pauses_reaches_the_childs_pause(monkeypatch, through_call_tool: bool):
     """SCENARIO (holds whatever the session path does with it): the approval re-ran the delegating tool once, under the session's call id, and the
     child run's pause reached the session path."""
-    row, _executor, provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
+    row, _executor, provider, outer, *_rest = await _approve_a_tool_whose_child_run_pauses(
+        monkeypatch, through_call_tool=through_call_tool,
+    )
 
     assert provider.calls == [outer]
     assert row is not None and row.status != SessionStatus.ENDED
@@ -616,42 +639,15 @@ async def test_an_approved_tool_whose_child_run_pauses_reaches_the_childs_pause(
 
 @pytest.mark.asyncio
 @_NESTED_PAUSE_SHAPES
-async def test_an_approved_tool_whose_child_run_pauses_is_refused_with_an_error_on_the_session_path(monkeypatch, through_call_tool: bool):
-    """What the session path does until the held fix lands (audit G6-3): the coordinator's flat re-park keeps no frames, so a pause inside a nested
-    agent or graph run after an approval is REFUSED, the same way for both shapes. The session's own call is answered with an error result, and the
-    session is not parked on the child's question.
-
-    The directly gated shape used to be re-parked flat, under the CHILD's call id: when the person answered the child's question, the answer was
-    injected as a tool_result for ``child-call`` into a transcript whose pending call is the session's own, the session's call was never answered,
-    and the child run was lost."""
-    row, executor, provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
-
-    assert provider.calls == [outer], "the approved tool ran once"
-    ((*_assistant, answer),) = executor.injected
-    (part,) = answer.parts
-    assert part.id == outer and part.error is True, part
-    body = json.loads(part.output)
-    assert body["is_error"] is True and "nested agent or graph run" in body["reason"], body
-    assert row is not None and row.parked_status != "parked", "the session must not wait on the child's question"
-    assert (row.parked_state or {}).get("tool_call_id") != "child-call"
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "held: the session path's re-park (repark_resumed_yield_outcome) keeps no frames, so a pause inside a nested agent or graph run after an "
-        "approval is refused with an error result, through call_tool and on a directly gated delegating tool alike (audit G6-3)"
-    ),
-)
-@_NESTED_PAUSE_SHAPES
-async def test_an_approved_tool_whose_child_run_pauses_parks_the_session_on_the_childs_question(monkeypatch, through_call_tool: bool):
-    """BEHAVIOUR a fix must reach: the session parks again on the child's question with the child's frame kept under the session's call, so the
-    answer unwinds through the child run to that call. Today both shapes are refused with an error result: a call_tool re-run in
-    ``_resume_tool_approval``, a directly gated delegating tool in the coordinator (it used to be parked flat without the frame, so the child's
-    answer was delivered to the child's own call id)."""
-    row, executor, _provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
+async def test_an_approved_tool_whose_child_run_pauses_reparks_and_unwinds_once(monkeypatch, through_call_tool: bool):
+    """Both approval shapes keep the child frame, then the child's reply
+    unwinds to the outer call without rerunning the approved delegating tool."""
+    (
+        row, executor, provider, outer, storage_provider, session_storage,
+        engine, pool, manager,
+    ) = await _approve_a_tool_whose_child_run_pauses(
+        monkeypatch, through_call_tool=through_call_tool,
+    )
 
     state = (row.parked_state if row is not None else None) or {}
     broken = []
@@ -665,3 +661,63 @@ async def test_an_approved_tool_whose_child_run_pauses_parks_the_session_on_the_
     if kept != [outer]:
         broken.append(f"the child's frame is not kept under the session's call {outer!r}: frames keyed {kept}")
     assert not broken, broken
+
+    assert state["tool_call_id"] == "child-call"
+    assert state["scoped_tool_call_id"] == "scoped-outer"
+    assert state["binding_epoch"] == 7
+    assert state["client_tools_attached"] is True
+    assert state["completed_results"] == []
+    assert state["remaining_calls"] == []
+    assert state["remaining_scoped_call_ids"] == {}
+
+    # Deliver the child's answer through the real coordinator and continuation
+    # walk. Only the model turn itself is stubbed: it records the resolved leaf
+    # and completes the child, as a real resumed subagent would.
+    answered = row.model_copy(update={
+        "parked_status": "resumable",
+        "parked_state": {
+            **state,
+            "resume_event_payload": {"response": "blue"},
+        },
+    })
+    await session_storage.update(answered)
+
+    resumed_child: list[ToolResultPart] = []
+
+    async def _resume_subagent(**kwargs):
+        resumed_child.append(kwargs["child_result"])
+        return "child finished"
+
+    async def _unused(*_args, **_kwargs):
+        raise AssertionError("unrelated continuation service was called")
+
+    services = InvocationServices(
+        build_subagent_toolmanager=_unused,
+        resume_subagent=_resume_subagent,
+        resolve_graph=_unused,
+        build_child_graph_executor=_unused,
+        graph_agent_tool_result=_unused,
+        session_id=row.id,
+    )
+    executor2 = _RecordingExecutor(tool_manager=manager)
+    monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(executor2))
+    monkeypatch.setattr(pool, "_build_invocation_services", lambda *_args: services)
+
+    await pool._run_engine_session(await _claim_session(engine, row.id))
+
+    assert provider.calls == [outer], "the approved outer tool must not run again"
+    assert len(resumed_child) == 1
+    assert resumed_child[0].id == "child-call"
+    assert json.loads(resumed_child[0].output) == {"response": "blue"}
+    (injected,) = executor2.injected
+    result = next(part for part in injected[-1].parts if isinstance(part, ToolResultPart))
+    assert result.id == outer
+    assert result.error is False
+    assert json.loads(result.output) == {"output": "child finished"}
+
+    done = await session_storage.get(row.id)
+    assert done is not None and done.parked_status is None
+
+    # The second-stage reply is not another approval decision.
+    audit_storage = storage_provider.get_storage(ToolApprovalRecord)
+    assert len(audit_storage._data) == 1
