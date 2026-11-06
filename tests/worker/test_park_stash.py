@@ -24,7 +24,7 @@ from pydantic_core import to_jsonable_python
 
 import primer.observability.metrics as metrics
 import primer.session.dispatch as session_dispatch
-from primer.int.claim import ParkRequest
+from primer.int.claim import ClaimKind, ParkRequest, ReleaseOutcome
 from primer.model.workspace_session import SessionMessageKind, SessionStatus
 from primer.workspace.session_factory import pause_session
 
@@ -202,6 +202,84 @@ async def test_a_pause_after_the_stash_guard_aborts_the_park_release_and_wins_on
     assert len(world.llm_calls) == 1, "the pause reclaim must not call the model again"
 
 
+@pytest.mark.parametrize("live_status", [SessionStatus.WAITING, SessionStatus.CREATED])
+@pytest.mark.asyncio
+async def test_a_live_status_change_after_the_stash_guard_still_applies_the_park(world, live_status):
+    await _leave_a_lost_park(world)
+    world.expire_lease()
+    real_release = world.engine.release
+    moved = False
+
+    async def move_before_release(lease, *, outcome):
+        nonlocal moved
+        if outcome.park is not None and not moved:
+            moved = True
+            written = await world.sessions.patch_if(
+                SID,
+                {"status": live_status.value},
+                where={"status": [SessionStatus.RUNNING.value]},
+            )
+            assert written is not None
+        return await real_release(lease, outcome=outcome)
+
+    world.engine.release = move_before_release  # type: ignore[method-assign]
+    pool = world.pool(f"wrk-late-{live_status.value}")
+    pool._build_session_executor = lambda s: _async(_AskThenAnswer(world, s))  # type: ignore[method-assign]
+
+    assert await world.claim_and_run(pool) == 1
+
+    row = await world.row()
+    assert moved
+    assert row.status is live_status and row.parked_status == "parked"
+    assert row.pending_park is None
+    assert len(world.llm_calls) == 1, "the recovered park must not run the model again"
+    assert not await world.engine.has_lease(ClaimKind.SESSION, SID)
+
+
+@pytest.mark.asyncio
+async def test_a_graph_repark_after_a_live_status_change_drops_the_old_resume_lease(world):
+    row = await world.create_session()
+    parked_at = datetime.now(timezone.utc)
+    await world.sessions.update(row.model_copy(update={
+        "status": SessionStatus.RUNNING,
+        "parked_status": "resumable",
+        "parked_event_key": "graph:old",
+        "parked_event_keys": ["graph:old"],
+        "parked_at": parked_at,
+        "parked_state": {"resume_event_payloads": {}, "resume_event_key": "graph:old"},
+    }))
+    await world.engine.upsert(ClaimKind.SESSION, SID)
+    leases = await world.engine.claim_due("wrk-graph-resume", max_count=1)
+    assert len(leases) == 1
+
+    outcome = ReleaseOutcome(
+        success=True,
+        drop_lease=True,
+        park=ParkRequest(
+            parked_state={"kind": "graph", "resume_event_payloads": {}},
+            parked_event_key="graph:new",
+            parked_event_keys=["graph:new"],
+            parked_at=parked_at,
+            parked_until=None,
+            drained_reply_keys=frozenset(),
+        ),
+    )
+    moved = await world.sessions.patch_if(
+        SID,
+        {"status": SessionStatus.WAITING.value},
+        where={"status": [SessionStatus.RUNNING.value]},
+    )
+    assert moved is not None
+
+    await world.engine.release(leases[0], outcome=outcome)
+
+    reparking = await world.row()
+    assert reparking.status is SessionStatus.WAITING
+    assert reparking.parked_status == "parked" and reparking.parked_event_key == "graph:new"
+    assert not await world.engine.has_lease(ClaimKind.SESSION, SID), "the old resume handler must not be re-armed"
+    assert await world.engine.claim_due("wrk-graph-again", max_count=1) == []
+
+
 @pytest.mark.asyncio
 async def test_two_refused_pause_writes_finish_with_a_fresh_cancel_decision(world, monkeypatch):
     await _leave_a_lost_park(world)
@@ -246,6 +324,51 @@ async def test_two_refused_pause_writes_finish_with_a_fresh_cancel_decision(worl
     assert row.parked_status is None and row.pending_park is None
     assert world.outcomes[-1].park is None
     assert len(world.llm_calls) == 1, "CAS exhaustion must not fall through to an executor or model call"
+
+
+@pytest.mark.asyncio
+async def test_two_refused_pause_writes_requeue_entity_noop_when_the_third_read_still_sees_pause(world, monkeypatch):
+    await _leave_a_lost_park(world)
+    world.expire_lease()
+    real_noop = session_dispatch._noop_if_turn_already_completed
+    real_patch_if = world.sessions.patch_if
+    pause_writes = 0
+    adapter_writes = 0
+
+    async def pause_between_guards(*args):
+        result = await real_noop(*args)
+        written = await real_patch_if(
+            SID,
+            {"pause_requested": True},
+            where={"status": [SessionStatus.RUNNING.value], "pause_requested": [False]},
+        )
+        assert written is not None
+        return result
+
+    async def refuse_both_pause_writes(id, patch=None, *, where, set_paths=None, conn=None):
+        nonlocal pause_writes, adapter_writes
+        if patch and patch.get("status") == SessionStatus.PAUSED.value:
+            pause_writes += 1
+            return None
+        if patch and ("pending_park" in patch or "turn_no" in patch):
+            adapter_writes += 1
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    monkeypatch.setattr(session_dispatch, "_noop_if_turn_already_completed", pause_between_guards)
+    world.sessions.patch_if = refuse_both_pause_writes  # type: ignore[method-assign]
+    pool = world.pool("wrk-cas-pause")
+    pool._build_session_executor = lambda s: _async(_AskThenAnswer(world, s))  # type: ignore[method-assign]
+
+    assert await world.claim_and_run(pool) == 1
+
+    outcome = world.outcomes[-1]
+    row = await world.row()
+    assert pause_writes == 2
+    assert outcome.entity_noop is True and outcome.requeue_after == timedelta(seconds=1)
+    assert outcome.park is None and adapter_writes == 0
+    assert row.status is SessionStatus.RUNNING and row.pause_requested is True
+    assert row.parked_status is None and row.pending_park is not None
+    assert len(world.llm_calls) == 1, "the entity-noop requeue must not run an executor or model"
 
 
 @pytest.mark.asyncio

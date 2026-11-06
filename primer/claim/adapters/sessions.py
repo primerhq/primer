@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_PARK_RELEASE_LIVE_STATUSES = {
+    SessionStatus.CREATED,
+    SessionStatus.RUNNING,
+    SessionStatus.WAITING,
+}
+
 
 class SessionClaimAdapter(ClaimAdapter):
     kind = ClaimKind.SESSION
@@ -256,7 +262,7 @@ class SessionClaimAdapter(ClaimAdapter):
         """
         keys = set(park.parked_event_keys or [park.parked_event_key])
         for attempt in range(2):
-            lifecycle = self._park_release_lifecycle_fence()
+            lifecycle = self._park_release_lifecycle_fence(entity_id, sess)
             state = sess.parked_state or {}
             kept = {
                 leaf: entry for leaf, entry in (state.get("resume_event_payloads") or {}).items()
@@ -291,20 +297,27 @@ class SessionClaimAdapter(ClaimAdapter):
         raise ConflictError(f"session {entity_id!r}: replies landed under the re-park twice; the release is not applied")
 
     @staticmethod
-    def _park_release_lifecycle_fence() -> dict:
+    def _park_release_lifecycle_fence(entity_id: str, sess) -> dict:
         """The lifecycle shape in which a park may commit.
 
-        A pause, Cancel or terminal/resting transition can land after dispatch chose a park and before the release
-        transaction. The adapter owns none of those fields and must not duplicate their lifecycle paths. Refusing the
-        release leaves its transaction and lease intact; the later claim then takes the canonical dispatch exit.
+        A pause, Cancel or transition out of the live status set can land after dispatch chose a park and before the
+        release transaction. The adapter owns none of those fields and must not duplicate their lifecycle paths.
+        Refusing the release leaves its transaction and lease intact; the later claim takes the canonical dispatch exit.
         """
-        # These are the values required NOW, in the same statement as the park write. Do not derive them from the
-        # adapter's earlier snapshot: a legitimate wake can have moved that snapshot from WAITING to RUNNING before
-        # the write, while the inverse move (or a fresh flag) must refuse it.
+        if (
+            sess.status not in _PARK_RELEASE_LIVE_STATUSES
+            or sess.pause_requested
+            or sess.cancel_requested
+        ):
+            raise ConflictError(
+                f"session {entity_id!r}: its lifecycle no longer permits the park release"
+            )
+        # Fence the exact live state read. CREATED, RUNNING and WAITING may all be stable recovery rows, but a
+        # transition after this read must refuse this attempt so the retry decides the fresh lifecycle instead.
         return {
-            "status": [SessionStatus.RUNNING.value],
-            "pause_requested": [False],
-            "cancel_requested": [False],
+            "status": [raw_generation(sess, "status")],
+            "pause_requested": [raw_generation(sess, "pause_requested")],
+            "cancel_requested": [raw_generation(sess, "cancel_requested")],
         }
 
     async def _patch_owned(
@@ -331,7 +344,7 @@ class SessionClaimAdapter(ClaimAdapter):
             else:
                 where = {"workspace_id": [raw_generation(sess, "workspace_id")]}
                 if protect_park_lifecycle:
-                    where.update(self._park_release_lifecycle_fence())
+                    where.update(self._park_release_lifecycle_fence(entity_id, sess))
             try:
                 written = await self._storage.patch_if(
                     entity_id, to_jsonable_python(patch), where=where, conn=conn,
