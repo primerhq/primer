@@ -1357,7 +1357,7 @@ class WorkerPool:
 
         The session adapter carries a reply accepted while the resume ran onto the new park and makes the row ``resumable``
         (``SessionClaimAdapter._repark_carrying_replies``), but the release drops the lease that reply's flip armed. Re-armed here,
-        after the release, with the flip's own ``mark_resumable``; a RUNNING or WAITING row only, as ``_maybe_rearm_session``.
+        after the release, with the flip's own ``mark_resumable``; every live status the park release accepts.
         """
         if self._storage is None:
             return
@@ -1365,7 +1365,11 @@ class WorkerPool:
             fresh = await self._storage.get_storage(WorkspaceSession).get(session_id)
             if (
                 fresh is not None and fresh.parked_status == "resumable"
-                and fresh.status in (SessionStatus.RUNNING, SessionStatus.WAITING)
+                and fresh.status in (
+                    SessionStatus.CREATED,
+                    SessionStatus.RUNNING,
+                    SessionStatus.WAITING,
+                )
             ):
                 await self._engine.mark_resumable(ClaimKind.SESSION, session_id)
         except Exception:
