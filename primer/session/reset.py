@@ -256,6 +256,9 @@ async def _reopen_ended_locked(
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,
+            # A stash belongs to the invocation that ended. Reopen does not bump turn_no, so leaving it here would
+            # make the first claim of the new invocation apply that old invocation's park.
+            "pending_park": None,
             "turn_status": "arming" if keep_arming else "idle",
             # the arm's own stamp stays with a turn the wake goes on to promote; a plain reopen leaves none
             **({} if keep_arming else {"armed_at": None}),

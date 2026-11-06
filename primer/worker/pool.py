@@ -1290,8 +1290,10 @@ class WorkerPool:
         so the re-claim finds the entity runnable and does the work AGAIN: a harness operation runs again; a trigger
         fires again. A session turn that COMPLETED is the exception: it recorded ``completed_turn_no`` before its
         release, so the re-claim finds ``completed_turn_no == turn_no`` and ``run_one_session_turn`` takes its no-op
-        path (no model call; its own release applies the lost bump; see ``_noop_if_turn_already_completed``). A
-        session's park release that rolls back is not covered: the re-claim runs a fresh turn. A resume release that
+        path (no model call; its own release applies the lost bump; see ``_noop_if_turn_already_completed``). A session
+        turn that PARKED is the same: it stashed its park on the row (``pending_park``) before its release, so the
+        re-claim finds a stash for its own ``turn_no`` and hands that park on as its outcome (see
+        ``_apply_pending_park_if_stashed``). A resume release that
         rolls back is covered for the continue path only (``resumed_park_at``, ticket 01a10b54-425b: the re-claim does
         not run the handler again); a resume that re-parks still runs again (ticket 01a1206e-0acc). A failed session release's terminal ERROR record is a workspace write the database transaction
         does not cover, so the rollback does not undo it and it can be written twice. This is the cost of a bound
