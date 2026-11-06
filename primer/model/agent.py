@@ -1,16 +1,17 @@
 """Agent definition model.
 
 An agent is the user-facing unit of "an LLM with a personality and a
-toolset." Stored as a :class:`Document` in an agents
-:class:`primer.model.collection.Collection` (the ``description``
-inherited from :class:`Describeable` doubles as embedding-text for
-vector search over agents in a future release).
+toolset." An owned row persisted through the per-model ``Storage[T]``
+handle (the ``description`` inherited from :class:`Describeable`
+doubles as embedding-text for vector search over agents in a future
+release).
 
 Carries:
 
 * identity + description (from :class:`Describeable`).
 * :attr:`Agent.model` -- which configured
-  :class:`primer.model.provider.LLMProvider` + which model name.
+  :class:`primer.model.model_profile.ModelProfile` supplies the default
+  provider-side model and API-level tunables.
 * :attr:`Agent.temperature` -- sampling temperature for every call.
 * :attr:`Agent.tools` -- first-class tools registered with the agent
   (referenced by id; resolved against the application's toolsets at
@@ -21,7 +22,7 @@ Carries:
   ``\\n\\n`` for OpenAI / Ollama).
 
 This is the *definition* model. The per-session snapshot taken at
-session start is :class:`primer.model.session.AgentBinding` -- two
+session start is :class:`primer.model.workspace_session.AgentBinding` -- two
 distinct types because session history is preserved even after the
 underlying agent definition has been edited or deleted.
 """

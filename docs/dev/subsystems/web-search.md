@@ -14,8 +14,11 @@ external search engine. It covers four concerns:
   routes through.
 - The **`WebSearchService`**, which reads the active-config singleton, resolves the
   provider, and dispatches the query (walking the fallback chain on failure).
-- The **`web__web_search` MCP tool** (and its sibling `web__http_request`),
-  exposed through the built-in internal `web` toolset that agents call.
+- The **`web__web_search` MCP tool** (and its toolset siblings `web__web_fetch`
+  and `web__http_request`), exposed through the built-in internal `web` toolset
+  that agents call. `web__download` belongs to the same toolset but is
+  `requires_workspace` (workspace-only, resolved through the `workspace_registry`)
+  and is never MCP-exposable: `is_exposable` refuses it (`needs_workspace`).
 
 The `web` toolset is built by a factory at app lifespan and stamped on
 `app.state.web_toolset`; the harness wiring for internal toolsets is documented in
@@ -84,8 +87,13 @@ The entities:
 - **Storage abstraction.** Provider rows and the active-config singleton persist
   through the generic `Storage[T]` interface; the registry and service take the
   per-type `Storage` handle (not the `StorageProvider`) at construction.
-- **Adjacent subsystem.** The `web` internal toolset (the `web__web_search` and
-  `web__http_request` tools and their `InternalToolsetProvider` wiring) is built at
+- **Adjacent subsystem.** The `web` internal toolset (the `web__web_search`,
+  `web__web_fetch`, `web__http_request` and `web__download` tools and their
+  `InternalToolsetProvider` wiring; `download` is `requires_workspace` and is
+  registered only when the factory gets a `workspace_registry`, which the app
+  lifespan does, and its handler resolves the workspace through it; a
+  `requires_workspace` tool is refused by `is_exposable` (`needs_workspace`,
+  `primer/mcp/safety.py`), so `download` is never MCP-exposable) is built at
   lifespan and registered through the harness; see [harness.md](harness.md).
 
 ## 4. Code layout
@@ -116,8 +124,8 @@ The entities:
 - `primer/api/routers/web_search.py`: the CRUD router, the `_test` / `_types`
   helpers router, and the singleton GET / PUT router.
 - `primer/toolset/web/__init__.py`: `build_web_toolset` factory.
-- `primer/toolset/web/tools.py`: `WebSearchArgs` / `HttpRequestArgs`, the
-  descriptor factories, and the async handlers.
+- `primer/toolset/web/tools.py`: `WebSearchArgs` / `WebFetchArgs` / `HttpRequestArgs` /
+  `DownloadArgs`, the descriptor factories, and the async handlers.
 - `primer/toolset/_system_web.py`: `web_active_config_tools`, the four
   `system` tools that read and set the web search and web fetch active
   config (registered by `build_system_toolset`).

@@ -1,14 +1,21 @@
-"""User model — single-user authentication for v1.
+"""User model - the operator accounts that can log in to the primer console.
 
-A row in this table represents the operator account that can log in to
-the primer console. Single-user enforcement is in the auth router:
-``POST /v1/auth/register`` is only valid when no user exists. v2 will
-introduce multi-user with invitations.
+Multi-user is in place (access-control Phase 2 and on): a row is one
+person; ``role`` (``admin`` / ``user`` / ``restricted``) is their rank,
+``disabled`` locks the account out, ``must_change_password`` forces a
+reset before continued use, and ``session_epoch`` is the generation
+number every session cookie carries (a password change, an admin reset
+or "sign out everywhere" bumps it and ends all of the account's
+sessions). ``POST /v1/auth/register`` stays a FIRST-BOOT door: it is
+valid only when no user exists yet and creates the install's first
+admin; every other account is provisioned by an admin through
+``/v1/admin/users``.
 
 The ``password_hash`` field stores the full argon2 PHC-format string
 (``$argon2id$...``) including algorithm parameters and salt; the
 verifier uses the embedded parameters so we can rotate hash params
-without invalidating existing hashes.
+without invalidating existing hashes. ``None`` marks an account
+provisioned without a password; it cannot authenticate.
 """
 
 from __future__ import annotations
@@ -31,8 +38,8 @@ class User(Identifiable):
     username: str = Field(
         ...,
         description="Lowercase-normalised login identifier. Unique across "
-        "the table (enforced by application code; the storage layer's "
-        "predicate ABC does not currently express uniqueness constraints).",
+        "the table through the auth/admin checks and the storage providers' "
+        "unique username index.",
         min_length=1,
         max_length=64,
     )
