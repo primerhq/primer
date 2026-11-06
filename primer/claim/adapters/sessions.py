@@ -9,6 +9,7 @@ from pydantic_core import to_jsonable_python
 from primer.int.claim import ClaimAdapter, ClaimKind, Lease, ReleaseOutcome, read_for_eligibility
 from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.workspace_session import SessionStatus
 from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.storage import raw_generation
 
@@ -194,7 +195,9 @@ class SessionClaimAdapter(ClaimAdapter):
                 "pending_park": None,
             }
             if p.drained_reply_keys is None:
-                await self._patch_owned(entity_id, sess, conn, owned, bump=False)
+                await self._patch_owned(
+                    entity_id, sess, conn, owned, bump=False, protect_park_lifecycle=True,
+                )
             else:
                 await self._repark_carrying_replies(entity_id, sess, conn, owned, p)
             return
@@ -253,6 +256,7 @@ class SessionClaimAdapter(ClaimAdapter):
         """
         keys = set(park.parked_event_keys or [park.parked_event_key])
         for attempt in range(2):
+            lifecycle = self._park_release_lifecycle_fence()
             state = sess.parked_state or {}
             kept = {
                 leaf: entry for leaf, entry in (state.get("resume_event_payloads") or {}).items()
@@ -267,6 +271,7 @@ class SessionClaimAdapter(ClaimAdapter):
                     "resume_event_key": last["event_key"], "resume_event_payload": last.get("payload"),
                 }
             where = {
+                **lifecycle,
                 "workspace_id": [raw_generation(sess, "workspace_id")],
                 ("parked_state", "resume_event_key"): [state.get("resume_event_key")],
             }
@@ -285,7 +290,33 @@ class SessionClaimAdapter(ClaimAdapter):
                     return
         raise ConflictError(f"session {entity_id!r}: replies landed under the re-park twice; the release is not applied")
 
-    async def _patch_owned(self, entity_id: str, sess, conn, owned: dict, *, bump: bool):
+    @staticmethod
+    def _park_release_lifecycle_fence() -> dict:
+        """The lifecycle shape in which a park may commit.
+
+        A pause, Cancel or terminal/resting transition can land after dispatch chose a park and before the release
+        transaction. The adapter owns none of those fields and must not duplicate their lifecycle paths. Refusing the
+        release leaves its transaction and lease intact; the later claim then takes the canonical dispatch exit.
+        """
+        # These are the values required NOW, in the same statement as the park write. Do not derive them from the
+        # adapter's earlier snapshot: a legitimate wake can have moved that snapshot from WAITING to RUNNING before
+        # the write, while the inverse move (or a fresh flag) must refuse it.
+        return {
+            "status": [SessionStatus.RUNNING.value],
+            "pause_requested": [False],
+            "cancel_requested": [False],
+        }
+
+    async def _patch_owned(
+        self,
+        entity_id: str,
+        sess,
+        conn,
+        owned: dict,
+        *,
+        bump: bool,
+        protect_park_lifecycle: bool = False,
+    ):
         """One ``patch_if`` of the branch's ``owned`` fields (plus the fenced ``turn_no`` bump).
 
         Returns the row as written, or ``None`` when the row is gone (nothing to write). Raises
@@ -299,6 +330,8 @@ class SessionClaimAdapter(ClaimAdapter):
                 where = {"turn_no": [raw_generation(sess, "turn_no")]}
             else:
                 where = {"workspace_id": [raw_generation(sess, "workspace_id")]}
+                if protect_park_lifecycle:
+                    where.update(self._park_release_lifecycle_fence())
             try:
                 written = await self._storage.patch_if(
                     entity_id, to_jsonable_python(patch), where=where, conn=conn,
@@ -315,8 +348,9 @@ class SessionClaimAdapter(ClaimAdapter):
                 sess = await self._storage.get(entity_id, conn=conn)
                 if sess is None:
                     return None
+        changed = "lifecycle" if protect_park_lifecycle else "turn_no"
         raise ConflictError(
-            f"session {entity_id!r}: turn_no changed under the release twice; the release is not applied"
+            f"session {entity_id!r}: {changed} changed under the release twice; the release is not applied"
         )
 
     async def _write_terminal_record(

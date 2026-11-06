@@ -2747,7 +2747,9 @@ async def _apply_pending_park_if_stashed(
     async with session_lifecycle_lock().acquire(session_id):
         # A conditional pause write can be refused by a writer in another process. Re-read and decide that row instead
         # of applying a park chosen from an older snapshot.
-        for _ in range(2):
+        # Two refused pause CAS writes get one final fresh decision. That last read never falls through to the running
+        # flip while a pause is still current: it hands the lease back entity-neutral instead.
+        for attempt in range(3):
             fresh = await session_storage.get(session_id)
             if fresh is None or fresh.pending_park is None:
                 return None
@@ -2760,6 +2762,13 @@ async def _apply_pending_park_if_stashed(
                 cancel_requested = True
                 break
             if fresh.pause_requested:
+                if attempt == 2:
+                    return ReleaseOutcome(
+                        success=False,
+                        requeue_after=timedelta(seconds=1),
+                        last_error="the pending-park pause transition was refused twice",
+                        entity_noop=True,
+                    )
                 paused = await session_storage.patch_if(
                     session_id,
                     to_jsonable_python({"status": SessionStatus.PAUSED}),
@@ -2780,8 +2789,6 @@ async def _apply_pending_park_if_stashed(
                 logger.warning("session %s: its stashed park is unreadable; running the turn", session_id, exc_info=True)
                 return None
             break
-        else:
-            return None
     if cancel_requested:
         return await _end_cancelled_at_claim(deps, session_storage, session_id)
     assert park is not None

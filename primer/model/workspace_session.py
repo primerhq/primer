@@ -596,7 +596,9 @@ class WorkspaceSession(Identifiable):
             "the park columns and clears it in the same transaction, and the non-park branch clears it too. A claim "
             "that finds a stash whose ``turn_no`` equals the row's knows the previous attempt parked and its release "
             "never committed (abandoned or rolled back): it returns that park as its outcome instead of running the "
-            "turn again, and ITS release applies it. A stash for another ``turn_no`` is stale and ignored. "
+            "turn again. Its release applies the park only while the row remains RUNNING without a current pause or "
+            "Cancel; otherwise that transaction is refused for the canonical lifecycle exit to handle on reclaim. "
+            "A stash for another ``turn_no`` is stale and ignored. "
             "Additive/optional, no migration: a row without it reads None, and an older build ignores the key."
         ),
     )
