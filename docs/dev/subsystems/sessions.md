@@ -397,7 +397,14 @@ Four rules make that safe:
   it is, at the head of the queue, and the row is deleted only after its wake
   landed: the wake deletes it right after its USER_INPUT is written and before
   the turn is promoted (a crash between the two delivers it a second time at the
-  next realize; nothing is lost).
+  next realize; nothing is lost). A routed REST, machine or Canvas steer that
+  is newly queued immediately nudges that same queued-head realization after
+  the queueing call returns (and any `wake_session` lifecycle lock is
+  released). This closes the opposite race,
+  where the terminating turn read an empty queue at its checkpoint just before
+  the pending row became visible. If the turn is still live the nudge leaves the
+  row for its checkpoint; if the checkpoint already passed the nudge arms the
+  next turn. Concurrent nudges still converge on the queued row id.
 
   Reopening an ENDED session is fenced the same way (`_reopen_ended_locked`):
   ONE `patch_if` decides it and reserves the divider's seq (fenced on the row
@@ -424,8 +431,7 @@ Four rules make that safe:
   attachment parts (the queue cannot hold them), and `restart_session`'s wake
   (no receipt), still write their USER_INPUT whatever the turn's state, and one
   that lands WHILE a turn runs reserves its seq from the row, which the turn's
-  writer keeps ahead of its own seqs (a lease, see below); a deferred message waits for the sweep (up to
-  30 s) when the turn that would drain it already ran its drain; a realize whose
+  writer keeps ahead of its own seqs (a lease, see below); a realize whose
   slot append landed and whose log write failed appends the message to the slot
   again at the next realize; the dispatch safety net flips idle without writing
   `last_seq` first, and a cancellation inside the streaming phase's `finally`
@@ -442,7 +448,10 @@ Four rules make that safe:
   rest with messages still queued and no turn boundary to come: the worker
   died between the turn's terminal write and its drain, or a realize's wake
   failed (the message stays queued: the row is deleted only after its wake
-  lands). The session-messaging sweep (`SessionMessagingSweeper` in
+  lands). A REST, machine or Canvas producer that newly queued a row first
+  performs the immediate post-store nudge described above. The
+  session-messaging sweep
+  (`SessionMessagingSweeper` in
   `primer/bus/scheduler_tasks.py`, leader-elected under
   `ROLE_SESSION_MESSAGING_SWEEPER`, so one process sweeps; its first tick runs
   when it takes the role, at boot, then every 30 s) realizes the queue head of

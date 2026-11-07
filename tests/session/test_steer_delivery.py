@@ -88,31 +88,38 @@ async def test_human_intent_is_forwarded_to_wake_session(monkeypatch):
     assert forwarded == [False]
 
 
-async def test_busy_session_queues_under_queue_parallelism(monkeypatch):
+async def test_busy_snapshot_is_rerouted_by_wake_session(monkeypatch):
+    """The initial read is advisory: the fresh row inside wake_session decides.
+
+    A turn may finish after this helper reads ``running``. Bypassing
+    ``wake_session`` from that snapshot can store a queue row after the
+    terminal checkpoint has already passed.
+    """
     sp = _FakeStorageProvider()
     await _seed(sp, _row(turn_status="running"))
-    queued = []
+    woken = []
 
-    async def _fake_store(**kw):
-        queued.append(kw["text"])
+    async def _fake_wake(**kw):
+        woken.append(kw["instruction"])
+        kw["receipt"].outcome = "woken"
+        return _row(turn_status="claimable")
 
-    monkeypatch.setattr(sd, "store_pending_steer", _fake_store)
+    monkeypatch.setattr(sd, "wake_session", _fake_wake)
     out = await deliver_steer(
         session_id="s1", text="later", parallelism="queue", human_intent=True, **_kw(sp)
     )
-    assert out.outcome == DELIVERED_QUEUED
-    assert queued == ["later"]
+    assert out.outcome == DELIVERED_WOKEN
+    assert woken == ["later"]
 
 
 async def test_busy_session_is_dropped_under_skip_parallelism(monkeypatch):
     sp = _FakeStorageProvider()
     await _seed(sp, _row(turn_status="running"))
 
-    async def _must_not_run(**_kw):  # pragma: no cover - must not be called
-        raise AssertionError("skip parallelism must not queue")
+    async def _skip(**kw):
+        kw["receipt"].outcome = "skipped_busy"
 
-    monkeypatch.setattr(sd, "store_pending_steer", _must_not_run)
-    monkeypatch.setattr(sd, "wake_session", _must_not_run)
+    monkeypatch.setattr(sd, "wake_session", _skip)
     out = await deliver_steer(
         session_id="s1", text="drop me", parallelism="skip", human_intent=True, **_kw(sp)
     )

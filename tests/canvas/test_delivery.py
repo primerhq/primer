@@ -14,6 +14,7 @@ The world is the canvas suite's in-memory one (``tests/canvas/_fakes.py``): the 
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -67,6 +68,23 @@ class Engine:
 
     async def upsert(self, kind: Any, entity_id: str, **_: Any) -> None:
         self.upserts.append((kind, entity_id))
+
+
+class _PendingCreateGate:
+    """Pause the real pending-row create at the post-checkpoint race window."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def create(self, entity: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        await self.release.wait()
+        return await self._inner.create(entity, **kwargs)
 
 
 def _park(tool_name: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -362,7 +380,7 @@ async def test_ineligible_canvas_delivery_never_changes_the_active_responder_led
 
 
 async def test_a_click_never_overtakes_a_queued_message() -> None:
-    """An idle session with an older message still queued (audit G7-03 (b)): the click goes behind it, with its event, and stays unread."""
+    """An idle session with an older message queued realizes that head first and leaves the click behind it."""
     from primer.session.pending_messages import store_pending_steer
 
     w = await _world("idle")
@@ -371,9 +389,11 @@ async def test_a_click_never_overtakes_a_queued_message() -> None:
 
     assert await _deliver(w, ev) == DELIVERY_QUEUED
 
-    first, click = _pending(w)
-    assert first.parts[0]["text"] == "typed first" and click.attribution == {CANVAS_EVENT_PAYLOAD_KEY: event_attribution(ev)}
-    assert w.records("s1", "user_input") == [] and [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
+    [click] = _pending(w)
+    assert click.attribution == {CANVAS_EVENT_PAYLOAD_KEY: event_attribution(ev)}
+    [user_input] = w.records("s1", "user_input")
+    assert user_input["payload"]["text"] == "typed first"
+    assert [e.id for e in (await w.canvas("s1")).unseen_events()] == ["e1"]
 
 
 async def test_a_wait_on_kinds_takes_a_silent_event() -> None:
@@ -491,6 +511,93 @@ def _wake_deps(w: World) -> SessionWakeDeps:
 
 async def _turn_ends(w: World) -> None:
     await w.sessions.update((await w.sessions.get("s1")).model_copy(update={"turn_status": "idle"}))
+
+
+async def _nudge(w: World, scheduler: Scheduler, engine: Engine) -> None:
+    from primer.session.dispatch import realize_queued_steer
+
+    await realize_queued_steer(
+        storage_provider=w.sp,
+        workspace_id="ws-1",
+        session_id="s1",
+        scheduler=scheduler,
+        claim_engine=engine,
+        workspace_registry=w.registry,
+        event_bus=w.bus,
+    )
+
+
+@pytest.mark.parametrize("checkpoint_before_insert", [True, False], ids=["insert-after-checkpoint", "insert-before-checkpoint"])
+async def test_a_newly_queued_click_is_nudged_on_both_sides_of_the_terminal_checkpoint(
+    checkpoint_before_insert: bool,
+) -> None:
+    """The producer nudge and terminal checkpoint cover both store orderings without duplicating the Canvas input."""
+    async with asyncio.timeout(5):
+        w = await _world("running")
+        scheduler, engine = Scheduler(), Engine()
+        pending = w.sp.get_storage(PendingSessionMessage)
+        gate = _PendingCreateGate(pending)
+        w.sp._stores[PendingSessionMessage] = gate
+        event = await _record(w, "click play")
+        delivery = asyncio.create_task(_deliver(w, event, scheduler=scheduler, engine=engine))
+        try:
+            await gate.entered.wait()
+            if checkpoint_before_insert:
+                await _turn_ends(w)
+                await _nudge(w, scheduler, engine)
+                assert _pending(w) == []
+                gate.release.set()
+                assert await delivery == DELIVERY_QUEUED
+            else:
+                gate.release.set()
+                assert await delivery == DELIVERY_QUEUED
+                assert len(_pending(w)) == 1
+                await _turn_ends(w)
+                await _nudge(w, scheduler, engine)
+        finally:
+            gate.release.set()
+            if not delivery.done():
+                delivery.cancel()
+                await asyncio.gather(delivery, return_exceptions=True)
+
+        [user_input] = w.records("s1", "user_input")
+        assert user_input["payload"][CANVAS_EVENT_PAYLOAD_KEY]["id"] == event.id
+        assert _pending(w) == []
+        assert _times_the_agent_got(w, event.id) == 1
+        assert scheduler.enqueued == ["s1"]
+        assert engine.upserts == [(ClaimKind.SESSION, "s1")]
+
+
+async def test_a_fresh_wake_that_queues_is_nudged_and_two_drainers_deliver_the_click_once(monkeypatch) -> None:
+    """The wake-session queue route gets the same nudge, and later competing drains remain idempotent."""
+    import primer.canvas.delivery as delivery_mod
+
+    async with asyncio.timeout(5):
+        w = await _world("idle")
+        scheduler, engine = Scheduler(), Engine()
+        event = await _record(w, "click play")
+        real_wake = wake_session
+
+        async def turn_started_before_fresh_wake(**kwargs: Any) -> Any:
+            row = await w.sessions.get("s1")
+            await w.sessions.update(row.model_copy(update={"status": SessionStatus.RUNNING, "turn_status": "running"}))
+            return await real_wake(**kwargs)
+
+        monkeypatch.setattr(delivery_mod, "wake_session", turn_started_before_fresh_wake)
+
+        assert await _deliver(w, event, scheduler=scheduler, engine=engine) == DELIVERY_QUEUED
+        assert len(_pending(w)) == 1
+        assert w.records("s1", "user_input") == []
+
+        await _turn_ends(w)
+        await asyncio.gather(_nudge(w, scheduler, engine), _nudge(w, scheduler, engine))
+
+        [user_input] = w.records("s1", "user_input")
+        assert user_input["payload"][CANVAS_EVENT_PAYLOAD_KEY]["id"] == event.id
+        assert _pending(w) == []
+        assert _times_the_agent_got(w, event.id) == 1
+        assert scheduler.enqueued == ["s1"]
+        assert engine.upserts == [(ClaimKind.SESSION, "s1")]
 
 
 async def test_a_realized_queued_click_keeps_its_canvas_payload() -> None:

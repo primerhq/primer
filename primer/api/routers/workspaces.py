@@ -2331,8 +2331,6 @@ async def steer_session(
     )
     from primer.model.principal import PrincipalRef, person_ref
     from primer.session.external_calls import flip_external_row
-    from primer.session.pending_messages import store_pending_steer
-    from primer.session.steer_routing import ROUTE_PENDING, route_steer
     from primer.session.yields import durably_wake_session
     from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -2456,40 +2454,6 @@ async def steer_session(
                 "the instruction was not delivered"
             )
 
-        # A session runs one turn at a time, so an instruction that
-        # arrives while a turn is still open is queued rather than
-        # written as a second user message, which would break the
-        # 1:1 user-message-to-terminal pairing the drain counts. The
-        # drain realizes it at the next checkpoint. Results-carrying
-        # bodies are exempt: those resume the open turn on purpose, and
-        # the instruction is meant to steer that same resumed turn.
-        # Bodies carrying tool defs are exempt alongside results: a
-        # pending row has nowhere to hold external_tools, so deferring
-        # one would silently drop the registration for the turn it was
-        # meant to arm. Bodies carrying attachments are exempt for the
-        # same reason: PendingSessionMessage.parts is a plain text-only
-        # projection today (realize_next_pending only ever extracts
-        # type=="text"), so a deferred attachment would silently vanish
-        # rather than reach the model. append_instruction's own message
-        # FIFO (used below via wake_session) already carries parts.
-        if (
-            row is not None
-            and not body.tool_results
-            and not body.external_tools
-            and not body.attachments
-            and route_steer(row) == ROUTE_PENDING
-        ):
-            await store_pending_steer(
-                storage_provider=storage_provider,
-                session=row,
-                text=body.instruction,
-                workspace_registry=registry,
-                event_bus=event_bus,
-                by=by,
-                trusted_responder_input=trusted_responder_input,
-            )
-            return await sessions.get(session_id)
-
         # Stamp the per-turn schema where the dispatch pops it. Written
         # before the wake so the turn it arms is the one that sees it.
         if body.response_format is not None and row is not None:
@@ -2574,6 +2538,25 @@ async def steer_session(
             by=by,
             trusted_responder_input=trusted_responder_input,
         )
+        if routing_receipt is not None and routing_receipt.outcome == "queued":
+            # The queue write can land just after the terminating turn's one
+            # drain checkpoint read an empty queue. Nudge the exact same
+            # queued-head realization the checkpoint uses; a still-busy or
+            # paused session leaves the row in place, while an already-rested
+            # session starts it now. The queued row remains the ownership
+            # token, so concurrent nudges still deliver it at most once.
+            from primer.session.dispatch import realize_queued_steer
+
+            await realize_queued_steer(
+                storage_provider=storage_provider,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                scheduler=scheduler,
+                claim_engine=engine,
+                workspace_registry=registry,
+                event_bus=event_bus,
+            )
+            row = await sessions.get(session_id) or row
         # G12-09: the response names the dropped attachments (response-only,
         # like MainSessionOut.created): the send succeeded, the row is
         # intact, the named files just are not in the model's multimodal
