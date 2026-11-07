@@ -462,6 +462,10 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
     from primer.model.yield_ import YieldToWorker
     from primer.model.workspace_session import WorkspaceSession
     from primer.session.tool_wait_batches import task_is_live_for_session
+    from primer.worker.task_gate_runtime import (
+        TaskGateStateError,
+        new_task_gate_state,
+    )
 
     if pool._storage is None:
         # A pool built without storage (bare loop tests) cannot read the row,
@@ -659,6 +663,45 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
             y.timeout if y.timeout is not None
             else _TASK_GATE_DEFAULT_TIMEOUT_SECONDS
         )
+        deadline = now + timedelta(seconds=timeout)
+        try:
+            gate_state = new_task_gate_state(
+                yld,
+                task=claimed_row,
+                gate_seq=claimed_row.gate_seq + 1,
+                parked_at=now,
+                deadline=deadline,
+                binding_epoch=session.binding_epoch,
+            )
+        except TaskGateStateError as exc:
+            # Nested/corrupt topology cannot be resumed safely at task scope.
+            # Fail this task terminally instead of dropping its lease with an
+            # envelope no later worker can consume.
+            reason = _short_error(exc)
+            logger.error(
+                "tool-call task %s produced an unsupported gate: %s",
+                task.id,
+                reason,
+            )
+            await pool._release_lease(
+                engine_lease,
+                ReleaseOutcome(
+                    success=False,
+                    drop_lease=True,
+                    claim_token=token,
+                    last_error=reason,
+                    entity_update={
+                        "result_state": {
+                            "id": task.wire_call_id,
+                            "output": reason,
+                            "error": True,
+                        },
+                        "attempts": claimed_row.attempts,
+                        "last_error": reason,
+                    },
+                ),
+            )
+            return
         logger.info(
             "tool-call task %s gated by %r (event_key=%r): the task parks, "
             "the session's park is untouched",
@@ -671,9 +714,9 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
                 drop_lease=True,
                 claim_token=token,
                 park=ParkRequest(
-                    parked_state=y.resume_metadata,
+                    parked_state=gate_state.to_jsonable(),
                     parked_event_key=y.event_key,
-                    parked_until=now + timedelta(seconds=timeout),
+                    parked_until=deadline,
                     parked_at=now,
                 ),
             ),
