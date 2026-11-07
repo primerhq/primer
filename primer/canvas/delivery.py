@@ -15,7 +15,8 @@ next depends on the session, read fresh:
   nothing is written. It was delivered.
 * a waking event while a turn is open, or while the session is parked on anything else (an ``ask_user``, an approval, a wait on other
   elements): ``queued``, as a steer whose text is the ``<canvas_event>`` block (``store_pending_steer``). The park is untouched, so a
-  click never answers a gate (Review Focus 1); the drain realizes it at the next turn boundary.
+  click never answers a gate (Review Focus 1); the next turn boundary or the post-store nudge realizes it. The outcome remains
+  ``queued`` when that nudge has already realized or dropped the row, because the delivery was accepted through the queue route.
 * else: ``woken``, the block as the session's next instruction (``wake_session``, ``human_intent=True``: a click is a person). A paused
   session is resumed, as a person's typed message resumes it. A wake the session refuses (gone, or ended since) is ``recorded``.
 
@@ -138,6 +139,36 @@ async def _already_read(storage_provider: Any, session_id: str, event: CanvasEve
     return row is not None and (event.seq <= row.seen_event_seq or event.seq in row.seen_ahead)
 
 
+async def _nudge_queued_event(
+    *,
+    storage_provider: Any,
+    workspace_id: str,
+    session_id: str,
+    scheduler: Any,
+    claim_engine: Any,
+    workspace_registry: Any,
+    event_bus: Any,
+) -> None:
+    """Best-effort realization after a Canvas delivery has stored a queued steer.
+
+    Both callers invoke this only after ``store_pending_steer`` or
+    ``wake_session`` has returned, so their session lifecycle locks have been
+    released. The queued row remains the exact-once ownership token shared
+    with the terminal checkpoint and the periodic repair sweep.
+    """
+    from primer.session.dispatch import realize_queued_steer
+
+    await realize_queued_steer(
+        storage_provider=storage_provider,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        scheduler=scheduler,
+        claim_engine=claim_engine,
+        workspace_registry=workspace_registry,
+        event_bus=event_bus,
+    )
+
+
 async def deliver_canvas_event(
     *,
     event: CanvasEvent,
@@ -191,6 +222,15 @@ async def deliver_canvas_event(
             attribution=carried, by=by,
             trusted_responder_input=trusted_responder_input,
         )
+        await _nudge_queued_event(
+            storage_provider=storage_provider,
+            workspace_id=home,
+            session_id=session_id,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
+        )
         return DELIVERY_QUEUED
     receipt = SessionWakeReceipt()
     try:
@@ -211,7 +251,18 @@ async def deliver_canvas_event(
     except (NotFoundError, ConflictError):
         logger.warning("canvas event %s: session %s cannot take it now; recorded only", event.id, session_id, exc_info=True)
         return DELIVERY_RECORDED
-    return DELIVERY_QUEUED if receipt.outcome == "queued" else DELIVERY_WOKEN
+    if receipt.outcome == "queued":
+        await _nudge_queued_event(
+            storage_provider=storage_provider,
+            workspace_id=home,
+            session_id=session_id,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
+        )
+        return DELIVERY_QUEUED
+    return DELIVERY_WOKEN
 
 
 # ---- the digest (plan Decision 9) ------------------------------------------------------------------------------------------------------

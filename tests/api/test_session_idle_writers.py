@@ -536,6 +536,73 @@ async def test_delete_refuses_a_running_session(client, sp, monkeypatch, case: s
 # ---------------------------------------------------------------------------
 
 
+async def test_a_busy_steer_uses_wake_session_s_fresh_route(
+    client, sp, monkeypatch,
+) -> None:
+    """The route's first session read cannot decide to queue by itself.
+
+    The running turn may finish, drain an empty queue and release before the
+    pending INSERT. ``wake_session`` owns the second, fenced read that decides
+    whether to queue or wake, so even an initially busy row must reach it.
+    """
+    import primer.session.enqueue as enqueue_mod
+    from primer.model.workspace_session import PendingSessionMessage
+
+    await _seed(sp, status=SessionStatus.RUNNING, turn_status="running")
+    calls: list[str] = []
+
+    async def fresh_wake(**kwargs: Any) -> WorkspaceSession:
+        calls.append(kwargs["instruction"])
+        kwargs["receipt"].outcome = "woken"
+        current = await sp.get_storage(WorkspaceSession).get(SID)
+        assert current is not None
+        return current.model_copy(update={"turn_status": "claimable"})
+
+    monkeypatch.setattr(enqueue_mod, "wake_session", fresh_wake)
+
+    response = await client.post(
+        f"/v1/workspaces/{WID}/sessions/{SID}/steer",
+        json={"instruction": "route me from the fresh row"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["route me from the fresh row"]
+    pending = await sp.get_storage(PendingSessionMessage).list(
+        OffsetPage(offset=0, length=10)
+    )
+    assert pending.items == []
+
+
+async def test_a_freshly_queued_rest_steer_nudges_the_checkpoint_realizer(
+    client, sp, monkeypatch,
+) -> None:
+    import primer.session.dispatch as dispatch_mod
+    import primer.session.enqueue as enqueue_mod
+
+    await _seed(sp, status=SessionStatus.RUNNING, turn_status="running")
+    nudges: list[tuple[str, str]] = []
+
+    async def queued_wake(**kwargs: Any) -> WorkspaceSession:
+        kwargs["receipt"].outcome = "queued"
+        current = await sp.get_storage(WorkspaceSession).get(SID)
+        assert current is not None
+        return current
+
+    async def nudge(**kwargs: Any) -> None:
+        nudges.append((kwargs["workspace_id"], kwargs["session_id"]))
+
+    monkeypatch.setattr(enqueue_mod, "wake_session", queued_wake)
+    monkeypatch.setattr(dispatch_mod, "realize_queued_steer", nudge)
+
+    response = await client.post(
+        f"/v1/workspaces/{WID}/sessions/{SID}/steer",
+        json={"instruction": "nudge after the queue write"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert nudges == [(WID, SID)]
+
+
 async def test_a_steer_s_response_format_stamp_does_not_put_back_a_turn_armed_after_its_read(
     client, sp, monkeypatch,
 ) -> None:

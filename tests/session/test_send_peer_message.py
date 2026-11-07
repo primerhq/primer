@@ -1069,14 +1069,18 @@ async def test_a_refused_peer_message_does_not_spend_the_senders_allowance():
 
 
 async def test_two_senders_that_pass_the_check_together_never_evict_a_persons_steer(monkeypatch):
-    """The check and the store are not one step across senders (the lock is per sender), so two senders can both see room for one. The queue then
+    """The check and the store are not one step across processes, so two senders can both see room for one. The queue then
     holds one more than the cap, and what the cap drops is a peer message: the one that arrived first, which is on the record. Every person's steer stays."""
+    from primer.session import enqueue as enqueue_mod
+    from primer.session.mutation_lock import KeyedLock
+
     world = await _world()
     await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
     await seed_session(world, sid="ses-c", binding=AgentSessionBinding(agent_id="other"), initiated_by=USER, turn_no=1)
     persons = await _fill_queue(world, _MAX_PENDING_PER_SESSION - 1)
     pending = world.sp.get_storage(PendingSessionMessage)
     real_find = pending.find
+    monkeypatch.setattr(enqueue_mod, "session_lifecycle_lock", lambda: KeyedLock())
 
     async def find(*args, **kwargs):
         out = await real_find(*args, **kwargs)
