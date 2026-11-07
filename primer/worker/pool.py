@@ -1852,6 +1852,20 @@ class WorkerPool:
     async def _build_agent_executor(self, session: WorkspaceSession, workspace):
         return await executor_builders.build_agent_executor(self, session, workspace)
 
+    async def _build_agent_tool_manager(
+        self,
+        session: WorkspaceSession,
+        workspace,
+        *,
+        required_tool_name: str,
+    ):
+        return await executor_builders.build_agent_tool_manager(
+            self,
+            session,
+            workspace,
+            required_tool_name=required_tool_name,
+        )
+
     async def _build_graph_executor(self, session: WorkspaceSession, workspace):
         return await executor_builders.build_graph_executor(self, session, workspace)
 
