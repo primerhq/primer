@@ -195,6 +195,9 @@ class _Manager:
     def is_interruptible_call(self, call) -> bool:
         return self.is_interruptible(call.name)
 
+    async def is_task_claim_safe(self, call) -> bool:
+        return True
+
     async def list_tools(self, *, principal=None):
         return [TOOL]
 

@@ -598,14 +598,15 @@ async def _dispatch_and_claim_batch(storage_provider, session_id: str):
     })
 
     async def _wake_session_on_tool_wait_ready(signal) -> None:
-        from primer.session.yields import durably_mark_session_resumable
+        from primer.claim.tool_wait_reconcile import verify_and_mark_batch_resumable
 
-        woken = await session_storage.get(signal.session_id)
-        if woken is None:
-            return
-        await durably_mark_session_resumable(
-            woken, event_key=signal.event_key, payload=signal.payload,
-            session_storage=session_storage, engine=engine,
+        await verify_and_mark_batch_resumable(
+            session_id=signal.session_id,
+            session_storage=session_storage,
+            task_storage=task_storage,
+            engine=engine,
+            source="hook",
+            signal=signal,
         )
 
     engine.bind_post_release_hook(_wake_session_on_tool_wait_ready)
@@ -767,14 +768,16 @@ async def test_two_sessions_with_identical_turn_zero_batches_do_not_share_rows_l
     })
 
     async def _wake(signal) -> None:
-        from primer.session.yields import durably_mark_session_resumable
+        from primer.claim.tool_wait_reconcile import verify_and_mark_batch_resumable
 
-        woken = await session_storage.get(signal.session_id)
-        if woken is not None:
-            await durably_mark_session_resumable(
-                woken, event_key=signal.event_key, payload=signal.payload,
-                session_storage=session_storage, engine=engine,
-            )
+        await verify_and_mark_batch_resumable(
+            session_id=signal.session_id,
+            session_storage=session_storage,
+            task_storage=task_storage,
+            engine=engine,
+            source="hook",
+            signal=signal,
+        )
 
     engine.bind_post_release_hook(_wake)
 

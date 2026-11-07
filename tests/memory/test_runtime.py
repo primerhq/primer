@@ -180,12 +180,13 @@ def test_graph_node_and_invoke_paths_unchanged():
 
 
 def test_the_session_builder_adds_the_tools_before_resolving_toolsets_and_passes_the_parts_on():
-    """``build_agent_executor`` is too wide to run here; what matters is the order: the memory tools must be in ``agent.tools`` BEFORE the toolset
-    providers are derived from it (the ``collections`` toolset must be resolved), and the parts and index reach the executor."""
+    """The builder augments tools before entering the shared context helper, which derives providers from those augmented tools."""
     root = Path(__file__).resolve().parents[2] / "primer"
     src = (root / "worker" / "executor_builders.py").read_text(encoding="utf-8")
     body = src[src.index("async def build_agent_executor"):src.index("async def build_graph_executor")]
-    assert body.index("with_memory_tools(agent.tools)") < body.index("_toolset_ids_from_scoped(agent.tools)")
+    helper = src[src.index("async def _prepare_agent_tool_manager_context"):src.index("def _construct_agent_tool_manager")]
+    assert body.index("with_memory_tools(agent.tools)") < body.index("_prepare_agent_tool_manager_context(")
+    assert "_toolset_ids_from_scoped(tools)" in helper
     assert "memory_parts=memory_parts" in body and "memory_index=memory_index" in body
 
 

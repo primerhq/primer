@@ -86,13 +86,15 @@ async def test_a_row_made_without_a_slot_is_given_one_when_its_turn_is_built(wor
 
 
 def test_the_executor_builder_allocates_a_missing_slot():
-    """``build_agent_executor`` is too wide to run here; what matters is that it asks for the slot to be made instead of raising."""
+    """The full builder selects slot creation and the shared context helper performs it."""
     import inspect
 
     from primer.worker import executor_builders
 
     body = inspect.getsource(executor_builders.build_agent_executor)
-    assert "ensure_agent_slot(" in body and "On-disk session slot" not in body
+    helper = inspect.getsource(executor_builders._prepare_agent_tool_manager_context)
+    assert "existing_slot_only=False" in body
+    assert "ensure_agent_slot(" in helper and "On-disk session slot" not in body
 
 
 async def test_the_first_message_of_a_slotless_row_lands_in_the_history_the_turn_sends(workspace, fake_storage_provider):
