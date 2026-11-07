@@ -74,6 +74,8 @@ def test_the_executor_bookkeeping_fields_default_to_a_fresh_unowned_row() -> Non
     task = _task()
     assert (task.attempts, task.gate_seq) == (0, 0)
     assert task.claim_token is None
+    assert task.gate_occurrence_token is None
+    assert task.gate_resolution is None
     assert task.materialized_at is None
 
 
@@ -86,16 +88,33 @@ def test_the_counters_reject_a_negative_value(field) -> None:
 def test_a_row_stored_before_the_fields_existed_still_loads() -> None:
     """Rows written by the park handlers on main carry none of the new keys."""
     stored = _task().model_dump(mode="json")
-    for key in ("attempts", "claim_token", "gate_seq", "materialized_at"):
+    for key in (
+        "attempts", "claim_token", "gate_seq", "gate_occurrence_token",
+        "gate_resolution", "materialized_at",
+    ):
         del stored[key]
     loaded = ToolCallTask.model_validate(stored)
-    assert (loaded.attempts, loaded.claim_token, loaded.gate_seq, loaded.materialized_at) == (0, None, 0, None)
+    assert (
+        loaded.attempts,
+        loaded.claim_token,
+        loaded.gate_seq,
+        loaded.gate_occurrence_token,
+        loaded.gate_resolution,
+        loaded.materialized_at,
+    ) == (0, None, 0, None, None, None)
 
 
 def test_the_new_fields_round_trip_through_the_stored_json() -> None:
     task = _task(attempts=3, claim_token="wrk-1:2026-10-05T00:00:00+00:00:ab12cd34", gate_seq=2,
-                 materialized_at=_now())
+                 gate_occurrence_token="a" * 32,
+                 gate_resolution={"schema_version": 1}, materialized_at=_now())
     assert ToolCallTask.model_validate(task.model_dump(mode="json")) == task
+
+
+@pytest.mark.parametrize("token", ["", "A" * 32, "g" * 32, "a" * 31, "a" * 33])
+def test_gate_occurrence_token_is_canonical_lowercase_hex(token) -> None:
+    with pytest.raises(ValidationError):
+        _task(gate_occurrence_token=token)
 
 
 # ---- session-qualified identity (S1b) -------------------------------------------------------------------

@@ -192,24 +192,38 @@ class ToolCallTask(Identifiable):
     gate_event_key: str | None = None
     gate_until: datetime | None = None
 
-    # Set only while state == GATED - the SAME parked-state blob shape
-    # session/graph parks already carry (yielded.resume_metadata.
-    # original_call + policy_id/approval_type/gate_reason - see
-    # primer.agent.approval_record.record_from_parked_blob, which reads
-    # exactly this shape and is reused unmodified for the task-granular
-    # ToolApprovalRecord write ruling 3's rider requires at resume).
+    # The identity of ONE occurrence of this task's gate. A provider event key
+    # and even a human gate id may repeat when the same call re-gates; this
+    # fresh token does not. It is top-level so the decision CAS can fence on it
+    # without replacing or interpreting the gate envelope. Optional keeps rows
+    # written before task-gate occurrence fencing readable.
+    gate_occurrence_token: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{32}$",
+    )
+
+    # The canonical, deterministic receipt of the decision that moved this
+    # occurrence from GATED to QUEUED. It is written in the SAME field-scoped
+    # CAS as the state transition and kept until the resumed attempt consumes
+    # the envelope. The typed codec in primer.worker.task_gate_runtime is the
+    # only reader/writer of its shape. Optional keeps legacy rows readable.
+    gate_resolution: dict[str, Any] | None = None
+
+    # Set while state == GATED and retained through the decision's QUEUED
+    # state. New rows use the versioned TaskGateState envelope owned by
+    # primer.worker.task_gate_runtime; a narrowly-defined legacy approval
+    # shape remains readable there only when original_call makes its identity
+    # unambiguous.
     # This is the one narrow exception to "scheduling state only" (Q1):
     # ruling 3 (01a0518b) - task row stays pointer-only for the FINISHED
     # transcript truth (TOOL_CALL/TOOL_RESULT records), but a gate's live
     # payload has no other durable home at task granularity (unlike a
     # session park, which already had parked_state as its established
     # home; a bare-new ToolCallTask has nothing else to point at).
-    # NOT cleared at resume (GATED -> QUEUED, see
+    # NOT cleared at decision time (GATED -> QUEUED, see
     # primer.claim.tool_call_resume.durably_mark_tool_call_task_resumable):
-    # the resume decision itself gets stashed in here too
-    # (resume_event_payload/resume_event_key, mirroring
-    # WorkspaceSession.parked_state's own resume-payload convention) so
-    # the re-claiming worker has something to read the decision from.
+    # the canonical receipt is also embedded in the envelope and mirrored by
+    # gate_resolution so the re-claiming worker can consume it while the CAS
+    # can fence and classify it without a whole-row update.
     # Cleared to None only once actually consumed - on a terminal
     # release (DONE/FAILED) or a transient-failure requeue back to
     # QUEUED, see ToolCallClaimAdapter.on_release.
@@ -263,10 +277,9 @@ class ToolCallTask(Identifiable):
     claim_token: str | None = None
 
     # Bumped by every GATED release (BUILT: ``ToolCallClaimAdapter``, one fenced read of the
-    # counter). CONTRACT for the decisions slice, not built: a REST/channel decision carries the
-    # value the resolver returned and flips the gate only while it still matches, so a decision
-    # for an earlier gate of the same call cannot resume a later one. Today the gated -> queued
-    # flip (``durably_mark_tool_call_task_resumable``) compares only ``state != done``.
+    # counter). The internal decision helper fences on this value, the occurrence token, event key,
+    # GATED state, absent claim token and absent receipt, so a decision for an earlier gate of the
+    # same call cannot resume a later one. Public decision wiring remains outside the A1 slice.
     gate_seq: int = Field(0, ge=0)
 
     # CONTRACT, not built (nothing stamps it today): the resume coordinator stamps it when it

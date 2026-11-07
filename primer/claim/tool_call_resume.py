@@ -1,115 +1,150 @@
-"""Guarded, durable ``GATED -> QUEUED`` flip for one ToolCallTask row.
+"""Occurrence-fenced task-gate decision persistence.
 
-Phase 3 stage 7a (docs/superpowers/2026-08-29-phase3-execution-topology-design.md,
-01a0518b, user-approved; ruling 3 on the gate-payload question). Mirrors
-:func:`primer.session.yields.durably_mark_session_resumable`'s own shape
-exactly, at task granularity instead of session granularity: a gated
-tool call has no bus/event-key wake path of its own to publish onto (a
-task's own ``gate_event_key`` is a record of WHICH gate it is waiting
-on, not a channel anything subscribes to) - so the intended caller is
-the respond endpoint for a task-level gate, calling this helper
-directly, the same way the session-level respond endpoints call
-:func:`~primer.session.yields.durably_wake_session`. NOT WIRED: no
-production decision endpoint calls this helper yet (only tests do).
-The claim worker can produce a GATED task, but no decision path advances
-that row back to QUEUED.
-
-Unlike the session version, there is no ``ToolCallTaskState`` value
-equivalent to ``"resumable"``: :class:`~primer.claim.adapters.tool_calls.
-ToolCallClaimAdapter`'s own ``eligibility_sql`` already admits
-``'queued'`` directly, so this flips straight to QUEUED rather than
-through an intermediate resumable state.
-
-The resume-time :class:`~primer.model.tool_approval.ToolApprovalRecord`
-write (ruling 3's cross-team-consistency rider - Wave 3's audit surfaces
-read exclusively from records) does NOT happen here: it happens when the
-task is re-claimed and its resumed gate is actually processed, mirroring
-how the session-level write happens in the RESUME coordinator
-(``primer.worker.session_resume_coordinator``), not in
-``durably_wake_session`` itself. That resume-time write does not exist
-yet: ``primer.worker.tool_wait_resume_coordinator`` only reads
-terminal tasks and has no ``ToolApprovalRecord`` write. This missing
-decision and resume wiring is one reason the feature flag remains off.
+This is the internal, default-off A1 seam. No router, channel, timeout or
+executor-resume path calls it yet. It persists one canonical decision receipt
+and re-arms the task lease; consuming the receipt is a later slice.
 """
 
 from __future__ import annotations
 
-import logging
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from primer.int.claim import ClaimKind
+from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.storage.cas import patch_if_or_current
+from primer.worker.task_gate_runtime import (
+    TaskGateDecisionClass,
+    TaskGateState,
+    TaskGateStateError,
+    classify_task_gate_decision,
+    decode_task_gate_state,
+    make_resolution_receipt,
+)
 
 if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
     from primer.int.storage import Storage
 
 
-logger = logging.getLogger(__name__)
+class TaskGateResumeOutcome(StrEnum):
+    """Typed result of one decision attempt."""
+
+    ADVANCED = "advanced"
+    IDEMPOTENT = "idempotent"
+    REFUSED_CONFLICT = "refused_conflict"
+    REFUSED_STALE = "refused_stale"
+    REFUSED_RUNNING = "refused_running"
+    REFUSED_TERMINAL = "refused_terminal"
+    REFUSED_CORRUPT = "refused_corrupt"
+    REFUSED_MISSING = "refused_missing"
+
+
+_REFUSAL = {
+    TaskGateDecisionClass.CONFLICT: TaskGateResumeOutcome.REFUSED_CONFLICT,
+    TaskGateDecisionClass.STALE: TaskGateResumeOutcome.REFUSED_STALE,
+    TaskGateDecisionClass.RUNNING: TaskGateResumeOutcome.REFUSED_RUNNING,
+    TaskGateDecisionClass.TERMINAL: TaskGateResumeOutcome.REFUSED_TERMINAL,
+    TaskGateDecisionClass.CORRUPT: TaskGateResumeOutcome.REFUSED_CORRUPT,
+}
 
 
 async def durably_mark_tool_call_task_resumable(
-    task: ToolCallTask,
+    task_id: str,
     *,
+    occurrence_token: str,
+    gate_seq: int,
     event_key: str,
     payload: dict[str, Any] | None,
     task_storage: "Storage[ToolCallTask]",
     engine: "ClaimEngine | None",
-) -> bool:
-    """Guarded, durable ``GATED -> QUEUED`` flip for one ToolCallTask row.
+) -> TaskGateResumeOutcome:
+    """Persist one exact decision and re-arm its task lease.
 
-    This is the single source of truth for the task-granular gate's
-    resume transition - the direct analogue of
-    :func:`primer.session.yields.durably_mark_session_resumable`.
-
-    Steps:
-
-    * Stamp the resume payload into ``gate_state`` under
-      ``resume_event_payload`` / ``resume_event_key`` - the SAME key
-      names the session-level function uses, so a future resume
-      coordinator can share the exact same payload-extraction code
-      the session-level one already has.
-    * ``task_storage.update_unless`` the flipped row, guarded against
-      ``state == DONE`` - not a TOCTOU race with cancellation (cancel
-      fan-out is not wired yet - a GATED task holds no lease, so
-      nothing else can claim and terminate it out from under this
-      call today), but a genuine double-fire race: the same decision
-      arriving twice (an operator double-click, a re-delivered bus
-      notification) must not resurrect an already-completed task by
-      blindly overwriting its terminal row. Revisit this guard once
-      cancel fan-out lands - a cancelled-while-gated task would also
-      need covering, and ``update_unless`` only takes one forbidden
-      value.
-    * Re-arm the claim lease via ``engine.mark_resumable`` (the park
-      dropped it, same as the session case) so the claim loop picks
-      the task up WITHOUT relying on any bus - a gated task has no
-      bus channel to listen on in the first place.
-
-    Returns True when the row was advanced, False when the guard
-    rejected it (already resumed, or already terminal).
+    The write is one field-scoped compare-and-set fenced on GATED, the exact
+    occurrence token, gate sequence and event key, no claim owner, and no
+    existing receipt. A same-decision retry on the resulting QUEUED row is
+    idempotent and re-runs ``mark_resumable`` so a crash or failure after the
+    durable write but before lease re-arm is repairable.
     """
-    if task.state != ToolCallTaskState.GATED:
-        # Snapshot check: mirrors the session-level function's own
-        # single-event-park guard ("a single-event park only advances
-        # from parked") - a second flip for an already-resumed task is
-        # a no-op, not an error.
-        return False
-
-    state = dict(task.gate_state or {})
-    state["resume_event_payload"] = dict(payload or {})
-    state["resume_event_key"] = event_key
-    updated = task.model_copy(update={
-        "state": ToolCallTaskState.QUEUED,
-        "gate_state": state,
-    })
-    landed = await task_storage.update_unless(
-        updated, field="state", forbidden=ToolCallTaskState.DONE.value,
+    receipt = make_resolution_receipt(
+        occurrence_token=occurrence_token,
+        gate_seq=gate_seq,
+        event_key=event_key,
+        payload=payload,
     )
-    if landed is None:
-        return False
+    task = await task_storage.get(task_id)
+    if task is None:
+        return TaskGateResumeOutcome.REFUSED_MISSING
+
+    classification = classify_task_gate_decision(task, receipt)
+    if classification is TaskGateDecisionClass.IDENTICAL:
+        await _rearm_if_wired(task, receipt, engine)
+        return TaskGateResumeOutcome.IDEMPOTENT
+    if classification is not TaskGateDecisionClass.PENDING:
+        return _REFUSAL[classification]
+
+    try:
+        gate = decode_task_gate_state(task.gate_state, task=task)
+    except TaskGateStateError:
+        return TaskGateResumeOutcome.REFUSED_CORRUPT
+    if not isinstance(gate, TaskGateState):
+        return TaskGateResumeOutcome.REFUSED_CORRUPT
+    resolved_gate = gate.with_resolution(receipt)
+    patch = {
+        "state": ToolCallTaskState.QUEUED.value,
+        "gate_state": resolved_gate.to_jsonable(),
+        "gate_resolution": receipt.to_jsonable(),
+    }
+    where = {
+        "state": [ToolCallTaskState.GATED.value],
+        "gate_occurrence_token": [occurrence_token],
+        "gate_seq": [gate_seq],
+        "gate_event_key": [event_key],
+        "claim_token": [None],
+        "gate_resolution": [None],
+    }
+    try:
+        landed, current = await patch_if_or_current(
+            task_storage,
+            task_id,
+            patch,
+            where=where,
+        )
+    except NotFoundError:
+        return TaskGateResumeOutcome.REFUSED_MISSING
+
+    if landed is not None:
+        # Decode and classify the write itself before arming a lease. A storage
+        # implementation that returned a non-canonical row must fail closed.
+        if classify_task_gate_decision(landed, receipt) is not TaskGateDecisionClass.IDENTICAL:
+            return TaskGateResumeOutcome.REFUSED_CORRUPT
+        await _rearm_if_wired(landed, receipt, engine)
+        return TaskGateResumeOutcome.ADVANCED
+
+    if current is None:
+        return TaskGateResumeOutcome.REFUSED_MISSING
+    classification = classify_task_gate_decision(current, receipt)
+    if classification is TaskGateDecisionClass.IDENTICAL:
+        await _rearm_if_wired(current, receipt, engine)
+        return TaskGateResumeOutcome.IDEMPOTENT
+    return _REFUSAL.get(classification, TaskGateResumeOutcome.REFUSED_CORRUPT)
+
+
+async def _rearm_if_wired(
+    task: ToolCallTask,
+    receipt,
+    engine: "ClaimEngine | None",
+) -> None:
+    """Re-arm only the exact decided QUEUED occurrence."""
+    if classify_task_gate_decision(task, receipt) is not TaskGateDecisionClass.IDENTICAL:
+        return
     if engine is not None:
         await engine.mark_resumable(ClaimKind.TOOL_CALL, task.id)
-    return True
 
 
-__all__ = ["durably_mark_tool_call_task_resumable"]
+__all__ = [
+    "TaskGateResumeOutcome",
+    "durably_mark_tool_call_task_resumable",
+]
