@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic import BaseModel
 
 from primer.model.access import Access
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
@@ -76,11 +77,14 @@ class FakeToolset(ToolsetProvider):
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.role_checks: list[str] = []
+        self.contexts: list[object | None] = []
 
     def required_role(self, tool_name: str) -> str:
         # The ABC default is "admin" (fail-closed for MCP proxies); these are
         # ordinary user tools, so the unattributed/user-rank test principal clears
         # the floor.
+        self.role_checks.append(tool_name)
         return "user"
 
     async def list_tools(self, *, principal: str | None = None):
@@ -101,18 +105,59 @@ class FakeToolset(ToolsetProvider):
         ctx: object | None = None,
     ) -> ToolCallResult:
         self.calls.append(tool_name)
+        self.contexts.append(ctx)
         if tool_name == "boom":
             raise RuntimeError("the boom tool failed")
         return ToolCallResult(output=f"ok-from-{tool_name}", is_error=False)
 
 
+class FakeMemoryToolset(FakeToolset):
+    async def list_tools(self, *, principal: str | None = None):
+        del principal
+        for name in ("search", "read_document"):
+            yield Tool(
+                id=name,
+                description=f"the {name} memory tool",
+                toolset_id="collections",
+                args_schema={"type": "object", "properties": {}},
+            )
+
+
+class _WorkspaceProbeArgs(BaseModel):
+    n: int
+
+
+class FakeWorkspaceTool:
+    id = "probe"
+    description = "workspace probe"
+    examples: list = []
+    requires_workspace_context = True
+    read_only = False
+    interruptible = True
+    preview_args = None
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def parameters(self):
+        return _WorkspaceProbeArgs
+
+    async def execute(self, args, ctx):
+        del ctx
+        from primer.workspace.tool import ToolResult
+
+        self.calls.append(args.n)
+        return ToolResult(output=f"workspace-ok-{args.n}")
+
+
 class FakeAgentSession:
     """The on-disk AgentSession slot the builder looks up by session id."""
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, *, workspace_tools: list | None = None) -> None:
         self.workspace_id = "ws-1"
         self.session_id = session_id
-        self.workspace_tools: list = []
+        self.agent_id = "agent-1"
+        self.workspace_tools = list(workspace_tools or [])
         self.system_prompt_fragment = ""
 
 
@@ -122,11 +167,22 @@ class FakeWorkspace:
     id = "ws-1"
     state_path = ".state"
 
-    def __init__(self, records_by_session: dict[str, list[SessionMessageRecord]]) -> None:
+    def __init__(
+        self,
+        records_by_session: dict[str, list[SessionMessageRecord]],
+        *,
+        workspace_tools: list | None = None,
+    ) -> None:
         self._records = records_by_session
+        self._workspace_tools = list(workspace_tools or [])
+        self.session_gets: list[str] = []
 
     async def get_session(self, session_id: str) -> FakeAgentSession:
-        return FakeAgentSession(session_id)
+        self.session_gets.append(session_id)
+        return FakeAgentSession(
+            session_id,
+            workspace_tools=self._workspace_tools,
+        )
 
     def _log_sid(self, path: str) -> str | None:
         parts = path.split("/")
@@ -188,10 +244,15 @@ class FakeWorkspaceRegistry:
 
 class FakeProviderRegistry:
     def __init__(self, toolset: FakeToolset) -> None:
-        self._toolset = toolset
+        self._toolsets = {TOOLSET_ID: toolset}
+        self.requests: list[str] = []
+
+    def add_toolset(self, toolset_id: str, toolset: ToolsetProvider) -> None:
+        self._toolsets[toolset_id] = toolset
 
     async def get_toolset(self, toolset_id: str):
-        return self._toolset if toolset_id == TOOLSET_ID else None
+        self.requests.append(toolset_id)
+        return self._toolsets.get(toolset_id)
 
 
 class FakeStorageProvider:
@@ -204,21 +265,28 @@ class FakeStorageProvider:
         return self._by_cls.setdefault(model_cls, _InMemoryStorage(model_cls))
 
 
-def _tool_call_record(tool: str = "do_thing") -> SessionMessageRecord:
+def _tool_call_record(
+    tool: str = "do_thing",
+    *,
+    scoped_tool_name: str | None = None,
+) -> SessionMessageRecord:
     return SessionMessageRecord(
         seq=1,
         kind=SessionMessageKind.TOOL_CALL,
         created_at=_now(),
         payload={
             "id": SCOPED,
-            "name": f"{TOOLSET_ID}__{tool}",
+            "name": scoped_tool_name or f"{TOOLSET_ID}__{tool}",
             "arguments": {"n": 7},
         },
     )
 
 
 def _parked_session(
-    workspace_session_cls_rows: dict, *, outstanding_task_ids: list[str],
+    workspace_session_cls_rows: dict,
+    *,
+    outstanding_task_ids: list[str],
+    agent_tools: list[str] | None = None,
 ) -> WorkspaceSession:
     wake_key = tool_wait_event_key(SESSION_ID, scoped_task_id=outstanding_task_ids[0])
     parked_state = ToolWaitParkedState(
@@ -234,10 +302,14 @@ def _parked_session(
         workspace_id="ws-1",
         binding=AgentSessionBinding(
             agent_id="agent-1",
-            agent_snapshot=Agent(access=Access(public=True), 
+            agent_snapshot=Agent(id="agent-1", access=Access(public=True),
                 model=AgentModel(profile_id="profile-1"),
                 description="the probe agent",
-                tools=[f"{TOOLSET_ID}__do_thing", f"{TOOLSET_ID}__boom"],
+                tools=(
+                    list(agent_tools)
+                    if agent_tools is not None
+                    else [f"{TOOLSET_ID}__do_thing", f"{TOOLSET_ID}__boom"]
+                ),
             ),
         ),
         binding_epoch=1,
@@ -258,6 +330,9 @@ async def _build_pool(
     outstanding_task_ids: list[str],
     config: WorkerConfig | None = None,
     tool: str = "do_thing",
+    scoped_tool_name: str | None = None,
+    agent_tools: list[str] | None = None,
+    workspace_tools: list | None = None,
 ):
     """A flag-on pool whose reserved tool slice could claim ``TASK_ID``.
 
@@ -271,12 +346,20 @@ async def _build_pool(
     """
     provider = FakeStorageProvider()
     toolset = FakeToolset()
-    workspace = FakeWorkspace({SESSION_ID: [_tool_call_record(tool)]})
+    effective_tool_name = scoped_tool_name or f"{TOOLSET_ID}__{tool}"
+    workspace = FakeWorkspace(
+        {SESSION_ID: [_tool_call_record(tool, scoped_tool_name=effective_tool_name)]},
+        workspace_tools=workspace_tools,
+    )
     registry = FakeWorkspaceRegistry(workspace)
     provider_registry = FakeProviderRegistry(toolset)
 
     session_rows: dict = {}
-    session = _parked_session(session_rows, outstanding_task_ids=outstanding_task_ids)
+    session = _parked_session(
+        session_rows,
+        outstanding_task_ids=outstanding_task_ids,
+        agent_tools=agent_tools,
+    )
     session_storage = provider.get_storage(WorkspaceSession)
     await session_storage.create(session)
 
@@ -287,7 +370,7 @@ async def _build_pool(
             id=task_id,
             session_id=SESSION_ID,
             turn_no=0,
-            tool_name=f"{TOOLSET_ID}__{tool}",
+            tool_name=effective_tool_name,
             state=ToolCallTaskState.QUEUED,
             record_seq=1,
             call_id=CALL_ID,
@@ -673,7 +756,7 @@ def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=Non
             resume_metadata=metadata or {
                 "original_call": {
                     "id": CALL_ID,
-                    "name": f"{TOOLSET_ID}__do_thing",
+                    "name": task.tool_name,
                     "arguments": {"n": 7},
                 },
             },
@@ -722,10 +805,22 @@ async def test_resolved_approval_uses_shared_resume_semantics(
     )
     gate = _resolve_task_gate(provider, payload=payload)
     manager = _ResolvedGateToolManager()
+    setup_calls = []
+    original_get_workspace = pool._workspace_registry.get_workspace
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _workspace(workspace_id):
+        setup_calls.append("workspace")
+        return await original_get_workspace(workspace_id)
 
+    async def _manager(_session, _workspace, *, required_tool_name):
+        setup_calls.append(("manager", required_tool_name))
+        return manager
+
+    async def _executor(_session, _workspace):
+        raise AssertionError("a resolved approval must not build a full executor")
+
+    pool._workspace_registry.get_workspace = _workspace  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     pool._build_agent_executor = _executor  # type: ignore[method-assign]
     try:
         await pool.start()
@@ -737,6 +832,13 @@ async def test_resolved_approval_uses_shared_resume_semantics(
         assert len(manager.calls) == expected_calls
         if expected_calls:
             assert manager.calls[0][1] == {"bypass_approval": True}
+            assert setup_calls == [
+                "workspace", ("manager", f"{TOOLSET_ID}__do_thing"),
+            ]
+        else:
+            assert setup_calls == [], (
+                "a rejected, timed-out or cancelled approval needs no ordinary-call setup"
+            )
         assert expected_output in task_storage._data[TASK_ID].result_state["output"]  # noqa: SLF001
         from primer.model.tool_approval import ToolApprovalRecord
 
@@ -750,8 +852,259 @@ async def test_resolved_approval_uses_shared_resume_semantics(
 
 
 @pytest.mark.asyncio
+async def test_resolved_approved_builds_only_narrow_authorized_manager(
+    monkeypatch,
+):
+    from primer.memory import runtime as memory_runtime
+    from primer.model.principal import PrincipalRef
+    from primer.worker import executor_builders
+    from primer.workspace import instructions, session_factory
+
+    pool, _engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+
+    async def _unused_async(*_args, **_kwargs):
+        raise AssertionError("approved resume reached a full-executor dependency")
+
+    def _unused_graph(*_args, **_kwargs):
+        raise AssertionError("approved resume built graph services")
+
+    pool._build_agent_executor = _unused_async  # type: ignore[method-assign]
+    pool._build_graph_invocation_services = _unused_graph  # type: ignore[method-assign]
+    monkeypatch.setattr(executor_builders, "resolve_llm_and_model", _unused_async)
+    monkeypatch.setattr(memory_runtime, "memory_enabled", _unused_async)
+    monkeypatch.setattr(session_factory, "ensure_agent_slot", _unused_async)
+    monkeypatch.setattr(instructions, "load_workspace_instructions", _unused_async)
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the approved gate did not complete through the narrow manager",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        workspace = pool._workspace_registry._workspace  # noqa: SLF001
+        registry = pool._provider_registry
+        assert task.result_state["output"] == "ok-from-do_thing"
+        assert registry.requests == [TOOLSET_ID]
+        assert workspace.session_gets == [SESSION_ID]
+        assert toolset.role_checks and set(toolset.role_checks) == {"do_thing"}
+        assert toolset.calls == ["do_thing"]
+        (ctx,) = toolset.contexts
+        assert (ctx.session_id, ctx.workspace_id) == (SESSION_ID, "ws-1")
+        assert ctx.initiated_by == PrincipalRef.unattributed()
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_approval_refuses_ordinary_tool_absent_from_agent_surface(
+    monkeypatch,
+):
+    from primer.worker import engine_handlers
+
+    pool, _engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+        agent_tools=[f"{TOOLSET_ID}__boom"],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+
+    async def _must_not_retry(*_args, **_kwargs):
+        raise AssertionError("an unauthorized resolved tool reached transient retry")
+
+    monkeypatch.setattr(
+        engine_handlers, "_transient_tool_call_failure", _must_not_retry,
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the unauthorized resolved tool did not terminalize",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        body = json.loads(task.result_state["output"])
+        assert pool._provider_registry.requests == []
+        assert toolset.calls == []
+        assert body["is_error"] is True
+        assert body["tool_name"] == "_approval"
+        assert "not in the agent's registered tool list" in body["reason"]
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_approval_preserves_enabled_memory_tool_grant():
+    from primer.model.memory import AgentMemory
+
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+        scoped_tool_name="collections__search",
+        agent_tools=[],
+    )
+    memory_toolset = FakeMemoryToolset()
+    pool._provider_registry.add_toolset("collections", memory_toolset)
+    await provider.get_storage(AgentMemory).create(
+        AgentMemory(id="agent-1", enabled=True),
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the approved memory-tool gate did not complete",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert task.result_state["output"] == "ok-from-search"
+        assert pool._provider_registry.requests == ["collections"]
+        assert memory_toolset.calls == ["search"]
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_approval_preserves_implicit_workspace_tool_grant():
+    workspace_tool = FakeWorkspaceTool()
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+        scoped_tool_name="workspace__probe",
+        agent_tools=[],
+        workspace_tools=[workspace_tool],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the approved workspace-tool gate did not complete",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert task.result_state["output"] == "workspace-ok-7"
+        assert pool._provider_registry.requests == []
+        assert workspace_tool.calls == [7]
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.parametrize("failure", ["external_defs", "manager"])
+@pytest.mark.asyncio
+async def test_full_executor_preserves_manager_construction_order(
+    monkeypatch,
+    failure,
+):
+    from types import SimpleNamespace
+
+    from primer.agent.tool_manager import ToolExecutionManager
+    from primer.memory import runtime as memory_runtime
+    from primer.model.principal import PrincipalRef
+    from primer.worker import executor_builders
+    from primer.workspace import session_factory
+
+    pool, _engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    session = await provider.get_storage(WorkspaceSession).get(SESSION_ID)
+    workspace = pool._workspace_registry._workspace  # noqa: SLF001
+    events: list[str] = []
+
+    async def _memory_enabled(_storage, _agent):
+        events.append("memory_enabled")
+        return True
+
+    async def _get_toolset(toolset_id):
+        events.append(f"provider:{toolset_id}")
+        return toolset
+
+    async def _client_toolset(_pool, _session):
+        events.append("client_toolset")
+        return {}
+
+    async def _ensure_slot(_workspace, _session, _agent):
+        events.append("slot")
+        return FakeAgentSession(SESSION_ID)
+
+    async def _principal(_storage, _session):
+        events.append("principal")
+        return PrincipalRef.unattributed()
+
+    async def _workspace_access(_storage, _session, _principal):
+        events.append("workspace_access")
+
+    async def _llm(*_args, **_kwargs):
+        events.append("llm")
+        return object(), SimpleNamespace(context_length=4096)
+
+    def _graph(**_kwargs):
+        events.append("graph")
+        return object()
+
+    async def _memory_prompt(*_args, **_kwargs):
+        events.append("memory_prompt")
+        return [], ""
+
+    async def _memory_lookup(**_kwargs):
+        events.append("memory_lookup")
+        return None
+
+    def _external_defs(_session, _agent):
+        events.append("external_defs")
+        if failure == "external_defs":
+            raise RuntimeError("external defs failed")
+        return None
+
+    def _manager(_cls, **_kwargs):
+        events.append("manager")
+        raise RuntimeError("manager failed")
+
+    monkeypatch.setattr(memory_runtime, "memory_enabled", _memory_enabled)
+    monkeypatch.setattr(memory_runtime, "memory_prompt_parts", _memory_prompt)
+    monkeypatch.setattr(memory_runtime, "memory_lookup_for", _memory_lookup)
+    monkeypatch.setattr(pool._provider_registry, "get_toolset", _get_toolset)
+    monkeypatch.setattr(executor_builders, "client_toolset_for", _client_toolset)
+    monkeypatch.setattr(session_factory, "ensure_agent_slot", _ensure_slot)
+    monkeypatch.setattr(executor_builders, "resolve_run_principal", _principal)
+    monkeypatch.setattr(
+        executor_builders, "refuse_run_without_workspace_access", _workspace_access,
+    )
+    monkeypatch.setattr(executor_builders, "resolve_llm_and_model", _llm)
+    pool._build_graph_invocation_services = _graph  # type: ignore[method-assign]
+    monkeypatch.setattr(executor_builders, "_external_defs_for", _external_defs)
+    monkeypatch.setattr(ToolExecutionManager, "for_workspace", classmethod(_manager))
+
+    try:
+        with pytest.raises(RuntimeError, match=f"{failure.replace('_', ' ')} failed"):
+            await pool._build_agent_executor(session, workspace)
+        expected = [
+            "memory_enabled",
+            f"provider:{TOOLSET_ID}",
+            "provider:collections",
+            "client_toolset",
+            "slot",
+            "principal",
+            "workspace_access",
+            "llm",
+            "graph",
+            "memory_prompt",
+            "memory_lookup",
+            "external_defs",
+        ]
+        if failure == "manager":
+            expected.append("manager")
+        assert events == expected
+    finally:
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
 async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
-    from primer.model.yield_ import YieldTimeout
     from primer.toolset._system_tools import ask_user_resume
     from primer.worker import yield_resume_registry
 
@@ -769,15 +1122,24 @@ async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
     )
     gate = _resolve_task_gate(
         provider,
-        payload={"__yield_timeout__": True},
+        payload={"response": "yes"},
         tool_name="ask_user",
         metadata={"question": "continue?"},
     )
-    manager = _ResolvedGateToolManager()
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _workspace(_workspace_id):
+        raise AssertionError("a resolved ask_user gate must not resolve a workspace")
 
+    async def _executor(_session, _workspace):
+        raise AssertionError("a resolved ask_user gate must not build an executor")
+
+    async def _manager(_session, _workspace, *, required_tool_name):
+        raise AssertionError(
+            f"a resolved ask_user gate must not build a manager for {required_tool_name}"
+        )
+
+    pool._workspace_registry.get_workspace = _workspace  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     pool._build_agent_executor = _executor  # type: ignore[method-assign]
     try:
         await pool.start()
@@ -791,12 +1153,62 @@ async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
             "question": "continue?",
             "parked_at_iso": gate.parked_at.isoformat(),
         }
-        assert isinstance(payload, YieldTimeout)
+        assert payload == {"response": "yes"}
         assert (context.tool_name, context.tool_call_id, context.session_id) == (
             "ask_user", CALL_ID, SESSION_ID,
         )
         assert "parked_at_iso" not in gate.yielded.resume_metadata
-        assert manager.calls == []
+        assert task_storage._data[TASK_ID].result_state["output"] == '{"response": "yes"}'  # noqa: SLF001
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_approved_manager_failure_is_redacted_terminal_not_retry(
+    monkeypatch,
+):
+    from primer.worker import engine_handlers
+
+    pool, engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    secret = "Authorization: Bearer sk-resolved-setup-secret"
+    manager_build_calls = 0
+
+    async def _manager(_session, _workspace, *, required_tool_name):
+        nonlocal manager_build_calls
+        manager_build_calls += 1
+        assert required_tool_name == f"{TOOLSET_ID}__do_thing"
+        raise RuntimeError(secret)
+
+    async def _executor(_session, _workspace):
+        raise AssertionError("manager failure must not build a full executor")
+
+    async def _must_not_retry(*_args, **_kwargs):
+        raise AssertionError("a resolved dependency failure reached transient retry")
+
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        engine_handlers, "_transient_tool_call_failure", _must_not_retry,
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the resolved setup failure did not terminate",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        body = json.loads(task.result_state["output"])
+        assert manager_build_calls == 1
+        assert toolset.calls == [], "the ordinary tool path must not run"
+        assert body["is_error"] is True and body["tool_name"] == "_approval"
+        assert "sk-resolved-setup-secret" not in body["reason"]
+        assert task.attempts == 0
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
@@ -810,10 +1222,11 @@ async def test_resolved_approval_reyield_gets_a_new_occurrence():
     old = _resolve_task_gate(provider, payload={"decision": "approved"})
     manager = _ResolvedGateToolManager(re_yield=True)
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _manager(_session, _workspace, *, required_tool_name):
+        assert required_tool_name == f"{TOOLSET_ID}__do_thing"
+        return manager
 
-    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
@@ -842,10 +1255,12 @@ async def test_resolved_gate_binding_mismatch_executes_nothing():
     provider.get_storage(WorkspaceSession)._data[SESSION_ID] = sessions[SESSION_ID]  # noqa: SLF001
     manager = _ResolvedGateToolManager()
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _manager(_session, _workspace, *, required_tool_name):
+        raise AssertionError(
+            f"the stale-binding gate reached manager setup for {required_tool_name}"
+        )
 
-    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
@@ -871,10 +1286,12 @@ async def test_resolved_gate_with_stale_session_park_executes_nothing():
     provider.get_storage(WorkspaceSession)._data[SESSION_ID] = sessions[SESSION_ID]  # noqa: SLF001
     manager = _ResolvedGateToolManager()
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _manager(_session, _workspace, *, required_tool_name):
+        raise AssertionError(
+            f"the stale-session gate reached manager setup for {required_tool_name}"
+        )
 
-    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
@@ -904,10 +1321,11 @@ async def test_approval_audit_failure_does_not_block_resumed_execution():
     audit_storage.create = _fail_audit
     manager = _ResolvedGateToolManager()
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _manager(_session, _workspace, *, required_tool_name):
+        assert required_tool_name == f"{TOOLSET_ID}__do_thing"
+        return manager
 
-    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
@@ -930,10 +1348,11 @@ async def test_resolved_resume_exception_is_redacted_and_terminal():
     secret = "Authorization: Bearer sk-task-gate-secret"
     manager = _ResolvedGateToolManager(error=secret)
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _manager(_session, _workspace, *, required_tool_name):
+        assert required_tool_name == f"{TOOLSET_ID}__do_thing"
+        return manager
 
-    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
@@ -956,25 +1375,21 @@ async def test_resolved_resume_exception_is_redacted_and_terminal():
 @pytest.mark.asyncio
 async def test_post_claim_gate_mutation_uses_json_typed_equality(monkeypatch):
     from primer.model.tool_approval import ToolApprovalRecord
-    from primer.worker import yield_resume_registry
 
-    hook_calls = []
-
-    def _hook(metadata, payload, context):
-        hook_calls.append((metadata, payload, context))
-        return ToolCallResult(output="must not run", is_error=False)
-
-    monkeypatch.setitem(
-        yield_resume_registry._registry, "test_task_gate", _hook,  # noqa: SLF001
-    )
     pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
         outstanding_task_ids=[TASK_ID],
     )
     _resolve_task_gate(
         provider,
-        payload={"answer": "yes"},
-        tool_name="test_task_gate",
-        metadata={"flag": True},
+        payload={"decision": "approved"},
+        metadata={
+            "flag": True,
+            "original_call": {
+                "id": CALL_ID,
+                "name": f"{TOOLSET_ID}__do_thing",
+                "arguments": {"n": 7},
+            },
+        },
     )
     task_storage = provider.get_storage(ToolCallTask)
     original_get = task_storage.get
@@ -996,20 +1411,78 @@ async def test_post_claim_gate_mutation_uses_json_typed_equality(monkeypatch):
         return row
 
     monkeypatch.setattr(task_storage, "get", _mutate_on_post_claim_read)
-    manager = _ResolvedGateToolManager()
+    setup_calls = []
 
-    async def _executor(session, workspace):
-        return _executor_with(manager)
+    async def _manager(session, workspace, *, required_tool_name):
+        setup_calls.append((session, workspace, required_tool_name))
+        raise AssertionError("the changed gate reached manager setup")
 
-    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    pool._build_agent_tool_manager = _manager  # type: ignore[method-assign]
     try:
         await pool.start()
         await _until(
             lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
             "the post-claim envelope mutation did not fail closed",
         )
-        assert hook_calls == [] and manager.calls == []
+        assert setup_calls == []
         assert provider.get_storage(ToolApprovalRecord)._data == {}  # noqa: SLF001
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_resolved_hook_keeps_receipt_for_takeover(monkeypatch):
+    from primer.worker import yield_resume_registry
+    from primer.worker.engine_handlers import run_engine_tool_call
+
+    calls = 0
+
+    async def _hook(metadata, payload, context):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise asyncio.CancelledError
+        return ToolCallResult(output="resumed-after-takeover", is_error=False)
+
+    monkeypatch.setitem(
+        yield_resume_registry._registry, "test_task_gate", _hook,  # noqa: SLF001
+    )
+    pool, engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    gate = _resolve_task_gate(
+        provider,
+        payload={"answer": "yes"},
+        tool_name="test_task_gate",
+        metadata={"phase": 1},
+    )
+    try:
+        first = (await engine.claim_due(
+            "worker-one", max_count=1, kinds=[ClaimKind.TOOL_CALL],
+        ))[0]
+        with pytest.raises(asyncio.CancelledError):
+            await run_engine_tool_call(pool, first)
+
+        task_storage = provider.get_storage(ToolCallTask)
+        retained = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert retained.state is ToolCallTaskState.RUNNING
+        assert retained.gate_occurrence_token == gate.occurrence_token
+        assert retained.gate_resolution == gate.resolution.to_jsonable()
+        assert retained.gate_state == gate.to_jsonable()
+
+        lease_row = engine._leases[(ClaimKind.TOOL_CALL, TASK_ID)]  # noqa: SLF001
+        lease_row.expires_at = _now() - timedelta(seconds=1)
+        second = (await engine.claim_due(
+            "worker-two", max_count=1, kinds=[ClaimKind.TOOL_CALL],
+        ))[0]
+        await run_engine_tool_call(pool, second)
+
+        finished = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert calls == 2
+        assert finished.state is ToolCallTaskState.DONE
+        assert finished.result_state["output"] == "resumed-after-takeover"
+        assert finished.gate_state is None and finished.gate_resolution is None
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
