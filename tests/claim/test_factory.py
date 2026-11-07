@@ -91,7 +91,7 @@ def test_factory_returns_postgres_engine_for_non_in_memory_bus():
     assert isinstance(engine, PostgresClaimEngine)
 
 
-def test_factory_in_memory_engine_has_all_four_adapters():
+def test_factory_in_memory_engine_has_all_five_adapters():
     engine = ClaimEngineFactory.create(
         storage_provider=_FakeStorageProvider(),
         event_bus=InMemoryEventBus(),
@@ -107,7 +107,7 @@ def test_factory_in_memory_engine_has_all_four_adapters():
     assert ClaimKind.MEMORY in engine._adapters
 
 
-def test_factory_postgres_engine_has_all_four_adapters():
+def test_factory_postgres_engine_has_all_five_adapters():
     engine = ClaimEngineFactory.create(
         storage_provider=_FakeStorageProvider(),
         event_bus=_FakePostgresEventBus(),
