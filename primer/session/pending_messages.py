@@ -22,12 +22,17 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
 
 from pydantic import ValidationError
 
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.principal import PrincipalRef
+from primer.model.principal import PrincipalRef, person_ref
+from primer.model.responder_source import (
+    canonical_responder_payload,
+    validate_canonical_responder_identity,
+)
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
     BY_ATTRIBUTION_KEY,
@@ -35,6 +40,7 @@ from primer.model.workspace_session import (
     MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
     PeerAttribution,
+    PendingResponderProof,
     PendingSessionMessage,
     SessionMessageKind,
     SessionMessageRecord,
@@ -42,6 +48,10 @@ from primer.model.workspace_session import (
 )
 from primer.session.enqueue import CanvasClickDoesNotReopen, OnlyAPersonReopens, SessionWakeReceipt, wake_session
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.responder_wake_intent import (
+    PreparedResponderIntent,
+    prepare_responder_intent,
+)
 from primer.session.seq_reservation import reserve_next_seq
 
 logger = logging.getLogger(__name__)
@@ -159,6 +169,7 @@ async def store_pending_steer(
     attribution: dict | None = None,
     by: PrincipalRef | None = None,
     client_msg_id: str | None = None,
+    trusted_responder_starter: PrincipalRef | None = None,
 ) -> PendingSessionMessage:
     """Queue a follow-up steer without touching the message log.
 
@@ -188,6 +199,26 @@ async def store_pending_steer(
             f"Session {session.id!r} already has {_MAX_PENDING_PER_SESSION} messages waiting; a message from another session does not take their place"
         )
     now = datetime.now(UTC)
+    proof = None
+    if trusted_responder_starter is not None:
+        authenticated_person = person_ref(by)
+        if (
+            authenticated_person is None
+            or authenticated_person != trusted_responder_starter
+            or not _written_by_a_person(attribution)
+        ):
+            raise ValueError(
+                "queued responder proof starter must equal the authenticated person sender"
+            )
+        if session.responder_epoch is not None:
+            proof = PendingResponderProof(
+                starter=authenticated_person,
+                domain="user_input",
+                accepted_at=now,
+                payload_sha256=sha256(
+                    canonical_responder_payload({"text": text})
+                ).hexdigest(),
+            )
     row = PendingSessionMessage(
         id=f"{session.id}:pending:{now.isoformat()}:{uuid.uuid4().hex[:8]}",
         session_id=session.id,
@@ -196,6 +227,7 @@ async def store_pending_steer(
         client_msg_id=client_msg_id,
         enqueued_at=now,
         created_at=now,
+        responder_proof=proof,
     )
     await storage.create(row)
     await _enforce_pending_cap(
@@ -402,6 +434,25 @@ async def _realize_oldest(
         # would block every later follow-up behind an empty wake.
         await _delete_queued(storage, row.id)
         return False
+    prepared_intent = None
+    if row.responder_proof is not None:
+        session = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+        if session is None:
+            return False
+        try:
+            proof_state, prepared_intent = _prepared_intent_for_pending(session, row, text)
+        except ValueError:
+            logger.error(
+                "realize: queued responder proof is corrupt on pending row %s; leaving it quarantined",
+                row.id,
+                exc_info=True,
+            )
+            return False
+        if proof_state == "landed":
+            await _delete_queued(storage, row.id)
+            return True
+        if proof_state == "armed":
+            return False
     peer = None
     try:
         peer = PeerAttribution.from_attribution(row.attribution)
@@ -434,6 +485,7 @@ async def _realize_oldest(
             deps=wake_deps,
             queued_message_id=row.id,
             receipt=receipt,
+            prepared_intent=prepared_intent,
         )
     except (OnlyAPersonReopens, CanvasClickDoesNotReopen) as refusal:
         logger.info("realize: dropped a queued message on %s (%s)", session_id, type(refusal).__name__)
@@ -456,6 +508,99 @@ async def _realize_oldest(
     # Only now that the wake landed (its USER_INPUT is written and the turn armed) does the message leave the queue (audit G7-14).
     await _delete_queued(storage, row.id)
     return True
+
+
+def _pending_occurrence(row_id: str) -> str:
+    return sha256(f"pending-responder-occurrence-v1\0{row_id}".encode()).hexdigest()[:32]
+
+
+def _pending_epoch(row_id: str) -> str:
+    return sha256(f"pending-responder-epoch-v1\0{row_id}".encode()).hexdigest()[:32]
+
+
+def _prepared_intent_for_pending(
+    session: WorkspaceSession,
+    row: PendingSessionMessage,
+    text: str,
+) -> tuple[str, PreparedResponderIntent | None]:
+    """Validate server proof and classify it as new, armed, or landed."""
+    proof = row.responder_proof
+    if proof is None:
+        raise ValueError("pending row has no responder proof")
+    digest = sha256(canonical_responder_payload({"text": text})).hexdigest()
+    if (
+        proof.domain != "user_input"
+        or proof.accepted_at != row.enqueued_at
+        or proof.payload_sha256 != digest
+        or row.session_id != session.id
+    ):
+        raise ValueError("pending responder proof does not match its queued occurrence")
+    occurrence = _pending_occurrence(row.id)
+    target_epoch = _pending_epoch(row.id)
+    pending = session.pending_responder_intent
+    if pending is not None:
+        decoded = validate_canonical_responder_identity(pending.source_identity)
+        if not isinstance(decoded, dict) or not _identity_matches_pending(
+            decoded, session_id=session.id, occurrence=occurrence, digest=digest,
+        ) or (
+            pending.occurrence_id != occurrence
+            or pending.target_epoch != target_epoch
+            or pending.starter != proof.starter
+            or pending.accepted_at != proof.accepted_at
+        ):
+            raise ValueError("live responder intent does not match queued proof")
+        return "armed", None
+    receipt = session.last_responder_intent_receipt
+    if receipt is not None and receipt.occurrence_id == occurrence:
+        decoded = validate_canonical_responder_identity(receipt.source_identity)
+        if not isinstance(decoded, dict) or not _identity_matches_pending(
+            decoded, session_id=session.id, occurrence=occurrence, digest=digest,
+        ) or (
+            receipt.target_epoch != target_epoch
+            or receipt.starter != proof.starter
+            or receipt.accepted_at != proof.accepted_at
+            or receipt.payload_sha256 != digest
+        ):
+            raise ValueError("completed responder receipt conflicts with queued proof")
+        return "landed", None
+    for reservation in (session.responder_reservations or {}).values():
+        decoded = validate_canonical_responder_identity(reservation.source_identity)
+        if not isinstance(decoded, dict) or decoded.get("intent_occurrence_id") != occurrence:
+            continue
+        if not _identity_matches_pending(
+            decoded, session_id=session.id, occurrence=occurrence, digest=digest,
+        ) or (
+            reservation.domain != "user_input"
+            or reservation.person != proof.starter
+            or reservation.accepted_at != proof.accepted_at
+            or session.responder_epoch != target_epoch
+            or session.turn_person != proof.starter
+            or session.turn_person_seq is not None
+            or session.turn_person_at is not None
+            or session.turn_person_epoch is not None
+            or session.turn_person_source_key is not None
+        ):
+            raise ValueError("landed responder reservation conflicts with queued proof")
+        return "landed", None
+    return "new", prepare_responder_intent(
+        session,
+        starter=proof.starter,
+        user_input_payload={"text": text},
+        accepted_at=proof.accepted_at,
+        occurrence_id=occurrence,
+        target_epoch=target_epoch,
+    )
+
+
+def _identity_matches_pending(
+    decoded: dict[str, Any], *, session_id: str, occurrence: str, digest: str,
+) -> bool:
+    return (
+        decoded.get("session_id") == session_id
+        and decoded.get("intent_occurrence_id") == occurrence
+        and decoded.get("payload_sha256") == digest
+        and "user_input_seq" in decoded
+    )
 
 
 async def drop_queue_of_missing_session(storage_provider: Any, session_id: str) -> int:

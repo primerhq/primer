@@ -47,6 +47,7 @@ class PreparedResponderIntent:
     intent: PendingResponderIntent
     fences: ReservationFences
     responder_generations: dict[str, Any]
+    arm_token: datetime
 
 
 def prepare_responder_intent(
@@ -98,6 +99,49 @@ def prepare_responder_intent(
         intent=intent,
         fences=ReservationFences.from_session(row),
         responder_generations={field: raw_generation(row, field) for field in _RESPONDER_SCALARS},
+        arm_token=datetime.now(UTC),
+    )
+
+
+def rebase_prepared_responder_intent(
+    row: WorkspaceSession,
+    prepared: PreparedResponderIntent,
+) -> PreparedResponderIntent:
+    """Rebuild one proved intent after an atomic structural reopen.
+
+    The pending occurrence, authority, acceptance time, target epoch, and
+    payload digest remain identical; only the reopened row's USER_INPUT seq
+    and storage generations change.
+    """
+    if row.id != prepared.session_id:
+        raise ValueError("prepared responder intent names another session")
+    prior = prepared.intent
+    identity = {
+        "intent_occurrence_id": prior.occurrence_id,
+        "payload_sha256": prior.payload_sha256,
+        "session_id": row.id,
+        "user_input_seq": row.last_seq + 1,
+    }
+    source = responder_source(prior.domain, identity)
+    intent = PendingResponderIntent(
+        occurrence_id=prior.occurrence_id,
+        target_epoch=prior.target_epoch,
+        starter=prior.starter,
+        domain=source.domain,
+        source_identity=source.identity,
+        source_key=source.key,
+        accepted_at=prior.accepted_at,
+        user_input_seq=row.last_seq + 1,
+        payload_sha256=prior.payload_sha256,
+    )
+    return PreparedResponderIntent(
+        session_id=row.id,
+        intent=intent,
+        fences=ReservationFences.from_session(row),
+        responder_generations={
+            field: raw_generation(row, field) for field in _RESPONDER_SCALARS
+        },
+        arm_token=datetime.now(UTC),
     )
 
 
@@ -140,7 +184,7 @@ def prepared_arm_is_current(
         return False
     if owned:
         return row.turn_status == "arming" and raw_generation(row, "armed_at") is not None
-    return row.turn_status == "arming" and raw_generation(row, "armed_at") is not None
+    return row.turn_status == "arming" and row.armed_at == prepared.arm_token
 
 
 def exact_intent_where(row: WorkspaceSession) -> dict[Any, list[Any]]:
@@ -242,11 +286,17 @@ def promotion_patch(row: WorkspaceSession) -> dict[str, Any]:
         "turn_person_epoch": None,
         "turn_person_source_key": None,
         "pending_responder_intent": None,
+        "last_responder_intent_receipt": dump_for_storage(intent),
     }
 
 
 def intent_is_promoted(row: WorkspaceSession, intent: PendingResponderIntent) -> bool:
     """Recognise an exact successful promotion after an ambiguous response."""
+    if (
+        row.pending_responder_intent is None
+        and row.last_responder_intent_receipt == intent
+    ):
+        return True
     reservation = (row.responder_reservations or {}).get(intent.source_key)
     return (
         row.pending_responder_intent is None

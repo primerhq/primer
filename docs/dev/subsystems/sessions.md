@@ -91,18 +91,32 @@ A session has two persisted faces that are reconciled at turn boundaries:
   acceptance time, intended USER_INPUT sequence and payload digest. A pending
   message may carry a smaller storage-only authenticated-starter proof; its row
   id and enqueue time provide the later realization occurrence. Both default to
-  null on older rows and are absent from public dumps and OpenAPI. Queued-message
-  proof realization still does not consume its contract, so queued-input
-  attribution and human task gates remain disabled.
+  null on older rows and are absent from public dumps and OpenAPI. That slice
+  did not consume either contract; later slices below define the internal
+  direct and queued realization protocols.
 - S4.4b adds the internal direct-wake intent protocol. A trusted, prepared
   intent can be stamped with the wake's arming state and reserved USER_INPUT
   sequence in one CAS. The exact matching log record is then promoted with a
   fresh responder epoch, baseline reservation and turn state in one second CAS;
   a dead-arm sweep completes that same promotion or clears an arm whose record
   was never appended. Corrupt or mismatched proof remains quarantined and no
-  claimable row retains an intent. No public wake caller prepares an intent in
-  this slice, and queued-message proof realization, UI, tools, channels, MCP and
-  human task-gate activation remain disabled for later slices.
+  claimable row retains an intent. Direct input attribution, UI, tools,
+  channels, MCP and human task-gate activation remain disabled for later
+  slices.
+- S4.4c realizes only server-owned proof on queued steers from the authenticated
+  workspace message route. Queueing stores no reservation and rotates no epoch.
+  The trusted proof must name the same authenticated person as the queued
+  message; machine, peer, unattributed and legacy-ledger rows remain proofless
+  and retain their established delivery path.
+  At realization, the pending row id, enqueue time and canonical payload digest
+  derive a stable S4.4b intent. An ended-session reopen rebases that same
+  occurrence on the post-divider generation before arming. The queue row
+  remains until the combined close lands; that close also stores one hidden
+  completed-intent receipt, so a delete retry can still prove the occurrence
+  after later projection or structural epoch rotation without restamping the
+  responder ledger. Client-supplied attribution remains ineligible. Canvas,
+  channel, peer, trigger, MCP and direct-wake inputs do not enter this proof
+  path.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
