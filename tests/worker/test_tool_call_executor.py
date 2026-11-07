@@ -605,7 +605,15 @@ class _GatingToolManager:
             Yielded(
                 tool_name="_approval",
                 event_key=f"tool_approval:{SESSION_ID}:{CALL_ID}",
-                resume_metadata={"approval": "pending", "policy_id": "pol-1"},
+                resume_metadata={
+                    "approval": "pending",
+                    "policy_id": "pol-1",
+                    "original_call": {
+                        "id": CALL_ID,
+                        "name": f"{TOOLSET_ID}__do_thing",
+                        "arguments": {"n": 7},
+                    },
+                },
             ),
             tool_call_id=CALL_ID,
         )

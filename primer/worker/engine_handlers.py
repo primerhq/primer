@@ -672,6 +672,7 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
                 parked_at=now,
                 deadline=deadline,
                 binding_epoch=session.binding_epoch,
+                tool_arguments=call.arguments,
             )
         except TaskGateStateError as exc:
             # Nested/corrupt topology cannot be resumed safely at task scope.

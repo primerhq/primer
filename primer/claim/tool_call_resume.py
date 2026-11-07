@@ -58,7 +58,7 @@ async def durably_mark_tool_call_task_resumable(
     event_key: str,
     payload: dict[str, Any] | None,
     task_storage: "Storage[ToolCallTask]",
-    engine: "ClaimEngine | None",
+    engine: "ClaimEngine",
 ) -> TaskGateResumeOutcome:
     """Persist one exact decision and re-arm its task lease.
 
@@ -68,6 +68,8 @@ async def durably_mark_tool_call_task_resumable(
     idempotent and re-runs ``mark_resumable`` so a crash or failure after the
     durable write but before lease re-arm is repairable.
     """
+    if engine is None:
+        raise ValueError("a ClaimEngine is required to re-arm a decided task gate")
     receipt = make_resolution_receipt(
         occurrence_token=occurrence_token,
         gate_seq=gate_seq,
@@ -135,13 +137,12 @@ async def durably_mark_tool_call_task_resumable(
 async def _rearm_if_wired(
     task: ToolCallTask,
     receipt,
-    engine: "ClaimEngine | None",
+    engine: "ClaimEngine",
 ) -> None:
     """Re-arm only the exact decided QUEUED occurrence."""
     if classify_task_gate_decision(task, receipt) is not TaskGateDecisionClass.IDENTICAL:
         return
-    if engine is not None:
-        await engine.mark_resumable(ClaimKind.TOOL_CALL, task.id)
+    await engine.mark_resumable(ClaimKind.TOOL_CALL, task.id)
 
 
 __all__ = [
