@@ -30,6 +30,10 @@ from primer.model.workspace_session import (
 )
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.responder_attribution import (
+    ReservationFences,
+    empty_responder_rotation,
+)
 from primer.storage import raw_generation
 
 logger = logging.getLogger(__name__)
@@ -238,7 +242,11 @@ async def _reopen_ended_locked(
             logger.warning("reopen of session %s: could not give its turn status back after a failed write", session_id, exc_info=True)
         raise
 
-    # 3. Reopen the scheduler row: ENDED -> CREATED, clear terminal + park bookkeeping, bump the invocation counter.
+    # 3. Reopen the scheduler row and rotate its responder occurrence in the
+    # same CAS. A separate rotation would leave a crash window with the new
+    # invocation carrying the old turn's responder authority.
+    responder_rotation = empty_responder_rotation(reserved_row)
+    occurrence_where = ReservationFences.from_session(reserved_row).where()
     reopened = await sessions.patch_if(
         session_id,
         to_jsonable_python({
@@ -268,9 +276,14 @@ async def _reopen_ended_locked(
             "agent_phase": None,
             "agent_phase_turn_no": None,
             "agent_phase_stamped_at": None,
+            **responder_rotation.patch,
         }),
         set_paths={("metadata", "invocation"): invocation},
-        where={"status": [SessionStatus.ENDED.value], "turn_status": ["arming"], "armed_at": [raw_generation(reserved_row, "armed_at")]},
+        where={
+            **occurrence_where,
+            "armed_at": [raw_generation(reserved_row, "armed_at")],
+            **responder_rotation.where,
+        },
     )
     if reopened is None:
         return None
