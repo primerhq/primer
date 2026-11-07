@@ -55,7 +55,13 @@ async def _until(predicate, message: str, timeout: float = 5.0) -> None:
 def test_the_flag_and_the_reserve_default_to_off_and_unset():
     cfg = WorkerConfig()
     assert cfg.tool_calls_as_claims_enabled is False
+    assert cfg.task_gate_human_decisions_enabled is False
     assert cfg.tool_call_reserved_concurrency is None
+
+
+def test_human_task_gate_capability_cannot_be_enabled_before_p3():
+    with pytest.raises(ValueError, match="reserved until responder ordering P3"):
+        WorkerConfig(task_gate_human_decisions_enabled=True)
 
 
 @pytest.mark.parametrize(

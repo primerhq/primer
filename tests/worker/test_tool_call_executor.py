@@ -51,6 +51,22 @@ TASK_ID = f"{SESSION_ID}/{SCOPED}"
 CALL_ID = "call-raw-1"
 
 
+@pytest.fixture(autouse=True)
+def _exercise_reserved_resolved_gate_executor(request, monkeypatch) -> None:
+    """Keep A2 covered while production S0 refuses human task gates."""
+    if "task_gate_execution_disabled" in request.fixturenames:
+        return
+    monkeypatch.setattr(
+        "primer.worker.engine_handlers._task_gate_human_execution_enabled",
+        lambda _pool: True,
+    )
+
+
+@pytest.fixture
+def task_gate_execution_disabled() -> None:
+    """Use the production S0 executor capability state."""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -704,6 +720,24 @@ class _GatingToolManager:
         )
 
 
+class _UnexpectedYieldToolManager:
+    def __init__(self) -> None:
+        self.executed = 0
+
+    async def execute(self, call, *, principal=None):
+        self.executed += 1
+        from primer.model.yield_ import YieldToWorker, Yielded
+
+        raise YieldToWorker(
+            Yielded(
+                tool_name="unexpected_human_yield",
+                event_key=f"unexpected:{SESSION_ID}:{CALL_ID}",
+                resume_metadata={"prompt": "continue?"},
+            ),
+            tool_call_id=CALL_ID,
+        )
+
+
 class _ResolvedGateToolManager:
     def __init__(
         self, *, re_yield: bool = False, error: str | None = None,
@@ -785,6 +819,49 @@ def _executor_with(tool_manager) -> object:
     return types.SimpleNamespace(
         _executor=types.SimpleNamespace(_tool_manager=tool_manager),
     )
+
+
+@pytest.mark.asyncio
+async def test_s0_seeded_resolved_human_gate_has_no_resume_or_tool_side_effect(
+    task_gate_execution_disabled, monkeypatch,
+) -> None:
+    pool, engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    gate = _resolve_task_gate(
+        provider, payload={"response": "blue"}, tool_name="ask_user",
+        metadata={"prompt": "colour?"},
+    )
+    hook_lookups: list[str] = []
+
+    def _unexpected_hook(name: str):
+        hook_lookups.append(name)
+        raise AssertionError("S0 must not resolve a task-gate resume hook")
+
+    monkeypatch.setattr(
+        "primer.worker.yield_resume_registry.get_resume_hook", _unexpected_hook,
+    )
+
+    async def _unexpected_workspace(_workspace_id):
+        raise AssertionError("S0 must not resolve task execution dependencies")
+
+    pool._workspace_registry.get_workspace = _unexpected_workspace  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        await _until(
+            lambda: (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases,  # noqa: SLF001
+            "S0 did not remove the seeded human-gate lease",
+        )
+        stored = await provider.get_storage(ToolCallTask).get(TASK_ID)
+        assert stored is not None
+        assert stored.state is ToolCallTaskState.QUEUED
+        assert stored.gate_state == gate.to_jsonable()
+        assert hook_lookups == []
+        assert toolset.calls == []
+        assert pool._provider_registry.requests == []  # noqa: SLF001
+    finally:
+        await pool.drain_and_stop(timeout=2.0)
+        await scheduler.aclose()
 
 
 @pytest.mark.parametrize(
@@ -1538,6 +1615,80 @@ async def test_a_gated_tool_call_parks_the_task_not_the_session():
         assert session.parked_state is not None and TASK_ID in str(session.parked_state)
         for _signal, flipped in wake_calls:
             assert not flipped, "a GATED outcome must never flip the session resumable"
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_s0_policy_race_terminalizes_without_persisting_task_gate(
+    task_gate_execution_disabled,
+) -> None:
+    pool, engine, provider, toolset, _session_rows, _tasks, scheduler, wake_calls = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    manager = _GatingToolManager()
+
+    async def _executor(_session, _workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the approval-policy race did not terminalize",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert manager.executed == 1
+        assert toolset.calls == []
+        assert task.gate_state is None and task.gate_resolution is None
+        assert task.result_state["error"] is True
+        assert "responder ordering P3" in task.result_state["output"]
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases  # noqa: SLF001
+        await _until(
+            lambda: any(flipped for _signal, flipped in wake_calls),
+            "the terminal final sibling did not wake its session",
+        )
+        session = await provider.get_storage(WorkspaceSession).get(SESSION_ID)
+        assert session is not None and session.parked_status == "resumable"
+        assert any(flipped for _signal, flipped in wake_calls)
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_s0_unexpected_generic_yield_uses_terminal_backstop(
+    task_gate_execution_disabled,
+) -> None:
+    pool, engine, provider, toolset, _sessions, _tasks, scheduler, wake_calls = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    manager = _UnexpectedYieldToolManager()
+
+    async def _executor(_session, _workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the unexpected yield did not terminalize",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert manager.executed == 1
+        assert toolset.calls == []
+        assert task.gate_state is None and task.gate_resolution is None
+        assert task.result_state["error"] is True
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases  # noqa: SLF001
+        await _until(
+            lambda: any(flipped for _signal, flipped in wake_calls),
+            "the unexpected-yield terminal release did not wake the session",
+        )
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()

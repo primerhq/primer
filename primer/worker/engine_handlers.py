@@ -360,6 +360,11 @@ _TASK_GATE_DEFAULT_TIMEOUT_SECONDS = 3600.0
 _CLAIM_ROW_MAX_ATTEMPTS = 3
 
 
+def _task_gate_human_execution_enabled(pool) -> bool:
+    """Reserved S0 capability check, isolated for dormant-path tests."""
+    return bool(pool.config.task_gate_human_decisions_enabled)
+
+
 class _WorkspaceReadFileIO:
     """The read side of ``primer.tap.reader._WorkspaceReadIO`` bound to one live workspace.
 
@@ -506,6 +511,26 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         )
         await pool._release_lease(
             engine_lease, ReleaseOutcome(success=True, drop_lease=True, entity_noop=True),
+        )
+        return
+
+    if (
+        not _task_gate_human_execution_enabled(pool)
+        and (
+            task.state is ToolCallTaskState.GATED
+            or task.gate_state is not None
+            or task.gate_resolution is not None
+        )
+    ):
+        logger.error(
+            "tool-call task %s carries a human gate while the reserved "
+            "task-gate decision capability is disabled; dropping its lease "
+            "without executing it",
+            task.id,
+        )
+        await pool._release_lease(
+            engine_lease,
+            ReleaseOutcome(success=True, drop_lease=True, entity_noop=True),
         )
         return
 
@@ -720,6 +745,39 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         # keeps the token and the next claim takes it over (at-least-once).
         raise
     except YieldToWorker as yld:
+        if not _task_gate_human_execution_enabled(pool):
+            from primer.model.except_ import ConfigError
+            from primer.worker.yield_runtime import resume_failure_result
+
+            result = resume_failure_result(
+                tool_call_id=claimed_row.wire_call_id,
+                tool_name=yld.yielded.tool_name,
+                exc=ConfigError(
+                    "human task-gate decisions are disabled until responder "
+                    "ordering P3"
+                ),
+            )
+            logger.warning(
+                "tool-call task %s yielded %r while human task decisions are "
+                "disabled; failing terminally without persisting a gate",
+                task.id,
+                yld.yielded.tool_name,
+            )
+            await pool._release_lease(
+                engine_lease,
+                ReleaseOutcome(
+                    success=False,
+                    drop_lease=True,
+                    claim_token=token,
+                    last_error=result.output[:300],
+                    entity_update={
+                        "result_state": result.model_dump(mode="json"),
+                        "attempts": claimed_row.attempts,
+                        "last_error": result.output[:300],
+                    },
+                ),
+            )
+            return
         # The approval/yield gate: park the TASK, not the session. The adapter's
         # gate branch writes GATED, bumps gate_seq, clears the token and drops
         # the lease; the session is NOT woken (one gated task does not block
