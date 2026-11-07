@@ -20,6 +20,8 @@ from primer.model.principal import PrincipalRef, person_ref
 from primer.model.responder_source import (
     canonical_responder_payload,
     canonical_responder_source,
+    responder_source_key,
+    validate_canonical_responder_identity,
 )
 from primer.model.workspace_session import (
     RESPONDER_RESERVATION_LIMIT,
@@ -328,12 +330,64 @@ async def reserve_source(
     max_attempts: int = 8,
 ) -> ReservationResult:
     """Reserve one source in an already-active responder epoch."""
+    source = responder_source(domain, identity)
+    return await _reserve_source(
+        sessions,
+        session_id,
+        responder_epoch=responder_epoch,
+        person=person,
+        source=source,
+        accepted_at=accepted_at,
+        fences=fences,
+        max_attempts=max_attempts,
+    )
+
+
+async def reserve_canonical_source(
+    sessions: Storage[WorkspaceSession],
+    session_id: str,
+    *,
+    responder_epoch: str,
+    person: PrincipalRef,
+    domain: str,
+    source_identity: str,
+    source_key: str,
+    accepted_at: datetime,
+    fences: ReservationFences,
+    max_attempts: int = 8,
+) -> ReservationResult:
+    """Reserve an already-canonical source carried by a durable receipt."""
+    validate_canonical_responder_identity(source_identity)
+    if responder_source_key(domain, source_identity) != source_key:
+        raise ValueError("responder source key does not match its canonical identity")
+    return await _reserve_source(
+        sessions,
+        session_id,
+        responder_epoch=responder_epoch,
+        person=person,
+        source=ResponderSource(source_key, domain, source_identity),
+        accepted_at=accepted_at,
+        fences=fences,
+        max_attempts=max_attempts,
+    )
+
+
+async def _reserve_source(
+    sessions: Storage[WorkspaceSession],
+    session_id: str,
+    *,
+    responder_epoch: str,
+    person: PrincipalRef,
+    source: ResponderSource,
+    accepted_at: datetime,
+    fences: ReservationFences,
+    max_attempts: int,
+) -> ReservationResult:
     if not isinstance(person, PrincipalRef) or person_ref(person) != person:
         raise ValueError("responder reservation requires an attributable person")
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
     fence_where = fences.where()
-    source = responder_source(domain, identity)
     current = await sessions.get(session_id)
 
     for _ in range(max_attempts):
@@ -614,6 +668,7 @@ __all__ = [
     "new_session_responder_ledger",
     "project_reservation",
     "classic_gate_responder_decision",
+    "reserve_canonical_source",
     "reserve_source",
     "responder_source",
     "rotate_responder_epoch",

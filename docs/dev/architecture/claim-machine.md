@@ -140,6 +140,16 @@ Implemented executor and remaining gaps:
   digest and scalar repair stage for a future portable scanner. This slice has
   no producer, route, executor, claim or repair behavior, and S0 still refuses
   activation.
+- **Dormant ask-user S2 is a staged cross-row protocol.** An exact unclaimed
+  GATED occurrence can first store its canonical version-2 decision and server
+  responder receipt as `RECEIPT_STAGED`. A second primitive fresh-validates
+  the live session park, turn, binding and responder epoch, reserves and
+  projects that receipt through the existing responder ledger, and only then
+  advances the task to `PROJECTED`. A final exact digest/stage CAS promotes the
+  task to QUEUED and re-arms its lease as `PROMOTED`. Every task guard is scalar;
+  exact retries reuse the receipt acceptance time and repair either boundary
+  without allocating another responder sequence. These primitives have no
+  route, scanner or executor caller while S0 remains hard-disabled.
 - **No cancel fan-out.** Nothing signals outstanding tasks when their session is cancelled: `ToolCallTask` has no cancel field, and the cancel scopes the pool tracks are session scopes only.
 - **The retry cap.** `WorkerConfig.max_attempts` (default 5) is enforced by the executor at claim time: a lease whose `attempt_count >= max_attempts` is not run again; the task goes terminal `failed` WITHOUT a requeue and WITH a synthesized `result_state` (an error `ToolResultPart` carrying the wire call id), so the resume coordinator hands the model a `tool_result` for its `tool_use` instead of wedging the turn on an unanswerable error. The engine bumps `attempt_count` on each failed release; the row's `attempts` is the separate unclean-execution counter (takeover and failed release), written read-then-write under the claim fence.
 - **Priority.** The seam arms `TOOL_CALL` leases at `CLAIM_PRIORITY_RESUME` (50, the resume tier), at both arm sites (`primer/session/dispatch.py` and `primer/session/persistence.py`), so a burst of fresh sessions (`CLAIM_PRIORITY_FRESH`, 100) cannot starve a mid-turn session waiting on its tools. The gate re-arm and the session wake use the same tier. Tests pin both arm sites.
