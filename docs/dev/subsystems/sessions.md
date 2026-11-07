@@ -85,15 +85,24 @@ A session has two persisted faces that are reconciled at turn boundaries:
   preserve their established authority behavior. Task-scoped human gates,
   aggregate inboxes, queued input attribution and public activation remain
   disabled for later slices.
-- S4.4a adds model and storage contracts only. A session may carry one typed,
+- S4.4a added model and storage contracts only. A session may carry one typed,
   storage-only pending responder intent with a server-owned occurrence, target
   epoch, authenticated starter, canonical reservation-compatible source,
   acceptance time, intended USER_INPUT sequence and payload digest. A pending
   message may carry a smaller storage-only authenticated-starter proof; its row
   id and enqueue time provide the later realization occurrence. Both default to
-  null on older rows and are absent from public dumps and OpenAPI. No enqueue,
-  wake, arm, promotion or recovery path writes or consumes either contract yet,
-  so queued-input attribution and human task gates remain disabled.
+  null on older rows and are absent from public dumps and OpenAPI. Queued-message
+  proof realization still does not consume its contract, so queued-input
+  attribution and human task gates remain disabled.
+- S4.4b adds the internal direct-wake intent protocol. A trusted, prepared
+  intent can be stamped with the wake's arming state and reserved USER_INPUT
+  sequence in one CAS. The exact matching log record is then promoted with a
+  fresh responder epoch, baseline reservation and turn state in one second CAS;
+  a dead-arm sweep completes that same promotion or clears an arm whose record
+  was never appended. Corrupt or mismatched proof remains quarantined and no
+  claimable row retains an intent. No public wake caller prepares an intent in
+  this slice, and queued-message proof realization, UI, tools, channels, MCP and
+  human task-gate activation remain disabled for later slices.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
