@@ -30,11 +30,24 @@ from datetime import datetime, timedelta
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
-from primer.model.principal import PrincipalRef
+from primer.model.principal import PrincipalRef, person_ref
+from primer.model.responder_source import (
+    RESPONDER_SOURCE_DOMAIN_MAX_BYTES,
+    RESPONDER_SOURCE_IDENTITY_MAX_BYTES,
+    canonical_responder_identity,
+    responder_source_key,
+    validate_canonical_responder_identity,
+)
 from primer.model.storage import FieldRef, Op, Predicate, Value
 
 if TYPE_CHECKING:
@@ -449,8 +462,6 @@ SessionBinding = Annotated[
 
 
 RESPONDER_RESERVATION_LIMIT = 128
-RESPONDER_SOURCE_IDENTITY_MAX_BYTES = 2048
-RESPONDER_SOURCE_DOMAIN_MAX_BYTES = 64
 ResponderEpoch = Annotated[
     str, Field(pattern=r"^[0-9a-f]{32}$", min_length=32, max_length=32),
 ]
@@ -480,6 +491,66 @@ class ResponderReservation(BaseModel):
             )
         _require_aware_utc(self.accepted_at, "accepted_at")
         return self
+
+
+class PendingResponderIntent(BaseModel):
+    """Storage-only proof needed to atomically arm one authenticated input."""
+
+    occurrence_id: ResponderEpoch
+    target_epoch: ResponderEpoch
+    starter: PrincipalRef
+    domain: str = Field(
+        min_length=1,
+        max_length=RESPONDER_SOURCE_DOMAIN_MAX_BYTES,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    source_identity: str = Field(min_length=1)
+    source_key: ResponderSourceKey
+    accepted_at: datetime
+    user_input_seq: int = Field(ge=1)
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def _validate_intent(self) -> "PendingResponderIntent":
+        if person_ref(self.starter) != self.starter:
+            raise ValueError("pending responder intent starter must name a person")
+        _require_aware_utc(self.accepted_at, "accepted_at")
+        validate_canonical_responder_identity(self.source_identity)
+        if self.source_key != responder_source_key(self.domain, self.source_identity):
+            raise ValueError("pending responder intent source key does not match identity")
+        return self
+
+
+class PendingResponderProof(BaseModel):
+    """Server-owned authenticated-starter proof carried by a queued message."""
+
+    starter: PrincipalRef
+    domain: str = Field(
+        min_length=1,
+        max_length=RESPONDER_SOURCE_DOMAIN_MAX_BYTES,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    accepted_at: datetime
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def _validate_proof(self) -> "PendingResponderProof":
+        if person_ref(self.starter) != self.starter:
+            raise ValueError("pending responder proof starter must name a person")
+        _require_aware_utc(self.accepted_at, "accepted_at")
+        return self
+
+
+if TYPE_CHECKING:
+    PendingResponderIntentValue = PendingResponderIntent | None
+    PendingResponderProofValue = PendingResponderProof | None
+else:
+    # Pydantic follows excluded nested types into FastAPI's component set even
+    # though their fields never appear. Validate explicitly below while making
+    # the runtime annotation opaque, so adding storage-only contracts leaves
+    # the public OpenAPI document byte-compatible.
+    PendingResponderIntentValue = Any
+    PendingResponderProofValue = Any
 
 
 def _require_aware_utc(value: datetime, name: str) -> None:
@@ -565,6 +636,7 @@ class WorkspaceSession(Identifiable):
         "turn_person_at",
         "turn_person_epoch",
         "turn_person_source_key",
+        "pending_responder_intent",
     })
     responder_seq: int | None = Field(default=None, ge=0, exclude=True)
     responder_epoch: ResponderEpoch | None = Field(default=None, exclude=True)
@@ -578,6 +650,10 @@ class WorkspaceSession(Identifiable):
     turn_person_at: datetime | None = Field(default=None, exclude=True)
     turn_person_epoch: ResponderEpoch | None = Field(default=None, exclude=True)
     turn_person_source_key: ResponderSourceKey | None = Field(default=None, exclude=True)
+    pending_responder_intent: PendingResponderIntentValue = Field(
+        default=None,
+        exclude=True,
+    )
     _validate_response_format = field_validator("response_format")(
         _validate_response_format_schema
     )
@@ -979,6 +1055,13 @@ class WorkspaceSession(Identifiable):
             for key, reservation in value.items()
         }
 
+    @field_validator("pending_responder_intent", mode="before")
+    @classmethod
+    def _parse_pending_responder_intent(cls, value: Any) -> Any:
+        if value is None or isinstance(value, PendingResponderIntent):
+            return value
+        return PendingResponderIntent.model_validate(value)
+
     @model_validator(mode="after")
     def _validate_responder_ledger(self) -> "WorkspaceSession":
         base = (
@@ -996,6 +1079,8 @@ class WorkspaceSession(Identifiable):
         if all(value is None for value in base):
             if any(value is not None for value in projection):
                 raise ValueError("responder projection requires an active ledger")
+            if self.pending_responder_intent is not None:
+                raise ValueError("pending responder intent requires an active ledger")
             return self
         if any(value is None for value in base):
             raise ValueError("active responder ledger fields must be all present")
@@ -1003,6 +1088,20 @@ class WorkspaceSession(Identifiable):
         seq = self.responder_seq
         reservations = self.responder_reservations
         assert seq is not None and reservations is not None
+        intent = self.pending_responder_intent
+        if intent is not None:
+            if intent.target_epoch == self.responder_epoch:
+                raise ValueError("pending responder intent must target a fresh epoch")
+            expected_identity = canonical_responder_identity({
+                "intent_occurrence_id": intent.occurrence_id,
+                "payload_sha256": intent.payload_sha256,
+                "session_id": self.id,
+                "user_input_seq": intent.user_input_seq,
+            })
+            if intent.source_identity != expected_identity:
+                raise ValueError(
+                    "pending responder intent identity must match its session occurrence"
+                )
         reservation_seqs = [entry.seq for entry in reservations.values()]
         if len(set(reservation_seqs)) != len(reservation_seqs):
             raise ValueError("responder reservation seq values must be unique")
@@ -1370,12 +1469,33 @@ class PendingSessionMessage(Identifiable):
     drain orders by ``(enqueued_at, id)``.
     """
 
+    _storage_only_fields: ClassVar[frozenset[str]] = frozenset({"responder_proof"})
+
     session_id: str = Field(..., min_length=1)
     parts: list[dict[str, Any]] = Field(default_factory=list)
     attribution: dict[str, Any] | None = Field(default=None)
     client_msg_id: str | None = Field(default=None)
     enqueued_at: datetime = Field(...)
     created_at: datetime = Field(...)
+    responder_proof: PendingResponderProofValue = Field(
+        default=None,
+        exclude=True,
+    )
+
+    @field_validator("responder_proof", mode="before")
+    @classmethod
+    def _parse_responder_proof(cls, value: Any) -> Any:
+        if value is None or isinstance(value, PendingResponderProof):
+            return value
+        return PendingResponderProof.model_validate(value)
+
+    @model_validator(mode="after")
+    def _validate_responder_proof_occurrence(self) -> "PendingSessionMessage":
+        if self.responder_proof is not None:
+            _require_aware_utc(self.enqueued_at, "enqueued_at")
+            if self.responder_proof.accepted_at > self.enqueued_at:
+                raise ValueError("responder proof cannot be accepted after enqueue")
+        return self
 
 
 PEER_PAYLOAD_KEY = "peer"
