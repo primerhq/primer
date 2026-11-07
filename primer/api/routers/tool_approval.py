@@ -34,12 +34,14 @@ from primer.agent.tool_schemas import find_tool_schema
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
+from primer.model.principal import PrincipalRef, person_ref
 from primer.access.person import person_from_request
 from primer.access.workspaces import require_session, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
 from primer.api.approver_guard import enforce_approvers
 from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate, undecided_pending_gates
+from primer.session.responder_attribution import classic_gate_responder_decision
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
@@ -378,6 +380,7 @@ async def _publish_decision(
     engine: ClaimEngine | None,
     storage_provider=None,
     decided_by: str | None = None,
+    decided_person: PrincipalRef | None = None,
 ) -> bool:
     """Durably flip the row on ``gate``'s own event_key, then wake the bus.
 
@@ -417,12 +420,25 @@ async def _publish_decision(
         {"decision": body.decision, "reason": body.reason, "decided_by": decided_by},
         gate_id_of(gate.get("resume_metadata")),
     )
+    responder_decision = (
+        classic_gate_responder_decision(
+            sess,
+            domain="tool_approval",
+            event_key=event_key,
+            gate_id=gate_id_of(gate.get("resume_metadata")),
+            payload=payload,
+            person=decided_person,
+        )
+        if decided_person is not None
+        else None
+    )
     did = await durably_wake_session(
         sess,
         event_key=event_key,
         payload=payload,
         session_storage=session_storage,
         engine=engine,
+        responder_decision=responder_decision,
     )
     if not did:
         # The gate already holds a decision (or the park moved on): this one was not applied, so nothing is recorded or published. Recording it
@@ -744,6 +760,11 @@ def make_tool_approval_ops_router() -> APIRouter:
         # Counted only now: a decision the approver check refused is not a decision that named the right gate, and the count is what schedules the
         # flip to refusing tokenless responds (a stale token was counted above, where it is refused).
         count_gate_token(kind="approval", session_id=session_id, token=body.gate_id)
+        decided_person = (
+            person_ref(PrincipalRef.from_principal(request.state.actor))
+            if getattr(request.state, "actor", None) is not None
+            else None
+        )
         await _publish_decision(
             sess=sess,
             id_str=session_id,
@@ -754,6 +775,7 @@ def make_tool_approval_ops_router() -> APIRouter:
             engine=engine,
             storage_provider=storage_provider,
             decided_by=getattr(user, "username", None),
+            decided_person=decided_person,
         )
         from primer.events.recorder import actor_of, recorder_for
 

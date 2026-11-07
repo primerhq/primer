@@ -29,6 +29,7 @@ tolerated are gone with the chat engine).
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -39,7 +40,17 @@ from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import MalformedScopedIdError, parse_scoped_task_id
 from primer.model.common import dump_for_storage
 from primer.model.yield_ import with_wake_entry, with_wake_park
-from primer.model.workspace_session import NON_ENDED_STATUSES, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import (
+    NON_ENDED_STATUSES,
+    RESPONDER_RESERVATION_LIMIT,
+    ResponderReservation,
+    SessionStatus,
+    WorkspaceSession,
+)
+from primer.session.responder_attribution import (
+    ReservationFences,
+    ResponderDecision,
+)
 from primer.storage import raw_generation
 from primer.storage._patch import json_equal
 from primer.storage.cas import patch_if_checked
@@ -51,6 +62,113 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_RESPONDER_GENERATIONS = (
+    "responder_epoch",
+    "responder_seq",
+    "responder_reservation_version",
+    "turn_person_seq",
+    "turn_person_at",
+    "turn_person_epoch",
+    "turn_person_source_key",
+)
+
+
+class _ResponderDecisionRefused(Exception):
+    """The classic park already carries a conflicting responder decision."""
+
+
+def _reservation_matches_decision(
+    reservation: ResponderReservation | None,
+    decision: ResponderDecision,
+) -> bool:
+    return bool(
+        reservation is not None
+        and reservation.domain == decision.source.domain
+        and reservation.source_identity == decision.source.identity
+        and reservation.person == decision.person
+    )
+
+
+def _responder_decision_patch(
+    row: WorkspaceSession,
+    decision: ResponderDecision,
+    *,
+    activation_epoch: str,
+) -> tuple[dict[str, Any], dict[str, list[Any]]] | None:
+    """Build one new classic-decision reservation and its scalar CAS."""
+    if raw_generation(row, "parked_at") != decision.parked_at:
+        raise _ResponderDecisionRefused
+    active = row.responder_epoch is not None
+    if active:
+        assert row.responder_seq is not None
+        assert row.responder_reservation_version is not None
+        assert row.responder_reservations is not None
+        epoch = row.responder_epoch
+        seq = row.responder_seq
+        version = row.responder_reservation_version
+        reservations = dict(row.responder_reservations)
+    else:
+        epoch = activation_epoch
+        seq = 0
+        version = 0
+        reservations = {}
+    existing = reservations.get(decision.source.key)
+    if existing is not None:
+        if _reservation_matches_decision(existing, decision):
+            return None
+        raise _ResponderDecisionRefused
+    if len(reservations) >= RESPONDER_RESERVATION_LIMIT:
+        raise _ResponderDecisionRefused
+    next_seq = seq + 1
+    reservations[decision.source.key] = ResponderReservation(
+        domain=decision.source.domain,
+        source_identity=decision.source.identity,
+        person=decision.person,
+        seq=next_seq,
+        accepted_at=decision.accepted_at,
+    )
+    candidate = row.model_copy(update={
+        "responder_epoch": epoch,
+        "responder_seq": next_seq,
+        "responder_reservation_version": version + 1,
+        "responder_reservations": reservations,
+        "turn_person": decision.person,
+        "turn_person_seq": next_seq,
+        "turn_person_at": decision.accepted_at,
+        "turn_person_epoch": epoch,
+        "turn_person_source_key": decision.source.key,
+    })
+    stored = dump_for_storage(candidate)
+    fields = (
+        "responder_epoch",
+        "responder_seq",
+        "responder_reservation_version",
+        "responder_reservations",
+        "turn_person",
+        "turn_person_seq",
+        "turn_person_at",
+        "turn_person_epoch",
+        "turn_person_source_key",
+    )
+    patch = {field: stored[field] for field in fields}
+    where = ReservationFences.from_session(row).where()
+    where.update({
+        field: [raw_generation(row, field)]
+        for field in _RESPONDER_GENERATIONS
+    })
+    return patch, where
+
+
+def _same_gate_occurrence_for_responder_retry(
+    before: WorkspaceSession, after: WorkspaceSession,
+) -> bool:
+    """Allow a retry only for another leaf/responder CAS of this park."""
+    before_fences = ReservationFences.from_session(before).where()
+    after_fences = ReservationFences.from_session(after).where()
+    before_fences.pop("parked_status")
+    after_fences.pop("parked_status")
+    return before_fences == after_fences
 
 
 def _dispatch_key_for(event_key: str, *, session_id: str) -> str:
@@ -343,6 +461,7 @@ async def _rearm_if_redelivered(
     dumped: dict[str, Any],
     session_storage: "Storage[WorkspaceSession]",
     engine: "ClaimEngine | None",
+    responder_decision: ResponderDecision | None = None,
 ) -> bool:
     """Whether a wake the flip refused is a redelivery of the wake the row already holds; if so the lease is re-armed, as a landed flip re-arms it.
 
@@ -362,6 +481,12 @@ async def _rearm_if_redelivered(
         same = held.get("resume_event_key") == event_key and json_equal(held.get("resume_event_payload"), mine["resume_event_payload"])
     if not same:
         return False
+    if responder_decision is not None:
+        reservation = (fresh.responder_reservations or {}).get(
+            responder_decision.source.key
+        )
+        if not _reservation_matches_decision(reservation, responder_decision):
+            return False
     if engine is not None:
         # Accepted TOCTOU (#740 r1): the row can re-park in the gap between the fresh read and this re-arm, so a refused wake can
         # occasionally re-arm the lease of a park that is no longer the one compared; the upsert is idempotent and the resume
@@ -378,6 +503,9 @@ async def durably_mark_session_resumable(
     session_storage: "Storage[WorkspaceSession]",
     engine: "ClaimEngine | None",
     by: "PrincipalRef | None" = None,
+    responder_decision: ResponderDecision | None = None,
+    _decision_epoch: str | None = None,
+    _decision_attempt: int = 0,
 ) -> bool:
     """Guarded, durable ``parked -> resumable`` flip for one session row.
 
@@ -462,6 +590,9 @@ async def durably_mark_session_resumable(
     invoked standalone (no surrounding transaction of its own), by
     design, from every caller including that one.
     """
+    if by is not None and responder_decision is not None:
+        raise ValueError("by and responder_decision are mutually exclusive")
+    decision_epoch = _decision_epoch or secrets.token_hex(16)
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)
     # This wake's own leaves of ``parked_state``, never the whole state built from ``session``: the singular fields (the single-event resume path + a
@@ -477,7 +608,9 @@ async def durably_mark_session_resumable(
     if session.parked_status not in allowed:
         # A single-event park advances from ``parked`` only: this one already took a wake. Refused, unless that wake is this one.
         return session.parked_status == "resumable" and await _rearm_if_redelivered(
-            session, event_key=event_key, leaf_key=leaf_key, dumped=dumped, session_storage=session_storage, engine=engine,
+            session, event_key=event_key, leaf_key=leaf_key, dumped=dumped,
+            session_storage=session_storage, engine=engine,
+            responder_decision=responder_decision,
         )
     if _wake_names_another_gate(session, event_key=event_key, payload=payload):
         return False
@@ -515,8 +648,39 @@ async def durably_mark_session_resumable(
         # holds. In the guard, so a second wake that read the same row is refused by the backend, not by a check of the snapshot.
         where[("parked_state", "resume_event_payloads", leaf_key)] = [None]
     patch: dict[str, Any] = {"parked_status": dumped["parked_status"]}
-    if by is not None:
+    where_extra: dict[str, list[Any]] = {}
+    if responder_decision is not None:
+        try:
+            decision_mutation = _responder_decision_patch(
+                session, responder_decision, activation_epoch=decision_epoch,
+            )
+        except _ResponderDecisionRefused:
+            return False
+        if decision_mutation is None:
+            return await _rearm_if_redelivered(
+                session, event_key=event_key, leaf_key=leaf_key, dumped=dumped,
+                session_storage=session_storage, engine=engine,
+                responder_decision=responder_decision,
+            )
+        decision_patch, where_extra = decision_mutation
+        patch.update(decision_patch)
+    elif by is not None and session.turn_person_source_key is None:
+        # Compatibility for pre-ledger/non-projected inputs only. Fence the
+        # empty projection so a concurrent authenticated gate decision cannot
+        # be made invalid by this bare person write. A refusal retries from the
+        # fresh row below; once a projection exists it is preserved.
         patch["turn_person"] = by.model_dump(mode="json")
+        where_extra.update({
+            field: [raw_generation(session, field)]
+            for field in (
+                "turn_person_seq",
+                "turn_person_at",
+                "turn_person_epoch",
+                "turn_person_source_key",
+            )
+        })
+    where.update(where_extra)
+    where["parked_at"] = parked_at_spellings
     landed = await patch_if_checked(
         session_storage,
         session.id,
@@ -527,8 +691,31 @@ async def durably_mark_session_resumable(
     if landed is None:
         # The row is no longer the one this wake read (it ended, resumed, or parked again), or its key already holds a wake. Rejected atomically at
         # write time, not from the (possibly stale) snapshot above; a redelivery of the wake the key holds is answered as landed.
-        return await _rearm_if_redelivered(
+        redelivered = await _rearm_if_redelivered(
             session, event_key=event_key, leaf_key=leaf_key, dumped=dumped, session_storage=session_storage, engine=engine,
+            responder_decision=responder_decision,
+        )
+        retry_attribution = responder_decision is not None or by is not None
+        if redelivered or not retry_attribution or _decision_attempt >= 2:
+            return redelivered
+        fresh = await session_storage.get(session.id)
+        if (
+            fresh is None
+            or fresh.status == SessionStatus.ENDED
+            or fresh.parked_at != session.parked_at
+            or not _same_gate_occurrence_for_responder_retry(session, fresh)
+        ):
+            return False
+        return await durably_mark_session_resumable(
+            fresh,
+            event_key=event_key,
+            payload=payload,
+            session_storage=session_storage,
+            engine=engine,
+            by=by,
+            responder_decision=responder_decision,
+            _decision_epoch=decision_epoch,
+            _decision_attempt=_decision_attempt + 1,
         )
     # Re-arm the engine lease (park dropped it). mark_resumable upserts a
     # fresh claimable lease when none exists.
@@ -545,6 +732,7 @@ async def durably_wake_session(
     session_storage: "Storage[WorkspaceSession]",
     engine: "ClaimEngine | None",
     by: "PrincipalRef | None" = None,
+    responder_decision: ResponderDecision | None = None,
 ) -> bool:
     """Durable flip for the REST reply handlers, repairing a missing lease (``by``: see :func:`durably_mark_session_resumable`).
 
@@ -580,6 +768,7 @@ async def durably_wake_session(
         session_storage=session_storage,
         engine=engine,
         by=by,
+        responder_decision=responder_decision,
     )
     if did or engine is None:
         return did

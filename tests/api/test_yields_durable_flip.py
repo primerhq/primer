@@ -143,6 +143,13 @@ async def test_ask_user_respond_flips_row_without_listener(app, client):
     assert row.parked_status == "resumable"
     assert row.parked_state["resume_event_payload"] == {"response": "Alice"}
     assert row.parked_state["resume_event_key"] == "ask_user:d-a1:tc1"
+    assert (row.responder_seq, row.responder_reservation_version) == (1, 1)
+    [reservation] = list(row.responder_reservations.values())
+    assert reservation.domain == "ask_user"
+    assert reservation.person.display == "testuser"
+    assert reservation.person.user_id == reservation.person.id
+    assert "Alice" not in reservation.source_identity
+    assert row.turn_person_source_key in row.responder_reservations
 
 
 @pytest.mark.asyncio
@@ -199,6 +206,12 @@ async def test_tool_approval_respond_flips_row_without_listener(app, client):
         # fixture client's auto-registered first user is the admin.
         "decided_by": "testuser",
     }
+    assert (row.responder_seq, row.responder_reservation_version) == (1, 1)
+    [reservation] = list(row.responder_reservations.values())
+    assert reservation.domain == "tool_approval"
+    assert reservation.person.display == "testuser"
+    assert reservation.person.user_id == reservation.person.id
+    assert row.turn_person_source_key in row.responder_reservations
 
 
 @pytest.mark.asyncio
