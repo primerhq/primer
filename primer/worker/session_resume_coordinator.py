@@ -45,6 +45,7 @@ from primer.worker.yield_runtime import (
     classify_approval_payload,
     classify_resume_payload,
     ParkedState,
+    resume_failure_result,
     stamp_parked_at,
 )
 
@@ -431,14 +432,10 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
             " error tool_result", tool_name, sid,
         )
         # A failure, not an operator's refusal: not labelled ``rejected``.
-        tool_result_part = ToolResultPart(
-            id=parked.tool_call_id or "unknown",
-            output=json.dumps({
-                "is_error": True,
-                "reason": f"resume failed: {type(exc).__name__}: {redact_credentials(str(exc))}",
-                "tool_name": tool_name,
-            }),
-            error=True,
+        tool_result_part = resume_failure_result(
+            tool_call_id=parked.tool_call_id or "unknown",
+            tool_name=tool_name,
+            exc=exc,
         )
 
     return await pool._inject_resume_and_continue(
