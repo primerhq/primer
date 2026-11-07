@@ -15,9 +15,10 @@ and a release with no token never matches.
 
 BUILT: ``run_engine_tool_call`` (``primer/worker/engine_handlers.py``,
 registered unconditionally as ``WorkerPool._run_engine_tool_call``) claims
-and runs a task; the transitions below are what its releases drive (the
-decisions side - a ``gated -> queued`` flip on a decision - is the separate
-follow-up). See "Tool-call claims" in docs/dev/architecture/claim-machine.md.
+and runs standalone non-gated agent batches. The transitions below are
+what its releases drive. The decisions side does not yet call the
+``gated -> queued`` helper, and graph-bound execution is unsupported.
+See "Tool-call claims" in docs/dev/architecture/claim-machine.md.
 """
 
 from __future__ import annotations
@@ -174,10 +175,10 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # Gate branch: the tool call hit an approval/yield gate mid-
         # execution (a yielding tool, or an approval-required call) -
         # mirrors the session adapter's own park branch. The engine drops
-        # the lease (drop_lease=True on this outcome); the gate/wake event
-        # re-arms it later via engine.mark_resumable on THIS task's own
-        # entity_id, not the session's - the reason one gated call no
-        # longer blocks its siblings.
+        # the lease (drop_lease=True on this outcome). The intended decision
+        # path would re-arm it later via engine.mark_resumable on THIS task's
+        # own entity_id, not the session's. That production decision wiring
+        # is not built yet.
         if outcome.park is not None:
             p = outcome.park
             # gate_seq is a counter: a read, then a write that names the value read, so a
