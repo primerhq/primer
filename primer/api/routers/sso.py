@@ -90,7 +90,8 @@ from primer.api.deps import (
     get_user_identity_storage,
     get_user_storage,
 )
-from primer.api.routers.auth import _set_session_cookie
+from primer.api.errors import common_responses
+from primer.api.routers.auth import _require_auth_enabled, _set_session_cookie
 from primer.api.user_default import ensure_default_for_request
 from primer.auth.user_writes import write_user_fields
 from primer.auth import oidc
@@ -522,13 +523,14 @@ async def _begin_oidc_flow(
     return response
 
 
-@sso_router.get("/{provider_id}/login")
+@sso_router.get("/{provider_id}/login", responses=common_responses(400))
 async def sso_login(
     provider_id: str,
     request: Request,
     return_to: str | None = Query(default=None),
     storage=Depends(get_oidc_provider_storage),
 ) -> RedirectResponse:
+    _require_auth_enabled(request)
     try:
         return await _begin_oidc_flow(
             provider_id=provider_id, request=request, return_to=return_to, storage=storage,
@@ -540,7 +542,7 @@ async def sso_login(
         return response
 
 
-@sso_authed_router.post("/{provider_id}/link")
+@sso_authed_router.post("/{provider_id}/link", responses=common_responses(400))
 async def sso_link(
     provider_id: str,
     request: Request,
@@ -558,6 +560,7 @@ async def sso_link(
     just a typed accessor, not a defensive re-check. The user id is
     stamped into the SIGNED state, never trusted from the URL/query.
     """
+    _require_auth_enabled(request)
     user: User = request.state.user
     started = await _begin_oidc_flow(
         provider_id=provider_id, request=request, return_to=return_to, storage=storage,
@@ -568,7 +571,11 @@ async def sso_link(
     return answer
 
 
-@sso_router.get("/{provider_id}/callback", name="sso_callback")
+@sso_router.get(
+    "/{provider_id}/callback",
+    name="sso_callback",
+    responses=common_responses(400),
+)
 async def sso_callback(
     provider_id: str,
     request: Request,
@@ -579,6 +586,7 @@ async def sso_callback(
     user_storage=Depends(get_user_storage),
     storage_provider=Depends(get_storage_provider),
 ) -> RedirectResponse:
+    _require_auth_enabled(request)
     try:
         return await _complete_oidc_flow(
             provider_id=provider_id,
@@ -779,7 +787,11 @@ async def list_my_sso_identities(
     return out
 
 
-@sso_authed_router.delete("/identities/{identity_id}", status_code=204)
+@sso_authed_router.delete(
+    "/identities/{identity_id}",
+    status_code=204,
+    responses=common_responses(400),
+)
 async def unlink_sso_identity(
     identity_id: str,
     request: Request,
@@ -792,6 +804,7 @@ async def unlink_sso_identity(
     the SAME masked 404 -- this endpoint must never let a caller probe
     for the existence of another user's identity rows.
     """
+    _require_auth_enabled(request)
     user: User = request.state.user
     row = await identity_storage.get(identity_id)
     if row is None or row.user_id != user.id:
