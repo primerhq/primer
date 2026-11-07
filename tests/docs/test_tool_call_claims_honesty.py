@@ -62,7 +62,8 @@ def test_flag_default_and_schema_description_keep_the_capability_guardrails() ->
         "Default OFF",
         "graph binding executor is unsupported",
         "GATED decisions are unwired",
-        "post-release crash",
+        "Exact boot and leader-periodic reconciliation repairs marked terminal-batch wake loss",
+        "pre-marker rows retain the 3600-second park-timeout compatibility boundary",
     ):
         assert marker in description
 
@@ -103,11 +104,11 @@ def test_docs_name_every_surface_that_keeps_the_flag_off() -> None:
         "graph binding executor is unsupported",
         "GATED decisions are unwired",
         "cancel fan-out",
-        "recovery reconciliation",
         "nested subagent",
-        "post-release crash",
     ):
         assert marker in claim_doc
+    assert "Exact terminal-batch wake reconciliation is now implemented" in claim_doc
+    assert "pre-marker rows retain the 3600-second timeout boundary" in claim_doc
 
     graphs_doc = _read("docs/dev/subsystems/graphs.md")
     sessions_doc = _read("docs/dev/subsystems/sessions.md")
