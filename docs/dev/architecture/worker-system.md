@@ -142,6 +142,12 @@ The pool side of Phase 3 stage 7a (the `ToolCallTask` entity, its adapter, the f
   from the pool, a router or a background scanner. The task stays GATED with no
   lease until projection is durable, and S0 still prevents production from
   creating or consuming a human task gate.
+- **Dormant ask-user REST routing.** S3 wires the staged primitives to the
+  established ask-user request and response models behind the reserved
+  test-only capability seam. It rechecks FULL access immediately before
+  receipt staging and publishes no classic gate event for a task decision.
+  S0 still rejects activation, and the worker still cannot consume a v2 ask
+  receipt in production.
 
 ## 6. Wiring
 

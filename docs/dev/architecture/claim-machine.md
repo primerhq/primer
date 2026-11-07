@@ -150,6 +150,14 @@ Implemented executor and remaining gaps:
   exact retries reuse the receipt acceptance time and repair either boundary
   without allocating another responder sequence. These primitives have no
   route, scanner or executor caller while S0 remains hard-disabled.
+- **Dormant ask-user S3 adds the REST decision contract without activation.**
+  The existing ask-user pending/respond routes can, only behind the reserved
+  internal capability seam used by focused tests, resolve one validated
+  standalone task occurrence, validate its response schema, derive the
+  responder from the authenticated server actor, and run the S2 stages in
+  order. Exact task tokens never fall through to classic parks, while a
+  classic-only park keeps its established wire behavior. Production S0 keeps
+  the capability false, so seeded task asks remain hidden and immutable.
 - **No cancel fan-out.** Nothing signals outstanding tasks when their session is cancelled: `ToolCallTask` has no cancel field, and the cancel scopes the pool tracks are session scopes only.
 - **The retry cap.** `WorkerConfig.max_attempts` (default 5) is enforced by the executor at claim time: a lease whose `attempt_count >= max_attempts` is not run again; the task goes terminal `failed` WITHOUT a requeue and WITH a synthesized `result_state` (an error `ToolResultPart` carrying the wire call id), so the resume coordinator hands the model a `tool_result` for its `tool_use` instead of wedging the turn on an unanswerable error. The engine bumps `attempt_count` on each failed release; the row's `attempts` is the separate unclean-execution counter (takeover and failed release), written read-then-write under the claim fence.
 - **Priority.** The seam arms `TOOL_CALL` leases at `CLAIM_PRIORITY_RESUME` (50, the resume tier), at both arm sites (`primer/session/dispatch.py` and `primer/session/persistence.py`), so a burst of fresh sessions (`CLAIM_PRIORITY_FRESH`, 100) cannot starve a mid-turn session waiting on its tools. The gate re-arm and the session wake use the same tier. Tests pin both arm sites.

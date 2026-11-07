@@ -164,6 +164,13 @@ A session has two persisted faces that are reconciled at turn boundaries:
   time, and a later classic projection wins by sequence without regression.
   No REST route, executor, repair scan or activation is added; human task gates
   remain hard-disabled.
+- Dormant task ask-user S3 lets focused router tests exercise the existing
+  ask-user wire models against one validated standalone task occurrence. The
+  server actor supplies responder identity, schema and access checks precede
+  S2 staging, and an exact task token cannot fall into classic resolution.
+  The reserved capability remains false and rejects production activation;
+  graph task asks, channels, cancellation, timeout and background repair stay
+  outside this slice.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
