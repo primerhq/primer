@@ -720,7 +720,14 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
                 f"resolved task gate changed after claim: {_short_error(exc)}",
             )
             return
-        if current_gate != resolved_gate:
+        from primer.storage._patch import json_equal
+
+        if (
+            not isinstance(current_gate, TaskGateState)
+            or not json_equal(
+                current_gate.to_jsonable(), resolved_gate.to_jsonable(),
+            )
+        ):
             await _fail_claimed_tool_call_task(
                 pool, engine_lease, token, claimed_row,
                 "resolved task gate changed after claim",
@@ -821,12 +828,12 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
             "resolved task gate for %s raised; synthesising an error result",
             task.id,
         )
-        result = ToolResultPart(
-            id=task.wire_call_id,
-            output=(
-                f"resume failed: {type(exc).__name__}: {_short_error(exc)}"
-            ),
-            error=True,
+        from primer.worker.yield_runtime import resume_failure_result
+
+        result = resume_failure_result(
+            tool_call_id=task.wire_call_id,
+            tool_name=resolved_gate.yielded.tool_name,
+            exc=exc,
         )
 
     # A tool-level error (result.error) is still a SUCCESSFUL execution: the
@@ -855,6 +862,7 @@ async def _consume_resolved_task_gate(pool, gate, session, tool_manager):
         _resume_tool_approval,
         classify_approval_payload,
         classify_marker_payload,
+        stamp_parked_at,
     )
 
     receipt = gate.resolution
@@ -902,9 +910,12 @@ async def _consume_resolved_task_gate(pool, gate, session, tool_manager):
         )
 
     hook = get_resume_hook(gate.yielded.tool_name)
+    resume_metadata = stamp_parked_at(
+        gate.yielded, gate.parked_at,
+    ).resume_metadata
     registry = getattr(pool, "_provider_registry", None)
     hook_result = hook(
-        gate.yielded.resume_metadata,
+        resume_metadata,
         resume.payload,
         ResumeContext(
             tool_name=gate.yielded.tool_name,

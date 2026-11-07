@@ -328,6 +328,24 @@ def stamp_parked_at(yielded: Yielded, parked_at: datetime) -> Yielded:
     )
 
 
+def resume_failure_result(
+    *, tool_call_id: str, tool_name: str, exc: BaseException,
+) -> ToolResultPart:
+    """Build the shared fail-closed, credential-redacted resume result."""
+    return ToolResultPart(
+        id=tool_call_id,
+        output=json.dumps({
+            "is_error": True,
+            "reason": (
+                f"resume failed: {type(exc).__name__}: "
+                f"{redact_credentials(str(exc))}"
+            ),
+            "tool_name": tool_name,
+        }),
+        error=True,
+    )
+
+
 # ===========================================================================
 # Tool-wait batch park state (Phase 3 stage 7a, 01a0518b)
 # ===========================================================================
@@ -1229,6 +1247,7 @@ __all__ = [
     "make_timeout_payload",
     "merge_pending_dispatch",
     "reply_payloads_equal",
+    "resume_failure_result",
     "resume_call_tool_dispatch",
     "stamp_parked_at",
 ]
