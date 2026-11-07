@@ -47,6 +47,15 @@ A session has two persisted faces that are reconciled at turn boundaries:
   the stale reservation. It
   does not rotate epochs, create starter reservations, project `turn_person`,
   write task receipts, expose a route, or enable human task gates.
+- S3b adds internal rotation and projection primitives only. Rotation clears the
+  old epoch map and projection, preserves the lifetime sequence high-water,
+  increments the reservation version once, and may add one authenticated starter
+  reservation and `turn_person` baseline in that same mutation. Automated,
+  peer, trigger, tool and channel starters clear the prior person. Projection
+  applies an existing reservation in sequence order: newer wins, an exact retry
+  is idempotent, an older reservation cannot regress it, and a same-sequence
+  disagreement fails closed. Neither helper is wired to lifecycle writers,
+  routes, task receipts, UI, tools or activation flags in S3b.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
