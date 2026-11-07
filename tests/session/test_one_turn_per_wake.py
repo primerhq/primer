@@ -21,10 +21,17 @@ from typing import Any
 import pytest
 
 from primer.bus.in_memory import InMemoryEventBus
+from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.model.chat import Done, TextDelta
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage
-from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import (
+    AgentSessionBinding,
+    PendingSessionMessage,
+    SessionMessageKind,
+    SessionStatus,
+    WorkspaceSession,
+)
 from primer.session import enqueue as enqueue_mod
 from primer.session import steer_delivery
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
@@ -201,10 +208,6 @@ async def test_a_message_that_lands_while_an_older_one_is_queued_goes_behind_it(
         first = await deliver_steer(session_id="ses-b", text="newer person message", parallelism="queue", human_intent=True,
                                     **world.deliver_kwargs())
         assert first.outcome == "queued"
-        assert _user_inputs(world) == []
-
-        assert await realize_next_pending(storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b",
-                                          wake_deps=world.wake_deps()) is True
         assert [r["payload"]["text"] for r in _user_inputs(world)] == ["older queued peer message"]
         assert (await world.sessions.get("ses-b")).turn_status == "claimable"
         assert await _pending_texts(world) == ["newer person message"], "the newer message waits for the next turn boundary"
@@ -227,8 +230,8 @@ async def test_a_peer_message_to_an_idle_session_with_older_messages_waiting_is_
                                          **world.deliver_kwargs())
 
         assert (result.delivery, result.note) == ("queued", NOTE_QUEUED_BEHIND)
-        assert _user_inputs(world) == []
-        assert await _pending_texts(world) == ["older", "[from session ses-a (agent planner)]\nnewer"]
+        assert [r["payload"]["text"] for r in _user_inputs(world)] == ["older"]
+        assert await _pending_texts(world) == ["[from session ses-a (agent planner)]\nnewer"]
         steered = await world.sp.get_event_store().read_after(0, event_type_prefix="session.steered")
         assert [e.payload["delivery"] for e in steered] == ["queued"]
 
@@ -339,6 +342,72 @@ class _AnsweringExecutor(FakeExecutor):
     last_done_reason = "stop"
 
 
+class _PendingCreateGate:
+    """Hold the pending-row INSERT while every other storage operation runs.
+
+    The API process has already made its fresh routed decision when ``create``
+    is entered. Holding only the INSERT reproduces the cross-process window in
+    which the worker can finish, read an empty queue at its checkpoint and
+    release before the row becomes visible.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def create(self, entity: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        await self.release.wait()
+        return await self._inner.create(entity, **kwargs)
+
+
+class _BlockedTurnExecutor:
+    """One model request whose terminal event the race test controls."""
+
+    last_done_reason = "stop"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.finish = asyncio.Event()
+
+    async def invoke(self, messages: list[Any], **kwargs: Any):
+        self.started.set()
+        yield TextDelta(text="ANSWER-01", index=0)
+        await self.finish.wait()
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+
+class _LatestUserExecutor:
+    """Record the newest durable USER_INPUT visible to one model request."""
+
+    last_done_reason = "stop"
+
+    def __init__(self, world: World, requests: list[str]) -> None:
+        self._world = world
+        self._requests = requests
+
+    async def invoke(self, messages: list[Any], **kwargs: Any):
+        inputs = [
+            record["payload"]["text"]
+            for record in records(self._world, "ses-b")
+            if record["kind"] == SessionMessageKind.USER_INPUT.value
+        ]
+        self._requests.append(inputs[-1])
+        yield TextDelta(text="ANSWER-02", index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+
+def _install_pending_storage(world: World, storage: Any) -> None:
+    table = getattr(world.sp, "_stores", None)
+    if table is None:
+        table = world.sp._handles
+    table[PendingSessionMessage] = storage
+
+
 def _exit_executor(world: World, exit_kind: str) -> Any:
     if exit_kind == "clean":
         return _AnsweringExecutor([TextDelta(text="the answer", index=0), Done(stop_reason="stop", raw_reason="stop")])
@@ -365,6 +434,111 @@ def _dispatch_deps(world: World, executor: Any) -> SessionDispatchDeps:
         storage_provider=world.sp, workspace_io=world.registry.workspace("ws-1"), event_bus=world.bus, build_executor=build,
         workspace_registry=world.registry, scheduler=world.scheduler, claim_engine=world.engine,
     )
+
+
+@pytest.mark.parametrize(
+    "queue_after_checkpoint",
+    [
+        pytest.param(True, id="pending insert lands after terminal checkpoint"),
+        pytest.param(False, id="pending insert lands before terminal checkpoint"),
+    ],
+)
+async def test_a_routed_steer_straddling_the_terminal_checkpoint_is_delivered_once(
+    new_world, monkeypatch, queue_after_checkpoint,
+):
+    """The producer and the checkpoint cover both orders of the old gap.
+
+    ``deliver_steer`` first observes a real RUNNING turn and routes the
+    follow-up to ``PendingSessionMessage``. The INSERT is then held. In the
+    failing order the turn terminates and its checkpoint sees no row before
+    the INSERT lands; in the opposite order the producer's immediate nudge
+    sees the turn still running and the later checkpoint owns delivery.
+    Either order must leave one durable input, one newly armed turn and one
+    answer to the latest user message. The existing
+    ``test_two_realizes_of_one_queue_head_in_two_processes_deliver_it_once``
+    pins the same ownership rule with two concurrent drainers.
+    """
+    async with asyncio.timeout(BOUND_S):
+        world = await _armed_turn_world(new_world)
+        gated = None
+        try:
+            _each_wake_in_its_own_process(monkeypatch)
+            pending = world.sp.get_storage(PendingSessionMessage)
+            gated = _PendingCreateGate(pending)
+            _install_pending_storage(world, gated)
+
+            first = _BlockedTurnExecutor()
+            first_turn = asyncio.create_task(
+                run_one_session_turn(_make_lease("ses-b"), _dispatch_deps(world, first))
+            )
+            await first.started.wait()
+            assert (await world.sessions.get("ses-b")).turn_status == "running"
+
+            delivery = asyncio.create_task(
+                deliver_steer(
+                    session_id="ses-b",
+                    text="FOLLOW-UP-02",
+                    parallelism="queue",
+                    human_intent=True,
+                    **world.deliver_kwargs(),
+                )
+            )
+            await gated.entered.wait()
+
+            if queue_after_checkpoint:
+                first.finish.set()
+                first_outcome = await first_turn
+                assert first_outcome.drop_lease
+                await SessionClaimAdapter(session_storage=world.sessions).on_release(
+                    None, "ses-b", outcome=first_outcome,
+                )
+                assert await _pending_texts(world) == []
+                assert (await world.sessions.get("ses-b")).turn_status == "idle"
+                gated.release.set()
+                delivered = await delivery
+            else:
+                gated.release.set()
+                delivered = await delivery
+                assert await _pending_texts(world) == ["FOLLOW-UP-02"]
+                first.finish.set()
+                first_outcome = await first_turn
+                assert first_outcome.drop_lease
+                await SessionClaimAdapter(session_storage=world.sessions).on_release(
+                    None, "ses-b", outcome=first_outcome,
+                )
+
+            assert delivered.outcome == "queued"
+            assert await _pending_texts(world) == []
+            armed = await world.sessions.get("ses-b")
+            assert armed.turn_status == "claimable"
+            assert world.scheduler.enqueued == ["ses-b"]
+            assert len(world.engine.upserts) == 1
+
+            model_requests: list[str] = []
+            second_outcome = await run_one_session_turn(
+                _make_lease("ses-b"),
+                _dispatch_deps(world, _LatestUserExecutor(world, model_requests)),
+            )
+            assert second_outcome.drop_lease
+            assert model_requests == ["FOLLOW-UP-02"]
+            follow_ups = [
+                record
+                for record in records(world, "ses-b")
+                if record["kind"] == SessionMessageKind.USER_INPUT.value
+                and record["payload"]["text"] == "FOLLOW-UP-02"
+            ]
+            answers = [
+                record
+                for record in records(world, "ses-b")
+                if record["kind"] == SessionMessageKind.ASSISTANT_TOKEN.value
+                and record["payload"]["text"] == "ANSWER-02"
+            ]
+            assert len(follow_ups) == len(answers) == 1
+            assert await _pending_texts(world) == []
+        finally:
+            if gated is not None:
+                gated.release.set()
+            await world.bus.aclose()
 
 
 @pytest.mark.parametrize("exit_kind", ["clean", "cancel", "failure"])

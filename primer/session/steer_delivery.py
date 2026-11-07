@@ -16,10 +16,9 @@ from typing import Any
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import PeerAttribution, WorkspaceSession
-from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, queued_attribution, wake_session
-from primer.session.pending_messages import PendingQueueFull, store_pending_steer
+from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
+from primer.session.pending_messages import PendingQueueFull
 from primer.session.responder_wake_intent import TrustedResponderInput
-from primer.session.steer_routing import ROUTE_PENDING, route_steer
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +32,10 @@ DELIVERED_QUEUE_FULL = "queue_full"
 @dataclass
 class SteerDelivery:
     """What happened to one delivery attempt.
+
+    ``DELIVERED_QUEUED`` means the delivery was accepted through the queue
+    route. Its immediate best-effort nudge may already have realized or
+    dropped the row before this result is returned.
 
     ``detail`` and ``conflict`` say why a ``DELIVERED_MISSING`` attempt found the session unable to take the message: the text of the NotFoundError
     or ConflictError :func:`wake_session` raised (the workspace was removed under the write, the session cannot be reopened), and whether it was the
@@ -76,12 +79,14 @@ async def deliver_steer(
     steer is: the wake that lands runs the turn as them, and the queue keeps
     them (``attribution["by"]``) when the steer waits behind a turn.
 
-    The outcome is ``DELIVERED_QUEUED`` when the message was stored and not
-    written: the target had a turn open, or :func:`wake_session` held the
-    message because the session is paused (it returns the row untouched,
-    ``turn_status`` not claimable). A wake that lands arms the turn
-    (``claimable``) and reports ``DELIVERED_WOKEN``; so does a wake that
-    returns nothing, which is what the test doubles do.
+    The outcome is ``DELIVERED_QUEUED`` when the message was accepted through
+    the queue route: the target had a turn open, or :func:`wake_session` held
+    the message because the session is paused (it returns the row untouched,
+    ``turn_status`` not claimable). The immediate post-store nudge may already
+    have realized or dropped the queued row before this function returns; the
+    outcome still describes the route that accepted it. A wake that lands
+    arms the turn (``claimable``) and reports ``DELIVERED_WOKEN``; so does a
+    wake that returns nothing, which is what the test doubles do.
 
     An ENDED target is never queued, whatever its park columns say
     (:func:`~primer.session.steer_routing.route_steer`): it is woken, which
@@ -113,28 +118,6 @@ async def deliver_steer(
     row = await sessions.get(session_id)
     if row is None:
         return SteerDelivery(outcome=DELIVERED_MISSING)
-    if route_steer(row) == ROUTE_PENDING:
-        if parallelism == "skip":
-            return SteerDelivery(
-                outcome=DELIVERED_SKIPPED_BUSY, session_id=session_id,
-            )
-        try:
-            await store_pending_steer(
-                storage_provider=storage_provider,
-                session=row,
-                text=text,
-                workspace_registry=workspace_registry,
-                event_bus=event_bus,
-                # A peer's sender and hops, or the mark of a message no person wrote (a trigger fire, a tool call): the drain that realizes it
-                # reads them (``queued_attribution``; such a message does not reopen a session an operator cancelled). So does the person whose
-                # input this is (spec §13 Q1): the realized turn runs as them.
-                attribution=queued_attribution(peer, by_a_person=human_intent),
-                by=by,
-                trusted_responder_input=trusted_responder_input,
-            )
-        except PendingQueueFull:
-            return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
-        return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     try:
         receipt = SessionWakeReceipt()
         woken = await wake_session(
@@ -179,6 +162,21 @@ async def deliver_steer(
             outcome=DELIVERED_SKIPPED_BUSY, session_id=session_id,
         )
     if receipt.outcome == "queued":
+        # A terminal checkpoint may have read the queue immediately before
+        # this wake stored its row. Re-run that same best-effort queued-head
+        # realization now. If the old turn is still live it is a no-op; if
+        # the turn already rested it closes the post-checkpoint gap.
+        from primer.session.dispatch import realize_queued_steer
+
+        await realize_queued_steer(
+            storage_provider=storage_provider,
+            workspace_id=row.workspace_id,
+            session_id=session_id,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
+        )
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     if woken is not None and woken.turn_status != "claimable":
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
