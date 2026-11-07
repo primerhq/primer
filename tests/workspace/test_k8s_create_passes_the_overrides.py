@@ -50,5 +50,6 @@ async def test_create_without_overrides_builds_the_template_as_it_is(overrides):
     body = await _statefulset_body(overrides)
 
     container = body["spec"]["template"]["spec"]["containers"][0]
-    assert container["env"] == [] and "resources" not in container
+    assert container["env"] == [{"name": "WORKSPACE_ROOT", "value": "/workspace"}]
+    assert "resources" not in container
     assert body["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"] == "10Gi"

@@ -275,9 +275,9 @@ async def test_the_graph_nested_branch_hands_the_decided_gate_to_the_continuatio
 
     monkeypatch.setattr("primer.worker.continuation.resume_continuation", fake_resume_continuation)
     monkeypatch.setattr("primer.worker.frames.frames_from_jsonable", lambda frames: [object()])
-    monkeypatch.setattr("primer.model.yield_.Yielded.from_jsonable", classmethod(lambda cls, data: object()))
     pool = SimpleNamespace(_build_invocation_services=lambda *a, **k: object())
-    await grc.resume_graph_continuation(pool, object(), object(), {}, {"frames": [{}], "leaf": {}}, {"decision": "approved"}, object(), object(), gate_id="g" * 32)  # type: ignore[arg-type]
+    leaf = Yielded(tool_name="system__ask_user", event_key="ask_user:s:call").to_jsonable()
+    await grc.resume_graph_continuation(pool, object(), object(), {}, {"frames": [{}], "leaf": leaf}, {"decision": "approved"}, object(), object(), gate_id="g" * 32)  # type: ignore[arg-type]
     assert seen.get("gate_id") == "g" * 32
 
 
