@@ -193,9 +193,9 @@ async def publish_service_version(
             },
         ) from exc
 
-    # Spec section 5 step 4: every granted toolset must resolve. Tool
-    # names are deliberately NOT resolved here; a stale name 404s at
-    # call time (phase 3).
+    # Spec section 5 step 4: every reserved toolset id must resolve. Tool
+    # names are deliberately NOT resolved here; planned phase-3 dispatch
+    # will return 404 for a stale name at call time.
     sp = request.app.state.storage_provider
     toolsets = sp.get_storage(Toolset)
     for grant in bundle.manifest.tools:

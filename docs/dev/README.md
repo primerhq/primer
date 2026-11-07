@@ -209,8 +209,8 @@ flowchart TD
 - [mcp-oauth](subsystems/mcp-oauth.md) - the shared, admin-owned OAuth sign-in for
   outbound MCP toolsets, including encrypted persistence, cross-pod refresh, REST
   routes, and agent-visible status.
-- [services](subsystems/services.md) - agent-published web apps: immutable versioned
-  bundles served at /svc/{name}/ by any API replica, with bundle python executing
+- [services](subsystems/services.md) - versioned web apps: immutable bundles published
+  through REST and served at /svc/{name}/ by any API replica, with bundle python executing
   per-request in the python-runner sandbox.
 - [external-tools](subsystems/external-tools.md) - invoker-supplied tool calls: an
   API caller attaches tool definitions to an invocation, the model calls them, the
