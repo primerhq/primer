@@ -20,6 +20,20 @@ The subsystem's job is to glue those together for exactly one turn at a time: cl
 A session has two persisted faces that are reconciled at turn boundaries:
 
 - `WorkspaceSession` (`primer/model/workspace_session.py`) is the scheduler-visible row in storage. It carries lifecycle state (`status`), claim/streaming bookkeeping (`turn_no`, `completed_turn_no`, `last_seq`, `next_unprocessed_seq`, `turn_status`, `cancel_requested_at`, `pause_requested_at`), the yielding-tool park columns (`parked_status`, `parked_event_key`, `parked_until`, `parked_at`, `parked_state`), the resumed-park marker (`resumed_park_at`), the park stash (`pending_park`), and the tool_wait park's marker and wake stamp (`parked_tool_batches`, `resumable_at`; nothing writes them yet, so both read null, see section 5). It is the row the `ClaimEngine` claims and the row the REST surface mutates.
+- The row also has a storage-only responder ledger contract: a lifetime sequence
+  high-water, current epoch, independent reservation mutation version, bounded
+  current-epoch reservation map, and optional `turn_person` projection metadata.
+  Legacy rows keep every ledger field null. Once active, its base fields are all
+  present; reservation sequences form a contiguous suffix of the lifetime
+  high-water. The epoch is exactly 32 lowercase hexadecimal characters. Each
+  reservation stores a bounded validated domain separately from its exact bounded
+  canonical source identity. Projection epoch/source/sequence/time are all present
+  or all null; a full projection matches the active epoch and named reservation,
+  while an authenticated starter may retain `turn_person` with a null projection
+  until durable USER_INPUT. These fields
+  never appear in public session JSON or OpenAPI. S2 defines storage and
+  validation only: it does not reserve sources, rotate epochs, write task receipts,
+  or connect lifecycle writers, so human task-gate decisions remain hard-disabled.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
