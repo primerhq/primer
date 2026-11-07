@@ -76,9 +76,16 @@ def _gate(
         yielded=Yielded(
             tool_name="_approval",
             event_key=event_key,
-            resume_metadata={"kind": "approval"},
+            resume_metadata={
+                "original_call": {
+                    "id": "t1",
+                    "name": "workspace__write",
+                    "arguments": {},
+                },
+            },
         ),
         tool_call_id="t1",
+        tool_arguments={},
         parked_at=parked_at,
         deadline=until,
         binding_epoch=0,
@@ -168,7 +175,7 @@ async def test_on_release_gate_sets_gated_state_and_event_key() -> None:
     assert updated.gate_until == until
     decoded = decode_task_gate_state(updated.gate_state, task=updated)
     assert isinstance(decoded, TaskGateState)
-    assert decoded.yielded.resume_metadata == {"kind": "approval"}
+    assert decoded.yielded.resume_metadata["original_call"]["id"] == "t1"
     assert updated.gate_seq == 1
     assert updated.gate_occurrence_token == "0" * 31 + "1"
     assert updated.gate_resolution is None

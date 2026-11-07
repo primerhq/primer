@@ -21,6 +21,7 @@ from pydantic_core import to_jsonable_python
 
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 from primer.model.yield_ import Yielded, YieldToWorker
+from primer.storage._patch import json_equal
 
 
 TASK_GATE_STATE_VERSION = 1
@@ -98,6 +99,7 @@ class TaskGateState:
     event_key: str
     yielded: Yielded
     tool_call_id: str
+    tool_arguments: dict[str, Any]
     parked_at: datetime
     deadline: datetime | None
     binding_epoch: int | None
@@ -125,6 +127,7 @@ class TaskGateState:
                 "event_keys": self.yielded.event_keys,
             },
             "tool_call_id": self.tool_call_id,
+            "tool_arguments": self.tool_arguments,
             "parked_at": self.parked_at.isoformat(),
             "deadline": self.deadline.isoformat() if self.deadline is not None else None,
             "binding_epoch": self.binding_epoch,
@@ -141,7 +144,7 @@ class TaskGateState:
             data,
             {
                 "schema_version", "occurrence_token", "gate_seq", "event_key",
-                "yielded", "tool_call_id", "parked_at", "deadline",
+                "yielded", "tool_call_id", "tool_arguments", "parked_at", "deadline",
                 "binding_epoch", "resolution",
             },
             "task-gate state",
@@ -166,6 +169,7 @@ class TaskGateState:
             event_key=event_key,
             yielded=yielded,
             tool_call_id=_nonempty_text(data["tool_call_id"], "state tool_call_id"),
+            tool_arguments=copy.deepcopy(_mapping(data["tool_arguments"], "state tool_arguments")),
             parked_at=_aware_datetime(data["parked_at"], "state parked_at"),
             deadline=(
                 _aware_datetime(data["deadline"], "state deadline")
@@ -182,6 +186,7 @@ class TaskGateState:
             raise TaskGateStateError("task-gate deadline precedes parked_at")
         if receipt is not None:
             _receipt_matches_state(receipt, state)
+        _validate_approval_original_call(state)
         return state
 
 
@@ -208,12 +213,21 @@ def new_task_gate_state(
     parked_at: datetime,
     deadline: datetime | None,
     binding_epoch: int | None,
+    tool_arguments: dict[str, Any],
 ) -> TaskGateState:
     """Build one fresh flat-task envelope, refusing nested continuation state."""
     if getattr(raised, "frames", None):
         raise TaskGateStateError(
             "task-level gates do not support nested continuation frames"
         )
+    for field_name in (
+        "batch_index", "completed_results", "remaining_calls",
+        "remaining_scoped_call_ids",
+    ):
+        if getattr(raised, field_name, None) is not None:
+            raise TaskGateStateError(
+                f"task-level gates do not support YieldToWorker.{field_name}"
+            )
     if raised.tool_call_id != task.wire_call_id:
         raise TaskGateStateError(
             "the yielded call id does not identify the claimed tool-call task"
@@ -225,6 +239,9 @@ def new_task_gate_state(
         event_key=_nonempty_text(yielded.event_key, "state event_key"),
         yielded=yielded,
         tool_call_id=_nonempty_text(raised.tool_call_id, "state tool_call_id"),
+        tool_arguments=copy.deepcopy(_mapping(
+            to_jsonable_python(tool_arguments), "state tool_arguments",
+        )),
         parked_at=_ensure_aware(parked_at, "state parked_at"),
         deadline=(
             _ensure_aware(deadline, "state deadline")
@@ -235,6 +252,7 @@ def new_task_gate_state(
             if binding_epoch is not None else None
         ),
     )
+    _validate_approval_original_call(state, expected_tool_name=task.tool_name)
     # Round-trip through the decoder so one writer and every reader enforce
     # exactly the same shape, including finite timeout and deadline ordering.
     return TaskGateState.from_jsonable(state.to_jsonable())
@@ -279,6 +297,8 @@ def classify_task_gate_decision(
     receipt: TaskGateResolutionReceipt,
 ) -> TaskGateDecisionClass:
     """Classify without mutating; corrupt or legacy gates fail closed."""
+    if task.state in (ToolCallTaskState.DONE, ToolCallTaskState.FAILED):
+        return TaskGateDecisionClass.TERMINAL
     exact_occurrence = (
         task.gate_occurrence_token == receipt.occurrence_token
         and task.gate_seq == receipt.gate_seq
@@ -286,8 +306,6 @@ def classify_task_gate_decision(
     )
     if not exact_occurrence:
         return TaskGateDecisionClass.STALE
-    if task.state in (ToolCallTaskState.DONE, ToolCallTaskState.FAILED):
-        return TaskGateDecisionClass.TERMINAL
     if task.state is ToolCallTaskState.RUNNING or task.claim_token is not None:
         return TaskGateDecisionClass.RUNNING
     try:
@@ -307,11 +325,11 @@ def classify_task_gate_decision(
         stored = TaskGateResolutionReceipt.from_jsonable(raw_receipt)
     except TaskGateStateError:
         return TaskGateDecisionClass.CORRUPT
-    if decoded.resolution is None or decoded.resolution != stored:
+    if decoded.resolution is None or not resolution_receipts_equal(decoded.resolution, stored):
         return TaskGateDecisionClass.CORRUPT
     return (
         TaskGateDecisionClass.IDENTICAL
-        if stored == receipt else TaskGateDecisionClass.CONFLICT
+        if resolution_receipts_equal(stored, receipt) else TaskGateDecisionClass.CONFLICT
     )
 
 
@@ -353,6 +371,7 @@ def _decode_legacy_approval(
 
 
 def _state_matches_task(state: TaskGateState, task: ToolCallTask) -> None:
+    validate_task_gate_call(state, task)
     if (
         state.occurrence_token != task.gate_occurrence_token
         or state.gate_seq != task.gate_seq
@@ -367,8 +386,52 @@ def _state_matches_task(state: TaskGateState, task: ToolCallTask) -> None:
         return
     if state.resolution is None or raw_receipt is None:
         raise TaskGateStateError("task-gate resolution mirrors disagree")
-    if state.resolution != TaskGateResolutionReceipt.from_jsonable(raw_receipt):
+    if not resolution_receipts_equal(
+        state.resolution, TaskGateResolutionReceipt.from_jsonable(raw_receipt),
+    ):
         raise TaskGateStateError("task-gate resolution mirrors disagree")
+
+
+def validate_task_gate_call(state: TaskGateState, task: ToolCallTask) -> None:
+    """Validate the persisted call identity against its ref-only task row."""
+    if state.tool_call_id != task.wire_call_id:
+        raise TaskGateStateError("task-gate call id does not match its task row")
+    _validate_approval_original_call(state, expected_tool_name=task.tool_name)
+
+
+def resolution_receipts_equal(
+    left: TaskGateResolutionReceipt,
+    right: TaskGateResolutionReceipt,
+) -> bool:
+    """Receipt equality under storage's JSON rule: bool differs from int, 1 equals 1.0."""
+    return (
+        left.schema_version == right.schema_version
+        and left.occurrence_token == right.occurrence_token
+        and left.gate_seq == right.gate_seq
+        and left.event_key == right.event_key
+        and json_equal(left.payload, right.payload)
+    )
+
+
+def _validate_approval_original_call(
+    state: TaskGateState,
+    *,
+    expected_tool_name: str | None = None,
+) -> None:
+    if state.yielded.tool_name != "_approval":
+        return
+    original = state.yielded.resume_metadata.get("original_call")
+    if not isinstance(original, dict) or set(original) != {"id", "name", "arguments"}:
+        raise TaskGateStateError("approval task gate requires an exact original_call")
+    if (
+        original["id"] != state.tool_call_id
+        or not isinstance(original["name"], str)
+        or not original["name"]
+        or (expected_tool_name is not None and original["name"] != expected_tool_name)
+        or not isinstance(original["arguments"], dict)
+        or not json_equal(original["arguments"], state.tool_arguments)
+    ):
+        raise TaskGateStateError("approval original_call does not match the claimed task")
 
 
 def _receipt_matches_state(
@@ -483,4 +546,6 @@ __all__ = [
     "decode_task_gate_state",
     "make_resolution_receipt",
     "new_task_gate_state",
+    "resolution_receipts_equal",
+    "validate_task_gate_call",
 ]

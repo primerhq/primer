@@ -8,11 +8,12 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.tool_call_resume import (
     TaskGateResumeOutcome,
     durably_mark_tool_call_task_resumable,
 )
-from primer.int.claim import ClaimKind
+from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.model.provider import SqliteConfig
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 from primer.model.yield_ import Yielded
@@ -52,6 +53,7 @@ def _task(*, token=TOKEN, seq=1) -> ToolCallTask:
             },
         ),
         tool_call_id="call-1",
+        tool_arguments={},
         parked_at=now,
         deadline=now + timedelta(minutes=5),
         binding_epoch=2,
@@ -156,10 +158,6 @@ async def test_conflicting_duplicate_is_refused_without_rearm(sqlite_provider):
             TaskGateResumeOutcome.REFUSED_RUNNING,
         ),
         (
-            lambda row: row.model_copy(update={"state": ToolCallTaskState.FAILED}),
-            TaskGateResumeOutcome.REFUSED_TERMINAL,
-        ),
-        (
             lambda row: _task(token="b" * 32, seq=2),
             TaskGateResumeOutcome.REFUSED_STALE,
         ),
@@ -180,6 +178,70 @@ async def test_live_terminal_and_later_occurrences_are_never_mutated(
     assert outcome is expected
     assert await storage.get(initial.id) == moved
     assert engine.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_real_terminal_release_clears_gate_identity_but_classifies_terminal(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    await storage.create(_task())
+    engine = _Engine()
+    assert await _decide(storage, engine) is TaskGateResumeOutcome.ADVANCED
+    queued = await storage.get("sess-1/x:tool:1:1")
+    running = await storage.patch_if(
+        queued.id,
+        {"state": "running", "claim_token": "terminal-token"},
+        where={"state": ["queued"]},
+    )
+    adapter = ToolCallClaimAdapter(task_storage=storage)
+    await adapter.on_release(
+        None,
+        running.id,
+        outcome=ReleaseOutcome(
+            success=True, drop_lease=True, claim_token="terminal-token",
+            entity_update={"result_state": {"id": "call-1", "output": "ok"}},
+        ),
+    )
+    terminal = await storage.get(running.id)
+    assert terminal.state is ToolCallTaskState.DONE
+    assert terminal.gate_occurrence_token is None and terminal.gate_resolution is None
+
+    assert await _decide(storage, engine) is TaskGateResumeOutcome.REFUSED_TERMINAL
+    assert engine.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bool_and_int_payloads_are_conflicting_decisions(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    await storage.create(_task())
+    engine = _Engine()
+    assert await _decide(storage, engine, payload={"answer": True}) is TaskGateResumeOutcome.ADVANCED
+    assert await _decide(storage, engine, payload={"answer": 1}) is TaskGateResumeOutcome.REFUSED_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_embedded_and_top_level_receipts_use_typed_json_equality(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    await storage.create(_task())
+    engine = _Engine()
+    assert await _decide(storage, engine, payload={"answer": True}) is TaskGateResumeOutcome.ADVANCED
+    row = await storage.get("sess-1/x:tool:1:1")
+    top = dict(row.gate_resolution)
+    top["payload"] = {"answer": 1}
+    await storage.update(row.model_copy(update={"gate_resolution": top}))
+
+    outcome = await _decide(storage, engine, payload={"answer": True})
+    assert outcome is TaskGateResumeOutcome.REFUSED_CORRUPT
+    assert engine.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_engine_cannot_advance_the_durable_row(sqlite_provider):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    initial = _task()
+    await storage.create(initial)
+    with pytest.raises(ValueError, match="ClaimEngine is required"):
+        await _decide(storage, None)
+    assert await storage.get(initial.id) == initial
 
 
 @pytest.mark.asyncio

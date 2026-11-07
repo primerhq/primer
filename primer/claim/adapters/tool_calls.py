@@ -187,6 +187,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 TaskGateState,
                 TaskGateStateError,
                 decode_task_gate_state,
+                validate_task_gate_call,
             )
 
             try:
@@ -209,6 +210,13 @@ class ToolCallClaimAdapter(ClaimAdapter):
             current = await self._read(entity_id, conn)
             if current is None:
                 return None
+            try:
+                validate_task_gate_call(gate, current)
+            except TaskGateStateError as exc:
+                raise _InvalidEntityUpdate(
+                    "it gave a task-gate envelope that does not identify the task",
+                    detail=str(exc)[:300],
+                ) from exc
             if (
                 gate.gate_seq != current.gate_seq + 1
                 or gate.event_key != p.parked_event_key

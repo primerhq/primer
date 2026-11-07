@@ -6,7 +6,7 @@ Storage[T].update — no per-entity storage subclass is needed.
 
 from __future__ import annotations
 
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 
 import pytest
@@ -22,6 +22,8 @@ from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.int.claim import ParkRequest
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.yield_ import Yielded
+from primer.worker.task_gate_runtime import TaskGateState
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +225,43 @@ def _make_tool_call_task(id: str = "worker:tool:1:1") -> ToolCallTask:
     )
 
 
+def _task_gate_park(
+    task: ToolCallTask,
+    *,
+    event_key: str,
+    gate_seq: int,
+    until: datetime | None,
+) -> ParkRequest:
+    parked_at = (until - timedelta(seconds=1)) if until is not None else datetime.now(UTC)
+    gate = TaskGateState(
+        occurrence_token=f"{gate_seq:032x}",
+        gate_seq=gate_seq,
+        event_key=event_key,
+        yielded=Yielded(
+            tool_name="_approval",
+            event_key=event_key,
+            resume_metadata={
+                "original_call": {
+                    "id": task.wire_call_id,
+                    "name": task.tool_name,
+                    "arguments": {},
+                },
+            },
+        ),
+        tool_call_id=task.wire_call_id,
+        tool_arguments={},
+        parked_at=parked_at,
+        deadline=until,
+        binding_epoch=0,
+    )
+    return ParkRequest(
+        parked_state=gate.to_jsonable(),
+        parked_event_key=event_key,
+        parked_until=until,
+        parked_at=parked_at,
+    )
+
+
 @pytest.mark.asyncio
 async def test_tool_call_on_release_success_sets_done(sqlite_provider):
     storage = sqlite_provider.get_storage(ToolCallTask)
@@ -254,11 +293,11 @@ async def test_tool_call_on_release_gate_sets_gated(sqlite_provider):
     adapter = ToolCallClaimAdapter(task_storage=storage)
     outcome = ReleaseOutcome(
         success=False, drop_lease=True, claim_token=_TOKEN,
-        park=ParkRequest(
-            parked_state={"kind": "approval"},
-            parked_event_key="tool_approval:sess-1:worker:tool:1:1",
-            parked_until=datetime(2026, 10, 5, 12, 30, 15, 123456, tzinfo=UTC),
-            parked_at=datetime.now(UTC),
+        park=_task_gate_park(
+            task,
+            event_key="tool_approval:sess-1:worker:tool:1:1",
+            gate_seq=1,
+            until=datetime(2026, 10, 5, 12, 30, 15, 123456, tzinfo=UTC),
         ),
     )
     await adapter.on_release(conn=None, entity_id=task.id, outcome=outcome)
@@ -267,7 +306,7 @@ async def test_tool_call_on_release_gate_sets_gated(sqlite_provider):
     assert updated is not None
     assert updated.state == ToolCallTaskState.GATED
     assert updated.gate_event_key == "tool_approval:sess-1:worker:tool:1:1"
-    assert updated.gate_state == {"kind": "approval"}
+    assert updated.gate_state["tool_call_id"] == task.wire_call_id
     assert updated.gate_until == datetime(2026, 10, 5, 12, 30, 15, 123456, tzinfo=UTC)
     assert updated.gate_seq == 1
     assert updated.claim_token is None
@@ -309,10 +348,7 @@ async def test_tool_call_gate_release_lands_on_a_row_stored_without_gate_seq(sql
         conn=None, entity_id=task.id,
         outcome=ReleaseOutcome(
             success=False, drop_lease=True, claim_token=_TOKEN,
-            park=ParkRequest(
-                parked_state={"kind": "approval"}, parked_event_key="k", parked_until=None,
-                parked_at=datetime.now(UTC),
-            ),
+            park=_task_gate_park(task, event_key="k", gate_seq=1, until=None),
         ),
     )
     updated = await storage.get(task.id)
@@ -355,9 +391,7 @@ async def test_tool_call_gate_release_is_rejected_by_the_database_when_gate_seq_
     adapter = ToolCallClaimAdapter(task_storage=wrapper)
     gate = ReleaseOutcome(
         success=False, drop_lease=True, claim_token=_TOKEN,
-        park=ParkRequest(
-            parked_state={"kind": "approval"}, parked_event_key="k", parked_until=None, parked_at=datetime.now(UTC),
-        ),
+        park=_task_gate_park(task, event_key="k", gate_seq=1, until=None),
     )
 
     assert await adapter.on_release(conn=None, entity_id=task.id, outcome=gate) is None
