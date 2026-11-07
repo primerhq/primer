@@ -68,6 +68,12 @@ not lost; pause/cancel/interrupt flags and their stored timestamps plus
 S3b uses the same scalar fence for epoch rotation and reservation projection:
 rotation replaces the storage-only ledger envelope in one guarded patch, while
 projection patches only `turn_person` and its four storage-only receipt fields.
+S4.4a extends the same serialization seam with two optional typed contracts:
+`WorkspaceSession.pending_responder_intent` and
+`PendingSessionMessage.responder_proof`. They are persisted by
+`dump_for_storage`, round-trip through generic storage and remain absent from
+ordinary dumps and schemas. They define no writer or lifecycle behavior yet;
+missing fields on older rows mean no authenticated responder proof.
 
 ## 3. Public surface
 

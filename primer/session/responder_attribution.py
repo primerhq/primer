@@ -7,24 +7,22 @@ authority merely because it reaches these helpers.
 
 from __future__ import annotations
 
-import base64
-import json
-import math
 import re
 import secrets
 from dataclasses import dataclass
-from decimal import Decimal
 from datetime import UTC, datetime
-from hashlib import blake2b, sha256
+from hashlib import sha256
 from typing import Any
 
 from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import PrincipalRef, person_ref
+from primer.model.responder_source import (
+    canonical_responder_payload,
+    canonical_responder_source,
+)
 from primer.model.workspace_session import (
     RESPONDER_RESERVATION_LIMIT,
-    RESPONDER_SOURCE_DOMAIN_MAX_BYTES,
-    RESPONDER_SOURCE_IDENTITY_MAX_BYTES,
     ResponderReservation,
     WorkspaceSession,
 )
@@ -32,7 +30,6 @@ from primer.storage import raw_generation
 from primer.storage.cas import patch_if_or_current
 
 
-_DOMAIN = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _FENCE_FIELDS = (
     "status",
     "turn_status",
@@ -52,8 +49,6 @@ _FENCE_FIELDS = (
     "last_seq",
 )
 _JSON_SCALARS = (str, int, float, bool, type(None))
-_MAX_IDENTITY_ITEMS = 256
-_MAX_IDENTITY_DEPTH = 16
 
 
 @dataclass(frozen=True)
@@ -172,22 +167,11 @@ class ReservationFences:
 
 def responder_source(domain: str, identity: Any) -> ResponderSource:
     """Return the canonical typed identity and its fixed-width ``rs1_`` key."""
-    domain_bytes = _validated_domain(domain)
-    canonical = _canonical_identity(identity)
-    identity_bytes = canonical.encode("utf-8")
-    if len(identity_bytes) > RESPONDER_SOURCE_IDENTITY_MAX_BYTES:
-        raise ValueError("responder source identity exceeds the byte limit")
-    framed = (
-        b"rs1\x00"
-        + len(domain_bytes).to_bytes(2, "big")
-        + domain_bytes
-        + len(identity_bytes).to_bytes(4, "big")
-        + identity_bytes
-    )
+    canonical = canonical_responder_source(domain, identity)
     return ResponderSource(
-        key="rs1_" + _source_digest(framed),
-        domain=domain,
-        identity=canonical,
+        key=canonical.key,
+        domain=canonical.domain,
+        identity=canonical.identity,
     )
 
 
@@ -220,7 +204,7 @@ def classic_gate_responder_decision(
             "parked_at": parked_at,
             "event_key": event_key,
             "gate_id": gate_id,
-            "payload_sha256": sha256(_canonical_json_payload(payload)).hexdigest(),
+            "payload_sha256": sha256(canonical_responder_payload(payload)).hexdigest(),
         },
     )
     return ResponderDecision(
@@ -265,7 +249,7 @@ def new_session_responder_ledger(
         raise ValueError("responder starter requires a positive USER_INPUT seq")
     if accepted_at is None:
         raise ValueError("responder starter requires accepted_at")
-    canonical_payload = _canonical_json_payload(user_input_payload)
+    canonical_payload = canonical_responder_payload(user_input_payload)
     source = responder_source(
         "user_input",
         {
@@ -329,95 +313,6 @@ def empty_responder_rotation(
         },
         where=where,
     )
-
-
-def _source_digest(framed: bytes) -> str:
-    return blake2b(framed, digest_size=32).hexdigest()
-
-
-def _validated_domain(domain: str) -> bytes:
-    if not isinstance(domain, str) or not _DOMAIN.fullmatch(domain):
-        raise ValueError("responder source domain must be a canonical lowercase identifier")
-    try:
-        encoded = domain.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise ValueError("responder source domain must be valid UTF-8") from exc
-    if len(encoded) > RESPONDER_SOURCE_DOMAIN_MAX_BYTES:
-        raise ValueError("responder source domain exceeds the byte limit")
-    return encoded
-
-
-def _canonical_identity(identity: Any) -> str:
-    if isinstance(identity, bytes):
-        encoded = base64.urlsafe_b64encode(identity).rstrip(b"=").decode("ascii")
-        return f"bytes:{encoded}"
-    budget = [0]
-    _validate_json(identity, depth=0, budget=budget)
-    try:
-        encoded = _canonical_json(identity)
-        encoded.encode("utf-8")
-    except (TypeError, ValueError, UnicodeEncodeError) as exc:
-        raise ValueError("responder source identity is not strict JSON") from exc
-    return f"json:{encoded}"
-
-
-def _canonical_json_payload(payload: Any) -> bytes:
-    budget = [0]
-    _validate_json(payload, depth=0, budget=budget)
-    try:
-        return _canonical_json(payload).encode("utf-8")
-    except (TypeError, ValueError, UnicodeEncodeError) as exc:
-        raise ValueError("responder payload is not strict JSON") from exc
-
-
-def _canonical_json(value: Any) -> str:
-    if value is None:
-        return "null"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        number = Decimal.from_float(value)
-        return "0" if number.is_zero() else format(number, "f")
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, list):
-        return "[" + ",".join(_canonical_json(item) for item in value) + "]"
-    if isinstance(value, dict):
-        return "{" + ",".join(
-            f"{_canonical_json(key)}:{_canonical_json(value[key])}"
-            for key in sorted(value)
-        ) + "}"
-    raise TypeError(type(value).__name__)
-
-
-def _validate_json(value: Any, *, depth: int, budget: list[int]) -> None:
-    if depth > _MAX_IDENTITY_DEPTH:
-        raise ValueError("responder source identity is too deeply nested")
-    budget[0] += 1
-    if budget[0] > _MAX_IDENTITY_ITEMS:
-        raise ValueError("responder source identity has too many values")
-    if value is None or isinstance(value, (str, bool, int)):
-        return
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("responder source identity contains a non-finite number")
-        return
-    if isinstance(value, list):
-        for item in value:
-            _validate_json(item, depth=depth + 1, budget=budget)
-        return
-    if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            raise ValueError("responder source identity object keys must be strings")
-        for key, item in value.items():
-            _validate_json(key, depth=depth + 1, budget=budget)
-            _validate_json(item, depth=depth + 1, budget=budget)
-        return
-    raise ValueError(f"responder source identity cannot contain {type(value).__name__}")
 
 
 async def reserve_source(

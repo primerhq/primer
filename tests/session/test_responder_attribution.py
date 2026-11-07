@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-import primer.session.responder_attribution as attribution
+import primer.model.responder_source as responder_source_codec
 from primer.model.except_ import ConflictError
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
@@ -184,7 +184,11 @@ async def test_two_concurrent_sources_retry_without_losing_an_addition() -> None
 
 
 async def test_forced_digest_collision_fails_closed(monkeypatch) -> None:
-    monkeypatch.setattr(attribution, "_source_digest", lambda _value: "0" * 64)
+    monkeypatch.setattr(
+        responder_source_codec,
+        "_source_digest",
+        lambda _value: "0" * 64,
+    )
     store = await _store()
     await _reserve(store, identity={"call_id": "c1"})
 
