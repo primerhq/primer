@@ -33,6 +33,24 @@ from primer.worker.task_gate_runtime import TaskGateState
 from tests.api.test_gate_fence import _approval_session
 
 
+@pytest.fixture(autouse=True)
+def _exercise_reserved_task_gate_router_for_existing_contract_tests(
+    request, monkeypatch,
+) -> None:
+    """Keep the future C1 contract covered while S0 disables it in production."""
+    if "task_gate_capability_disabled" in request.fixturenames:
+        return
+    monkeypatch.setattr(
+        "primer.api.routers.tool_approval._task_gate_human_decisions_enabled",
+        lambda _request: True,
+    )
+
+
+@pytest.fixture
+def task_gate_capability_disabled() -> None:
+    """Opt a test into the production S0 capability state."""
+
+
 TOKEN = "a" * 32
 
 
@@ -214,6 +232,34 @@ async def _make_mixed_park(
             },
         },
     }))
+
+
+@pytest.mark.asyncio
+async def test_s0_hides_and_refuses_seeded_task_gate_without_mutation(
+    world, task_gate_capability_disabled,
+) -> None:
+    task = await _park_task_approval(world.sp, "s0-hidden")
+    await world.engine.upsert(ClaimKind.TOOL_CALL, task.id)
+    before = await world.sp.get_storage(ToolCallTask).get(task.id)
+    assert before is not None
+
+    pending = await world.client.get(
+        "/v1/sessions/s0-hidden/tool_approval/pending",
+    )
+    assert pending.status_code == 404
+    responded = await world.client.post(
+        "/v1/sessions/s0-hidden/tool_approval/respond",
+        json={
+            "tool_call_id": "wire-1", "gate_id": TOKEN,
+            "decision": "approved",
+        },
+    )
+    assert responded.status_code == 404
+
+    after = await world.sp.get_storage(ToolCallTask).get(task.id)
+    assert after == before
+    assert await world.engine.lease_exists(ClaimKind.TOOL_CALL, [task.id]) == {task.id}
+    assert await _records(world.sp) == []
 
 
 @pytest.mark.asyncio
@@ -576,7 +622,9 @@ async def test_corrupt_task_token_in_mixed_park_never_falls_to_classic(world) ->
 
 
 @pytest.mark.asyncio
-async def test_classic_approval_route_is_unchanged(world) -> None:
+async def test_classic_approval_route_is_unchanged(
+    world, task_gate_capability_disabled,
+) -> None:
     sp, client = world.sp, world.client
     await sp.get_storage(WorkspaceSession).create(
         _approval_session(

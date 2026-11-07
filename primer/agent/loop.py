@@ -983,7 +983,9 @@ async def _dispatch_tool_calls(
     """
     if tool_calls_as_claims_enabled and resolve_scoped_call is not None:
         notifying_calls, claimable_calls = _partition_notifying(calls, tool_manager)
-        if claimable_calls:
+        if claimable_calls and all(
+            [await tool_manager.is_task_claim_safe(call) for call in claimable_calls]
+        ):
             return await _dispatch_as_claims(
                 notifying_calls,
                 claimable_calls,

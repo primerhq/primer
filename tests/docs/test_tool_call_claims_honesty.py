@@ -66,6 +66,24 @@ def test_flag_default_and_schema_description_keep_the_capability_guardrails() ->
     ):
         assert marker in description
 
+    human_field = WorkerConfig.model_fields["task_gate_human_decisions_enabled"]
+    human_schema = WorkerConfig.model_json_schema()["properties"]["task_gate_human_decisions_enabled"]
+    assert human_field.default is False
+    assert human_schema["default"] is False
+    assert "not available before P3" in (human_field.description or "")
+
+
+def test_s0_docs_and_code_disable_human_task_gate_surfaces() -> None:
+    claim_doc = _read("docs/dev/architecture/claim-machine.md")
+    worker_doc = _read("docs/dev/architecture/worker-system.md")
+    router = _read("primer/api/routers/tool_approval.py")
+    executor = _read("primer/worker/engine_handlers.py")
+    for content in (claim_doc, worker_doc):
+        assert "S0" in content
+        assert "responder ordering P3" in content
+    assert "if _task_gate_human_decisions_enabled(request):" in router
+    assert "not _task_gate_human_execution_enabled(pool)" in executor
+
 
 def test_all_notifying_batches_are_documented_as_staying_out_of_the_claims_path() -> None:
     for relative in (

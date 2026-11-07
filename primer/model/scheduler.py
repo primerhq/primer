@@ -140,6 +140,17 @@ class WorkerConfig(BaseModel):
         ),
     )
 
+    task_gate_human_decisions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Reserved responder-ordering capability for human task gates. "
+            "Default OFF. The capability is not available before P3, so a "
+            "true value is rejected during configuration validation. Approval, "
+            "ask_user, and other yielding calls stay on the classic session "
+            "park path."
+        ),
+    )
+
     tool_call_reserved_concurrency: int | None = Field(
         default=None,
         ge=1,
@@ -169,6 +180,15 @@ class WorkerConfig(BaseModel):
             "worker."
         ),
     )
+
+    @model_validator(mode="after")
+    def _human_task_gate_capability_is_not_yet_available(self) -> "WorkerConfig":
+        if self.task_gate_human_decisions_enabled:
+            raise ValueError(
+                "task_gate_human_decisions_enabled is reserved until responder "
+                "ordering P3 is implemented"
+            )
+        return self
 
     @model_validator(mode="after")
     def _lease_ttl_at_least_2x_heartbeat(self) -> "WorkerConfig":

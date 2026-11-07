@@ -707,6 +707,34 @@ class ToolExecutionManager:
                 return False
         return True
 
+    async def is_task_claim_safe(self, call: ToolCallPart) -> bool:
+        """Whether a call may leave the classic session path as a task claim.
+
+        S0 keeps every yielding call and every call with an approval policy on
+        the classic path until durable human responder ordering is available.
+        Unknown calls also stay classic so the ordinary dispatcher can return
+        its established routing error without creating a task row.
+        """
+        if self._catalogue is None:
+            await self.list_tools(principal=None)
+        descriptor = self._descriptors.get(call.name)
+        if descriptor is None or descriptor.yields:
+            return False
+        if self._approval_resolver is None:
+            return True
+        if call.name in self._workspace_scoped:
+            toolset_id, tool_id = WORKSPACE_TOOLSET_ID, self._workspace_scoped[call.name]
+        else:
+            toolset_id, tool_id = self._tool_to_toolset.get(call.name, (None, None))
+        if toolset_id is None:
+            return False
+        if toolset_id == _EXTERNAL_TOOLSET_ID:
+            return True
+        policy = await self._approval_resolver.find(
+            toolset_id=canonical_toolset_id(toolset_id), tool_name=tool_id,
+        )
+        return policy is None or not policy.enabled
+
     def is_notifying(self, tool_name: str) -> bool:
         """True iff the SCOPED ``tool_name`` was declared notifying.
 
