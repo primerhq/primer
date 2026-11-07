@@ -3693,9 +3693,15 @@ async def _transition_session_status(
     # this worker), and the reconciler and the pool's _end_session do not take it at all, so the row can be
     # ended between that read and this write. The backend refuses the write in the same statement if the
     # stored status is ENDED.
+    where = {"status": [raw_generation(fresh, "status")]}
+    if expected_epoch is not None:
+        where["binding_epoch"] = [raw_generation(fresh, "binding_epoch")]
     try:
-        landed = await session_storage.update_unless(
-            fresh.model_copy(update=updates), field="status", forbidden=SessionStatus.ENDED.value,
+        landed = await patch_if_checked(
+            session_storage,
+            session.id,
+            to_jsonable_python(updates),
+            where=where,
         )
     except NotFoundError:
         # A force-delete can remove the row after the fresh read above. Treat
@@ -3706,10 +3712,12 @@ async def _transition_session_status(
         ended_now = await session_storage.get(session.id)
         if ended_now is None:
             return _TerminalWrite(False, new_status, ended_reason)
-        return await _leave_ended_row_alone(
-            session, ended_now, new_status, ended_reason,
-            executor=executor, workspace_registry=workspace_registry,
-        )
+        if ended_now.status == SessionStatus.ENDED:
+            return await _leave_ended_row_alone(
+                session, ended_now, new_status, ended_reason,
+                executor=executor, workspace_registry=workspace_registry,
+            )
+        return _TerminalWrite(False, ended_now.status, ended_now.ended_reason)
     if new_status == SessionStatus.ENDED:
         await _sync_agent_session_ended(
             executor, ended_reason,

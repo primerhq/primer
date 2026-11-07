@@ -81,6 +81,59 @@ async def test_interrupt_running_session_sets_flag(running_session_client):
     assert got.json()["interrupt_requested"] is True
 
 
+async def test_interrupt_field_patch_preserves_concurrent_unrelated_change(
+    running_session_client, fake_storage_provider, monkeypatch,
+):
+    from primer.model.workspace_session import WorkspaceSession
+
+    client, ctx = running_session_client
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    real_patch = sessions.patch_if
+
+    async def race_then_patch(entity_id, patch, *, where, **kwargs):
+        await real_patch(
+            entity_id, {"last_worker_id": "other-worker"},
+            where={"status": ["running"]},
+        )
+        return await real_patch(entity_id, patch, where=where, **kwargs)
+
+    monkeypatch.setattr(sessions, "patch_if", race_then_patch)
+    response = await client.post(
+        f"/v1/workspaces/{ctx.workspace_id}/sessions/{ctx.session_id}/interrupt",
+        json={},
+    )
+    assert response.status_code == 200
+    row = await sessions.get(ctx.session_id)
+    assert row.interrupt_requested is True
+    assert row.last_worker_id == "other-worker"
+
+
+async def test_interrupt_refuses_when_binding_moves_before_patch(
+    running_session_client, fake_storage_provider, monkeypatch,
+):
+    from primer.model.workspace_session import WorkspaceSession
+
+    client, ctx = running_session_client
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    real_patch = sessions.patch_if
+
+    async def move_then_patch(entity_id, patch, *, where, **kwargs):
+        await real_patch(
+            entity_id, {"binding_epoch": 1},
+            where={"binding_epoch": [0]},
+        )
+        return await real_patch(entity_id, patch, where=where, **kwargs)
+
+    monkeypatch.setattr(sessions, "patch_if", move_then_patch)
+    response = await client.post(
+        f"/v1/workspaces/{ctx.workspace_id}/sessions/{ctx.session_id}/interrupt",
+        json={},
+    )
+    assert response.status_code == 409
+    row = await sessions.get(ctx.session_id)
+    assert row.binding_epoch == 1 and row.interrupt_requested is False
+
+
 async def test_interrupt_publish_failure_is_still_200_but_is_logged_and_counted(
     running_session_client, app, monkeypatch, caplog,
 ):

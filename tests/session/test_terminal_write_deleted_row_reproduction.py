@@ -254,17 +254,18 @@ async def test_scenario_the_row_is_deleted_under_the_turns_terminal_write(
     """The harness really created the race: the store refused the turn's conditional write because the row was gone.
     What the turn then did is the behaviour test's business, so this one passes before and after a fix."""
     storage = fake_storage_provider.get_storage(WorkspaceSession)
-    real_update_unless = storage.update_unless
+    real_patch_if = storage.patch_if
     refused: list[NotFoundError] = []
 
-    async def watching(entity, **kwargs):
+    async def watching(entity_id, patch=None, **kwargs):
         try:
-            return await real_update_unless(entity, **kwargs)
+            return await real_patch_if(entity_id, patch, **kwargs)
         except NotFoundError as exc:
-            refused.append(exc)
+            if "status" in (patch or {}):
+                refused.append(exc)
             raise
 
-    storage.update_unless = watching
+    storage.patch_if = watching
     await _run_turn(
         seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
         exit_=exit_, row_gone="between",

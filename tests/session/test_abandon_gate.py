@@ -14,12 +14,16 @@ has already been closed cancelled.
 import json
 from datetime import UTC, datetime
 
+import pytest
+
+from primer.model.except_ import ConflictError
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
     WorkspaceSession,
 )
 from primer.session.abandon import abandon_session_gate
+from tests.conftest import _InMemoryStorage
 
 
 def _row(**kw):
@@ -41,16 +45,18 @@ def _row(**kw):
     return WorkspaceSession(**base)
 
 
-class _Sessions:
+class _Sessions(_InMemoryStorage[WorkspaceSession]):
     def __init__(self, row):
+        super().__init__(WorkspaceSession)
         self.row = row
 
-    async def get(self, _sid):
-        return self.row
+    @property
+    def row(self):
+        return self._data["s"]
 
-    async def update(self, row):
-        self.row = row
-        return row
+    @row.setter
+    def row(self, row):
+        self._data[row.id] = row
 
 
 class _IO:
@@ -152,3 +158,39 @@ class TestAbandonGate:
         )
         assert io.lines == []
         assert updated.last_seq == 5
+
+    async def test_field_patch_preserves_concurrent_unrelated_change(self):
+        row = _row()
+        sessions = _Sessions(row)
+        real_patch = sessions.patch_if
+
+        async def race_then_patch(*args, **kwargs):
+            sessions.row = sessions.row.model_copy(update={"cancel_requested": True})
+            return await real_patch(*args, **kwargs)
+
+        sessions.patch_if = race_then_patch
+        updated = await abandon_session_gate(
+            sessions=sessions, workspace_io=_IO(), row=row,
+            reason="binding switched",
+        )
+        assert updated.cancel_requested is True
+        assert updated.parked_status is None and updated.last_seq == 7
+
+    async def test_moved_park_refuses_the_stale_clear(self):
+        row = _row()
+        sessions = _Sessions(row)
+        real_patch = sessions.patch_if
+
+        async def move_then_patch(*args, **kwargs):
+            sessions.row = sessions.row.model_copy(update={
+                "parked_event_key": "ask_user:s:new",
+            })
+            return await real_patch(*args, **kwargs)
+
+        sessions.patch_if = move_then_patch
+        with pytest.raises(ConflictError, match="changed while its gate was being abandoned"):
+            await abandon_session_gate(
+                sessions=sessions, workspace_io=_IO(), row=row,
+                reason="binding switched",
+            )
+        assert sessions.row.parked_event_key == "ask_user:s:new"
