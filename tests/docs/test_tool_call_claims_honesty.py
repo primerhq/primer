@@ -16,13 +16,25 @@ def _read(relative: str) -> str:
 
 def test_claim_machine_documents_all_five_shipped_kinds_and_adapters() -> None:
     expected = ["SESSION", "HARNESS", "TRIGGER", "TOOL_CALL", "MEMORY"]
+    adapter_names = [
+        "SessionClaimAdapter",
+        "HarnessClaimAdapter",
+        "TriggerClaimAdapter",
+        "ToolCallClaimAdapter",
+        "MemoryClaimAdapter",
+    ]
     assert [kind.name for kind in ClaimKind] == expected
 
     claim_doc = _read("docs/dev/architecture/claim-machine.md")
+    worker_doc = _read("docs/dev/architecture/worker-system.md")
+    factory = _read("primer/claim/factory.py")
     assert "The five `ClaimKind` values" in claim_doc
     assert "The five shipped adapters:" in claim_doc
-    for name in expected:
-        assert f"`{name}`" in claim_doc
+    assert "The five shipped adapters are" in worker_doc
+    for kind, adapter in zip(expected, adapter_names, strict=True):
+        assert f"`{kind}`" in claim_doc
+        assert f"ClaimKind.{kind}: {adapter}(" in factory
+        assert f"`{adapter}`" in worker_doc
 
 
 def test_tool_call_handler_is_registered_and_documented_as_built() -> None:
