@@ -171,6 +171,16 @@ A session has two persisted faces that are reconciled at turn boundaries:
   The reserved capability remains false and rejects production activation;
   graph task asks, channels, cancellation, timeout and background repair stay
   outside this slice.
+- Dormant task ask-user S4A adds only the worker-side authority fence. A
+  promoted standalone ask can reach its resume hook only when its exact
+  responder reservation is durably represented by the current session
+  projection, or a later valid projection has taken authority without
+  regressing sequence. The worker dynamically rechecks that projected
+  person's role and FULL workspace access, then re-reads the occurrence and
+  projection before any hook effect. Re-yield creates a fresh occurrence and
+  cancellation retains the old receipt for takeover. S0 still blocks
+  production task asks; routing activation, repair, graphs, channels, timeout
+  and cancel fan-out remain deferred.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

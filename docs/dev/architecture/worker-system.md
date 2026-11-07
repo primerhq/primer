@@ -148,6 +148,14 @@ The pool side of Phase 3 stage 7a (the `ToolCallTask` entity, its adapter, the f
   receipt staging and publishes no classic gate event for a task decision.
   S0 still rejects activation, and the worker still cannot consume a v2 ask
   receipt in production.
+- **Dormant ask-user executor fence.** S4A lets the reserved executor path
+  consume a promoted version-2 ask only after exact occurrence, standalone
+  task, live park, binding, turn, responder-epoch and durable-projection
+  checks. It re-resolves the current projected person's role and FULL
+  workspace access, then fresh-reads and repeats those fences before the hook.
+  A later valid responder projection remains authoritative; same-sequence
+  source or person mismatches fail closed. This adds no production activation,
+  route, scanner or graph support while S0 remains false.
 
 ## 6. Wiring
 
