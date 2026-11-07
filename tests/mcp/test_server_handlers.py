@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ from primer.mcp.server import (
     current_actor,
     current_api_token_id,
     current_api_token_scopes,
+    current_mcp_invocation,
     current_principal,
 )
 from primer.model.chat import ToolCallResult
@@ -768,6 +770,103 @@ async def test_call_dispatches_normally_when_arguments_are_valid(
         "tool_name": "strict", "arguments": {"n": 7},
         "principal": None, "ctx": None,
     }], "the tool must have been dispatched exactly once with the real arguments"
+
+
+@pytest.mark.asyncio
+async def test_call_scopes_a_unique_transport_invocation_identity(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    """One JSON-RPC id may be reused, but each accepted call gets its own nonce."""
+    from mcp.types import CallToolRequestParams
+
+    seen = []
+
+    async def _invoke(**_kwargs):
+        seen.append(current_mcp_invocation.get())
+        return ToolCallResult(output="ok")
+
+    monkeypatch.setattr("primer.mcp.server.invoke_exposed", _invoke)
+    registry = _registry_with_schema({"type": "object", "properties": {}})
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+    handler = build_mcp_server(lambda: deps).get_request_handler("tools/call").handler
+    for request_id in (7, "7"):
+        ctx = SimpleNamespace(
+            request_id=request_id,
+            request=SimpleNamespace(headers={"mcp-session-id": "session-1"}),
+        )
+        result = await handler(
+            ctx,
+            CallToolRequestParams(name="misc__strict", arguments={}),
+        )
+        assert result.is_error is False
+
+    assert current_mcp_invocation.get() is None
+    assert len(seen) == 2 and all(item is not None for item in seen)
+    first, second = seen
+    assert first[0] == "session-1\x00int\x007"
+    assert second[0] == "session-1\x00str\x007"
+    assert first[1].utcoffset().total_seconds() == 0
+    assert second[1].utcoffset().total_seconds() == 0
+    assert first[2] != second[2]
+
+
+@pytest.mark.asyncio
+async def test_call_restores_invocation_context_after_validation_and_dispatch_failures(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    from mcp.types import CallToolRequestParams
+
+    seen = []
+
+    async def _invoke(**_kwargs):
+        seen.append(current_mcp_invocation.get())
+        if len(seen) == 1:
+            raise RuntimeError("dispatch failed")
+        return ToolCallResult(output="ok")
+
+    monkeypatch.setattr("primer.mcp.server.invoke_exposed", _invoke)
+    registry = _registry_with_schema({
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    })
+    deps = _deps(fake_storage_provider, registry)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__strict"],
+        updated_by="alice", deps=deps,
+    )
+    handler = build_mcp_server(lambda: deps).get_request_handler("tools/call").handler
+    ctx = SimpleNamespace(
+        request_id="failed",
+        request=SimpleNamespace(headers={"mcp-session-id": "session-1"}),
+    )
+
+    invalid = await handler(
+        ctx,
+        CallToolRequestParams(name="misc__strict", arguments={}),
+    )
+    assert invalid.is_error is True
+    assert current_mcp_invocation.get() is None
+
+    failed = await handler(
+        ctx,
+        CallToolRequestParams(name="misc__strict", arguments={"n": 1}),
+    )
+    assert failed.is_error is True
+    assert seen[0] is not None
+    assert current_mcp_invocation.get() is None
+
+    succeeded = await handler(
+        None,
+        CallToolRequestParams(name="misc__strict", arguments={"n": 1}),
+    )
+    assert succeeded.is_error is False
+    assert seen[1] is None
+    assert current_mcp_invocation.get() is None
 
 
 # ---- build_mcp_server smoke ------------------------------------------------

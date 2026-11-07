@@ -595,7 +595,7 @@ def _prepared_intent_for_pending(
         if not isinstance(canvas_event, dict):
             raise ValueError("pending canvas responder proof has no canvas event attribution")
         proof_payload[CANVAS_EVENT_PAYLOAD_KEY] = canvas_event
-    elif proof.domain != "user_input":
+    elif proof.domain not in ("user_input", "mcp_steer"):
         raise ValueError("pending responder proof has an unsupported domain")
     digest = sha256(canonical_responder_payload(proof_payload)).hexdigest()
     if (

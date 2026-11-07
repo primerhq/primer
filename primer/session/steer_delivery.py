@@ -18,6 +18,7 @@ from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import PeerAttribution, WorkspaceSession
 from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, queued_attribution, wake_session
 from primer.session.pending_messages import PendingQueueFull, store_pending_steer
+from primer.session.responder_wake_intent import TrustedResponderInput
 from primer.session.steer_routing import ROUTE_PENDING, route_steer
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ async def deliver_steer(
     event_bus: Any = None,
     peer: PeerAttribution | None = None,
     by: PrincipalRef | None = None,
+    trusted_responder_input: TrustedResponderInput | None = None,
 ) -> SteerDelivery:
     """Steer ``session_id`` with ``text``, honouring the parallelism mode.
 
@@ -128,6 +130,7 @@ async def deliver_steer(
                 # input this is (spec §13 Q1): the realized turn runs as them.
                 attribution=queued_attribution(peer, by_a_person=human_intent),
                 by=by,
+                trusted_responder_input=trusted_responder_input,
             )
         except PendingQueueFull:
             return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
@@ -150,6 +153,7 @@ async def deliver_steer(
             open_turn=parallelism,
             receipt=receipt,
             by=by,
+            trusted_responder_input=trusted_responder_input,
         )
     except PendingQueueFull:
         # The pause hold stored nothing: the queue it would have joined is full and the message is a peer's.
