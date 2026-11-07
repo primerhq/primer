@@ -229,7 +229,7 @@ async def test_an_ended_target_that_cannot_reopen_takes_nothing(ended_reason, ph
 )
 async def test_a_target_with_a_turn_open_queues_the_message_and_changes_nothing_else(seed):
     """Armed, running or parked (on any gate): the message waits behind the turn or the park. It is never written as a user message, never
-    answers a gate, never pulses the scheduler, and does not touch the hop count (the queued message has not started a turn)."""
+    answers a gate or pulses the scheduler. A pending pause additionally records the held message so the pause is never silent."""
     world = make_world(with_bus=True)
     await seed_session(world, sid="ses-b", turn_no=1, peer_hops=2, **seed)
     before = (await world.sessions.get("ses-b")).model_dump(mode="json")
@@ -238,10 +238,19 @@ async def test_a_target_with_a_turn_open_queues_the_message_and_changes_nothing_
     pending = await _pending(world)
     assert [p.attribution for p in pending] == [{"peer": PEER.model_dump(mode="json")}]
     assert [p.parts for p in pending] == [[{"type": "text", "text": TEXT}]]
-    assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before
-    assert records(world, "ses-b") == [] and slot(world, "ses-b").appended == []
+    after = await world.sessions.get("ses-b")
+    pause_held = seed.get("pause_requested") is True
+    expected = {**before, "last_seq": before["last_seq"] + 1} if pause_held else before
+    assert after.model_dump(mode="json") == expected
+    if pause_held:
+        [superseded] = records(world, "ses-b")
+        assert (superseded["seq"], superseded["kind"]) == (expected["last_seq"], "pause_superseded")
+        assert superseded["payload"] == {"action": "queued", "pending_id": pending[0].id}
+        assert world.bus.published == [("session:ses-b:tick", {"seq": expected["last_seq"]})]
+    else:
+        assert records(world, "ses-b") == [] and world.bus.published == []
+    assert slot(world, "ses-b").appended == []
     assert world.scheduler.enqueued == [] and world.engine.upserts == []
-    assert world.bus.published == [], "something was published on a key: a gate would have been answered"
 
 
 async def test_a_busy_target_queues_the_message_with_its_attribution():
