@@ -20,18 +20,18 @@ from datetime import UTC, datetime
 
 import pytest
 
-from primer.model.workspace_session import GraphSessionBinding, SessionStatus, WorkspaceSession
-from primer.session import steer_delivery
+from primer.model.storage import OffsetPage
+from primer.model.workspace_session import GraphSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
 from primer.session.steer_delivery import DELIVERED_QUEUED, DELIVERED_WOKEN, deliver_steer
 from primer.session.steer_routing import ROUTE_PENDING, ROUTE_WAKE, route_steer
 from primer.session.terminals import CLOSES, COPY, INSIDE, TurnWindowScanner
 from primer.session.timeline import build_turn_timeline, turn_envelopes, turn_windows
 from primer.session.turns import count_turn_state, has_open_turn
 from primer.session.usage import session_usage
-from tests.conftest import _FakeStorageProvider
 from tests.graph import test_fanout_delegation_order as scene
 from tests.graph.test_fanout_delegation_order import _WorkerLLM
 from tests.session.graph_turn_shapes import FailingWorkerLLM, _fanout_graph, cancelled, graph_turn, play, release_marker, with_park
+from tests.session._peer_fakes import make_world, records
 
 # name -> (the arguments of graph_turn as a factory, the status the turn ends in)
 SHAPES = {
@@ -241,26 +241,31 @@ def _graph_row(turn_status: str) -> WorkspaceSession:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("turn_status", "outcome"), [("running", DELIVERED_QUEUED), ("claimable", DELIVERED_QUEUED), ("idle", DELIVERED_WOKEN)])
-async def test_a_steer_to_a_graph_session_is_routed_by_the_rows_turn_status(monkeypatch, turn_status, outcome):
-    """The steer path production takes: ``deliver_steer`` -> ``route_steer(row)``, with NO log (the graph-window change does not touch it). A graph that is running is ``turn_status`` running, so its
-    steer was queued before the window rule and is queued now; an idle graph session is woken. (``route_steer``'s optional ``raw_lines`` slow path, the only reader of ``has_open_turn`` here, has
-    no production caller: both callers pass the row alone.)"""
-    sp = _FakeStorageProvider()
-    await sp.get_storage(WorkspaceSession).create(_graph_row(turn_status))
-    woken = []
+async def test_a_steer_to_a_graph_session_is_routed_by_the_rows_turn_status(turn_status, outcome):
+    """The real routed wake queues a graph's open turn and wakes its idle row.
 
-    async def _fake_wake(**kw):
-        woken.append(kw["instruction"])
-
-    monkeypatch.setattr(steer_delivery, "wake_session", _fake_wake)
+    ``deliver_steer`` now makes the fresh routing decision inside
+    ``wake_session``. A fake wake modeled the removed advisory fast path and
+    therefore reported every call as woken without exercising routing.
+    """
+    world = make_world()
+    await world.sessions.create(_graph_row(turn_status))
 
     out = await deliver_steer(
         session_id="s1", text="also this", parallelism="queue", human_intent=True,
-        storage_provider=sp, scheduler=object(), claim_engine=object(), workspace_registry=object(),
+        **world.deliver_kwargs(),
     )
 
     assert out.outcome == outcome
-    assert woken == (["also this"] if outcome == DELIVERED_WOKEN else [])
+    pending = await world.sp.get_storage(PendingSessionMessage).find(None, OffsetPage(offset=0, length=10))
+    if outcome == DELIVERED_QUEUED:
+        assert [row.parts for row in pending.items] == [[{"type": "text", "text": "also this"}]]
+        assert records(world, "s1", workspace_id="w1") == []
+        assert world.scheduler.enqueued == [] and world.engine.upserts == []
+    else:
+        assert pending.items == []
+        assert [row["payload"]["text"] for row in records(world, "s1", workspace_id="w1") if row["kind"] == "user_input"] == ["also this"]
+        assert world.scheduler.enqueued == ["s1"]
 
 
 @pytest.mark.asyncio

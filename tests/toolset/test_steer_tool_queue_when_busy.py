@@ -178,10 +178,19 @@ async def test_every_other_state_with_a_turn_open_queues_and_changes_nothing_els
     result, body = await _steer(world, "ses-b")
     assert not result.is_error, result.output
     assert body["delivery"] == "queued"
-    assert {k: v for k, v in body.items() if k != "delivery"} == before
-    assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before
-    assert len(await _pending(world)) == 1 and records(world, "ses-b") == []
-    assert world.scheduler.enqueued == [] and world.engine.upserts == [] and _woken_keys(world) == []
+    pause_held = seed.get("pause_requested") is True
+    expected = {**before, "last_seq": before["last_seq"] + 1} if pause_held else before
+    assert {k: v for k, v in body.items() if k != "delivery"} == expected
+    assert (await world.sessions.get("ses-b")).model_dump(mode="json") == expected
+    [pending] = await _pending(world)
+    if pause_held:
+        [superseded] = records(world, "ses-b")
+        assert (superseded["seq"], superseded["kind"]) == (expected["last_seq"], "pause_superseded")
+        assert superseded["payload"] == {"action": "queued", "pending_id": pending.id}
+        assert _woken_keys(world) == ["session:ses-b:tick"]
+    else:
+        assert records(world, "ses-b") == [] and _woken_keys(world) == []
+    assert world.scheduler.enqueued == [] and world.engine.upserts == []
     assert [e.payload["delivery"] for e in await _steered_events(world)] == ["queued"]
 
 
