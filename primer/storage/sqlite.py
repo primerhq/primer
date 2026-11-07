@@ -175,6 +175,15 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.gate_event_key'))",
         ),
     ],
+    "toolcalltask": [
+        (
+            "gate_route",
+            False,
+            "(json_extract(data,'$.state'), "
+            "json_extract(data,'$.session_id'), "
+            "json_extract(data,'$.gate_occurrence_token'))",
+        ),
+    ],
     "serviceversion": [
         # Mirrors the postgres entry (KN-19j): two concurrent publishes
         # compute the same next number from the same read; the unique

@@ -730,6 +730,16 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # The records list filters `workspace_id IN <readable>` for non-admins (access-control P2 Task 5).
         ("workspace_id", False, "((data->>'workspace_id'))"),
     ],
+    "toolcalltask": [
+        # Task-gate decision surfaces resolve one occurrence through its
+        # GATED -> QUEUED -> RUNNING window, and list pending gates by session.
+        (
+            "gate_route",
+            False,
+            "((data->>'state'), (data->>'session_id'), "
+            "(data->>'gate_occurrence_token'))",
+        ),
+    ],
     "externaltoolcall": [
         # Same filter on the global external tool call list (access-control P2 Task 5).
         ("workspace_id", False, "((data->>'workspace_id'))"),
