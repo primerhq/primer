@@ -304,7 +304,7 @@ def test_session_model_maps_to_the_sessions_table():
         ("sessions", [
             "sessions_status", "sessions_workspace_id", "sessions_parent_session_id", "sessions_last_worker_id", "sessions_binding_agent_id",
             "sessions_binding_graph_id", "sessions_turn_status", "sessions_parked_status", "sessions_tool_wait_reconcile",
-            "sessions_created_at_desc",
+            "sessions_tool_wait_reconcile_v2", "sessions_created_at_desc",
         ]),
         ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
@@ -381,6 +381,9 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     assert "apitoken_token_hash_uniq" in await _index_names(sp, "apitoken")
     assert "sessions_status" in await _index_names(sp, "sessions")
     assert "sessions_workspace_id" in await _index_names(sp, "sessions")
+    assert "sessions_tool_wait_reconcile_v2" in await _index_names(
+        sp, "sessions",
+    )
     assert "channel_provider_external" in await _index_names(sp, "channel")
     assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
     assert "document_collection_id" in await _index_names(sp, "document")
@@ -389,21 +392,21 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
 @pg
 @pytest.mark.asyncio
 async def test_terminal_tool_wait_query_uses_marker_and_id_order_index(postgres_storage_provider):
+    from primer.claim.tool_wait_reconcile import (
+        _terminal_tool_wait_candidate_predicate,
+    )
     from primer.model.workspace_session import WorkspaceSession
     from primer.storage._predicate import render_order_by
-    from primer.storage.q import Q
 
     sp = postgres_storage_provider
     store = sp.get_storage(WorkspaceSession)
     await store.get("__bootstrap__")
-    predicate = (
-        Q(WorkspaceSession)
-        .where("parked_tool_batches", True)
-        .where_in("parked_status", ["parked", "resumable"])
-        .build()
-    )
+    predicate = _terminal_tool_wait_candidate_predicate()
     translator = store._translator()
     where_sql = await store._where(translator, predicate)
+    assert "data->>'parked_tool_batches' IS NOT NULL" in where_sql
+    assert "data->>'parked_status' = ANY($1::text[])" in where_sql
+    assert translator._params == [["parked", "resumable"]]
     limit = translator.append_param(201)
     sql = (
         f"EXPLAIN SELECT id, data FROM {store._qualified} "
@@ -413,7 +416,7 @@ async def test_terminal_tool_wait_query_uses_marker_and_id_order_index(postgres_
         await conn.execute("SET LOCAL enable_seqscan = off")
         rows = await conn.fetch(sql, *translator._params)
     plan = " ".join(row[0] for row in rows)
-    assert "sessions_tool_wait_reconcile" in plan
+    assert "sessions_tool_wait_reconcile_v2" in plan
     assert "Sort" not in plan
 
 
