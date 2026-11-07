@@ -29,10 +29,15 @@ from primer.int.toolset import ToolsetProvider
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Tool, ToolCallResult, ToolResultPart
 from primer.model.scheduler import WorkerConfig
-from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.tool_call_task import (
+    TaskGateRepairStage,
+    ToolCallTask,
+    ToolCallTaskState,
+)
 from primer.model.yield_ import Yielded
 from primer.model.workspace_session import (
     AgentSessionBinding,
+    ResponderReservation,
     SessionMessageKind,
     SessionMessageRecord,
     SessionStatus,
@@ -766,11 +771,10 @@ class _ResolvedGateToolManager:
 
 def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=None):
     from primer.model.principal import PrincipalRef
-    from primer.model.responder_source import canonical_responder_source
     from primer.worker.task_gate_runtime import (
-        TaskGateResolutionReceipt,
-        TaskGateResponderReceipt,
         TaskGateState,
+        gate_state_sha256,
+        make_task_ask_resolution_receipt,
         make_resolution_receipt,
     )
 
@@ -778,35 +782,6 @@ def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=Non
     task = task_storage._data[TASK_ID]  # noqa: SLF001
     token = "a" * 32
     event_key = f"tool_approval:{SESSION_ID}:{CALL_ID}"
-    if tool_name == "ask_user":
-        source = canonical_responder_source(
-            "ask_user", {"session_id": SESSION_ID, "task_id": TASK_ID},
-        )
-        receipt = TaskGateResolutionReceipt(
-            occurrence_token=token,
-            gate_seq=1,
-            event_key=event_key,
-            payload=payload,
-            responder=TaskGateResponderReceipt(
-                person=PrincipalRef(
-                    type="user", id="person-1", display="Person One",
-                    role="user", source="local", user_id="person-1",
-                ),
-                responder_epoch="e" * 32,
-                domain=source.domain,
-                source_identity=source.identity,
-                source_key=source.key,
-                accepted_at=_now(),
-            ),
-            schema_version=2,
-        )
-    else:
-        receipt = make_resolution_receipt(
-            occurrence_token=token,
-            gate_seq=1,
-            event_key=event_key,
-            payload=payload,
-        )
     gate = TaskGateState(
         occurrence_token=token,
         gate_seq=1,
@@ -827,17 +802,88 @@ def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=Non
         parked_at=_now(),
         deadline=_now() + timedelta(minutes=5),
         binding_epoch=1,
-        resolution=receipt,
     )
+    if tool_name == "ask_user":
+        person = PrincipalRef(
+            type="user", id="person-1", display="Person One",
+            role="user", source="local", user_id="person-1",
+        )
+        accepted_at = _now()
+        receipt = make_task_ask_resolution_receipt(
+            state=gate,
+            task=task,
+            payload=payload,
+            person=person,
+            responder_epoch="e" * 32,
+            accepted_at=accepted_at,
+        )
+        gate = gate.with_resolution(receipt)
+        responder = receipt.responder
+        assert responder is not None
+        session_storage = provider.get_storage(WorkspaceSession)
+        session = session_storage._data[SESSION_ID]  # noqa: SLF001
+        reservation = ResponderReservation(
+            domain=responder.domain,
+            source_identity=responder.source_identity,
+            person=responder.person,
+            seq=1,
+            accepted_at=responder.accepted_at,
+        )
+        session_storage._data[SESSION_ID] = session.model_copy(update={  # noqa: SLF001
+            "responder_seq": 1,
+            "responder_epoch": responder.responder_epoch,
+            "responder_reservation_version": 1,
+            "responder_reservations": {responder.source_key: reservation},
+            "turn_person": responder.person,
+            "turn_person_seq": 1,
+            "turn_person_at": responder.accepted_at,
+            "turn_person_epoch": responder.responder_epoch,
+            "turn_person_source_key": responder.source_key,
+        })
+    else:
+        receipt = make_resolution_receipt(
+            occurrence_token=token,
+            gate_seq=1,
+            event_key=event_key,
+            payload=payload,
+        )
+        gate = gate.with_resolution(receipt)
+    encoded_gate = gate.to_jsonable()
     task_storage._data[TASK_ID] = task.model_copy(update={  # noqa: SLF001
         "gate_occurrence_token": token,
         "gate_event_key": event_key,
         "gate_until": gate.deadline,
         "gate_seq": 1,
-        "gate_state": gate.to_jsonable(),
+        "gate_state": encoded_gate,
         "gate_resolution": receipt.to_jsonable(),
+        "gate_state_sha256": (
+            gate_state_sha256(encoded_gate) if tool_name == "ask_user" else None
+        ),
+        "repair_stage": (
+            TaskGateRepairStage.PROMOTED
+            if tool_name == "ask_user"
+            else TaskGateRepairStage.NONE
+        ),
     })
     return gate
+
+
+def _allow_task_ask_access(monkeypatch, seen=None) -> None:
+    from primer.worker import executor_builders
+
+    async def _principal(_storage, session):
+        if seen is not None:
+            seen.append(("principal", session.turn_person))
+        return session.turn_person
+
+    async def _workspace(_storage, _session, principal):
+        if seen is not None:
+            seen.append(("workspace", principal))
+
+    monkeypatch.setattr(executor_builders, "resolve_run_principal", _principal)
+    monkeypatch.setattr(
+        executor_builders, "refuse_run_without_workspace_access", _workspace,
+    )
 
 
 def _executor_with(tool_manager) -> object:
@@ -1221,6 +1267,8 @@ async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
     monkeypatch.setitem(
         yield_resume_registry._registry, "ask_user", _hook,  # noqa: SLF001
     )
+    access_seen = []
+    _allow_task_ask_access(monkeypatch, access_seen)
     pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
         outstanding_task_ids=[TASK_ID],
     )
@@ -1263,6 +1311,421 @@ async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
         )
         assert "parked_at_iso" not in gate.yielded.resume_metadata
         assert task_storage._data[TASK_ID].result_state["output"] == '{"response": "yes"}'  # noqa: SLF001
+        assert access_seen == [
+            ("principal", gate.resolution.responder.person),
+            ("workspace", gate.resolution.responder.person),
+        ]
+        resumed_session = provider.get_storage(WorkspaceSession)._data[SESSION_ID]  # noqa: SLF001
+        assert resumed_session.turn_person == gate.resolution.responder.person
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stale_part",
+    [
+        "reservation",
+        "projection",
+        "epoch",
+        "turn",
+        "binding",
+        "park",
+        "same_seq_source",
+        "same_seq_person",
+    ],
+)
+async def test_resolved_task_ask_stale_authority_executes_no_hook_or_tool(
+    monkeypatch, stale_part,
+):
+    from primer.model.principal import PrincipalRef
+    from primer.model.responder_source import canonical_responder_source
+    from primer.worker import yield_resume_registry
+
+    hook_calls = []
+
+    def _hook(*args):
+        hook_calls.append(args)
+        return ToolCallResult(output="must-not-run", is_error=False)
+
+    monkeypatch.setitem(
+        yield_resume_registry._registry, "ask_user", _hook,  # noqa: SLF001
+    )
+    _allow_task_ask_access(monkeypatch)
+    pool, _engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    gate = _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+    responder = gate.resolution.responder
+    assert responder is not None
+    session_storage = provider.get_storage(WorkspaceSession)
+    session = session_storage._data[SESSION_ID]  # noqa: SLF001
+    changes = {}
+    if stale_part == "reservation":
+        changes["responder_reservations"] = {}
+    elif stale_part == "projection":
+        changes.update({
+            "turn_person_seq": None,
+            "turn_person_at": None,
+            "turn_person_epoch": None,
+            "turn_person_source_key": None,
+        })
+    elif stale_part == "epoch":
+        changes["responder_epoch"] = "f" * 32
+    elif stale_part == "turn":
+        changes["turn_no"] = 1
+    elif stale_part == "binding":
+        changes["binding_epoch"] = 2
+    elif stale_part == "park":
+        changes["parked_state"] = {
+            "kind": "tool_wait", "outstanding_task_ids": [],
+        }
+    elif stale_part == "same_seq_person":
+        changes["turn_person"] = PrincipalRef(
+            type="user", id="other", display="Other", role="user",
+            source="local", user_id="other",
+        )
+    else:
+        other = canonical_responder_source(
+            "ask_user", {"session_id": SESSION_ID, "other": True},
+        )
+        reservations = dict(session.responder_reservations)
+        reservations[other.key] = ResponderReservation(
+            domain=other.domain,
+            source_identity=other.identity,
+            person=responder.person,
+            seq=1,
+            accepted_at=responder.accepted_at,
+        )
+        changes.update({
+            "responder_reservations": reservations,
+            "turn_person_source_key": other.key,
+        })
+    session_storage._data[SESSION_ID] = session.model_copy(update=changes)  # noqa: SLF001
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state in {  # noqa: SLF001
+                ToolCallTaskState.DONE, ToolCallTaskState.FAILED,
+            },
+            f"the {stale_part} task ask did not fail closed",
+        )
+        assert hook_calls == []
+        assert toolset.calls == []
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["principal", "workspace"])
+async def test_resolved_task_ask_rechecks_current_access_before_hook(
+    monkeypatch, refusal,
+):
+    from primer.authz import RunRefused, WorkspaceAccessRevoked
+    from primer.worker import executor_builders, yield_resume_registry
+
+    hook_calls = []
+    monkeypatch.setitem(
+        yield_resume_registry._registry,
+        "ask_user",
+        lambda *args: hook_calls.append(args),  # noqa: ARG005
+    )
+    pool, _engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+
+    async def _principal(_storage, session):
+        if refusal == "principal":
+            raise RunRefused("responder role was revoked")
+        return session.turn_person
+
+    async def _workspace(_storage, _session, _principal):
+        raise WorkspaceAccessRevoked("workspace full access was revoked")
+
+    monkeypatch.setattr(executor_builders, "resolve_run_principal", _principal)
+    monkeypatch.setattr(
+        executor_builders, "refuse_run_without_workspace_access", _workspace,
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the access-refused task ask did not terminate",
+        )
+        assert hook_calls == []
+        assert toolset.calls == []
+        assert task_storage._data[TASK_ID].result_state["error"] is True  # noqa: SLF001
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_task_ask_accepts_later_projected_authority(monkeypatch):
+    from primer.model.principal import PrincipalRef
+    from primer.model.responder_source import canonical_responder_source
+    from primer.worker import yield_resume_registry
+
+    hook_calls = []
+    monkeypatch.setitem(
+        yield_resume_registry._registry,
+        "ask_user",
+        lambda _metadata, _payload, _context: (
+            hook_calls.append("ask")
+            or ToolCallResult(output="later-authority", is_error=False)
+        ),
+    )
+    access_seen = []
+    _allow_task_ask_access(monkeypatch, access_seen)
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    gate = _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+    receipt_responder = gate.resolution.responder
+    assert receipt_responder is not None
+    later_person = PrincipalRef(
+        type="user", id="person-2", display="Person Two", role="user",
+        source="local", user_id="person-2",
+    )
+    later_source = canonical_responder_source(
+        "ask_user", {"session_id": SESSION_ID, "decision": "later"},
+    )
+    later_at = _now() + timedelta(seconds=1)
+    sessions = provider.get_storage(WorkspaceSession)
+    session = sessions._data[SESSION_ID]  # noqa: SLF001
+    reservations = dict(session.responder_reservations)
+    reservations[later_source.key] = ResponderReservation(
+        domain=later_source.domain,
+        source_identity=later_source.identity,
+        person=later_person,
+        seq=2,
+        accepted_at=later_at,
+    )
+    sessions._data[SESSION_ID] = session.model_copy(update={  # noqa: SLF001
+        "responder_seq": 2,
+        "responder_reservation_version": 2,
+        "responder_reservations": reservations,
+        "turn_person": later_person,
+        "turn_person_seq": 2,
+        "turn_person_at": later_at,
+        "turn_person_source_key": later_source.key,
+    })
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the task ask with later authority did not finish",
+        )
+        assert hook_calls == ["ask"]
+        assert access_seen == [
+            ("principal", later_person),
+            ("workspace", later_person),
+        ]
+        assert sessions._data[SESSION_ID].turn_person == later_person  # noqa: SLF001
+        assert receipt_responder.source_key in reservations
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_task_ask_fresh_reads_after_access_boundary(monkeypatch):
+    from primer.worker import executor_builders, yield_resume_registry
+
+    hook_calls = []
+    monkeypatch.setitem(
+        yield_resume_registry._registry,
+        "ask_user",
+        lambda *args: hook_calls.append(args),  # noqa: ARG005
+    )
+    pool, _engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+    sessions = provider.get_storage(WorkspaceSession)
+
+    async def _principal(_storage, session):
+        return session.turn_person
+
+    async def _workspace(_storage, _session, _principal):
+        current = sessions._data[SESSION_ID]  # noqa: SLF001
+        sessions._data[SESSION_ID] = current.model_copy(update={  # noqa: SLF001
+            "binding_epoch": current.binding_epoch + 1,
+        })
+
+    monkeypatch.setattr(executor_builders, "resolve_run_principal", _principal)
+    monkeypatch.setattr(
+        executor_builders, "refuse_run_without_workspace_access", _workspace,
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the post-access binding race did not fail closed",
+        )
+        assert hook_calls == []
+        assert toolset.calls == []
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_task_ask_refuses_projection_changed_during_access(
+    monkeypatch,
+):
+    from primer.authz import RunRefused, WorkspaceAccessRevoked
+    from primer.model.principal import PrincipalRef
+    from primer.model.responder_source import canonical_responder_source
+    from primer.worker import executor_builders, yield_resume_registry
+
+    hook_calls = []
+    monkeypatch.setitem(
+        yield_resume_registry._registry,
+        "ask_user",
+        lambda *args: hook_calls.append(args),  # noqa: ARG005
+    )
+    pool, engine, provider, toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    gate = _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+    responder = gate.resolution.responder
+    assert responder is not None
+    person_b = PrincipalRef(
+        type="user", id="revoked-b", display="Revoked B", role="user",
+        source="local", user_id="revoked-b",
+    )
+    source_b = canonical_responder_source(
+        "ask_user", {"session_id": SESSION_ID, "decision": "concurrent-b"},
+    )
+    accepted_b = _now() + timedelta(seconds=1)
+    sessions = provider.get_storage(WorkspaceSession)
+    auth_calls = []
+
+    async def _principal(_storage, session):
+        auth_calls.append(("principal", session.turn_person))
+        if session.turn_person == person_b:
+            raise RunRefused("B is revoked")
+        return session.turn_person
+
+    async def _workspace(_storage, _session, principal):
+        auth_calls.append(("workspace", principal))
+        if principal == person_b:
+            raise WorkspaceAccessRevoked("B has no FULL workspace access")
+        current = sessions._data[SESSION_ID]  # noqa: SLF001
+        reservations = dict(current.responder_reservations)
+        reservations[source_b.key] = ResponderReservation(
+            domain=source_b.domain,
+            source_identity=source_b.identity,
+            person=person_b,
+            seq=2,
+            accepted_at=accepted_b,
+        )
+        sessions._data[SESSION_ID] = current.model_copy(update={  # noqa: SLF001
+            "responder_seq": 2,
+            "responder_reservation_version": 2,
+            "responder_reservations": reservations,
+            "turn_person": person_b,
+            "turn_person_seq": 2,
+            "turn_person_at": accepted_b,
+            "turn_person_source_key": source_b.key,
+        })
+
+    monkeypatch.setattr(executor_builders, "resolve_run_principal", _principal)
+    monkeypatch.setattr(
+        executor_builders, "refuse_run_without_workspace_access", _workspace,
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the projection TOCTOU did not fail closed",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert auth_calls == [
+            ("principal", responder.person),
+            ("workspace", responder.person),
+        ]
+        assert hook_calls == []
+        assert toolset.calls == []
+        assert task.result_state == {
+            "id": CALL_ID,
+            "output": "resolved task ask_user authority changed during access checks",
+            "error": True,
+        }
+        assert task.attempts == 0
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_task_ask_reyield_mints_a_fresh_occurrence(monkeypatch):
+    from primer.model.yield_ import YieldToWorker
+    from primer.worker import yield_resume_registry
+
+    calls = 0
+
+    def _hook(_metadata, _payload, context):
+        nonlocal calls
+        calls += 1
+        raise YieldToWorker(
+            Yielded(
+                tool_name="ask_user",
+                event_key=f"ask_user:{SESSION_ID}:again",
+                resume_metadata={"question": "again?"},
+            ),
+            tool_call_id=context.tool_call_id,
+        )
+
+    monkeypatch.setitem(
+        yield_resume_registry._registry, "ask_user", _hook,  # noqa: SLF001
+    )
+    _allow_task_ask_access(monkeypatch)
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    old = _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.GATED,  # noqa: SLF001
+            "the resumed task ask did not re-gate",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert calls == 1
+        assert task.gate_seq == old.gate_seq + 1
+        assert task.gate_occurrence_token != old.occurrence_token
+        assert task.gate_resolution is None
+        assert task.repair_stage is TaskGateRepairStage.NONE
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
@@ -1550,16 +2013,17 @@ async def test_cancelled_resolved_hook_keeps_receipt_for_takeover(monkeypatch):
         return ToolCallResult(output="resumed-after-takeover", is_error=False)
 
     monkeypatch.setitem(
-        yield_resume_registry._registry, "test_task_gate", _hook,  # noqa: SLF001
+        yield_resume_registry._registry, "ask_user", _hook,  # noqa: SLF001
     )
+    _allow_task_ask_access(monkeypatch)
     pool, engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
         outstanding_task_ids=[TASK_ID],
     )
     gate = _resolve_task_gate(
         provider,
         payload={"answer": "yes"},
-        tool_name="test_task_gate",
-        metadata={"phase": 1},
+        tool_name="ask_user",
+        metadata={"question": "continue?"},
     )
     try:
         first = (await engine.claim_due(
