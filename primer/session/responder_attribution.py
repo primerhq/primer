@@ -14,7 +14,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from decimal import Decimal
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import blake2b, sha256
 from typing import Any
 
@@ -61,6 +61,18 @@ class ResponderSource:
     key: str
     domain: str
     identity: str
+
+
+@dataclass(frozen=True)
+class ResponderDecision:
+    """Trusted identity of one authenticated classic human-gate decision."""
+
+    person: PrincipalRef
+    source: ResponderSource
+    accepted_at: datetime
+    parked_at: str
+    event_key: str
+    gate_id: str | None
 
 
 @dataclass(frozen=True)
@@ -176,6 +188,48 @@ def responder_source(domain: str, identity: Any) -> ResponderSource:
         key="rs1_" + _source_digest(framed),
         domain=domain,
         identity=canonical,
+    )
+
+
+def classic_gate_responder_decision(
+    row: WorkspaceSession,
+    *,
+    domain: str,
+    event_key: str,
+    gate_id: str | None,
+    payload: Any,
+    person: PrincipalRef,
+    accepted_at: datetime | None = None,
+) -> ResponderDecision:
+    """Build a trusted classic-gate decision from server-owned context."""
+    if domain not in {"ask_user", "tool_approval"}:
+        raise ValueError("classic responder decision domain is unsupported")
+    if person_ref(person) != person:
+        raise ValueError("classic responder decision must name a person")
+    if row.parked_at is None:
+        raise ValueError("classic responder decision requires a parked occurrence")
+    stamped_at = accepted_at or datetime.now(UTC)
+    if stamped_at.tzinfo is None or stamped_at.utcoffset() is None:
+        raise ValueError("accepted_at must be timezone-aware")
+    stamped_at = stamped_at.astimezone(UTC)
+    parked_at = raw_generation(row, "parked_at")
+    source = responder_source(
+        domain,
+        {
+            "session_id": row.id,
+            "parked_at": parked_at,
+            "event_key": event_key,
+            "gate_id": gate_id,
+            "payload_sha256": sha256(_canonical_json_payload(payload)).hexdigest(),
+        },
+    )
+    return ResponderDecision(
+        person=person,
+        source=source,
+        accepted_at=stamped_at,
+        parked_at=parked_at,
+        event_key=event_key,
+        gate_id=gate_id,
     )
 
 
@@ -657,12 +711,14 @@ __all__ = [
     "ReservationFences",
     "ReservationResult",
     "ProjectionResult",
+    "ResponderDecision",
     "ResponderSource",
     "RotationResult",
     "RotationStarter",
     "empty_responder_rotation",
     "new_session_responder_ledger",
     "project_reservation",
+    "classic_gate_responder_decision",
     "reserve_source",
     "responder_source",
     "rotate_responder_epoch",
