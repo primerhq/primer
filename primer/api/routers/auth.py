@@ -171,6 +171,19 @@ def _normalise_username(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _require_auth_enabled(request: Request) -> None:
+    """Refuse session/state-signing auth flows when auth is disabled."""
+    if request.app.state.config.auth.enabled:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": "auth_disabled",
+            "message": "This authentication flow is unavailable because authentication is disabled.",
+        },
+    )
+
+
 def _validate_username(name: str) -> None:
     if not _USERNAME_RE.match(name):
         raise HTTPException(
@@ -387,12 +400,15 @@ async def auth_status(request: Request) -> AuthStatus:
     )
 
 
-@auth_router.post("/register", response_model=AuthOk)
+@auth_router.post(
+    "/register", response_model=AuthOk, responses=common_responses(400, 409),
+)
 async def register(
     body: RegisterBody, request: Request, response: Response,
 ) -> AuthOk:
     """First-boot operator account creation. Returns 409 if a user
     already exists (single-user v1)."""
+    _require_auth_enabled(request)
     username = _normalise_username(body.username)
     _validate_username(username)
 
@@ -423,7 +439,11 @@ async def register(
     return AuthOk(username=username)
 
 
-@auth_router.post("/login", response_model=AuthOk, responses=common_responses(401, 429))
+@auth_router.post(
+    "/login",
+    response_model=AuthOk,
+    responses=common_responses(400, 401, 429, 503),
+)
 async def login(
     body: LoginBody, request: Request, response: Response,
 ) -> AuthOk:
@@ -434,6 +454,10 @@ async def login(
     real and an invented username, and a correct password is refused too. The attempt is counted when it starts, because the
     password check below is slow and awaited.
     """
+    # Auth-disabled requests already act as the synthetic system admin. The
+    # real lifespan deliberately has no cookie-signing secret in this mode.
+    _require_auth_enabled(request)
+
     username = _normalise_username(body.username)
     client = _client_address(request)
     throttle = _login_throttle(request)

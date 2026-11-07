@@ -38,6 +38,33 @@ async def test_register_creates_user_and_sets_cookie(client):
 
 
 @pytest.mark.asyncio
+async def test_register_auth_disabled_returns_problem_without_user_or_session(
+    client, app, fake_storage_provider,
+):
+    app.state.config = app.state.config.model_copy(
+        update={
+            "auth": app.state.config.auth.model_copy(update={"enabled": False}),
+        }
+    )
+    app.state.session_secret = None
+
+    resp = await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert resp.json()["extensions"]["error"] == "auth_disabled"
+    assert "primer_session" not in resp.cookies
+    assert not hasattr(app.state, "hash_gate")
+    users = await fake_storage_provider.get_storage(User).list(
+        OffsetPage(offset=0, length=1),
+    )
+    assert users.items == []
+
+
+@pytest.mark.asyncio
 async def test_register_first_user_gets_admin_role(client, fake_storage_provider):
     """Single-user v1 always registers exactly one operator account —
     Layer 1 RBAC (Task 2) promotes that first account to admin so
@@ -103,6 +130,43 @@ async def test_login_success(client):
     assert resp.status_code == 200
     assert resp.json()["username"] == "alice"
     assert "primer_session" in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_login_auth_disabled_returns_problem_without_session_or_user_write(
+    client, app, fake_storage_provider,
+):
+    """Password login is unavailable when every request already acts as system."""
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    client.cookies.clear()
+    app.state.config = app.state.config.model_copy(
+        update={
+            "auth": app.state.config.auth.model_copy(update={"enabled": False}),
+        }
+    )
+    # Match the real lifespan: it does not resolve a cookie-signing secret
+    # when authentication is disabled and an encryption key is configured.
+    app.state.session_secret = None
+
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"username": "alice", "password": "supersecret"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert resp.json()["type"] == "/errors/bad-request"
+    assert resp.json()["extensions"]["error"] == "auth_disabled"
+    assert "primer_session" not in resp.cookies
+    assert not hasattr(app.state, "login_throttle")
+    assert not hasattr(app.state, "login_address_throttle")
+    users = await fake_storage_provider.get_storage(User).list(
+        OffsetPage(offset=0, length=1),
+    )
+    assert users.items[0].last_login_at is None
 
 
 @pytest.mark.asyncio
