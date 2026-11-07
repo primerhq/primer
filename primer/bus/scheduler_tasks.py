@@ -736,6 +736,8 @@ class SessionMessagingSweeper(_BackgroundTask):
 
     async def _heal_an_arm(self, storage, row) -> bool:
         """Settle a turn a dead wake left ``arming`` (see :meth:`_heal_unclaimed_turns`)."""
+        if row.pending_responder_intent is not None:
+            return await self._heal_responder_intent_arm(storage, row)
         if row.status in (SessionStatus.PAUSED, SessionStatus.ENDED):
             target = "idle"
         else:
@@ -743,7 +745,11 @@ class SessionMessagingSweeper(_BackgroundTask):
         try:
             written = await storage.patch_if(
                 row.id, {"turn_status": target, "armed_at": None},
-                where={"turn_status": ["arming"], "armed_at": [raw_generation(row, "armed_at")]},
+                where={
+                    "turn_status": ["arming"],
+                    "armed_at": [raw_generation(row, "armed_at")],
+                    ("pending_responder_intent", "occurrence_id"): [None],
+                },
             )
         except NotFoundError:
             return False
@@ -754,6 +760,84 @@ class SessionMessagingSweeper(_BackgroundTask):
         logger.warning(
             "session-messaging-sweeper: session %s was left arming by a wake that did not settle it; it is now %s%s",
             row.id, target, " and claimed" if target == "claimable" else "",
+        )
+        return True
+
+    async def _heal_responder_intent_arm(self, storage, row) -> bool:
+        """Recover an S4.4b arm without ever running under the old epoch."""
+        from primer.session.dispatch import _read_message_lines
+        from primer.session.responder_attribution import ReservationFences
+        from primer.session.responder_wake_intent import (
+            classify_intent_user_input,
+            exact_intent_where,
+            promotion_patch,
+        )
+        from primer.worker.io_shim import _WorkspaceIOShim
+
+        intent = row.pending_responder_intent
+        assert intent is not None
+        io = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+        io.register_session(row.id, row.workspace_id)
+        lines = await _read_message_lines(io, row)
+        if lines is None:
+            # An unreadable log is not evidence that the input exists. Keep
+            # the arm quarantined for a later retry rather than claim it with
+            # authority from the preceding epoch.
+            return False
+        state, _record = classify_intent_user_input(lines, intent)
+        if state == "corrupt":
+            logger.error(
+                "session-messaging-sweeper: responder intent log proof is corrupt for session %s; leaving it quarantined",
+                row.id,
+            )
+            return False
+        where = {
+            **ReservationFences.from_session(row).where(),
+            **exact_intent_where(row),
+            "armed_at": [raw_generation(row, "armed_at")],
+        }
+        if state == "absent":
+            # A pause/cancel may have landed after the wake armed. Clearing to
+            # idle would strand that lifecycle request with no lease to honor
+            # it. Claim solely for run_one_session_turn's pre-executor guard;
+            # that guard converges PAUSED/ENDED without building an executor.
+            target = (
+                "claimable"
+                if row.pause_requested or row.cancel_requested
+                else "idle"
+            )
+            patch = {
+                "turn_status": target,
+                "armed_at": None,
+                "pending_responder_intent": None,
+            }
+        else:
+            patch = {
+                **promotion_patch(row),
+                "turn_status": (
+                    "idle"
+                    if row.status in (SessionStatus.PAUSED, SessionStatus.ENDED)
+                    else "claimable"
+                ),
+                "armed_at": None,
+            }
+            target = patch["turn_status"]
+        try:
+            written = await storage.patch_if(
+                row.id,
+                to_jsonable_python(patch),
+                where=where,
+            )
+        except NotFoundError:
+            return False
+        if written is None:
+            return False
+        if target == "claimable":
+            await self._arm_the_claim(row.id)
+        logger.warning(
+            "session-messaging-sweeper: recovered responder intent arm for session %s to %s",
+            row.id,
+            target,
         )
         return True
 
