@@ -56,7 +56,7 @@ class ClaimEngineFactory:
         event_bus: EventBus,
         workspace_registry: "WorkspaceRegistry | None" = None,
     ) -> "ClaimEngine":
-        """Build a ClaimEngine + the four standard adapters.
+        """Build a ClaimEngine + the five standard adapters.
 
         The bus type drives the selection:
         - :class:`~primer.bus.in_memory.InMemoryEventBus` → in-memory engine

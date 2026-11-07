@@ -1,16 +1,13 @@
-"""Red probes for the TOOL_CALL claim executor (BPF wave 1, spec: A2 analysis section 6(a)).
+"""Focused coverage for the built TOOL_CALL claim executor (BPF wave 1).
 
-The flagship C4 defect: with ``tool_calls_as_claims_enabled=True`` a parked tool batch
-writes independently-claimable ``ToolCallTask`` rows + ``TOOL_CALL`` leases, but the pool
-registers no TOOL_CALL handler in ``_dispatch``, so the reserved tool slice never claims
-them (its own ``TOOL_CALL in self._dispatch`` guard) and the session's park resolves only
-by the hour-long timeout, ending the session FAILED. That pre-fix red was captured live
-against a real LLM (S4: park -> 1 h -> FAILED, /var/tmp/revamp/bulletproof/p3/leg1-summary.md);
-that capture is probe (iv) of the build brief and is NOT re-run here (no e2e in this PR).
+These tests prove the standalone non-gated agent path: the pool claims a task,
+runs it through the owning session's tool surface, records its terminal state,
+and wakes the parked session when the batch is terminal. They also pin orphan,
+retry, gate, takeover, mismatch, refusal, and deletion handling.
 
-The three probes below are red on main for the same root cause: the lease is never
-claimed, so (i) the task never runs, (ii) an orphan task is never voided, (iii) a
-poisoned task never reaches its terminal retry cap.
+They are not evidence that the default-off feature is ready for production.
+Graph binding execution is unsupported, GATED decisions are unwired, and cancel,
+reconciliation, nested topology, and the post-release crash residual remain.
 """
 
 from __future__ import annotations
@@ -367,9 +364,7 @@ async def _until(predicate, message: str, timeout: float = 8.0) -> None:
 async def test_flag_on_pool_claims_runs_and_wakes_a_parked_tool_call():
     """A real park with a claimable tool: the pool CLAIMS the TOOL_CALL lease, RUNS the
     tool through the session's own tool surface, lands the DONE row with its
-    result_state, and the last-sibling wake flips the session resumable. On main the
-    reserved tool slice claims nothing (no handler registered), the task stays QUEUED
-    and the session's park can only time out (C4)."""
+    result_state, and the last-sibling wake flips the session resumable."""
     pool, engine, provider, toolset, session_rows, task_rows, scheduler, wake_calls = await _build_pool(
         outstanding_task_ids=[TASK_ID],
     )
@@ -409,8 +404,7 @@ async def test_flag_on_pool_claims_runs_and_wakes_a_parked_tool_call():
 async def test_a_task_not_referenced_by_the_live_park_is_voided_never_executed():
     """A task whose id the owning session's live tool_wait parked_state no longer
     references (the non-byte-identical crash-retry orphan, D-A2-06) is voided: terminal
-    FAILED without running the tool, lease dropped, never QUEUED again. On main nothing
-    claims the lease, so the orphan row sits QUEUED indefinitely."""
+    FAILED without running the tool, lease dropped, never QUEUED again."""
     other_task_id = f"{SESSION_ID}/x:tool:9:1"
     pool, engine, provider, toolset, session_rows, task_rows, scheduler, _wake = await _build_pool(
         # The session parked on a LATER turn's batch: TASK_ID is not in it.
@@ -443,7 +437,6 @@ async def test_a_poisoned_tool_call_reaches_terminal_failed_with_a_synthesized_r
     """An execution that always fails must stop requeueing: at attempt_count == max_attempts
     the task goes terminal FAILED carrying a synthesized error result_state (the resume
     coordinator hands the model a tool_result for its tool_use instead of wedging).
-    On main nothing claims the lease, so no attempt count ever advances.
 
     The poison is the tool manager's own failure: a tool that raises is answered by the
     manager as an error result (W16, ruling D1; the next test), so it no longer poisons."""
@@ -631,7 +624,8 @@ async def test_a_gated_tool_call_parks_the_task_not_the_session():
     """The approval/yield gate: the handler parks the TASK (GATED row, bumped
     gate_seq, cleared token, lease dropped) and leaves the session's park
     untouched - one gated call does not block its siblings, and the session is
-    never woken by the gate itself (the decision side is the decisions slice)."""
+    never woken by the gate itself. Production decision wiring does not yet advance
+    the GATED row back to QUEUED."""
     pool, engine, provider, toolset, session_rows, task_rows, scheduler, wake_calls = await _build_pool(
         outstanding_task_ids=[TASK_ID],
     )
