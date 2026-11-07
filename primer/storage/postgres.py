@@ -639,6 +639,11 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             False,
             "((data->>'parked_tool_batches'), id)",
         ),
+        (
+            "tool_wait_reconcile_v2",
+            False,
+            "(id) WHERE (data->>'parked_tool_batches' IS NOT NULL)",
+        ),
         # The default list order (`ORDER BY data->>'created_at' DESC NULLS LAST, id`).
         ("created_at_desc", False, "((data->>'created_at') DESC NULLS LAST, id)"),
     ],

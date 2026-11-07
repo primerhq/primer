@@ -132,6 +132,12 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             False,
             "(json_extract(data,'$.parked_tool_batches'), id)",
         ),
+        (
+            "tool_wait_reconcile_v2",
+            False,
+            "(id, data) "
+            "WHERE (json_extract(data,'$.parked_tool_batches') IS NOT NULL)",
+        ),
     ],
     "subscription": [
         ("trigger_id", False, "(json_extract(data,'$.trigger_id'))"),

@@ -54,6 +54,16 @@ _METRIC_OUTCOME: dict[Detail, MetricOutcome] = {
 }
 
 
+def _terminal_tool_wait_candidate_predicate():
+    """Portable selector for the bounded marker-backed reconciliation scan."""
+    return (
+        Q(WorkspaceSession)
+        .where_not_null("parked_tool_batches")
+        .where_in("parked_status", ["parked", "resumable"])
+        .build()
+    )
+
+
 def _finish(source: Source, detail: Detail) -> Detail:
     """Count one attempt using the closed low-cardinality outcome vocabulary."""
     _metrics.tool_wait_reconcile_outcomes_total.labels(
@@ -213,12 +223,7 @@ async def reconcile_terminal_tool_wait_parks(
 
     session_storage = storage_provider.get_storage(WorkspaceSession)
     task_storage = storage_provider.get_storage(ToolCallTask)
-    predicate = (
-        Q(WorkspaceSession)
-        .where("parked_tool_batches", True)
-        .where_in("parked_status", ["parked", "resumable"])
-        .build()
-    )
+    predicate = _terminal_tool_wait_candidate_predicate()
     page = await session_storage.find(
         predicate, CursorPage(cursor=cursor, length=RECONCILE_PAGE_SIZE),
     )
