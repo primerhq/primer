@@ -220,12 +220,14 @@ async def test_append_failure_clears_intent_without_rotating(monkeypatch) -> Non
     assert (after.responder_epoch, after.responder_reservation_version) == ("a" * 32, 4)
 
 
-async def test_sweeper_recovers_exact_log_before_claiming(monkeypatch) -> None:
+@pytest.mark.parametrize("domain", ["user_input", "mcp_steer"])
+async def test_sweeper_recovers_exact_log_before_claiming(monkeypatch, domain) -> None:
     original = _row()
     provider, sessions = await _storage(original)
     prepared = prepare_responder_intent(
         original,
         starter=PERSON,
+        domain=domain,
         user_input_payload=PAYLOAD,
         accepted_at=NOW,
         occurrence_id="1" * 32,
@@ -252,6 +254,7 @@ async def test_sweeper_recovers_exact_log_before_claiming(monkeypatch) -> None:
     assert after.responder_epoch == "b" * 32
     assert (after.responder_seq, after.responder_reservation_version) == (3, 5)
     assert len(after.responder_reservations) == 1
+    assert next(iter(after.responder_reservations.values())).domain == domain
     assert after.last_responder_intent_receipt is None
     assert engine.ids == [original.id]
 
@@ -306,17 +309,22 @@ async def test_sweeper_recovers_canvas_event_intent_with_generated_digest_metada
     ],
     ids=["binding", "lifecycle"],
 )
-async def test_stale_prepared_authority_refuses_moved_session(move) -> None:
+@pytest.mark.parametrize("domain", ["canvas_event", "mcp_steer"])
+async def test_stale_prepared_authority_refuses_moved_session(move, domain) -> None:
     original = _row()
     _provider, sessions = await _storage(original)
     prepared = prepare_responder_intent(
         original,
         starter=PERSON,
-        domain="canvas_event",
-        user_input_payload={
-            "text": '<canvas_event id="e1">click</canvas_event>',
-            "canvas_event": {"id": "e1", "seq": 1},
-        },
+        domain=domain,
+        user_input_payload=(
+            {
+                "text": '<canvas_event id="e1">click</canvas_event>',
+                "canvas_event": {"id": "e1", "seq": 1},
+            }
+            if domain == "canvas_event"
+            else PAYLOAD
+        ),
         accepted_at=NOW,
         occurrence_id="1" * 32,
         target_epoch="b" * 32,

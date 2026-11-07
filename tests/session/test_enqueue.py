@@ -298,7 +298,8 @@ async def test_trusted_retry_rebuilds_generation_but_preserves_authority():
 
 
 @pytest.mark.asyncio
-async def test_trusted_direct_promotion_preserves_queued_cleanup_receipt():
+@pytest.mark.parametrize("domain", ["user_input", "mcp_steer"])
+async def test_trusted_direct_promotion_preserves_queued_cleanup_receipt(domain):
     base = _row(SessionStatus.CREATED).model_copy(update={
         "responder_epoch": "a" * 32,
         "responder_seq": 0,
@@ -337,7 +338,7 @@ async def test_trusted_direct_promotion_preserves_queued_cleanup_receipt():
         receipt=SessionWakeReceipt(),
         by=person,
         trusted_responder_input=TrustedResponderInput(
-            person=person, domain="user_input", occurrence="6" * 32,
+            person=person, domain=domain, occurrence="6" * 32,
             accepted_at=datetime.now(timezone.utc),
         ),
         deps=deps,

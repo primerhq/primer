@@ -29,7 +29,7 @@ from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.trigger import AgentFreshSubConfig, DelayedTriggerConfig, Subscription, Trigger
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta, WorkspaceTemplate
-from primer.model.workspace_session import SessionInfo, WorkspaceSession
+from primer.model.workspace_session import SessionInfo, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext
 from primer.mcp.server import current_actor
 from primer.toolset.workspaces import build_workspaces_toolset
@@ -323,6 +323,409 @@ async def test_session_control_tools_need_full():
         out = await _call(toolset, "steer_workspace_session", {"workspace_id": "ws-2", "session_id": "ses-d", "instruction": "go"})
         _ok(out, "steer as the token's user (the owner)")
         assert json.loads(out.output)["delivery"] == "woken"
+
+
+async def test_direct_mcp_steer_lands_and_queues_authenticated_responder_authority():
+    from primer.mcp.server import current_mcp_invocation
+    from primer.model.workspace_session import PendingSessionMessage
+    from primer.session.enqueue import SessionWakeDeps
+    from primer.session.pending_messages import realize_next_pending
+
+    world = await _world()
+    toolset, registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    invocation = current_mcp_invocation.set(("mcp-session-1\0int\0request-1", NOW, "1" * 32))
+    try:
+        with _as_mcp("u1"):
+            out = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "direct MCP",
+            })
+    finally:
+        current_mcp_invocation.reset(invocation)
+    _ok(out, "direct MCP steer")
+    landed = await world.sessions.get("ses-a")
+    assert landed is not None and landed.turn_person is not None
+    assert landed.turn_person.user_id == "u1"
+    assert (landed.responder_seq, landed.responder_reservation_version) == (1, 2)
+    [reservation] = landed.responder_reservations.values()
+    assert reservation.domain == "mcp_steer"
+
+    await world.sessions.update(landed.model_copy(update={"status": SessionStatus.RUNNING, "turn_status": "running"}))
+    invocation = current_mcp_invocation.set(("mcp-session-1\0int\0request-2", NOW, "2" * 32))
+    try:
+        with _as_mcp("u1"):
+            queued = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "queued MCP",
+            })
+    finally:
+        current_mcp_invocation.reset(invocation)
+    _ok(queued, "queued direct MCP steer")
+    assert json.loads(queued.output)["delivery"] == "queued"
+    pending = (await world.sp.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=10))).items
+    assert len(pending) == 1 and pending[0].responder_proof is not None
+    assert pending[0].responder_proof.domain == "mcp_steer"
+    current = await world.sessions.get("ses-a")
+    assert current is not None
+    await world.sessions.update(current.model_copy(update={"status": SessionStatus.WAITING, "turn_status": "idle"}))
+    assert await realize_next_pending(
+        storage_provider=world.sp,
+        workspace_id="ws-1",
+        session_id="ses-a",
+        wake_deps=SessionWakeDeps(
+            storage_provider=world.sp,
+            scheduler=world.scheduler,
+            claim_engine=world.engine,
+            workspace_registry=registry,
+            event_bus=world.bus,
+        ),
+    ) is True
+    realized = await world.sessions.get("ses-a")
+    assert realized is not None
+    assert (realized.responder_seq, realized.responder_reservation_version) == (2, 3)
+    assert {item.domain for item in realized.responder_reservations.values()} == {"mcp_steer"}
+
+
+async def test_reused_mcp_request_id_gets_a_distinct_server_owned_occurrence():
+    from primer.mcp.server import current_mcp_invocation
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    request_identity = "mcp-session-reused\0int\0request-7"
+    source_keys = []
+    for nonce in ("5" * 32, "6" * 32):
+        invocation = current_mcp_invocation.set((request_identity, NOW, nonce))
+        try:
+            with _as_mcp("u1"):
+                out = await _call(toolset, "steer_workspace_session", {
+                    "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "same MCP",
+                })
+        finally:
+            current_mcp_invocation.reset(invocation)
+        _ok(out, "direct MCP steer with a reused request id")
+        current = await world.sessions.get("ses-a")
+        assert current is not None
+        assert len(current.responder_reservations) == 1
+        source_keys.append(next(iter(current.responder_reservations)))
+        await world.sessions.update(current.model_copy(update={
+            "status": SessionStatus.WAITING,
+            "turn_status": "idle",
+        }))
+
+    landed = await world.sessions.get("ses-a")
+    assert landed is not None
+    assert (landed.responder_seq, landed.responder_reservation_version) == (2, 3)
+    assert len(set(source_keys)) == 2
+    assert len(landed.responder_reservations) == 1
+    assert {item.domain for item in landed.responder_reservations.values()} == {"mcp_steer"}
+
+
+async def test_ctxless_call_without_transport_invocation_cannot_claim_mcp_authority():
+    world = await _world()
+    toolset, _registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    with _as_mcp("u1"):
+        out = await _call(toolset, "steer_workspace_session", {
+            "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "unproven",
+        })
+    _ok(out, "ctx-less steer without MCP transport identity")
+    after = await world.sessions.get("ses-a")
+    assert after is not None
+    assert (after.responder_epoch, after.responder_seq, after.responder_reservation_version) == ("a" * 32, 0, 1)
+    assert after.responder_reservations == {}
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        None,
+        Principal(type="system", id="system", display="system", source="internal"),
+    ],
+    ids=["missing-actor", "auth-off-system"],
+)
+async def test_unattributed_and_system_mcp_callers_cannot_claim_responder_authority(actor):
+    from primer.mcp.server import current_mcp_invocation
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    actor_token = current_actor.set(actor)
+    invocation = current_mcp_invocation.set(("mcp-session-system\0int\0request-1", NOW, "8" * 32))
+    try:
+        out = await _call(toolset, "steer_workspace_session", {
+            "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "unattributed",
+        })
+    finally:
+        current_mcp_invocation.reset(invocation)
+        current_actor.reset(actor_token)
+    if actor is None:
+        _refused(out, "not-found", "unattributed direct MCP steer")
+    else:
+        _ok(out, "auth-off system direct MCP steer")
+    after = await world.sessions.get("ses-a")
+    assert after is not None
+    assert (after.responder_epoch, after.responder_seq, after.responder_reservation_version) == ("a" * 32, 0, 1)
+    assert after.responder_reservations == {}
+
+
+@pytest.mark.parametrize(
+    ("status", "ended_reason"),
+    [
+        (SessionStatus.PAUSED, None),
+        (SessionStatus.ENDED, "completed"),
+    ],
+    ids=["paused", "ended-restartable"],
+)
+async def test_direct_mcp_steer_preserves_paused_and_ended_wake_contract(status, ended_reason):
+    from primer.mcp.server import current_mcp_invocation
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    await seed_session(
+        world,
+        sid="ses-state",
+        status=status,
+        ended_reason=ended_reason,
+        turn_no=1,
+        initiated_by=U1,
+    )
+    row = await world.sessions.get("ses-state")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    invocation = current_mcp_invocation.set(("mcp-session-state\0int\0request-1", NOW, "9" * 32))
+    try:
+        with _as_mcp("u1"):
+            out = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-state", "instruction": "resume MCP",
+            })
+    finally:
+        current_mcp_invocation.reset(invocation)
+    _ok(out, f"direct MCP steer from {status.value}")
+    assert json.loads(out.output)["delivery"] == "woken"
+    landed = await world.sessions.get("ses-state")
+    assert landed is not None and landed.status == SessionStatus.RUNNING
+    assert landed.turn_person is not None and landed.turn_person.user_id == "u1"
+    assert landed.responder_seq == 1
+    assert len(landed.responder_reservations) == 1
+    assert next(iter(landed.responder_reservations.values())).domain == "mcp_steer"
+
+
+async def test_ctxless_active_run_cannot_claim_direct_mcp_responder_authority():
+    from primer.agent.invoke import _RUN_ID
+    from primer.mcp.server import current_mcp_invocation
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    invocation = current_mcp_invocation.set(("mcp-session-1\0int\0request-3", NOW, "3" * 32))
+    run = _RUN_ID.set("delegated-run")
+    try:
+        with _as_mcp("u1"):
+            out = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "delegated",
+            })
+    finally:
+        _RUN_ID.reset(run)
+        current_mcp_invocation.reset(invocation)
+    _refused(out, "not-found", "ctx-less delegated steer")
+    after = await world.sessions.get("ses-a")
+    assert after is not None
+    assert (after.responder_epoch, after.responder_seq, after.responder_reservation_version) == ("a" * 32, 0, 1)
+    assert after.responder_reservations == {}
+
+
+@pytest.mark.parametrize("session_bound", [True, False], ids=["session-peer", "non-session-context"])
+async def test_tool_context_paths_never_claim_direct_mcp_responder_authority(session_bound):
+    from primer.mcp.server import current_mcp_invocation
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    if session_bound:
+        await seed_session(world, sid="ses-sender", initiated_by=U1)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    ctx = ToolContext(
+        tool_call_id="context-call",
+        session_id="ses-sender" if session_bound else None,
+        workspace_id="ws-1" if session_bound else None,
+        initiated_by=U1,
+    )
+    invocation = current_mcp_invocation.set(("mcp-session-context\0int\0request-1", NOW, "a" * 32))
+    try:
+        with _as_mcp("u1"):
+            out = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "context steer",
+            }, ctx)
+    finally:
+        current_mcp_invocation.reset(invocation)
+    _ok(out, "tool-context steer")
+    after = await world.sessions.get("ses-a")
+    assert after is not None
+    assert (after.responder_epoch, after.responder_seq, after.responder_reservation_version) == ("a" * 32, 0, 1)
+    assert after.responder_reservations == {}
+
+
+async def test_direct_mcp_arm_race_defers_the_same_authority_to_the_queue():
+    from primer.mcp.server import current_mcp_invocation
+    from primer.model.workspace_session import PendingSessionMessage
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    real_patch_if = world.sessions.patch_if
+    lost = False
+
+    async def lose_first_arm(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        nonlocal lost
+        if not lost and patch and patch.get("pending_responder_intent") is not None:
+            lost = True
+            current = await world.sessions.get(id)
+            assert current is not None
+            moved = await real_patch_if(
+                id,
+                {
+                    "status": SessionStatus.RUNNING,
+                    "turn_status": "running",
+                    "last_seq": current.last_seq + 1,
+                },
+                where={"last_seq": [current.last_seq]},
+            )
+            assert moved is not None
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    world.sessions.patch_if = lose_first_arm
+    invocation = current_mcp_invocation.set(("mcp-session-race\0int\0request-1", NOW, "4" * 32))
+    try:
+        with _as_mcp("u1"):
+            out = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "race MCP",
+            })
+    finally:
+        current_mcp_invocation.reset(invocation)
+    _ok(out, "direct MCP steer that loses its arm")
+    assert json.loads(out.output)["delivery"] == "queued"
+    pending = (await world.sp.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=10))).items
+    assert len(pending) == 1 and pending[0].responder_proof is not None
+    proof = pending[0].responder_proof
+    assert proof.domain == "mcp_steer"
+    assert proof.starter.user_id == "u1"
+    after = await world.sessions.get("ses-a")
+    assert after is not None
+    assert (after.responder_seq, after.responder_reservation_version) == (0, 1)
+    assert after.responder_reservations == {}
+
+
+async def test_direct_mcp_bounded_retry_keeps_one_invocation_occurrence():
+    from primer.mcp.server import current_mcp_invocation
+
+    world = await _world()
+    toolset, _registry = _tools(world)
+    row = await world.sessions.get("ses-a")
+    assert row is not None
+    await world.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+        "turn_status": "idle",
+    }))
+    real_patch_if = world.sessions.patch_if
+    attempts = []
+
+    async def lose_first_generation(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if patch and patch.get("pending_responder_intent") is not None:
+            attempts.append(patch["pending_responder_intent"])
+            if len(attempts) == 1:
+                current = await world.sessions.get(id)
+                assert current is not None
+                moved = await real_patch_if(
+                    id,
+                    {"last_seq": current.last_seq + 1},
+                    where={"last_seq": [current.last_seq]},
+                )
+                assert moved is not None
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    world.sessions.patch_if = lose_first_generation
+    invocation = current_mcp_invocation.set(("mcp-session-retry\0str\0request-a", NOW, "7" * 32))
+    try:
+        with _as_mcp("u1"):
+            out = await _call(toolset, "steer_workspace_session", {
+                "workspace_id": "ws-1", "session_id": "ses-a", "instruction": "retry MCP",
+            })
+    finally:
+        current_mcp_invocation.reset(invocation)
+    _ok(out, "direct MCP steer with one generation retry")
+    assert len(attempts) == 2
+    assert attempts[0]["occurrence_id"] == attempts[1]["occurrence_id"]
+    assert attempts[0]["accepted_at"] == attempts[1]["accepted_at"]
+    assert attempts[0]["domain"] == attempts[1]["domain"] == "mcp_steer"
+    assert attempts[0]["user_input_seq"] + 1 == attempts[1]["user_input_seq"]
+    landed = await world.sessions.get("ses-a")
+    assert landed is not None
+    assert (landed.responder_seq, landed.responder_reservation_version) == (1, 2)
+    assert len(landed.responder_reservations) == 1
 
 
 async def test_file_tools_need_their_level():

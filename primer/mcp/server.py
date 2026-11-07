@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import time
 from contextvars import ContextVar
+from datetime import UTC, datetime
+from secrets import token_hex
 from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
@@ -74,6 +76,9 @@ current_api_token_id: ContextVar[str | None] = ContextVar(
 # string consumed by the provider-call + audit chain.
 current_actor: ContextVar["Principal | None"] = ContextVar(
     "primer_mcp_actor", default=None,
+)
+current_mcp_invocation: ContextVar[tuple[str, datetime, str] | None] = ContextVar(
+    "primer_mcp_invocation", default=None,
 )
 # The auth gate also stashes the authenticated bearer token's scopes
 # here so the dispatch layer can enforce the ``mcp`` scope when a tool
@@ -182,7 +187,6 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
           convention for tool-execution failures the client should
           surface to the user without aborting the session.
         """
-        del ctx
         name = params.name
         arguments = params.arguments or {}
         deps = deps_factory()
@@ -193,6 +197,20 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         t0 = time.monotonic()
         error_code: str | None = None
         ok = False
+        request_id = getattr(ctx, "request_id", None)
+        request = getattr(ctx, "request", None)
+        session_id = None
+        if request is not None:
+            session_id = request.headers.get("mcp-session-id")
+        invocation_token = current_mcp_invocation.set(
+            (
+                f"{session_id}\0{type(request_id).__name__}\0{request_id}",
+                datetime.now(UTC),
+                token_hex(16),
+            )
+            if session_id and request_id is not None
+            else None
+        )
         try:
             try:
                 bad_input = await _input_validation_error(deps, name, arguments)
@@ -246,6 +264,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                 ],
             )
         finally:
+            current_mcp_invocation.reset(invocation_token)
             log_invoke(
                 principal=principal,
                 api_token_id=api_token_id,
@@ -274,5 +293,6 @@ __all__ = [
     "current_principal",
     "current_api_token_id",
     "current_actor",
+    "current_mcp_invocation",
     "current_api_token_scopes",
 ]
