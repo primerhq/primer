@@ -250,7 +250,40 @@ async def test_sweeper_recovers_exact_log_before_claiming(monkeypatch) -> None:
     assert after.turn_status == "claimable"
     assert after.pending_responder_intent is None
     assert after.responder_epoch == "b" * 32
+    assert (after.responder_seq, after.responder_reservation_version) == (3, 5)
+    assert len(after.responder_reservations) == 1
+    assert after.last_responder_intent_receipt is None
     assert engine.ids == [original.id]
+
+
+@pytest.mark.parametrize(
+    "move",
+    [
+        {"binding_epoch": 1},
+        {"pause_requested": True, "pause_requested_at": NOW},
+    ],
+    ids=["binding", "lifecycle"],
+)
+async def test_stale_prepared_authority_refuses_moved_session(move) -> None:
+    original = _row()
+    _provider, sessions = await _storage(original)
+    prepared = prepare_responder_intent(
+        original,
+        starter=PERSON,
+        user_input_payload=PAYLOAD,
+        accepted_at=NOW,
+        occurrence_id="1" * 32,
+        target_epoch="b" * 32,
+    )
+    await sessions.update(original.model_copy(update=move))
+
+    assert await _arm_or_reserve(
+        sessions, original, arm=True, prepared_intent=prepared,
+    ) is None
+    current = await sessions.get(original.id)
+    assert current.pending_responder_intent is None
+    assert current.responder_epoch == "a" * 32
+    assert (current.responder_seq, current.responder_reservation_version) == (2, 4)
 
 
 @pytest.mark.parametrize(

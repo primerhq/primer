@@ -127,6 +127,13 @@ A session has two persisted faces that are reconciled at turn boundaries:
   deleted only after promotion, the next queued close may replace the singleton
   receipt only after the prior cleanup no longer needs it. REST, canvas, MCP and
   direct-wake activation remain disabled for later S4.5 slices.
+- S4.5B activates responder attribution only for a plain authenticated REST
+  steer after the existing FULL-access check. The route supplies one immutable,
+  server-owned person/occurrence/time proof; the wake rebuilds its intent from
+  each fresh session generation after any reopen and immediately before arming.
+  Busy steers carry the existing queue proof instead. Tool results, external
+  tools, attachments, no-instruction wakes, auth-off callers, peers, machines,
+  canvas, MCP and channels remain ineligible and preserve prior authority.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

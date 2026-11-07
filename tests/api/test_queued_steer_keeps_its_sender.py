@@ -35,6 +35,8 @@ async def test_a_peers_queued_steer_runs_as_the_peer(world, app, client, cast): 
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id=SID, workspace_id=WS, binding=AgentSessionBinding(agent_id="operator"), status=SessionStatus.RUNNING,
         turn_status="running", turn_no=1, created_at=NOW, initiated_by=carol, turn_person=carol,
+        responder_epoch="a" * 32, responder_seq=0,
+        responder_reservation_version=1, responder_reservations={},
     ))
 
     queued = await cast.dave.post(f"/v1/workspaces/{WS}/sessions/{SID}/steer", json={"instruction": "from dave"})
@@ -43,6 +45,8 @@ async def test_a_peers_queued_steer_runs_as_the_peer(world, app, client, cast): 
     assert len(pending) == 1
     by = (pending[0].attribution or {}).get("by")
     assert by is not None and by["user_id"] == cast.dave_id, f"the queued steer lost its sender: {pending[0].attribution!r}"
+    assert pending[0].responder_proof is not None
+    assert pending[0].responder_proof.starter.user_id == cast.dave_id
 
     # Carol's turn ends; the drain realizes dave's steer into the next turn.
     row = await sp.get_storage(WorkspaceSession).get(SID)

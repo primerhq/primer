@@ -396,6 +396,31 @@ class SteerBody(BaseModel):
         return self
 
 
+def _trusted_rest_responder_input(
+    body: SteerBody,
+    by: "PrincipalRef | None",
+):
+    """Return server-owned responder authority for the one eligible REST shape."""
+    from primer.model.principal import person_ref
+    from primer.session.responder_wake_intent import TrustedResponderInput
+
+    person = person_ref(by)
+    if (
+        person is None
+        or body.instruction is None
+        or body.tool_results
+        or body.external_tools is not None
+        or body.attachments
+    ):
+        return None
+    return TrustedResponderInput(
+        person=person,
+        domain="user_input",
+        occurrence=uuid.uuid4().hex,
+        accepted_at=datetime.now(timezone.utc),
+    )
+
+
 async def _binding_allows_external(row, storage_provider) -> bool:
     """Does this session's agent allow invoker-supplied tools?
 
@@ -2326,6 +2351,8 @@ async def steer_session(
             f"{workspace_id!r}"
         )
 
+    trusted_responder_input = _trusted_rest_responder_input(body, by)
+
     # Registration gate: external_tools requires allow_external_tools on
     # the session's agent (snapshot when frozen, else the live row).
     if body.external_tools and not await _binding_allows_external(
@@ -2459,6 +2486,11 @@ async def steer_session(
                 workspace_registry=registry,
                 event_bus=event_bus,
                 by=by,
+                trusted_responder_starter=(
+                    trusted_responder_input.person
+                    if trusted_responder_input is not None
+                    else None
+                ),
             )
             return await sessions.get(session_id)
 
@@ -2544,10 +2576,7 @@ async def steer_session(
             receipt=routing_receipt,
             deps=deps,
             by=by,
-            # This actor was resolved by the route's existing FULL-access
-            # authentication. It is eligible only if this message queues;
-            # direct-wake attribution remains deferred to S4.5.
-            trusted_responder_starter=person_ref(by),
+            trusted_responder_input=trusted_responder_input,
         )
         # G12-09: the response names the dropped attachments (response-only,
         # like MainSessionOut.created): the send succeeded, the row is
