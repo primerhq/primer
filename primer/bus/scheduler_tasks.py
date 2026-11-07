@@ -38,6 +38,7 @@ from primer.int.coordinator import (
     ROLE_SESSION_MESSAGING_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
+    ROLE_TASK_ASK_RECONCILER,
     ROLE_TOOL_WAIT_RECONCILER,
     ROLE_TIMER_SCHEDULER,
     ROLE_WEBHOOK_DELIVERY_RETENTION,
@@ -277,6 +278,51 @@ class ToolWaitWakeReconciler(_BackgroundTask):
                     )
             except Exception:
                 logger.exception("tool-wait reconciliation tick failed")
+            try:
+                await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
+
+
+class TaskAskDecisionReconciler(_BackgroundTask):
+    """Leader-elected bounded repair for staged task ask decisions."""
+
+    role = ROLE_TASK_ASK_RECONCILER
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        claim_engine: "ClaimEngine",
+        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+    ) -> None:
+        super().__init__(name="task-ask-decision-reconciler")
+        self._sp = storage_provider
+        self._engine = claim_engine
+        self._poll = poll_seconds
+        self._cursor: str | None = None
+
+    async def _run(self) -> None:
+        from primer.claim.task_ask_reconcile import reconcile_staged_task_asks
+
+        while not self._stopping:
+            try:
+                next_cursor, count = await reconcile_staged_task_asks(
+                    self._sp,
+                    self._engine,
+                    source="periodic",
+                    cursor=self._cursor,
+                )
+                self._cursor = next_cursor
+                if count:
+                    logger.info(
+                        "task ask reconciliation examined %d staged task(s)",
+                        count,
+                    )
+            except Exception:
+                # Keep the previous cursor: a failing page must be retried,
+                # not skipped after leadership changes or the next tick.
+                logger.exception("task ask reconciliation tick failed")
             try:
                 await asyncio.sleep(self._poll)
             except asyncio.CancelledError:

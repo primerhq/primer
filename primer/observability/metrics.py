@@ -377,6 +377,20 @@ tool_wait_reconcile_outcomes_total = Counter(
     registry=registry,
 )
 
+task_ask_repair_candidates_total = Counter(
+    "task_ask_repair_candidates_total",
+    "Staged task ask decisions examined by repair, by source.",
+    ["source"],
+    registry=registry,
+)
+
+task_ask_repair_outcomes_total = Counter(
+    "task_ask_repair_outcomes_total",
+    "Staged task ask repair results, by source and closed outcome.",
+    ["source", "outcome"],
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Cardinality guard (S7 section 4, crosscheck m2)
@@ -489,6 +503,7 @@ def reset_for_test() -> None:
     global compaction_outcomes_total  # noqa: PLW0603
     global tool_wait_malformed_scoped_id_total  # noqa: PLW0603
     global tool_wait_reconcile_candidates_total, tool_wait_reconcile_outcomes_total  # noqa: PLW0603
+    global task_ask_repair_candidates_total, task_ask_repair_outcomes_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -767,6 +782,18 @@ def reset_for_test() -> None:
         ["source", "outcome"],
         registry=registry,
     )
+    task_ask_repair_candidates_total = Counter(
+        "task_ask_repair_candidates_total",
+        "Staged task ask decisions examined by repair, by source.",
+        ["source"],
+        registry=registry,
+    )
+    task_ask_repair_outcomes_total = Counter(
+        "task_ask_repair_outcomes_total",
+        "Staged task ask repair results, by source and closed outcome.",
+        ["source", "outcome"],
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -816,4 +843,6 @@ __all__ = [
     "tool_wait_malformed_scoped_id_total",
     "tool_wait_reconcile_candidates_total",
     "tool_wait_reconcile_outcomes_total",
+    "task_ask_repair_candidates_total",
+    "task_ask_repair_outcomes_total",
 ]

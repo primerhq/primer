@@ -155,7 +155,19 @@ The pool side of Phase 3 stage 7a (the `ToolCallTask` entity, its adapter, the f
   workspace access, then fresh-reads and repeats those fences before the hook.
   A later valid responder projection remains authoritative; same-sequence
   source or person mismatches fail closed. This adds no production activation,
-  route, scanner or graph support while S0 remains false.
+  route, scanner or graph support while S0 remains false. Pause or interrupt
+  races take a distinct transient path: exact RUNNING/PROMOTED ownership moves
+  back to GATED/PROJECTED before the worker drops its lease, so no hook runs and
+  the reconciler can continue B/C when the session is live again.
+- **Dormant ask-user staged repair.** S4B runs one bounded repair page after
+  orphan task cleanup and before terminal tool-wait repair, then continues on a
+  leader-elected 30-second keyset loop. It never rearms before responder
+  projection is durable. A paused or interrupted promoted row is first fenced
+  back to nonclaimable GATED/PROJECTED and only then loses its task lease;
+  already-GATED rows need no lease mutation. Dead or corrupt occurrences are
+  terminally
+  quarantined through an exact CAS and immediately participate in final-sibling
+  wake repair. The worker pool still cannot produce human task gates under S0.
 
 ## 6. Wiring
 

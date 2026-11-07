@@ -891,13 +891,20 @@ async def _run_resolved_task_gate(
         new_task_gate_state,
     )
 
-    snapshot, reason = await _fresh_resolved_task_gate_snapshot(
+    snapshot, reason, transient = await _fresh_resolved_task_gate_snapshot(
         task_storage=task_storage,
         session_storage=session_storage,
         claimed_row=claimed_row,
         token=token,
         gate=gate,
     )
+    if transient:
+        assert snapshot is not None
+        await _hold_claimed_resolved_task_ask(
+            pool, engine_lease, task_storage=task_storage,
+            task=snapshot[0], token=token,
+        )
+        return
     if snapshot is None:
         await _fail_claimed_tool_call_task(
             pool, engine_lease, token, claimed_row,
@@ -921,13 +928,20 @@ async def _run_resolved_task_gate(
             # Authorization can await storage. Re-read and repeat every
             # occurrence and responder fence before the resume hook sees a
             # byte of the decision.
-            snapshot, reason = await _fresh_resolved_task_gate_snapshot(
+            snapshot, reason, transient = await _fresh_resolved_task_gate_snapshot(
                 task_storage=task_storage,
                 session_storage=session_storage,
                 claimed_row=claimed_row,
                 token=token,
                 gate=gate,
             )
+            if transient:
+                assert snapshot is not None
+                await _hold_claimed_resolved_task_ask(
+                    pool, engine_lease, task_storage=task_storage,
+                    task=snapshot[0], token=token,
+                )
+                return
             if snapshot is None:
                 await _fail_claimed_tool_call_task(
                     pool, engine_lease, token, claimed_row, reason,
@@ -1059,6 +1073,7 @@ async def _fresh_resolved_task_gate_snapshot(
 ):
     """Return one exact live resolved occurrence, including v2 authority."""
     from primer.model.tool_call_task import ToolCallTaskState
+    from primer.model.workspace_session import SessionStatus
     from primer.session.tool_wait_batches import (
         batches_referenced_by_park,
         task_is_live_for_session,
@@ -1098,7 +1113,7 @@ async def _fresh_resolved_task_gate_snapshot(
     ):
         return None, current_reason or (
             "the resolved task gate no longer matches the live session binding"
-        )
+        ), False
     try:
         current_gate = decode_task_gate_state(
             current_task.gate_state, task=current_task,
@@ -1106,19 +1121,78 @@ async def _fresh_resolved_task_gate_snapshot(
     except TaskGateStateError as exc:
         return None, (
             f"resolved task gate changed after claim: {_short_error(exc)}"
-        )
+        ), False
     if (
         not isinstance(current_gate, TaskGateState)
         or not json_equal(current_gate.to_jsonable(), gate.to_jsonable())
     ):
-        return None, "resolved task gate changed after claim"
+        return None, "resolved task gate changed after claim", False
     try:
         _validate_resolved_task_ask_authority(
             current_task, current_session, current_gate,
         )
     except (TaskGateStateError, ValueError) as exc:
-        return None, f"resolved task ask_user authority is stale: {_short_error(exc)}"
-    return (current_task, current_session, current_gate), ""
+        return None, (
+            f"resolved task ask_user authority is stale: {_short_error(exc)}"
+        ), False
+    status = getattr(current_session.status, "value", current_session.status)
+    if _is_resolved_task_ask(current_gate) and (
+        status == SessionStatus.PAUSED.value
+        or current_session.pause_requested
+        or current_session.interrupt_requested
+    ):
+        return (
+            (current_task, current_session, current_gate),
+            "the resolved task ask_user session is paused or interrupted",
+            True,
+        )
+    return (current_task, current_session, current_gate), "", False
+
+
+async def _hold_claimed_resolved_task_ask(
+    pool, engine_lease, *, task_storage, task, token: str,
+) -> None:
+    """Put an owned transient v2 ask back behind the repair boundary."""
+    from primer.int.claim import ReleaseOutcome
+    from primer.model.tool_call_task import TaskGateRepairStage, ToolCallTaskState
+    from primer.storage import raw_generation
+
+    fields = (
+        "state",
+        "session_id",
+        "turn_no",
+        "gate_occurrence_token",
+        "gate_seq",
+        "gate_event_key",
+        "gate_until",
+        "claim_token",
+        "gate_state_sha256",
+        "repair_stage",
+        "attempts",
+        "started_at",
+        "finished_at",
+    )
+    if (
+        task.state is not ToolCallTaskState.RUNNING
+        or task.repair_stage is not TaskGateRepairStage.PROMOTED
+        or task.claim_token != token
+    ):
+        return
+    held = await task_storage.patch_if(
+        task.id,
+        {
+            "state": ToolCallTaskState.GATED.value,
+            "repair_stage": TaskGateRepairStage.PROJECTED.value,
+            "claim_token": None,
+        },
+        where={field: [raw_generation(task, field)] for field in fields},
+    )
+    if held is None:
+        return
+    await pool._release_lease(
+        engine_lease,
+        ReleaseOutcome(success=True, drop_lease=True, entity_noop=True),
+    )
 
 
 def _is_resolved_task_ask(gate) -> bool:

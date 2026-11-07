@@ -58,6 +58,7 @@ ROLE_COORDINATOR_SWEEPER = "coordinator-sweeper"
 ROLE_STUCK_SESSION_SWEEPER = "stuck-session-sweeper"
 ROLE_SESSION_MESSAGING_SWEEPER = "session-messaging-sweeper"
 ROLE_TOOL_WAIT_RECONCILER = "tool-wait-reconciler"
+ROLE_TASK_ASK_RECONCILER = "task-ask-reconciler"
 ROLE_EVENT_DISPATCHER = "event-dispatcher"
 ROLE_EVENT_RETENTION = "event-retention"
 ROLE_SESSION_RETENTION = "session-retention"
@@ -201,6 +202,7 @@ __all__ = [
     "ROLE_STUCK_SESSION_SWEEPER",
     "ROLE_TIMEOUT_SWEEPER",
     "ROLE_TOOL_WAIT_RECONCILER",
+    "ROLE_TASK_ASK_RECONCILER",
     "ROLE_TIMER_SCHEDULER",
     "ROLE_WATCHER_MANAGER",
 ]
