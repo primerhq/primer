@@ -3,13 +3,20 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.int.claim import ClaimKind
+from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
     WorkspaceSession,
 )
-from primer.session.enqueue import SessionWakeDeps, wake_session
+from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
+from primer.session.responder_wake_intent import (
+    TrustedResponderInput,
+    prepare_responder_intent,
+    promotion_patch,
+)
 
 
 class _FakeStorage:
@@ -159,6 +166,186 @@ async def test_created_session_is_invoked_and_claimable():
     assert slot.appended == ["hello"]
     assert sched.enqueued == ["sess-1"]
     assert (ClaimKind.SESSION, "sess-1") in eng.upserts
+
+
+@pytest.mark.asyncio
+async def test_trusted_direct_input_rotates_responder_from_fresh_row():
+    row = _row(SessionStatus.CREATED).model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    })
+    deps, slot, _sched, _eng = _deps(row)
+    person = PrincipalRef(
+        type="user", id="person-1", display="Person", role="user",
+        source="local", user_id="person-1",
+    )
+    receipt = SessionWakeReceipt()
+
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="trusted message",
+        human_intent=True,
+        receipt=receipt,
+        by=person,
+        trusted_responder_input=TrustedResponderInput(
+            person=person,
+            domain="user_input",
+            occurrence="1" * 32,
+            accepted_at=datetime.now(timezone.utc),
+        ),
+        deps=deps,
+    )
+
+    assert receipt.outcome == "woken"
+    assert out.turn_person == person
+    assert (out.responder_seq, out.responder_reservation_version) == (1, 2)
+    assert out.responder_epoch != "a" * 32
+    assert out.last_responder_intent_receipt is None
+    assert slot.appended == ["trusted message"]
+
+
+@pytest.mark.asyncio
+async def test_paused_trusted_input_resumes_and_rotates_responder():
+    row = _row(SessionStatus.PAUSED).model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    })
+    deps, _slot, _sched, _eng = _deps(row)
+    person = PrincipalRef(
+        type="user", id="person-1", display="Person", role="user",
+        source="local", user_id="person-1",
+    )
+
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="resume",
+        human_intent=True,
+        receipt=SessionWakeReceipt(),
+        by=person,
+        trusted_responder_input=TrustedResponderInput(
+            person=person, domain="user_input", occurrence="3" * 32,
+            accepted_at=datetime.now(timezone.utc),
+        ),
+        deps=deps,
+    )
+
+    assert out.status == SessionStatus.RUNNING
+    assert out.turn_person == person
+    assert (out.responder_seq, out.responder_reservation_version) == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_trusted_retry_rebuilds_generation_but_preserves_authority():
+    row = _row(SessionStatus.CREATED).model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    })
+    deps, _slot, _sched, _eng = _deps(row)
+    storage = deps.storage_provider._s
+    real_patch_if = storage.patch_if
+    attempts = []
+
+    async def patch_if(id, patch=None, *, where, set_paths=None, conn=None):
+        if patch and patch.get("pending_responder_intent") is not None:
+            attempts.append((patch["pending_responder_intent"], where.copy()))
+            if len(attempts) == 1:
+                storage._row = storage._row.model_copy(
+                    update={"last_seq": storage._row.last_seq + 1},
+                )
+        return await real_patch_if(
+            id, patch, where=where, set_paths=set_paths, conn=conn,
+        )
+
+    storage.patch_if = patch_if
+    person = PrincipalRef(
+        type="user", id="person-1", display="Person", role="user",
+        source="local", user_id="person-1",
+    )
+    accepted_at = datetime.now(timezone.utc)
+
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="retry",
+        human_intent=True,
+        receipt=SessionWakeReceipt(),
+        by=person,
+        trusted_responder_input=TrustedResponderInput(
+            person=person, domain="user_input", occurrence="4" * 32,
+            accepted_at=accepted_at,
+        ),
+        deps=deps,
+    )
+
+    assert len(attempts) == 2
+    first, first_where = attempts[0]
+    second, second_where = attempts[1]
+    for field in ("occurrence_id", "starter", "accepted_at", "domain", "payload_sha256"):
+        assert first[field] == second[field]
+    assert first["user_input_seq"] + 1 == second["user_input_seq"]
+    assert first["source_key"] != second["source_key"]
+    assert first_where["last_seq"] != second_where["last_seq"]
+    assert out.responder_seq == 1
+    assert len(out.responder_reservations) == 1
+
+
+@pytest.mark.asyncio
+async def test_trusted_direct_promotion_preserves_queued_cleanup_receipt():
+    base = _row(SessionStatus.CREATED).model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    })
+    person = PrincipalRef(
+        type="user", id="person-1", display="Person", role="user",
+        source="local", user_id="person-1",
+    )
+    queued = prepare_responder_intent(
+        base,
+        starter=person,
+        user_input_payload={"text": "queued"},
+        accepted_at=datetime.now(timezone.utc),
+        occurrence_id="5" * 32,
+        target_epoch="b" * 32,
+        receipt_required=True,
+        pending_message_id="pending-1",
+    )
+    queued_row = base.model_copy(
+        update={"pending_responder_intent": queued.intent},
+    )
+    with_receipt = WorkspaceSession.model_validate({
+        **dump_for_storage(queued_row),
+        **promotion_patch(queued_row),
+    })
+    receipt = with_receipt.last_responder_intent_receipt
+    deps, _slot, _sched, _eng = _deps(with_receipt)
+
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="direct",
+        human_intent=True,
+        receipt=SessionWakeReceipt(),
+        by=person,
+        trusted_responder_input=TrustedResponderInput(
+            person=person, domain="user_input", occurrence="6" * 32,
+            accepted_at=datetime.now(timezone.utc),
+        ),
+        deps=deps,
+    )
+
+    assert out.last_responder_intent_receipt == receipt
+    assert out.responder_seq == 2
+    assert len(out.responder_reservations) == 1
 
 
 @pytest.mark.asyncio
@@ -498,6 +685,43 @@ async def test_ended_restartable_session_reopens_and_runs():
     assert kinds.index("invocation_divider") < kinds.index("user_input")
     divider = next(r for r in records if r["kind"] == "invocation_divider")
     assert divider["payload"]["invocation"] == 2
+
+
+@pytest.mark.asyncio
+async def test_trusted_ended_input_prepares_after_reopen():
+    person = PrincipalRef(
+        type="user", id="person-1", display="Person", role="user",
+        source="local", user_id="person-1",
+    )
+    row = _row(SessionStatus.ENDED).model_copy(update={
+        "ended_reason": "completed",
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    })
+    deps, _slot, _sched, _eng = _deps(row)
+
+    out = await wake_session(
+        workspace_id="ws-1",
+        session_id="sess-1",
+        instruction="again",
+        human_intent=True,
+        receipt=SessionWakeReceipt(),
+        by=person,
+        trusted_responder_input=TrustedResponderInput(
+            person=person,
+            domain="user_input",
+            occurrence="2" * 32,
+            accepted_at=datetime.now(timezone.utc),
+        ),
+        deps=deps,
+    )
+
+    assert out.status == SessionStatus.RUNNING
+    assert out.turn_person == person
+    assert (out.responder_seq, out.responder_reservation_version) == (1, 3)
+    assert out.pending_responder_intent is None
 
 
 @pytest.mark.asyncio

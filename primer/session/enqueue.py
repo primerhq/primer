@@ -34,6 +34,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any, Literal
 
 from pydantic_core import to_jsonable_python
@@ -55,6 +56,8 @@ from primer.model.workspace_session import (
 )
 from primer.session.responder_wake_intent import (
     PreparedResponderIntent,
+    TrustedResponderInput,
+    prepare_responder_intent,
     rebase_prepared_responder_intent,
     classify_intent_user_input,
     exact_intent_where,
@@ -297,7 +300,7 @@ async def wake_session(
     queued_message_id: str | None = None,
     by: PrincipalRef | None = None,
     prepared_intent: PreparedResponderIntent | None = None,
-    trusted_responder_starter: PrincipalRef | None = None,
+    trusted_responder_input: TrustedResponderInput | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -414,8 +417,17 @@ async def wake_session(
     another process since wins, and the session is not woken.
     """
     sent_by_a_person = human_intent if by_a_person is None else by_a_person
+    if prepared_intent is not None and trusted_responder_input is not None:
+        raise ValueError("queued and direct responder proof cannot be combined")
     if prepared_intent is not None and queued_message_id is None:
         raise ValueError("prepared responder intent is reserved for queued realization")
+    if trusted_responder_input is not None and not instruction:
+        raise ValueError("trusted responder input requires an instruction")
+    trusted_responder_starter = (
+        trusted_responder_input.person
+        if trusted_responder_input is not None
+        else None
+    )
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     # A plain text instruction from a routed caller can wait in the pending queue, so the open turn is decided for it here (see the docstring).
     # Calls carrying per-turn tools or attachment parts stay on their existing path: PendingSessionMessage cannot represent those payloads. A
@@ -611,14 +623,36 @@ async def wake_session(
                 # turn claimable in the same statement. Of two wakes of one idle session, in any two processes, exactly one write lands: the other
                 # is refused, reads the row again above, finds the turn armed and defers its message. A refusal from any other change (a record
                 # that took the next seq, a Cancel, a pause) is decided again the same way. Nothing has been written when it is refused.
+                attempt_intent = prepared_intent
+                if (
+                    trusted_responder_input is not None
+                    and row.responder_epoch is not None
+                ):
+                    target_epoch = sha256(
+                        (
+                            "direct-responder-epoch-v1\0"
+                            + trusted_responder_input.occurrence
+                        ).encode()
+                    ).hexdigest()[:32]
+                    attempt_intent = prepare_responder_intent(
+                        row,
+                        starter=trusted_responder_input.person,
+                        domain=trusted_responder_input.domain,
+                        user_input_payload={"text": instruction},
+                        accepted_at=trusted_responder_input.accepted_at,
+                        occurrence_id=trusted_responder_input.occurrence,
+                        target_epoch=target_epoch,
+                        receipt_required=False,
+                    )
                 taken = await _arm_or_reserve(
                     sessions,
                     row,
                     arm=routed,
                     owned=reopened,
-                    prepared_intent=prepared_intent,
+                    prepared_intent=attempt_intent,
                 )
                 if taken is not None:
+                    prepared_intent = attempt_intent
                     decided, row = row, taken
                     if routed or reopened:
                         armed = taken
