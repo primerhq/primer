@@ -23,6 +23,7 @@ from primer.model.except_ import ConfigError, NotFoundError
 from pydantic import SecretStr
 
 from primer.model.workspace import (
+    DEFAULT_WORKSPACE_ROOT,
     K8sConnectionInCluster,
     K8sConnectionKubeconfig,
     K8sConnectionServiceAccountToken,
@@ -32,9 +33,11 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
+    validate_kubernetes_workspace_volume_identity,
+    validate_workspace_root,
 )
 from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, end_sessions_shielded, roll_back_shielded
-from primer.workspace.env_names import RUNTIME_TOKEN_ENV_NAMES
+from primer.workspace.env_names import RUNTIME_TOKEN_ENV_NAMES, WORKSPACE_ROOT_ENV_NAME
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name, legacy_k8s_object_name
@@ -55,6 +58,83 @@ _RUNTIME_READY_MAX_POLL_S = 2.0
 
 # What a gateway answers while it has not programmed or reached a freshly created backend.
 _GATEWAY_NOT_READY_STATUSES = frozenset({404, 502, 503, 504})
+
+
+def _manifest_field(value: Any, json_name: str, attr_name: str | None = None) -> Any:
+    """Read one Kubernetes field from a raw manifest dict or client model."""
+    if isinstance(value, dict):
+        return value.get(json_name)
+    return getattr(value, attr_name or json_name, None)
+
+
+def _workspace_root_from_statefulset(statefulset: Any) -> str:
+    """Return the live runtime root only when the StatefulSet proves it."""
+    spec = _manifest_field(statefulset, "spec")
+    template = _manifest_field(spec, "template")
+    pod_spec = _manifest_field(template, "spec")
+    containers = _manifest_field(pod_spec, "containers")
+    if not isinstance(containers, (list, tuple)):
+        raise ConfigError("StatefulSet has no inspectable workspace container")
+    container = next(
+        (item for item in containers if _manifest_field(item, "name") == "workspace"),
+        None,
+    )
+    if container is None:
+        raise ConfigError("StatefulSet has no named workspace container")
+
+    working_dir = _manifest_field(container, "workingDir", "working_dir")
+    try:
+        working_dir = validate_workspace_root(working_dir)
+    except ValueError as exc:
+        raise ConfigError(f"StatefulSet workspace container has an unsafe workingDir: {exc}") from exc
+
+    env = _manifest_field(container, "env") or []
+    if not isinstance(env, (list, tuple)):
+        raise ConfigError("StatefulSet workspace container has malformed env")
+    root_values = [
+        _manifest_field(item, "value")
+        for item in env
+        if _manifest_field(item, "name") == WORKSPACE_ROOT_ENV_NAME
+    ]
+    if not root_values:
+        if working_dir != DEFAULT_WORKSPACE_ROOT:
+            raise ConfigError(
+                "legacy StatefulSet has no WORKSPACE_ROOT but its workspace container workingDir is "
+                f"{working_dir!r}; only the legacy default {DEFAULT_WORKSPACE_ROOT!r} can be recovered safely"
+            )
+        root = DEFAULT_WORKSPACE_ROOT
+    else:
+        if len(root_values) != 1:
+            raise ConfigError("StatefulSet workspace container has multiple WORKSPACE_ROOT entries")
+        try:
+            root = validate_workspace_root(root_values[0])
+        except ValueError as exc:
+            raise ConfigError(f"StatefulSet workspace container has an unsafe WORKSPACE_ROOT: {exc}") from exc
+        if root != working_dir:
+            raise ConfigError(
+                f"StatefulSet WORKSPACE_ROOT {root!r} does not match its workspace container workingDir {working_dir!r}"
+            )
+
+    volume_mounts = _manifest_field(container, "volumeMounts", "volume_mounts")
+    if not isinstance(volume_mounts, (list, tuple)):
+        raise ConfigError("StatefulSet workspace container has no inspectable volumeMounts")
+    workspace_mounts = [
+        item for item in volume_mounts if _manifest_field(item, "name") == "ws"
+    ]
+    if len(workspace_mounts) != 1:
+        raise ConfigError(
+            "StatefulSet workspace container must have exactly one volumeMount named 'ws'"
+        )
+    mount_path = _manifest_field(workspace_mounts[0], "mountPath", "mount_path")
+    try:
+        mount_path = validate_workspace_root(mount_path)
+    except ValueError as exc:
+        raise ConfigError(f"StatefulSet workspace volumeMount has an unsafe mountPath: {exc}") from exc
+    if mount_path != root:
+        raise ConfigError(
+            f"StatefulSet workspace volumeMount path {mount_path!r} does not match WORKSPACE_ROOT {root!r}"
+        )
+    return root
 
 
 def _runtime_not_serving_yet(exc: BaseException) -> bool:
@@ -165,6 +245,13 @@ def _validate_template_overrides(template: WorkspaceTemplate) -> None:
     if not isinstance(template.backend, KubernetesTemplateConfig):
         return
     tcfg = template.backend
+    try:
+        validate_kubernetes_workspace_volume_identity(
+            tcfg.extra_volumes,
+            tcfg.extra_volume_mounts,
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     _assert_allowlisted(tcfg.pod_overrides or {}, _POD_OVERRIDES_ALLOWED, source="pod_overrides")
     _assert_allowlisted(
         [vol.model_dump(exclude_none=True) for vol in tcfg.extra_volumes], [_VOLUME_ALLOWED],
@@ -226,6 +313,7 @@ def _build_statefulset_manifest(
     BEFORE ``pod_overrides`` is merged, which cannot set any of them (see :data:`_POD_OVERRIDES_ALLOWED`).
     """
     assert isinstance(template.backend, KubernetesTemplateConfig)
+    _validate_template_overrides(template)
     tcfg = template.backend
     if obj_name is None:
         from primer.workspace.k8s.naming import k8s_object_name
@@ -239,6 +327,12 @@ def _build_statefulset_manifest(
             "the workspace Secret", workspace_id, ", ".join(refused_env),
         )
     size = overrides.resources if overrides is not None else None
+    runtime_env = {
+        key: value
+        for key, value in merged.env_unwrapped().items()
+        if key not in _RUNTIME_TOKEN_ENV_NAMES
+    }
+    runtime_env[WORKSPACE_ROOT_ENV_NAME] = tcfg.workdir
 
     base_container: dict[str, Any] = {
         "name": "workspace",
@@ -249,8 +343,7 @@ def _build_statefulset_manifest(
         ] + [vm.model_dump(exclude_none=True) if hasattr(vm, "model_dump") else dict(vm) for vm in tcfg.extra_volume_mounts],
         "env": [
             {"name": k, "value": v}
-            for k, v in merged.env_unwrapped().items()
-            if k not in _RUNTIME_TOKEN_ENV_NAMES
+            for k, v in runtime_env.items()
         ],
         "envFrom": [
             {"secretRef": {"name": obj_name}},
@@ -914,13 +1007,19 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         assert self._core_v1 is not None and self._apps_v1 is not None
         obj_name = await self._object_name_in_cluster(workspace_id)
         try:
-            await self._apps_v1.read_namespaced_stateful_set(
+            statefulset = await self._apps_v1.read_namespaced_stateful_set(
                 obj_name, self._config.namespace,
             )
         except Exception as exc:  # noqa: BLE001
             if "404" in str(exc):
                 return None
             raise
+        workspace_root = _workspace_root_from_statefulset(statefulset)
+        if workspace_root != template.backend.workdir:
+            raise ConfigError(
+                f"StatefulSet workspace root {workspace_root!r} does not match the template snapshot workdir "
+                f"{template.backend.workdir!r}"
+            )
         pod_name = f"{obj_name}-0"
         # Make sure the Pod is up (the StatefulSet may have been scaled
         # to 0 between sessions).
@@ -952,7 +1051,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             sandbox = WSSandbox(
                 runtime_client=client,
                 container_id=obj_name,
-                workspace_root=template.backend.workdir,
+                workspace_root=workspace_root,
             )
             reattach_meta = WorkspaceRuntimeMeta(
                 url=url,
@@ -965,7 +1064,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 sandbox=sandbox,
                 backend_kind="kubernetes",
                 runtime_meta=reattach_meta,
-                workspace_root=template.backend.workdir,
+                workspace_root=workspace_root,
             )
             async with self._lock:
                 existing = self._workspaces.get(workspace_id)

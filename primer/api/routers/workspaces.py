@@ -193,8 +193,9 @@ class WorkspaceCreateBody(BaseModel):
     overrides: WorkspaceTemplateOverrides | None = Field(
         default=None,
         description=(
-            "Optional per-instantiation overrides (env additions, "
-            "extra files, additional init commands)."
+            "Optional per-instantiation overrides (environment variables, extra files, and additional init commands). "
+            "Environment overrides cannot set PRIMER_RUNTIME_TOKEN, RUNTIME_TOKEN, or WORKSPACE_ROOT; set the template's "
+            "backend.workdir to control the runtime root."
         ),
     )
     reply_binding: WorkspaceChannelLink | None = Field(

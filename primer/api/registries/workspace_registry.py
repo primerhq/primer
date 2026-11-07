@@ -38,10 +38,14 @@ from primer.model.except_ import ConflictError, NotFoundError, ValidationError
 from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
 from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
 from primer.model.workspace import (
+    ContainerTemplateConfig,
+    KubernetesTemplateConfig,
     WorkspaceChannelLink,
     WorkspaceProvider,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
+    validate_kubernetes_workspace_volume_identity,
+    validate_workspace_root,
 )
 from primer.storage import raw_generation
 from primer.workspace.env_names import refuse_bad_env_names
@@ -402,6 +406,21 @@ class WorkspaceRegistry(BusInvalidated):
         # refuse or the platform sets itself, and a size from the template above the sane maxima. The override sizes carry their
         # maxima in the model.
         refuse_bad_env_names(template, overrides)
+        if isinstance(template.backend, KubernetesTemplateConfig):
+            try:
+                validate_kubernetes_workspace_volume_identity(
+                    template.backend.extra_volumes,
+                    template.backend.extra_volume_mounts,
+                )
+            except ValueError as exc:
+                raise ValidationError(f"template {template.id!r} has an unsafe Kubernetes volume identity: {exc}") from exc
+        if isinstance(template.backend, (ContainerTemplateConfig, KubernetesTemplateConfig)):
+            try:
+                validate_workspace_root(template.backend.workdir)
+            except ValueError as exc:
+                raise ValidationError(
+                    f"template {template.id!r} sets backend.workdir to an unsafe workspace root: {exc}"
+                ) from exc
         refuse_oversized_template_sizes(template, overrides)
         if provider is not None and asks_for_a_size(overrides):
             refuse_unsupported_resource_overrides(provider.config.kind, overrides)

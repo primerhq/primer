@@ -368,7 +368,13 @@ async def test_get_returns_sandbox_workspace_after_reattach():
     backend._lock = __import__("asyncio").Lock()
     backend._initialised = True
     # STS exists.
-    backend._apps_v1.read_namespaced_stateful_set = AsyncMock()
+    backend._apps_v1.read_namespaced_stateful_set = AsyncMock(return_value=SimpleNamespace(
+        spec=SimpleNamespace(template=SimpleNamespace(spec=SimpleNamespace(containers=[SimpleNamespace(
+            name="workspace", working_dir="/workspace",
+            env=[SimpleNamespace(name="WORKSPACE_ROOT", value="/workspace")],
+            volume_mounts=[SimpleNamespace(name="ws", mount_path="/workspace")],
+        )]))),
+    ))
     # Secret carries the token.
     backend._core_v1.read_namespaced_secret = AsyncMock(
         return_value=SimpleNamespace(

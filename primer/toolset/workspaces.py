@@ -132,7 +132,12 @@ from primer.toolset._system_guards import (
     refuse_update,
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
-from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
+from primer.workspace.env_names import (
+    ENV_NAME_PATTERN,
+    MAX_ENV_NAME_LENGTH,
+    RUNTIME_TOKEN_ENV_NAMES,
+    WORKSPACE_ROOT_ENV_NAME,
+)
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_tree_for_resolved, reserved_trees
 from primer.workspace.template_privilege import (
@@ -562,7 +567,8 @@ _RUNTIME_TOKEN_NAMES = " and ".join(f"``{name}``" for name in sorted(RUNTIME_TOK
 # the platform's own.
 _ENV_NAME_RULE = (
     f"An environment variable name follows Kubernetes' own rule: ``{ENV_NAME_PATTERN}``, at most {MAX_ENV_NAME_LENGTH} characters, and never "
-    f"``.``, ``..`` or a name that starts with ``..``; {_RUNTIME_TOKEN_NAMES} are reserved for the runtime's own token. "
+    f"``.``, ``..`` or a name that starts with ``..``; {_RUNTIME_TOKEN_NAMES} are reserved for the runtime's own token, and "
+    f"``{WORKSPACE_ROOT_ENV_NAME}`` is reserved for its canonical root (use ``backend.workdir`` instead). "
     "A bad name is ``type=validation-error`` and the message names it (never its value)."
 )
 
@@ -619,6 +625,8 @@ _TEMPLATE_FIELDS_BY_PROVIDER = (
     f"a ``gpu.resource_name`` other than ``{DEFAULT_GPU_RESOURCE_NAME}``, container ``backend.extra_mounts``, Kubernetes "
     "``extra_volumes``, ``extra_volume_mounts``, ``pod_overrides`` and ``container_security_context_overrides``, and a file whose "
     "source ``kind`` is ``secret``. "
+    "Kubernetes volume name ``ws`` is platform-owned for the workspace PVC and cannot appear in ``backend.extra_volumes`` or "
+    "``backend.extra_volume_mounts``. "
     "``node_selector``, a ``gpu`` count with the default resource name and ``image_pull_policy`` are open to every user. "
     "A GPU resource name under ``kubernetes.io/`` or starting with ``requests.`` is refused for everyone "
     "(``type=validation-error``). "
