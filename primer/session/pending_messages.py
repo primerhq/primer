@@ -52,6 +52,7 @@ from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.responder_attribution import ReservationFences
 from primer.session.responder_wake_intent import (
     PreparedResponderIntent,
+    TrustedResponderInput,
     exact_intent_where,
     exact_receipt_where,
     prepare_responder_intent,
@@ -173,7 +174,7 @@ async def store_pending_steer(
     attribution: dict | None = None,
     by: PrincipalRef | None = None,
     client_msg_id: str | None = None,
-    trusted_responder_starter: PrincipalRef | None = None,
+    trusted_responder_input: TrustedResponderInput | None = None,
 ) -> PendingSessionMessage:
     """Queue a follow-up steer without touching the message log.
 
@@ -204,23 +205,29 @@ async def store_pending_steer(
         )
     now = datetime.now(UTC)
     proof = None
-    if trusted_responder_starter is not None:
+    if trusted_responder_input is not None:
         authenticated_person = person_ref(by)
         if (
             authenticated_person is None
-            or authenticated_person != trusted_responder_starter
+            or authenticated_person != trusted_responder_input.person
             or not _written_by_a_person(attribution)
         ):
             raise ValueError(
                 "queued responder proof starter must equal the authenticated person sender"
             )
         if session.responder_epoch is not None:
+            proof_payload = {"text": text}
+            if trusted_responder_input.domain == "canvas_event":
+                canvas_event = (attribution or {}).get(CANVAS_EVENT_PAYLOAD_KEY)
+                if not isinstance(canvas_event, dict):
+                    raise ValueError("canvas responder proof requires stored canvas event attribution")
+                proof_payload[CANVAS_EVENT_PAYLOAD_KEY] = canvas_event
             proof = PendingResponderProof(
                 starter=authenticated_person,
-                domain="user_input",
+                domain=trusted_responder_input.domain,
                 accepted_at=now,
                 payload_sha256=sha256(
-                    canonical_responder_payload({"text": text})
+                    canonical_responder_payload(proof_payload)
                 ).hexdigest(),
             )
     row = PendingSessionMessage(
@@ -582,10 +589,17 @@ def _prepared_intent_for_pending(
     proof = row.responder_proof
     if proof is None:
         raise ValueError("pending row has no responder proof")
-    digest = sha256(canonical_responder_payload({"text": text})).hexdigest()
+    proof_payload = {"text": text}
+    if proof.domain == "canvas_event":
+        canvas_event = (row.attribution or {}).get(CANVAS_EVENT_PAYLOAD_KEY)
+        if not isinstance(canvas_event, dict):
+            raise ValueError("pending canvas responder proof has no canvas event attribution")
+        proof_payload[CANVAS_EVENT_PAYLOAD_KEY] = canvas_event
+    elif proof.domain != "user_input":
+        raise ValueError("pending responder proof has an unsupported domain")
+    digest = sha256(canonical_responder_payload(proof_payload)).hexdigest()
     if (
-        proof.domain != "user_input"
-        or proof.accepted_at != row.enqueued_at
+        proof.accepted_at != row.enqueued_at
         or proof.payload_sha256 != digest
         or row.session_id != session.id
     ):
@@ -637,7 +651,8 @@ def _prepared_intent_for_pending(
     return "new", prepare_responder_intent(
         session,
         starter=proof.starter,
-        user_input_payload={"text": text},
+        domain=proof.domain,
+        user_input_payload=proof_payload,
         accepted_at=proof.accepted_at,
         occurrence_id=occurrence,
         target_epoch=target_epoch,

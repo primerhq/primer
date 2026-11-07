@@ -34,9 +34,11 @@ from primer.canvas.wait import consume_events
 from primer.int.claim import ClaimKind
 from primer.model.canvas import CanvasEvent
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import PendingSessionMessage, SessionStatus
 from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
 from primer.session.pending_messages import realize_next_pending
+from primer.session.responder_wake_intent import TrustedResponderInput
 from tests.canvas._fakes import World, make_world, seed_session
 
 PROGRAM = """
@@ -116,7 +118,7 @@ async def _deliver(w: World, event: CanvasEvent, **parts: Any) -> str:
     return await deliver_canvas_event(
         event=event, state=w.service.state_of(row), session_id="s1", workspace_id="ws-1", storage_provider=w.sp,
         scheduler=parts.get("scheduler") or Scheduler(), claim_engine=parts.get("engine") or Engine(), workspace_registry=w.registry,
-        event_bus=w.bus,
+        event_bus=w.bus, by=parts.get("by"), trusted_responder_input=parts.get("trusted_responder_input"),
     )
 
 
@@ -196,6 +198,167 @@ async def test_a_queued_click_never_answers_the_gate_it_waits_behind() -> None:
     row = await w.sessions.get("s1")
     assert row.model_dump() == {**before.model_dump(), "last_seq": row.last_seq}
     assert all("ask_user" not in key for key, _ in w.bus.published)
+
+
+async def test_an_authenticated_queued_click_realizes_one_responder_occurrence() -> None:
+    w = await _world("running")
+    row = await w.sessions.get("s1")
+    assert row is not None
+    await w.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    }))
+    event = await _record(w, "click play")
+    person = PrincipalRef(type="user", id="u1", display="Alice", role="user", source="local", user_id="u1")
+    trusted = TrustedResponderInput(
+        person=person,
+        domain="canvas_event",
+        occurrence="b" * 32,
+        accepted_at=event.at,
+    )
+
+    assert await _deliver(w, event, by=person, trusted_responder_input=trusted) == DELIVERY_QUEUED
+    [pending] = _pending(w)
+    assert pending.responder_proof is not None and pending.responder_proof.domain == "canvas_event"
+    await _turn_ends(w)
+
+    assert await realize_next_pending(
+        storage_provider=w.sp,
+        workspace_id="ws-1",
+        session_id="s1",
+        wake_deps=_wake_deps(w),
+    ) is True
+    landed = await w.sessions.get("s1")
+    assert landed is not None and landed.turn_person == person
+    assert (landed.responder_seq, landed.responder_reservation_version) == (1, 2)
+    assert len(landed.responder_reservations) == 1 and _pending(w) == []
+    assert await realize_next_pending(
+        storage_provider=w.sp,
+        workspace_id="ws-1",
+        session_id="s1",
+        wake_deps=_wake_deps(w),
+    ) is False
+
+
+async def test_a_direct_canvas_wake_that_loses_its_arm_keeps_canvas_authority_in_the_queue() -> None:
+    w = await _world("idle")
+    row = await w.sessions.get("s1")
+    assert row is not None
+    await w.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    }))
+    event = await _record(w, "click play")
+    person = PrincipalRef(type="user", id="u1", display="Alice", role="user", source="local", user_id="u1")
+    trusted = TrustedResponderInput(
+        person=person,
+        domain="canvas_event",
+        occurrence="c" * 32,
+        accepted_at=event.at,
+    )
+    real_patch_if = w.sessions.patch_if
+    lost = False
+
+    async def lose_the_first_arm(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        nonlocal lost
+        if not lost and patch and patch.get("pending_responder_intent") is not None:
+            lost = True
+            current = await w.sessions.get(id)
+            assert current is not None
+            moved = await real_patch_if(
+                id,
+                {"status": "running", "turn_status": "running", "last_seq": current.last_seq + 1},
+                where={"last_seq": [current.last_seq]},
+            )
+            assert moved is not None
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    w.sessions.patch_if = lose_the_first_arm
+    assert await _deliver(w, event, by=person, trusted_responder_input=trusted) == DELIVERY_QUEUED
+    [pending] = _pending(w)
+    assert pending.responder_proof is not None
+    assert pending.responder_proof.domain == "canvas_event"
+    assert pending.attribution[CANVAS_EVENT_PAYLOAD_KEY] == event_attribution(event)
+    queued_id = pending.id
+
+    await _turn_ends(w)
+    assert await realize_next_pending(
+        storage_provider=w.sp,
+        workspace_id="ws-1",
+        session_id="s1",
+        wake_deps=_wake_deps(w),
+    ) is True
+    landed = await w.sessions.get("s1")
+    assert landed is not None and landed.turn_person == person
+    assert (landed.responder_seq, landed.responder_reservation_version) == (1, 2)
+    [reservation] = landed.responder_reservations.values()
+    assert reservation.domain == "canvas_event"
+    assert landed.last_responder_intent_receipt is not None
+    assert landed.last_responder_intent_receipt.pending_message_id == queued_id
+    assert _pending(w) == []
+
+    cleanup_receipt = landed.last_responder_intent_receipt
+    await w.sessions.update(landed.model_copy(update={"status": SessionStatus.WAITING, "turn_status": "idle"}))
+    second = await _record(w, "click play")
+    second_trusted = TrustedResponderInput(
+        person=person,
+        domain="canvas_event",
+        occurrence="d" * 32,
+        accepted_at=second.at,
+    )
+    assert await _deliver(w, second, by=person, trusted_responder_input=second_trusted) == DELIVERY_WOKEN
+    direct = await w.sessions.get("s1")
+    assert direct is not None
+    assert (direct.responder_seq, direct.responder_reservation_version) == (2, 3)
+    assert direct.last_responder_intent_receipt == cleanup_receipt
+
+
+@pytest.mark.parametrize(
+    ("row_state", "event_name", "by", "with_capability"),
+    [
+        ("idle", "change genre", None, False),
+        ("wait-match", "click play", None, True),
+        ("idle", "click play", PrincipalRef.system(), False),
+        ("idle", "click play", PrincipalRef(type="user", id="u1", display="Alice", role="user", source="local", user_id="u1"), False),
+    ],
+    ids=["silent", "canvas-wait", "system", "internal-person-without-capability"],
+)
+async def test_ineligible_canvas_delivery_never_changes_the_active_responder_ledger(
+    row_state: str,
+    event_name: str,
+    by: PrincipalRef | None,
+    with_capability: bool,
+) -> None:
+    w = await _world(row_state)
+    row = await w.sessions.get("s1")
+    assert row is not None
+    await w.sessions.update(row.model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    }))
+
+    event = await _record(w, event_name)
+    trusted = None
+    if with_capability:
+        trusted_person = PrincipalRef(type="user", id="u1", display="Alice", role="user", source="local", user_id="u1")
+        trusted = TrustedResponderInput(
+            person=trusted_person,
+            domain="canvas_event",
+            occurrence="e" * 32,
+            accepted_at=event.at,
+        )
+    await _deliver(w, event, by=by, trusted_responder_input=trusted)
+
+    after = await w.sessions.get("s1")
+    assert after is not None
+    assert (after.responder_epoch, after.responder_seq, after.responder_reservation_version) == ("a" * 32, 0, 1)
+    assert after.responder_reservations == {}
 
 
 async def test_a_click_never_overtakes_a_queued_message() -> None:

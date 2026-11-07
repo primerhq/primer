@@ -256,6 +256,48 @@ async def test_sweeper_recovers_exact_log_before_claiming(monkeypatch) -> None:
     assert engine.ids == [original.id]
 
 
+async def test_sweeper_recovers_canvas_event_intent_with_generated_digest_metadata(monkeypatch) -> None:
+    original = _row()
+    provider, sessions = await _storage(original)
+    canvas_payload = {
+        "text": '<canvas_event id="e1">click</canvas_event>',
+        "canvas_event": {"id": "e1", "seq": 1, "element": "play", "kind": "click"},
+    }
+    prepared = prepare_responder_intent(
+        original,
+        starter=PERSON,
+        domain="canvas_event",
+        user_input_payload=canvas_payload,
+        accepted_at=NOW,
+        occurrence_id="c" * 32,
+        target_epoch="b" * 32,
+    )
+    armed = await _arm_or_reserve(sessions, original, arm=True, prepared_intent=prepared)
+    engine = _Engine()
+
+    async def read_lines(_io, _row):
+        return [_record(payload={
+            **canvas_payload,
+            "canvas_digest": {"rev": 2, "events": []},
+        }).model_dump_json()]
+
+    monkeypatch.setattr("primer.session.dispatch._read_message_lines", read_lines)
+    sweeper = SessionMessagingSweeper(
+        storage_provider=provider,
+        scheduler=_Scheduler(),
+        claim_engine=engine,
+        workspace_registry=SimpleNamespace(),
+    )
+
+    assert await sweeper._heal_an_arm(sessions, armed)
+    after = await sessions.get(original.id)
+    assert after is not None and after.turn_status == "claimable"
+    assert (after.responder_seq, after.responder_reservation_version) == (3, 5)
+    [reservation] = after.responder_reservations.values()
+    assert reservation.domain == "canvas_event"
+    assert engine.ids == [original.id]
+
+
 @pytest.mark.parametrize(
     "move",
     [
@@ -270,7 +312,11 @@ async def test_stale_prepared_authority_refuses_moved_session(move) -> None:
     prepared = prepare_responder_intent(
         original,
         starter=PERSON,
-        user_input_payload=PAYLOAD,
+        domain="canvas_event",
+        user_input_payload={
+            "text": '<canvas_event id="e1">click</canvas_event>',
+            "canvas_event": {"id": "e1", "seq": 1},
+        },
         accepted_at=NOW,
         occurrence_id="1" * 32,
         target_epoch="b" * 32,

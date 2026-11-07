@@ -24,6 +24,7 @@ from primer.session.pending_messages import (
     store_pending_steer,
 )
 from primer.session.responder_wake_intent import (
+    TrustedResponderInput,
     prepare_responder_intent,
     promotion_patch,
 )
@@ -42,6 +43,15 @@ NOW = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
 PERSON = PrincipalRef(
     type="user", id="u1", display="User", role="user", source="local", user_id="u1",
 )
+
+
+def _trusted(person: PrincipalRef = PERSON) -> TrustedResponderInput:
+    return TrustedResponderInput(
+        person=person,
+        domain="user_input",
+        occurrence="f" * 32,
+        accepted_at=NOW,
+    )
 
 
 def _session() -> WorkspaceSession:
@@ -88,7 +98,7 @@ async def _queued(sp: _SP, *, trusted: bool = True) -> PendingSessionMessage:
         text="queued text",
         workspace_registry=None,
         by=PERSON,
-        trusted_responder_starter=PERSON if trusted else None,
+        trusted_responder_input=_trusted() if trusted else None,
     )
 
 
@@ -131,7 +141,7 @@ async def test_proof_requires_the_exact_authenticated_person_sender() -> None:
                 workspace_registry=None,
                 by=by,
                 attribution=attribution,
-                trusted_responder_starter=starter,
+                trusted_responder_input=_trusted(starter),
             )
     assert sp.pending.rows == {}
 
