@@ -53,9 +53,20 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from primer.session.responder_wake_intent import (
+    PreparedResponderIntent,
+    classify_intent_user_input,
+    exact_intent_where,
+    intent_is_promoted,
+    intent_matches_record,
+    prepared_arm_is_current,
+    prepared_arm_where,
+    promotion_patch,
+)
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter, WorkspaceWriteTimeout
 from primer.session.reset import OnlyAPersonReopens, _reopen_ended_locked, no_turn_holds, refuse_a_reopen_it_may_not_make
+from primer.session.responder_attribution import ReservationFences
 from primer.session.seq_reservation import reserve_next_seq
 from primer.session.title import derive_title_from_text
 from primer.storage import raw_generation
@@ -423,6 +434,7 @@ async def wake_session(
         armed: WorkspaceSession | None = None
         settled: str | None = None
         message_written = False
+        user_input_record: SessionMessageRecord | None = None
         try:
             for _attempt in range(_ARM_ATTEMPTS):
                 row = await sessions.get(session_id)
@@ -662,7 +674,7 @@ async def wake_session(
                     writer = WorkspaceMessageWriter(
                         workspace_io=ws, session_id=session_id, start_seq=row.last_seq - 1,
                     )
-                    user_input_seq = await writer.append(SessionMessageRecord(
+                    user_input_record = SessionMessageRecord(
                         seq=1,  # overwritten by the writer's monotonic counter: the reserved seq
                         kind=SessionMessageKind.USER_INPUT,
                         payload={
@@ -671,7 +683,9 @@ async def wake_session(
                             **({PEER_PAYLOAD_KEY: peer.model_dump(mode="json")} if peer is not None else {}),
                         },
                         created_at=datetime.now(timezone.utc),
-                    ))
+                    )
+                    user_input_seq = await writer.append(user_input_record)
+                    user_input_record = user_input_record.model_copy(update={"seq": user_input_seq})
                     await writer.flush()
                 message_written = True
                 if queued_message_id is not None:
@@ -692,7 +706,7 @@ async def wake_session(
             was_paused = decided.pause_requested
             landed, settled = await _write_the_wake(
                 sessions, row, decided=decided, instruction=instruction, human_intent=human_intent, peer=peer,
-                external_tools=external_tools, armed=armed, by=by,
+                external_tools=external_tools, armed=armed, by=by, user_input_record=user_input_record,
             )
             if landed is None:
                 # A Cancel or a pause landed on the row after the decision (on any process): it wins, the session is not woken (a turn this
@@ -712,6 +726,7 @@ async def wake_session(
             if armed is not None and settled not in ("promoted", "taken"):
                 await _settle_the_arm(
                     sessions, deps, session_id, armed=armed, to_a_pause=settled == "paused", message_written=message_written,
+                    user_input_record=user_input_record,
                 )
         if deps.event_bus is not None:
             try:
@@ -749,7 +764,14 @@ async def wake_session(
 _ARM_ATTEMPTS = 5
 
 
-async def _arm_or_reserve(sessions: Any, row: WorkspaceSession, *, arm: bool, owned: bool = False) -> WorkspaceSession | None:
+async def _arm_or_reserve(
+    sessions: Any,
+    row: WorkspaceSession,
+    *,
+    arm: bool,
+    owned: bool = False,
+    prepared_intent: PreparedResponderIntent | None = None,
+) -> WorkspaceSession | None:
     """Reserve seq ``row.last_seq + 1`` for the wake's USER_INPUT and, with ``arm``, take the turn, in ONE guarded ``patch_if``.
 
     Fenced on the row as read: its ``last_seq`` (the reservation), ``status`` and ``pause_requested`` (what the pause hold and the reopen
@@ -759,12 +781,21 @@ async def _arm_or_reserve(sessions: Any, row: WorkspaceSession, *, arm: bool, ow
     :func:`_write_the_wake` promotes it to ``claimable`` once the message is written. Returns the row as written, or ``None`` when the fence
     was refused (the row changed: nothing was written). A row that is gone raises ``NotFoundError``.
     """
-    where: dict[str, list[Any]] = {
-        "last_seq": [raw_generation(row, "last_seq")],
-        "status": [raw_generation(row, "status")],
-        "pause_requested": [raw_generation(row, "pause_requested")],
-    }
+    if prepared_intent is not None:
+        if not arm:
+            raise ValueError("a responder intent can only be stamped by an arming wake")
+        if prepared_intent.session_id != row.id or prepared_intent.intent.user_input_seq != row.last_seq + 1:
+            raise ValueError("prepared responder intent does not match this session generation")
+        where: dict[Any, list[Any]] = prepared_arm_where(prepared_intent)
+    else:
+        where = {
+            "last_seq": [raw_generation(row, "last_seq")],
+            "status": [raw_generation(row, "status")],
+            "pause_requested": [raw_generation(row, "pause_requested")],
+        }
     patch: dict[str, Any] = {"last_seq": row.last_seq + 1}
+    if prepared_intent is not None:
+        patch["pending_responder_intent"] = prepared_intent.intent.model_dump(mode="json")
     if arm:
         where["parked_status"] = [None]
         if owned:
@@ -774,7 +805,13 @@ async def _arm_or_reserve(sessions: Any, row: WorkspaceSession, *, arm: bool, ow
             where["turn_status"] = ["idle"]
             patch["turn_status"] = "arming"
             patch["armed_at"] = datetime.now(timezone.utc)
-    return await sessions.patch_if(row.id, to_jsonable_python(patch), where=where)
+    written = await sessions.patch_if(row.id, to_jsonable_python(patch), where=where)
+    if written is not None or prepared_intent is None:
+        return written
+    current = await sessions.get(row.id)
+    if current is not None and prepared_arm_is_current(current, prepared_intent, owned=owned):
+        return current
+    return None
 
 
 def _held_by(armed: WorkspaceSession) -> dict[str, list[Any]]:
@@ -783,7 +820,14 @@ def _held_by(armed: WorkspaceSession) -> dict[str, list[Any]]:
 
 
 async def _settle_the_arm(
-    sessions: Any, deps: SessionWakeDeps, session_id: str, *, armed: WorkspaceSession, to_a_pause: bool, message_written: bool,
+    sessions: Any,
+    deps: SessionWakeDeps,
+    session_id: str,
+    *,
+    armed: WorkspaceSession,
+    to_a_pause: bool,
+    message_written: bool,
+    user_input_record: SessionMessageRecord | None = None,
 ) -> None:
     """Settle a turn this wake took and did not promote (review N1): every exit after the arm comes here, the early returns included.
 
@@ -799,7 +843,54 @@ async def _settle_the_arm(
     is the caller's.
     """
     try:
+        intent = armed.pending_responder_intent
+        if intent is not None:
+            fresh = await sessions.get(session_id)
+            if fresh is None or intent_is_promoted(fresh, intent):
+                return
+            if fresh.pending_responder_intent != intent:
+                return
+            held = _held_by(armed)
+            where = {
+                **ReservationFences.from_session(armed).where(),
+                **held,
+                **exact_intent_where(armed),
+            }
+            durable_state = "exact" if (
+                message_written
+                and user_input_record is not None
+                and intent_matches_record(intent, user_input_record)
+            ) else await _durable_intent_state(deps, armed)
+            if durable_state == "exact":
+                if user_input_record is not None and not intent_matches_record(intent, user_input_record):
+                    return
+                promoted = await sessions.patch_if(
+                    session_id,
+                    to_jsonable_python({
+                        **promotion_patch(armed),
+                        "turn_status": "claimable",
+                        "armed_at": None,
+                    }),
+                    where={
+                        **where,
+                        "last_seq": [intent.user_input_seq],
+                    },
+                )
+                if promoted is not None:
+                    if deps.claim_engine is not None:
+                        await deps.claim_engine.upsert(ClaimKind.SESSION, session_id)
+                    return
+                return
+            if durable_state != "absent":
+                return
+            await sessions.patch_if(
+                session_id,
+                {"turn_status": "idle", "armed_at": None, "pending_responder_intent": None},
+                where=where,
+            )
+            return
         held = _held_by(armed)
+        held[("pending_responder_intent", "occurrence_id")] = [None]
         if to_a_pause:
             fresh = await sessions.get(session_id)
             if fresh is not None and fresh.status == SessionStatus.RUNNING and fresh.pause_requested:
@@ -824,6 +915,23 @@ async def _settle_the_arm(
             logger.info("wake_session: the turn armed for session %s was no longer this wake's when it was settled", session_id)
     except Exception:  # noqa: BLE001 -- the failure the caller reports (if any) is the one to report; a stale arm is healed by the sweep
         logger.warning("wake_session: could not settle the turn armed for session %s", session_id, exc_info=True)
+
+
+async def _durable_intent_state(deps: SessionWakeDeps, row: WorkspaceSession) -> str:
+    """Classify the intent's exact log record; unreadable proof is corrupt."""
+    from primer.session.dispatch import _read_message_lines
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    intent = row.pending_responder_intent
+    if intent is None:
+        return "absent"
+    io = _WorkspaceIOShim(workspace_registry=deps.workspace_registry)
+    io.register_session(row.id, row.workspace_id)
+    lines = await _read_message_lines(io, row)
+    if lines is None:
+        return "corrupt"
+    state, _record = classify_intent_user_input(lines, intent)
+    return state
 
 
 async def _take_off_the_queue(storage_provider: Any, pending_id: str) -> None:
@@ -891,6 +999,7 @@ async def _write_the_wake(
     external_tools: "list | None",
     armed: WorkspaceSession | None,
     by: PrincipalRef | None = None,
+    user_input_record: SessionMessageRecord | None = None,
 ) -> tuple[WorkspaceSession | None, str | None]:
     """The fields a wake owns, in ONE ``patch_if``: never a whole-row write of a copy read earlier, which put back whatever another process
     committed since (a Cancel's flag, a release's park, a reservation's ``last_seq``).
@@ -959,6 +1068,22 @@ async def _write_the_wake(
             where.update({"turn_status": ["idle"], "armed_at": [None]} if reclaim else _held_by(armed))
         if not human_intent:
             where["pause_requested"] = [False]
+        intent = armed.pending_responder_intent if armed is not None else None
+        if intent is not None:
+            if intent_is_promoted(row, intent):
+                return row, "promoted"
+            if row.pending_responder_intent != intent:
+                return None, "taken"
+            if user_input_record is None or not intent_matches_record(intent, user_input_record):
+                return None, "taken"
+            fields.update(promotion_patch(row))
+            where.update(ReservationFences.from_session(row).where())
+            where.update(exact_intent_where(row))
+            where["last_seq"] = [intent.user_input_seq]
+        elif armed is not None:
+            # An intent-bearing arm can never fall through to the legacy bare
+            # promotion and run under authority from the preceding epoch.
+            where[("pending_responder_intent", "occurrence_id")] = [None]
         try:
             written = await sessions.patch_if(row.id, to_jsonable_python(fields), where=where)
         except NotFoundError:
@@ -968,6 +1093,10 @@ async def _write_the_wake(
         fresh = await sessions.get(row.id)
         if fresh is None:
             return None, "gone"
+        if intent is not None:
+            if intent_is_promoted(fresh, intent):
+                return fresh, "promoted"
+            return None, "taken"
         paused_since = (fresh.status == SessionStatus.PAUSED and decided.status != SessionStatus.PAUSED) or (
             not human_intent and fresh.pause_requested
         )
