@@ -478,6 +478,7 @@ def _make_lifespan(config: AppConfig):
         event_dispatcher = None
         event_retention_pruner = None
         session_retention_sweeper = None
+        webhook_delivery_retention_pruner = None
         vector_maintenance = None
         workspace_event_bridge = None
         stuck_session_sweeper = None
@@ -593,6 +594,12 @@ def _make_lifespan(config: AppConfig):
                     storage_provider=storage_provider, retention_days=config.session_retention_days, workspace_registry=workspace_registry,
                 )
                 session_retention_sweeper.start(coordinator.leader_elector)
+            from primer.bus.scheduler_tasks import WebhookDeliveryRetentionPruner
+            webhook_delivery_retention_pruner = WebhookDeliveryRetentionPruner(
+                storage_provider=storage_provider,
+                retention_days=config.webhook_delivery_retention_days,
+            )
+            webhook_delivery_retention_pruner.start(coordinator.leader_elector)
 
             # Runs maintain_indexes on each semantic-search provider's reindex_cron (Lance: nightly), on the leader only (GI-28).
             from primer.model.providers.vector import SemanticSearchProvider as _SemanticSearchProvider
@@ -1106,6 +1113,10 @@ def _make_lifespan(config: AppConfig):
                 (workspace_event_bridge, "workspace_event_bridge"),
                 (event_retention_pruner, "event_retention_pruner"),
                 (session_retention_sweeper, "session_retention_sweeper"),
+                (
+                    webhook_delivery_retention_pruner,
+                    "webhook_delivery_retention_pruner",
+                ),
                 (vector_maintenance, "vector_maintenance"),
                 (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),
