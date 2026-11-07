@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from pydantic import AnyUrl, BaseModel, Field, SecretStr, ValidationInfo, model_validator
+from pydantic import AnyUrl, BaseModel, Field, SecretStr, TypeAdapter, ValidationInfo, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from primer.common.origin import origin_of
@@ -27,6 +27,7 @@ class Identifiable(BaseModel):
 
     # Subclasses that may autogenerate set this to their id prefix.
     _id_prefix: ClassVar[str | None] = None
+    _storage_only_fields: ClassVar[frozenset[str]] = frozenset()
 
     id: str | None = Field(
         default=None,
@@ -45,6 +46,22 @@ class Identifiable(BaseModel):
                 raise ValueError("id is required for this entity type")
             object.__setattr__(self, "id", f"{prefix}-{uuid4().hex[:12]}")
         return self
+
+    def _dump_storage_only_fields(self) -> dict[str, Any]:
+        """Serialize fields that are persisted but intentionally absent publicly.
+
+        A field named here must also use ``Field(exclude=True)`` so ordinary
+        ``model_dump`` calls and response schemas cannot expose it. Storage is
+        the one exception: each value is serialized through its declared type
+        with the same context as the rest of the row.
+        """
+        out: dict[str, Any] = {}
+        for name in self._storage_only_fields:
+            field = type(self).model_fields[name]
+            out[name] = TypeAdapter(field.annotation).dump_python(
+                getattr(self, name), mode="json", context=STORAGE_DUMP_CONTEXT,
+            )
+        return out
 
 
 class Describeable(Identifiable):
@@ -123,6 +140,8 @@ def dump_for_storage(entity: BaseModel) -> dict[str, Any]:
     form is the same for two URLs that differ only by password.
     """
     dumped = entity.model_dump(mode="json", context=STORAGE_DUMP_CONTEXT)
+    if isinstance(entity, Identifiable):
+        dumped.update(entity._dump_storage_only_fields())
     _unmask_secrets(dumped, entity)
     return dumped
 
