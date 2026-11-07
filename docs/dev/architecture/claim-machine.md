@@ -158,6 +158,16 @@ Implemented executor and remaining gaps:
   order. Exact task tokens never fall through to classic parks, while a
   classic-only park keeps its established wire behavior. Production S0 keeps
   the capability false, so seeded task asks remain hidden and immutable.
+- **Dormant ask-user S4A fences executor consumption.** A promoted version-2
+  ask receipt is consumed only after the worker fresh-validates the exact
+  standalone task occurrence and live session park, proves the receipt's
+  reservation is durably projected in the current responder epoch (or that a
+  later valid projection now owns the turn), and re-resolves the current run
+  principal plus FULL workspace access. Because those access checks await
+  storage, the worker repeats the full task, park, binding, turn and projection
+  read before invoking the resume hook. A stale receipt or revoked authority
+  produces one terminal error and no hook or provider effect. S0 remains hard
+  disabled; no route, repair scanner or capability activation is added.
 - **No cancel fan-out.** Nothing signals outstanding tasks when their session is cancelled: `ToolCallTask` has no cancel field, and the cancel scopes the pool tracks are session scopes only.
 - **The retry cap.** `WorkerConfig.max_attempts` (default 5) is enforced by the executor at claim time: a lease whose `attempt_count >= max_attempts` is not run again; the task goes terminal `failed` WITHOUT a requeue and WITH a synthesized `result_state` (an error `ToolResultPart` carrying the wire call id), so the resume coordinator hands the model a `tool_result` for its `tool_use` instead of wedging the turn on an unanswerable error. The engine bumps `attempt_count` on each failed release; the row's `attempts` is the separate unclean-execution counter (takeover and failed release), written read-then-write under the claim fence.
 - **Priority.** The seam arms `TOOL_CALL` leases at `CLAIM_PRIORITY_RESUME` (50, the resume tier), at both arm sites (`primer/session/dispatch.py` and `primer/session/persistence.py`), so a burst of fresh sessions (`CLAIM_PRIORITY_FRESH`, 100) cannot starve a mid-turn session waiting on its tools. The gate re-arm and the session wake use the same tier. Tests pin both arm sites.

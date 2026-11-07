@@ -885,73 +885,65 @@ async def _run_resolved_task_gate(
 ) -> None:
     """Fence and consume one resolved occurrence before ordinary-call setup."""
     from primer.int.claim import ParkRequest, ReleaseOutcome
-    from primer.model.tool_call_task import ToolCallTaskState
     from primer.model.yield_ import YieldToWorker
-    from primer.session.tool_wait_batches import (
-        batches_referenced_by_park,
-        task_is_live_for_session,
-    )
-    from primer.storage._patch import json_equal
     from primer.worker.task_gate_runtime import (
-        TaskGateState,
         TaskGateStateError,
-        decode_task_gate_state,
         new_task_gate_state,
     )
 
-    current_task = await task_storage.get(claimed_row.id)
-    current_session = await session_storage.get(claimed_row.session_id)
-    if current_task is None:
-        current_live = False
-        current_reason = "the task row disappeared after it was claimed"
-    else:
-        current_live, current_reason = task_is_live_for_session(
-            current_task, current_session,
-        )
-    park_holds_task = False
-    if current_session is not None:
-        park_holds_task = any(
-            claimed_row.id in (*ref.outstanding_ids, *ref.notifying_ids)
-            for ref in batches_referenced_by_park(
-                current_session.parked_state,
-            ).values()
-        )
-    if (
-        current_task is None
-        or current_task.state is not ToolCallTaskState.RUNNING
-        or current_task.claim_token != token
-        or not current_live
-        or not park_holds_task
-        or gate.binding_epoch != current_session.binding_epoch
-    ):
-        reason = current_reason or (
-            "the resolved task gate no longer matches the live session binding"
-        )
-        await _fail_claimed_tool_call_task(
-            pool, engine_lease, token, claimed_row, reason,
-        )
-        return
-    try:
-        current_gate = decode_task_gate_state(
-            current_task.gate_state, task=current_task,
-        )
-    except TaskGateStateError as exc:
+    snapshot, reason = await _fresh_resolved_task_gate_snapshot(
+        task_storage=task_storage,
+        session_storage=session_storage,
+        claimed_row=claimed_row,
+        token=token,
+        gate=gate,
+    )
+    if snapshot is None:
         await _fail_claimed_tool_call_task(
             pool, engine_lease, token, claimed_row,
-            f"resolved task gate changed after claim: {_short_error(exc)}",
+            reason,
         )
         return
-    if (
-        not isinstance(current_gate, TaskGateState)
-        or not json_equal(current_gate.to_jsonable(), gate.to_jsonable())
-    ):
-        await _fail_claimed_tool_call_task(
-            pool, engine_lease, token, claimed_row,
-            "resolved task gate changed after claim",
-        )
-        return
+    current_task, current_session, current_gate = snapshot
 
     try:
+        if _is_resolved_task_ask(current_gate):
+            from primer.worker.executor_builders import (
+                refuse_run_without_workspace_access,
+                resolve_run_principal,
+            )
+
+            authorized_projection = _task_ask_projection_identity(current_session)
+            principal = await resolve_run_principal(pool._storage, current_session)
+            await refuse_run_without_workspace_access(
+                pool._storage, current_session, principal,
+            )
+            # Authorization can await storage. Re-read and repeat every
+            # occurrence and responder fence before the resume hook sees a
+            # byte of the decision.
+            snapshot, reason = await _fresh_resolved_task_gate_snapshot(
+                task_storage=task_storage,
+                session_storage=session_storage,
+                claimed_row=claimed_row,
+                token=token,
+                gate=gate,
+            )
+            if snapshot is None:
+                await _fail_claimed_tool_call_task(
+                    pool, engine_lease, token, claimed_row, reason,
+                )
+                return
+            current_task, current_session, current_gate = snapshot
+            if _task_ask_projection_identity(current_session) != authorized_projection:
+                await _fail_claimed_tool_call_task(
+                    pool,
+                    engine_lease,
+                    token,
+                    claimed_row,
+                    "resolved task ask_user authority changed during access checks",
+                )
+                return
+
         tool_manager = None
         if _resolved_gate_needs_tool_manager(gate):
             workspace = None
@@ -969,7 +961,7 @@ async def _run_resolved_task_gate(
                 required_tool_name=current_task.tool_name,
             )
         result = await _consume_resolved_task_gate(
-            pool, gate, current_session, tool_manager,
+            pool, current_gate, current_session, tool_manager,
         )
     except asyncio.CancelledError:
         # A lost lease or drain leaves the RUNNING row, its claim token and
@@ -1060,6 +1052,162 @@ async def _run_resolved_task_gate(
             },
         ),
     )
+
+
+async def _fresh_resolved_task_gate_snapshot(
+    *, task_storage, session_storage, claimed_row, token: str, gate,
+):
+    """Return one exact live resolved occurrence, including v2 authority."""
+    from primer.model.tool_call_task import ToolCallTaskState
+    from primer.session.tool_wait_batches import (
+        batches_referenced_by_park,
+        task_is_live_for_session,
+    )
+    from primer.storage._patch import json_equal
+    from primer.worker.task_gate_runtime import (
+        TaskGateState,
+        TaskGateStateError,
+        decode_task_gate_state,
+    )
+
+    current_task = await task_storage.get(claimed_row.id)
+    current_session = await session_storage.get(claimed_row.session_id)
+    if current_task is None:
+        current_live = False
+        current_reason = "the task row disappeared after it was claimed"
+    else:
+        current_live, current_reason = task_is_live_for_session(
+            current_task, current_session,
+        )
+    park_holds_task = False
+    if current_session is not None:
+        park_holds_task = any(
+            claimed_row.id in (*ref.outstanding_ids, *ref.notifying_ids)
+            for ref in batches_referenced_by_park(
+                current_session.parked_state,
+            ).values()
+        )
+    if (
+        current_task is None
+        or current_task.state is not ToolCallTaskState.RUNNING
+        or current_task.claim_token != token
+        or not current_live
+        or not park_holds_task
+        or current_session is None
+        or gate.binding_epoch != current_session.binding_epoch
+    ):
+        return None, current_reason or (
+            "the resolved task gate no longer matches the live session binding"
+        )
+    try:
+        current_gate = decode_task_gate_state(
+            current_task.gate_state, task=current_task,
+        )
+    except TaskGateStateError as exc:
+        return None, (
+            f"resolved task gate changed after claim: {_short_error(exc)}"
+        )
+    if (
+        not isinstance(current_gate, TaskGateState)
+        or not json_equal(current_gate.to_jsonable(), gate.to_jsonable())
+    ):
+        return None, "resolved task gate changed after claim"
+    try:
+        _validate_resolved_task_ask_authority(
+            current_task, current_session, current_gate,
+        )
+    except (TaskGateStateError, ValueError) as exc:
+        return None, f"resolved task ask_user authority is stale: {_short_error(exc)}"
+    return (current_task, current_session, current_gate), ""
+
+
+def _is_resolved_task_ask(gate) -> bool:
+    receipt = gate.resolution
+    return (
+        gate.yielded.tool_name == "ask_user"
+        and receipt is not None
+        and receipt.schema_version == 2
+    )
+
+
+def _task_ask_projection_identity(session):
+    """The exact durable authority one dynamic access check authorized."""
+    return (
+        session.responder_epoch,
+        session.turn_person_seq,
+        session.turn_person_source_key,
+        session.turn_person,
+        session.turn_person_at,
+    )
+
+
+def _validate_resolved_task_ask_authority(task, session, gate) -> None:
+    """Fail closed unless a v2 ask receipt has durable current authority."""
+    if not _is_resolved_task_ask(gate):
+        return
+
+    from primer.model.tool_call_task import (
+        MalformedScopedIdError,
+        TaskGateRepairStage,
+        parse_scoped_task_id,
+    )
+    from primer.storage._patch import json_equal
+    from primer.worker.task_gate_runtime import TaskGateStateError
+
+    if task.repair_stage is not TaskGateRepairStage.PROMOTED:
+        raise TaskGateStateError("task ask_user receipt is not promoted")
+    try:
+        scoped = parse_scoped_task_id(task.id, task.session_id)
+    except MalformedScopedIdError as exc:
+        raise TaskGateStateError(str(exc)) from exc
+    if scoped.node != "x":
+        raise TaskGateStateError("graph-bound task ask_user is unsupported")
+    if task.turn_no != session.turn_no or scoped.turn_no != task.turn_no:
+        raise TaskGateStateError("task ask_user turn no longer matches the session")
+
+    receipt = gate.resolution
+    responder = receipt.responder
+    if responder is None:
+        raise TaskGateStateError("task ask_user receipt has no responder")
+    if responder.responder_epoch != session.responder_epoch:
+        raise TaskGateStateError("task ask_user responder epoch is stale")
+    reservations = session.responder_reservations or {}
+    reserved = reservations.get(responder.source_key)
+    if reserved is None:
+        raise TaskGateStateError("task ask_user responder reservation is missing")
+    if (
+        reserved.domain != responder.domain
+        or not json_equal(reserved.source_identity, responder.source_identity)
+        or reserved.person != responder.person
+        or reserved.accepted_at != responder.accepted_at
+    ):
+        raise TaskGateStateError("task ask_user responder reservation mismatches")
+
+    projected_fields = (
+        session.turn_person_seq,
+        session.turn_person_at,
+        session.turn_person_epoch,
+        session.turn_person_source_key,
+    )
+    if any(value is None for value in projected_fields):
+        raise TaskGateStateError("task ask_user responder is not projected")
+    if session.turn_person_epoch != session.responder_epoch:
+        raise TaskGateStateError("task ask_user projection epoch is stale")
+    projected = reservations.get(session.turn_person_source_key)
+    if projected is None or (
+        projected.seq != session.turn_person_seq
+        or projected.person != session.turn_person
+        or projected.accepted_at != session.turn_person_at
+    ):
+        raise TaskGateStateError("current responder projection is inconsistent")
+    if session.turn_person_seq < reserved.seq:
+        raise TaskGateStateError("task ask_user responder projection regressed")
+    if session.turn_person_seq == reserved.seq and (
+        session.turn_person_source_key != responder.source_key
+        or session.turn_person != responder.person
+        or session.turn_person_at != responder.accepted_at
+    ):
+        raise TaskGateStateError("same-sequence responder projection mismatches")
 
 
 def _resolved_gate_needs_tool_manager(gate) -> bool:
