@@ -156,6 +156,14 @@ A session has two persisted faces that are reconciled at turn boundaries:
   `ask_user` domain. A storage-only envelope digest and scalar repair stage
   prepare later field-scoped repair scans. No route, claim, executor, repair or
   capability behavior changes, and human task gates remain hard-disabled.
+- Dormant task ask-user S2 adds only internal staged CAS primitives. The task
+  first retains a receipt while GATED, then the session's existing responder
+  ledger reserves and projects the server principal under exact park, turn,
+  binding and epoch fences. Only a durable projection permits the task to move
+  to QUEUED and re-arm its lease. Exact retries reuse the stored acceptance
+  time, and a later classic projection wins by sequence without regression.
+  No REST route, executor, repair scan or activation is added; human task gates
+  remain hard-disabled.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

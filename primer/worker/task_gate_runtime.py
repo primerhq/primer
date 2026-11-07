@@ -404,6 +404,63 @@ def make_resolution_receipt(
     return TaskGateResolutionReceipt.from_jsonable(receipt.to_jsonable())
 
 
+def make_task_ask_resolution_receipt(
+    *,
+    state: TaskGateState,
+    task: ToolCallTask,
+    payload: dict[str, Any] | None,
+    person: PrincipalRef,
+    responder_epoch: str,
+    accepted_at: datetime,
+) -> TaskGateResolutionReceipt:
+    """Build one canonical version-2 ``ask_user`` resolution receipt.
+
+    All authority inputs are internal server values. The source identity binds
+    the decision to the exact task-gate occurrence and hashes, rather than
+    embeds, its decision payload.
+    """
+    validate_task_gate_call(state, task)
+    if state.yielded.tool_name != "ask_user":
+        raise TaskGateStateError("version-2 responder receipt requires ask_user")
+    if person_ref(person) != person:
+        raise TaskGateStateError("task-gate responder receipt must name a person")
+    decision = copy.deepcopy(_mapping(
+        to_jsonable_python(payload or {}), "resolution payload",
+    ))
+    source = canonical_responder_source(
+        "ask_user",
+        {
+            "session_id": task.session_id,
+            "task_id": task.id,
+            "occurrence_token": state.occurrence_token,
+            "gate_seq": state.gate_seq,
+            "event_key": state.event_key,
+            "payload_sha256": sha256(
+                canonical_responder_payload(decision)
+            ).hexdigest(),
+        },
+    )
+    responder = TaskGateResponderReceipt(
+        person=person,
+        responder_epoch=_epoch(responder_epoch),
+        domain=source.domain,
+        source_identity=source.identity,
+        source_key=source.key,
+        accepted_at=_ensure_aware(accepted_at, "responder accepted_at").astimezone(UTC),
+    )
+    receipt = TaskGateResolutionReceipt(
+        occurrence_token=state.occurrence_token,
+        gate_seq=state.gate_seq,
+        event_key=state.event_key,
+        payload=decision,
+        responder=responder,
+        schema_version=TASK_GATE_RESOLUTION_VERSION,
+    )
+    canonical = TaskGateResolutionReceipt.from_jsonable(receipt.to_jsonable())
+    state.with_resolution(canonical)
+    return canonical
+
+
 def gate_state_sha256(raw: Any) -> str:
     """Return the canonical scalar generation of one task-gate envelope."""
     try:
@@ -790,6 +847,7 @@ __all__ = [
     "decode_task_gate_state",
     "gate_state_sha256",
     "make_resolution_receipt",
+    "make_task_ask_resolution_receipt",
     "new_task_gate_state",
     "resolution_receipts_equal",
     "validate_task_gate_call",
