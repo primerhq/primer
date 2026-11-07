@@ -635,6 +635,12 @@ The label allowlist is enforced by `tests/observability/test_label_allowlist.py`
 which walks the whole registry rather than a list of known instruments, so a new
 metric with an unreviewed label fails the suite at declaration time.
 
+Dormant task-ask repair exposes two bounded, low-cardinality counters:
+`task_ask_repair_candidates_total{source}` counts rows examined by the boot or
+periodic pass, and `task_ask_repair_outcomes_total{source,outcome}` records the
+closed repair result. Labels contain only the source and outcome enum; task,
+session, decision payload, and responder identity appear in neither metric.
+
 Observability tests live under `tests/observability/` plus an end-to-end suite at
 `tests/e2e/test_observability.py`: `test_config`, `test_tracing`, `test_metrics`,
 `test_logging_integration`, `test_lifespan_integration`, `test_llm_instrumentation`,

@@ -178,9 +178,20 @@ A session has two persisted faces that are reconciled at turn boundaries:
   regressing sequence. The worker dynamically rechecks that projected
   person's role and FULL workspace access, then re-reads the occurrence and
   projection before any hook effect. Re-yield creates a fresh occurrence and
-  cancellation retains the old receipt for takeover. S0 still blocks
+  cancellation retains the old receipt for takeover. Pause or interrupt races
+  preserve the receipt by returning exact worker ownership to
+  GATED/PROJECTED before lease deletion, for later S4B repair. S0 still blocks
   production task asks; routing activation, repair, graphs, channels, timeout
   and cancel fan-out remain deferred.
+- Dormant task ask-user S4B adds bounded crash repair for decisions already
+  accepted by the dormant S3 seam. It resumes the S2 projection and promotion
+  stages, repairs a missing task lease only after durable projection, and
+  exact-CAS holds a promoted task at GATED/PROJECTED before removing its lease
+  while the owning session is paused or interrupted. An already-GATED staged
+  task remains unchanged.
+  Dead or corrupt occurrences fail with a fixed redacted tool result and enter
+  the existing final-sibling wake path. This adds no responder producer or
+  public activation; S0 remains false.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
