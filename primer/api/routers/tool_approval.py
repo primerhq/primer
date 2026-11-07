@@ -33,7 +33,7 @@ from primer.agent.approval_checks import (
 from primer.agent.tool_schemas import find_tool_schema
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.access.person import person_from_request
 from primer.access.workspaces import require_session, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
@@ -50,6 +50,18 @@ from primer.model.tool_approval import (
     PolicyApprovalConfig,
     ToolApprovalPolicy,
     ToolApprovalRecord,
+)
+from primer.model.tool_call_task import ToolCallTask
+from primer.claim.task_gate_decisions import (
+    TaskApprovalGate,
+    TaskApprovalLookupKind,
+    exact_task_approval,
+    pending_task_approvals,
+    task_approval_park_present,
+)
+from primer.claim.tool_call_resume import (
+    TaskGateResumeOutcome,
+    durably_mark_tool_call_task_resumable,
 )
 
 
@@ -285,6 +297,69 @@ def _build_pending_response(
     )
 
 
+def _build_task_pending_response(match: TaskApprovalGate) -> ToolApprovalPendingResponse:
+    """Project one task occurrence into the established approval response."""
+    gate = match.gate
+    metadata = gate.yielded.resume_metadata
+    original = metadata.get("original_call") or {}
+    return ToolApprovalPendingResponse(
+        tool_call_id=gate.tool_call_id,
+        tool_name=original.get("name", ""),
+        arguments=original.get("arguments") or {},
+        policy_id=metadata.get("policy_id"),
+        approval_type=metadata.get("approval_type"),
+        gate_reason=metadata.get("gate_reason"),
+        approvers=metadata.get("approvers"),
+        gate_id=gate.occurrence_token,
+        parked_at=gate.parked_at.isoformat(),
+        timeout_at=gate.deadline.isoformat() if gate.deadline is not None else None,
+    )
+
+
+async def _write_task_approval_record(
+    *,
+    match: TaskApprovalGate,
+    sess: WorkspaceSession,
+    body: ToolApprovalRespondBody,
+    storage_provider,
+    decided_by: str | None,
+) -> None:
+    """Best-effort primary audit write for one accepted task occurrence."""
+    from primer.agent.approval_record import (
+        gate_record_key,
+        record_from_parked_blob,
+        write_approval_record,
+    )
+
+    gate = match.gate
+    record = record_from_parked_blob(
+        blob=gate.to_jsonable(),
+        decision=body.decision,
+        reason=body.reason,
+        agent_id=getattr(sess.binding, "agent_id", None),
+        session_id=sess.id,
+        workspace_id=sess.workspace_id,
+        requested_at=gate.parked_at,
+        decided_by=decided_by,
+        gate_event_key=gate.event_key,
+    ).model_copy(update={
+        "gate_event_key": gate_record_key(
+            gate.event_key, gate.occurrence_token,
+        ),
+    })
+    await write_approval_record(
+        storage_provider.get_storage(ToolApprovalRecord), record,
+    )
+
+
+def _task_resume_refusal(outcome: TaskGateResumeOutcome) -> Exception:
+    if outcome is TaskGateResumeOutcome.REFUSED_CONFLICT:
+        return decided_gate_error("approval")
+    if outcome is TaskGateResumeOutcome.REFUSED_CORRUPT:
+        return NotFoundError("the task approval gate cannot be read")
+    return GateNotPendingError("the task approval gate is no longer pending")
+
+
 async def _publish_decision(
     *,
     sess: Any,
@@ -485,6 +560,10 @@ def make_tool_approval_ops_router() -> APIRouter:
         # workspace it lives in; a stranger answers the session's missing-row text.
         await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.READ)
         sess = await session_storage.get(session_id)
+        task_storage = get_storage_provider(request).get_storage(ToolCallTask)
+        task_gates = await pending_task_approvals(task_storage, sess)
+        if task_gates:
+            return _build_task_pending_response(task_gates[0])
         blob = _approval_blob_or_404(sess, session_id)
         # A gate whose decision is already stamped on the row (a respond landed, no worker has claimed the row yet) is not pending: it can only
         # answer 409 already_decided, then 404 gate_not_pending once claimed, so a poller that saw it would answer it twice (ticket 01a16ca6). It
@@ -513,6 +592,117 @@ def make_tool_approval_ops_router() -> APIRouter:
         # and before anything moves. The spec is checked below as well. Admins clear the gate. A missing id answers the gate's
         # missing-row text too, so a hidden session reads exactly like an unknown one (final access review F12).
         sess = await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
+        storage_provider = get_storage_provider(request)
+        task_storage = storage_provider.get_storage(ToolCallTask)
+        task_match = None
+        task_park = task_approval_park_present(sess)
+        if body.gate_id is not None:
+            lookup = await exact_task_approval(
+                task_storage, sess, occurrence_token=body.gate_id,
+            )
+            task_match = lookup.match
+            if task_match is not None and task_match.gate.tool_call_id != body.tool_call_id:
+                raise GateNotPendingError(
+                    f"No pending tool_approval with tool_call_id "
+                    f"{body.tool_call_id!r} on {session_id!r}"
+                )
+            if lookup.kind in {
+                TaskApprovalLookupKind.CORRUPT,
+                TaskApprovalLookupKind.MOVED,
+            }:
+                raise GateNotPendingError(
+                    "the task approval gate is no longer pending"
+                )
+            if lookup.kind is TaskApprovalLookupKind.ABSENT:
+                classic = resolve_pending_gate(
+                    sess.parked_state or {},
+                    tool_call_id=body.tool_call_id,
+                    kind="_approval",
+                    gate_id=body.gate_id,
+                )
+                if classic is not None:
+                    task_park = False
+                else:
+                    replacements = await pending_task_approvals(task_storage, sess)
+                    if any(
+                        match.gate.tool_call_id == body.tool_call_id
+                        for match in replacements
+                    ):
+                        count_gate_token(
+                            kind="approval", session_id=session_id,
+                            token=body.gate_id, stale=True,
+                        )
+                        raise stale_gate_error("approval")
+                    if task_park:
+                        raise GateNotPendingError(
+                            "the task approval gate is no longer pending"
+                        )
+        elif task_park:
+            # Task occurrences are never legacy/tokenless: their occurrence
+            # token is part of the durable CAS identity. In a mixed park a
+            # tokenless call is ambiguous and must not fall into classic logic.
+            raise GateNotPendingError(
+                "a task approval decision must name its gate_id"
+            )
+        if task_match is not None:
+            enforce_approvers(task_match.gate.yielded.resume_metadata, user)
+            if engine is None:
+                raise PrimerError(
+                    "claim_engine is required to resolve a task approval"
+                )
+            count_gate_token(
+                kind="approval", session_id=session_id, token=body.gate_id,
+            )
+            # Re-read both rows immediately before the task CAS. The executor
+            # repeats this cross-row liveness fence before any resumed effect.
+            fresh_session = await session_storage.get(session_id)
+            if fresh_session is None:
+                raise GateNotPendingError("the task approval gate is no longer pending")
+            fresh_lookup = await exact_task_approval(
+                task_storage, fresh_session, occurrence_token=body.gate_id,
+            )
+            fresh_match = fresh_lookup.match
+            if fresh_match is None or fresh_match.task.id != task_match.task.id:
+                raise GateNotPendingError("the task approval gate is no longer pending")
+            decided_by = getattr(user, "username", None)
+            payload = {
+                "decision": body.decision,
+                "reason": body.reason,
+                "decided_by": decided_by,
+            }
+            outcome = await durably_mark_tool_call_task_resumable(
+                fresh_match.task.id,
+                occurrence_token=fresh_match.gate.occurrence_token,
+                gate_seq=fresh_match.gate.gate_seq,
+                event_key=fresh_match.gate.event_key,
+                payload=payload,
+                task_storage=task_storage,
+                engine=engine,
+            )
+            if outcome not in {
+                TaskGateResumeOutcome.ADVANCED,
+                TaskGateResumeOutcome.IDEMPOTENT,
+            }:
+                raise _task_resume_refusal(outcome)
+            await _write_task_approval_record(
+                match=fresh_match,
+                sess=fresh_session,
+                body=body,
+                storage_provider=storage_provider,
+                decided_by=decided_by,
+            )
+            from primer.events.recorder import actor_of, recorder_for
+
+            await recorder_for(storage_provider, event_bus).emit(
+                "approval.decided",
+                actor=actor_of(getattr(request.state, "actor", None)),
+                session_id=session_id,
+                payload={
+                    "decision": body.decision,
+                    "tool_call_id": body.tool_call_id,
+                },
+            )
+            return {"status": "accepted"}
         blob = _approval_blob_or_404(sess, session_id, not_pending=GateNotPendingError)
         # Resolve the SPECIFIC gate body.tool_call_id names -- a graph park
         # can have several pending approval gates open at once, and only
@@ -551,7 +741,7 @@ def make_tool_approval_ops_router() -> APIRouter:
             event_bus=event_bus,
             session_storage=session_storage,
             engine=engine,
-            storage_provider=get_storage_provider(request),
+            storage_provider=storage_provider,
             decided_by=getattr(user, "username", None),
         )
         from primer.events.recorder import actor_of, recorder_for

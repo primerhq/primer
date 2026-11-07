@@ -42,6 +42,7 @@ def test_registry_declares_the_hot_tables():
         "agent", "graph", "toolset", "workspacetemplate", "workspace", "externaltoolcall", "collection", "trigger", "harness",
         "modelprofile", "workspaceprovider", "channelprovider", "semanticsearchprovider", "embeddingprovider", "crossencoderprovider", "llmprovider",
         "serviceversion", "user", "service", "subscription",
+        "toolcalltask",
     }
 
 
@@ -245,6 +246,47 @@ def test_artifactlocation_index_covers_provider_id_counts():
     assert sqlite_suffix == "provider_id"
     assert sqlite_unique is False
     assert sqlite_expr == "(json_extract(data,'$.provider_id'))"
+
+
+def test_tool_call_task_gate_route_index_matches_on_both_backends():
+    assert _HOT_FIELD_INDEXES["toolcalltask"] == [(
+        "gate_route",
+        False,
+        "((data->>'state'), (data->>'session_id'), "
+        "(data->>'gate_occurrence_token'))",
+    )]
+    assert _SQLITE_HOT_FIELD_INDEXES["toolcalltask"] == [(
+        "gate_route",
+        False,
+        "(json_extract(data,'$.state'), "
+        "json_extract(data,'$.session_id'), "
+        "json_extract(data,'$.gate_occurrence_token'))",
+    )]
+
+
+async def test_sqlite_creates_the_tool_call_task_gate_route_index(tmp_path):
+    from primer.model.provider import SqliteConfig
+    from primer.model.tool_call_task import ToolCallTask
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(
+        SqliteConfig(path=str(tmp_path / "task-gates.sqlite"))
+    )
+    await provider.initialize()
+    try:
+        await provider.get_storage(ToolCallTask).get("__bootstrap__")
+        cursor = await provider.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'toolcalltask_gate_route'"
+        )
+        row = await cursor.fetchone()
+    finally:
+        await provider.aclose()
+
+    assert row is not None
+    assert "json_extract(data,'$.state')" in row[0]
+    assert "json_extract(data,'$.session_id')" in row[0]
+    assert "json_extract(data,'$.gate_occurrence_token')" in row[0]
 
 
 def test_session_model_maps_to_the_sessions_table():
