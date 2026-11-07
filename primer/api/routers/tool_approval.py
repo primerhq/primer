@@ -72,6 +72,13 @@ _PLURAL = "tool_approval_policies"
 _TAG = "tool_approval_policies"
 
 
+def _task_gate_human_decisions_enabled(request: Request) -> bool:
+    """Return the reserved capability flag; S0 validation keeps it false."""
+    config = getattr(request.app.state, "config", None)
+    worker = getattr(config, "worker", None)
+    return bool(getattr(worker, "task_gate_human_decisions_enabled", False))
+
+
 async def _invalidate_policies(_entity_id: str, request: Request) -> None:
     """A policy row changed: the gate's cached verdicts are stale in every process (GS-28)."""
     resolver = getattr(request.app.state, "approval_resolver", None)
@@ -560,10 +567,11 @@ def make_tool_approval_ops_router() -> APIRouter:
         # workspace it lives in; a stranger answers the session's missing-row text.
         await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.READ)
         sess = await session_storage.get(session_id)
-        task_storage = get_storage_provider(request).get_storage(ToolCallTask)
-        task_gates = await pending_task_approvals(task_storage, sess)
-        if task_gates:
-            return _build_task_pending_response(task_gates[0])
+        if _task_gate_human_decisions_enabled(request):
+            task_storage = get_storage_provider(request).get_storage(ToolCallTask)
+            task_gates = await pending_task_approvals(task_storage, sess)
+            if task_gates:
+                return _build_task_pending_response(task_gates[0])
         blob = _approval_blob_or_404(sess, session_id)
         # A gate whose decision is already stamped on the row (a respond landed, no worker has claimed the row yet) is not pending: it can only
         # answer 409 already_decided, then 404 gate_not_pending once claimed, so a poller that saw it would answer it twice (ticket 01a16ca6). It
@@ -593,10 +601,13 @@ def make_tool_approval_ops_router() -> APIRouter:
         # missing-row text too, so a hidden session reads exactly like an unknown one (final access review F12).
         sess = await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
         storage_provider = get_storage_provider(request)
-        task_storage = storage_provider.get_storage(ToolCallTask)
         task_match = None
-        task_park = task_approval_park_present(sess)
-        if body.gate_id is not None:
+        task_park = False
+        task_storage = None
+        if _task_gate_human_decisions_enabled(request):
+            task_storage = storage_provider.get_storage(ToolCallTask)
+            task_park = task_approval_park_present(sess)
+        if task_storage is not None and body.gate_id is not None:
             lookup = await exact_task_approval(
                 task_storage, sess, occurrence_token=body.gate_id,
             )
@@ -637,7 +648,7 @@ def make_tool_approval_ops_router() -> APIRouter:
                         raise GateNotPendingError(
                             "the task approval gate is no longer pending"
                         )
-        elif task_park:
+        elif task_storage is not None and task_park:
             # Task occurrences are never legacy/tokenless: their occurrence
             # token is part of the durable CAS identity. In a mixed park a
             # tokenless call is ambiguous and must not fall into classic logic.

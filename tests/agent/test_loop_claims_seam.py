@@ -15,20 +15,29 @@ actually been exercised through the real code that implements them.
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from primer.agent.loop import _dispatch_as_claims, _dispatch_tool_calls
-from primer.model.chat import ToolCallPart, ToolResultPart
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.chat import Tool, ToolCallPart, ToolResultPart
 from primer.model.yield_ import ToolWaitPark
 
 
 class _FakeToolManager:
-    def __init__(self, *, notifying_names: frozenset = frozenset()) -> None:
+    def __init__(
+        self, *, notifying_names: frozenset = frozenset(),
+        task_claim_unsafe_names: frozenset = frozenset(),
+    ) -> None:
         self._notifying_names = notifying_names
+        self._task_claim_unsafe_names = task_claim_unsafe_names
         self.executed: list[str] = []
         self.delivered: list[str] = []
 
     def is_notifying(self, name: str) -> bool:
         return name in self._notifying_names
+
+    async def is_task_claim_safe(self, call: ToolCallPart) -> bool:
+        return call.name not in self._task_claim_unsafe_names
 
     async def deliver_notifying(self, call: ToolCallPart, *, principal):
         self.delivered.append(call.id)
@@ -47,6 +56,47 @@ def _resolver(mapping: dict[str, tuple[str, int]]):
 
 def _call(id_: str, name: str = "tool") -> ToolCallPart:
     return ToolCallPart(id=id_, name=name, arguments={})
+
+
+@pytest.mark.asyncio
+async def test_real_manager_classifies_yielding_and_ordinary_calls() -> None:
+    manager = object.__new__(ToolExecutionManager)
+    manager._catalogue = []  # noqa: SLF001
+    manager._descriptors = {  # noqa: SLF001
+        "system__ask_user": Tool(
+            id="ask_user", toolset_id="system", description="ask",
+            args_schema={}, yields=True,
+        ),
+        "system__read": Tool(
+            id="read", toolset_id="system", description="read",
+            args_schema={}, yields=False,
+        ),
+    }
+    manager._approval_resolver = None  # noqa: SLF001
+
+    assert not await manager.is_task_claim_safe(_call("ask", "system__ask_user"))
+    assert await manager.is_task_claim_safe(_call("read", "system__read"))
+
+
+@pytest.mark.asyncio
+async def test_real_manager_keeps_approval_policy_call_classic() -> None:
+    class _ApprovalResolver:
+        async def find(self, **_kwargs):
+            return SimpleNamespace(enabled=True)
+
+    manager = object.__new__(ToolExecutionManager)
+    manager._catalogue = []  # noqa: SLF001
+    manager._descriptors = {  # noqa: SLF001
+        "system__write": Tool(
+            id="write", toolset_id="system", description="write",
+            args_schema={}, yields=False,
+        ),
+    }
+    manager._workspace_scoped = {}  # noqa: SLF001
+    manager._tool_to_toolset = {"system__write": ("system", "write")}  # noqa: SLF001
+    manager._approval_resolver = _ApprovalResolver()  # noqa: SLF001
+
+    assert not await manager.is_task_claim_safe(_call("write", "system__write"))
 
 
 # ===========================================================================
@@ -109,6 +159,18 @@ async def test_routing_fires_claims_path_with_flag_and_resolver_and_claimable_ca
         )
     # Never reaches the classic in-process execute path.
     assert tm.executed == []
+
+
+@pytest.mark.asyncio
+async def test_human_gated_batch_stays_on_classic_path() -> None:
+    tm = _FakeToolManager(task_claim_unsafe_names=frozenset({"ask_user"}))
+    result = await _dispatch_tool_calls(
+        [_call("c1", name="ask_user")], tool_manager=tm, principal=None,
+        actions_out=[], tool_calls_as_claims_enabled=True,
+        resolve_scoped_call=_resolver({"c1": ("x:tool:0:1", 1)}),
+    )
+    assert tm.executed == ["c1"]
+    assert result and result[0].role == "tool"
 
 
 @pytest.mark.asyncio
