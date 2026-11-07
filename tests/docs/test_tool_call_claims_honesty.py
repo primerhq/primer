@@ -56,12 +56,27 @@ def test_flag_default_and_schema_description_keep_the_capability_guardrails() ->
     assert schema["description"] == description
     for marker in (
         "Standalone non-gated agent batches are implemented",
+        "only when a batch has at least one claimable call",
+        "born-terminal row for each notifying sibling",
+        "all-notifying batch stays in-process and creates no ToolCallTask rows",
         "Default OFF",
         "graph binding executor is unsupported",
         "GATED decisions are unwired",
         "post-release crash",
     ):
         assert marker in description
+
+
+def test_all_notifying_batches_are_documented_as_staying_out_of_the_claims_path() -> None:
+    for relative in (
+        "docs/dev/architecture/claim-machine.md",
+        "docs/dev/architecture/worker-system.md",
+    ):
+        content = _read(relative)
+        assert "at least one claimable call" in content
+        assert "born-terminal row for each notifying sibling" in content
+        assert "all-notifying batch stays in-process" in content
+        assert "no `ToolCallTask` rows" in content
 
 
 def test_docs_name_every_surface_that_keeps_the_flag_off() -> None:
