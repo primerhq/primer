@@ -44,7 +44,7 @@ _RESPONDER_SCALARS = (
 
 @dataclass(frozen=True)
 class TrustedResponderInput:
-    """Server-authenticated authority for one direct USER_INPUT occurrence."""
+    """Server-authenticated authority in one closed responder domain."""
 
     person: PrincipalRef
     domain: str
@@ -56,7 +56,7 @@ class TrustedResponderInput:
             raise ValueError("trusted responder input must name a person")
         if not re.fullmatch(r"[0-9a-f]{32}", self.occurrence):
             raise ValueError("trusted responder input occurrence must be 32 lowercase hex")
-        if self.domain not in ("user_input", "canvas_event"):
+        if self.domain not in ("user_input", "canvas_event", "mcp_steer"):
             raise ValueError("trusted responder input domain is not a server-owned capability")
         if self.accepted_at.tzinfo is None or self.accepted_at.utcoffset() is None:
             raise ValueError("trusted responder input accepted_at must be timezone-aware")

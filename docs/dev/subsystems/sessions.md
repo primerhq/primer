@@ -143,6 +143,13 @@ A session has two persisted faces that are reconciled at turn boundaries:
   events and internal canvas delivery callers remain ineligible. Canvas event
   recording, ordering and public response shapes are unchanged; MCP, channels,
   tasks and other producers remain outside this activation slice.
+- S4.5D activates the existing workspace steer tool only for a direct external
+  MCP request. The MCP session plus JSON-RPC request id form a server-owned
+  invocation identity; the live actor must name a person, FULL workspace access
+  is rechecked, and no tool context or active delegated run may exist. The typed
+  ``mcp_steer`` capability follows direct and queued delivery exactly like the
+  other responder producers. Session tools, delegated or system calls and other
+  machine entrypoints remain ineligible, and the tool schema is unchanged.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

@@ -204,6 +204,52 @@ def _mcp_caller_ref():
     return PrincipalRef.from_principal(actor)
 
 
+def _trusted_mcp_steer_input(ctx: ToolContext | None, args: "_SteerArgs"):
+    """Return authority only for one authenticated, direct MCP invocation."""
+    if ctx is not None:
+        return None
+    from hashlib import sha256
+
+    from primer.agent.invoke import _RUN_ID
+    from primer.mcp.server import current_actor, current_mcp_invocation
+    from primer.model.principal import PrincipalRef, person_ref
+    from primer.session.responder_wake_intent import TrustedResponderInput
+
+    if _RUN_ID.get() is not None:
+        return None
+    actor = current_actor.get()
+    invocation = current_mcp_invocation.get()
+    person = person_ref(PrincipalRef.from_principal(actor)) if actor is not None else None
+    if person is None or invocation is None:
+        return None
+    request_identity, accepted_at, occurrence_nonce = invocation
+    payload_digest = sha256(args.instruction.encode()).hexdigest()
+    occurrence = sha256(
+        (
+            "mcp-steer-responder-v1\0"
+            + request_identity
+            + "\0"
+            + occurrence_nonce
+            + "\0"
+            + person.type
+            + "\0"
+            + person.id
+            + "\0"
+            + args.workspace_id
+            + "\0"
+            + args.session_id
+            + "\0"
+            + payload_digest
+        ).encode()
+    ).hexdigest()[:32]
+    return TrustedResponderInput(
+        person=person,
+        domain="mcp_steer",
+        occurrence=occurrence,
+        accepted_at=accepted_at,
+    )
+
+
 def _caller_actor(ctx: ToolContext | None) -> str:
     """The actor an event raised by this tool call is attributed to: the run's initiator, or, on the MCP endpoint (no ToolContext), the
     request's actor; ``system`` when neither is known."""
@@ -2579,6 +2625,7 @@ def build_workspaces_toolset(
         # The same delivery path as the REST steer route and every other machine entrypoint (triggers, channel replies): a session with a
         # turn open (armed, running, or parked on any gate) QUEUES the instruction for its next turn boundary instead of writing a second
         # user message, a parked gate is never answered by it, and an idle or ended session starts its next turn with it.
+        trusted_responder_input = _trusted_mcp_steer_input(ctx, args)
         delivery = await deliver_steer(
             session_id=args.session_id,
             text=args.instruction,
@@ -2586,14 +2633,15 @@ def build_workspaces_toolset(
             # 01a08c08: this is an agent's tool call steering ANOTHER
             # session -- no human is behind it. Must not silently
             # clear an operator's pause on the target session.
-            human_intent=False,
+            human_intent=trusted_responder_input is not None,
             storage_provider=storage_provider,
             scheduler=scheduler,
             claim_engine=claim_engine,
             workspace_registry=workspace_registry,
             event_bus=event_bus,
             # The steer's turn runs as the calling run's person (spec §13 Q1); a run with none keeps the target's.
-            by=person_ref(run_principal(ctx)),
+            by=(trusted_responder_input.person if trusted_responder_input is not None else person_ref(run_principal(ctx))),
+            trusted_responder_input=trusted_responder_input,
         )
         if delivery.outcome == DELIVERED_MISSING:
             # deliver_steer reports a session that cannot take a message as missing, and says why: an ended session that cannot be reopened (a
