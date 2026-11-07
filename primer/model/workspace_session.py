@@ -637,6 +637,7 @@ class WorkspaceSession(Identifiable):
         "turn_person_epoch",
         "turn_person_source_key",
         "pending_responder_intent",
+        "last_responder_intent_receipt",
     })
     responder_seq: int | None = Field(default=None, ge=0, exclude=True)
     responder_epoch: ResponderEpoch | None = Field(default=None, exclude=True)
@@ -651,6 +652,10 @@ class WorkspaceSession(Identifiable):
     turn_person_epoch: ResponderEpoch | None = Field(default=None, exclude=True)
     turn_person_source_key: ResponderSourceKey | None = Field(default=None, exclude=True)
     pending_responder_intent: PendingResponderIntentValue = Field(
+        default=None,
+        exclude=True,
+    )
+    last_responder_intent_receipt: PendingResponderIntentValue = Field(
         default=None,
         exclude=True,
     )
@@ -1058,6 +1063,13 @@ class WorkspaceSession(Identifiable):
     @field_validator("pending_responder_intent", mode="before")
     @classmethod
     def _parse_pending_responder_intent(cls, value: Any) -> Any:
+        if value is None or isinstance(value, PendingResponderIntent):
+            return value
+        return PendingResponderIntent.model_validate(value)
+
+    @field_validator("last_responder_intent_receipt", mode="before")
+    @classmethod
+    def _parse_last_responder_intent_receipt(cls, value: Any) -> Any:
         if value is None or isinstance(value, PendingResponderIntent):
             return value
         return PendingResponderIntent.model_validate(value)

@@ -2304,7 +2304,7 @@ async def steer_session(
         apply_tool_results,
         cancel_pending_external,
     )
-    from primer.model.principal import PrincipalRef
+    from primer.model.principal import PrincipalRef, person_ref
     from primer.session.external_calls import flip_external_row
     from primer.session.pending_messages import store_pending_steer
     from primer.session.steer_routing import ROUTE_PENDING, route_steer
@@ -2544,6 +2544,10 @@ async def steer_session(
             receipt=routing_receipt,
             deps=deps,
             by=by,
+            # This actor was resolved by the route's existing FULL-access
+            # authentication. It is eligible only if this message queues;
+            # direct-wake attribution remains deferred to S4.5.
+            trusted_responder_starter=person_ref(by),
         )
         # G12-09: the response names the dropped attachments (response-only,
         # like MainSessionOut.created): the send succeeded, the row is
