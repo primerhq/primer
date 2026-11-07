@@ -25,7 +25,11 @@ from primer.api.registries import (
     ProviderRegistry,
     WorkspaceRegistry,
 )
-from primer.api.routers.workspaces import WorkspaceCreateBody, create_workspace
+from primer.api.routers.workspaces import (
+    WorkspaceCreateBody,
+    create_workspace,
+    workspace_router,
+)
 from primer.model.access import Access
 from primer.model.except_ import (
     BadRequestError,
@@ -1449,26 +1453,75 @@ class TestWorkspaceRouter:
 
     @pytest.mark.asyncio
     async def test_pause_returns_501(self, client) -> None:
-        """POST /v1/workspaces/{id}/pause is reserved and returns 501."""
+        """The authenticated compatibility route keeps its exact 501 body."""
         # Note: this test doesn't need a workspace to exist — the 501 is
         # returned BEFORE any storage lookup. If the route handler signature
         # implies it accepts the id without backend lookup, that's correct.
         resp = await client.post("/v1/workspaces/some-id/pause")
         assert resp.status_code == 501
+        assert resp.headers["content-type"].startswith("application/problem+json")
         body = resp.json()
         # HTTPException renders through the RFC 7807 envelope: the dict
         # detail's "message" becomes the string `detail`, the rest of the
         # keys are preserved verbatim under `extensions`.
-        assert body["extensions"]["error"] == "not_implemented"
-        assert "pause" in body["detail"].lower()
+        request_id = body["extensions"].pop("request_id")
+        assert request_id
+        assert body == {
+            "type": "/errors/not-implemented",
+            "title": "Not Implemented",
+            "status": 501,
+            "detail": (
+                "Workspace pause is reserved in v1 (see redesign spec §8.4). "
+                "Backend implementations: container=docker stop, "
+                "k8s=STS scale-to-0, local=no-op."
+            ),
+            "instance": "/v1/workspaces/some-id/pause",
+            "extensions": {
+                "error": "not_implemented",
+                "message": (
+                    "Workspace pause is reserved in v1 (see redesign spec §8.4). "
+                    "Backend implementations: container=docker stop, "
+                    "k8s=STS scale-to-0, local=no-op."
+                ),
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_resume_returns_501(self, client) -> None:
         resp = await client.post("/v1/workspaces/some-id/resume")
         assert resp.status_code == 501
+        assert resp.headers["content-type"].startswith("application/problem+json")
         body = resp.json()
-        assert body["extensions"]["error"] == "not_implemented"
-        assert "resume" in body["detail"].lower()
+        request_id = body["extensions"].pop("request_id")
+        assert request_id
+        message = "Workspace resume is reserved in v1 (see redesign spec §8.4)."
+        assert body == {
+            "type": "/errors/not-implemented",
+            "title": "Not Implemented",
+            "status": 501,
+            "detail": message,
+            "instance": "/v1/workspaces/some-id/resume",
+            "extensions": {"error": "not_implemented", "message": message},
+        }
+
+    def test_pause_and_resume_compatibility_routes_are_absent_from_openapi(
+        self, app
+    ) -> None:
+        routes = {route.path: route for route in workspace_router.routes}
+        paths = app.openapi()["paths"]
+        for router_path, public_path in (
+            (
+                "/workspaces/{workspace_id}/pause",
+                "/v1/workspaces/{workspace_id}/pause",
+            ),
+            (
+                "/workspaces/{workspace_id}/resume",
+                "/v1/workspaces/{workspace_id}/resume",
+            ),
+        ):
+            assert routes[router_path].deprecated is True
+            assert routes[router_path].include_in_schema is False
+            assert public_path not in paths
 
     @pytest.mark.asyncio
     async def test_create_against_agent_sandbox_provider_returns_501(

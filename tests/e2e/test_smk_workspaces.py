@@ -152,17 +152,6 @@ async def test_git_state_log(authed_client, unique_suffix, tmp_path):
     assert r.status_code == 200, r.text
 
 
-@smk("SMK-WSP-16", status="partial")
-async def test_pause_resume(authed_client, unique_suffix, tmp_path):
-    # Workspace-level pause/resume is reserved in v1 (501); the documented
-    # contract is the clean not-implemented envelope. Session-level pause/
-    # resume is exercised in the agents area.
-    wid = await _ws(authed_client, unique_suffix, tmp_path)
-    p = await authed_client.post(f"/v1/workspaces/{wid}/pause")
-    assert p.status_code == 501, p.text
-    assert p.json()["extensions"]["error"] == "not_implemented"
-
-
 @smk("SMK-WSP-17")
 async def test_diagnostic(authed_client, unique_suffix, tmp_path):
     wid = await _ws(authed_client, unique_suffix, tmp_path)
