@@ -56,6 +56,17 @@ A session has two persisted faces that are reconciled at turn boundaries:
   is idempotent, an older reservation cannot regress it, and a same-sequence
   disagreement fails closed. Neither helper is wired to lifecycle writers,
   routes, task receipts, UI, tools or activation flags in S3b.
+- S4.1 wires only structural session boundaries. A new row is born with an
+  active empty responder epoch. The authenticated REST create path may bake one
+  baseline `user_input` reservation into that same create when it also writes a
+  durable USER_INPUT; the reservation reuses the record's server timestamp and
+  identifies its payload only by a canonical SHA-256 digest. Reopening an ENDED
+  row rotates to a fresh empty epoch in the existing closing CAS, preserving the
+  lifetime sequence and incrementing the mutation version once. A no-instruction
+  resume preserves an active epoch, while legacy all-null rows retain their old
+  compatibility behavior. Binding switches, wake-time USER_INPUT attribution,
+  classic gates, task receipts and public human-gate activation remain unwired
+  until later S4 slices; human task gates therefore remain hard-disabled.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

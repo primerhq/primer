@@ -51,7 +51,11 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.graph import Graph
-from primer.model.principal import PrincipalRef
+from primer.model.principal import PrincipalRef, person_ref
+from primer.session.responder_attribution import (
+    NewSessionResponderLedger,
+    new_session_responder_ledger,
+)
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.storage import raw_generation
@@ -116,6 +120,7 @@ async def start_workspace_session(
     deps: SessionFactoryDeps,
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
+    trusted_starter: PrincipalRef | None = None,
     external_tools: "list | None" = None,
     system_metadata: dict | None = None,
 ) -> WorkspaceSession:
@@ -132,7 +137,9 @@ async def start_workspace_session(
     ``metadata`` is the caller's and may not name a key in
     :data:`RESERVED_SESSION_METADATA_KEYS` (ValidationError, 422);
     ``system_metadata`` is an internal creator's (a trigger fire's
-    provenance) and is stored over it.
+    provenance) and is stored over it. ``trusted_starter`` is separate from
+    ``initiated_by`` on purpose: only a server-authenticated human create path
+    may opt the initial USER_INPUT into responder attribution.
     """
     reserved = sorted(RESERVED_SESSION_METADATA_KEYS.intersection(metadata or {}))
     if reserved:
@@ -337,6 +344,9 @@ async def start_workspace_session(
     # could otherwise seed its own writer at the stale value and collide
     # seqs with this record).
     initial_last_seq = 0
+    initial_input_at: datetime | None = None
+    initial_input_payload: dict[str, Any] | None = None
+    creation_occurrence_id: str | None = None
     if initial_instructions and live_workspace is not None:
         from primer.model.workspace_session import (
             SessionMessageKind,
@@ -347,13 +357,26 @@ async def start_workspace_session(
         writer = WorkspaceMessageWriter(
             workspace_io=live_workspace, session_id=sid, start_seq=0,
         )
+        initial_input_at = datetime.now(timezone.utc)
+        initial_input_payload = {"text": initial_instructions}
+        creation_occurrence_id = uuid.uuid4().hex
         initial_last_seq = await writer.append(SessionMessageRecord(
             seq=1,  # overwritten by the writer's monotonic counter
             kind=SessionMessageKind.USER_INPUT,
-            payload={"text": initial_instructions},
-            created_at=datetime.now(timezone.utc),
+            payload=initial_input_payload,
+            created_at=initial_input_at,
         ))
         await writer.flush()
+
+    starter = person_ref(trusted_starter)
+    initial_responder_ledger = new_session_responder_ledger(
+        session_id=sid,
+        starter=starter if initial_last_seq else None,
+        creation_occurrence_id=creation_occurrence_id,
+        user_input_seq=initial_last_seq or None,
+        user_input_payload=initial_input_payload,
+        accepted_at=initial_input_at,
+    )
 
     # Persist the row + (optionally) auto-start + always register a
     # forward-compat ClaimEngine upsert via the shared service helper.
@@ -372,6 +395,7 @@ async def start_workspace_session(
         initiated_by=initiated_by,
         external_tools=external_tools,
         initial_last_seq=initial_last_seq,
+        initial_responder_ledger=initial_responder_ledger,
         deps=SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -474,6 +498,7 @@ async def create_session(
     initiated_by: PrincipalRef | None = None,
     external_tools: "list | None" = None,
     initial_last_seq: int = 0,
+    initial_responder_ledger: NewSessionResponderLedger | None = None,
 ) -> WorkspaceSession:
     """Persist a :class:`WorkspaceSession` row + optionally auto-start.
 
@@ -539,6 +564,9 @@ async def create_session(
     if isinstance(binding, GraphSessionBinding) and graph_input is not None:
         md["graph_input"] = graph_input
 
+    responder_ledger = initial_responder_ledger or new_session_responder_ledger(
+        session_id=sid,
+    )
     session = WorkspaceSession(
         id=sid,
         workspace_id=workspace_id,
@@ -552,6 +580,7 @@ async def create_session(
         initiated_by=initiated_by,
         created_at=now,
         last_seq=initial_last_seq,
+        **responder_ledger.fields(),
         external_tools=(
             [d.model_dump(by_alias=True) for d in external_tools]
             if external_tools
@@ -923,8 +952,11 @@ async def resume_session(
       rested failure), the pause flag and a workspace refusal are cleared, and the session is enqueued and its claim lease upserted.
     * ``NotFoundError`` when the session does not exist on the workspace, ``ConflictError`` when it has ended.
 
-    ``by`` (access-control spec §13 Q1) names the person whose input this resume is: when the row it read has never run a turn
-    (``turn_person`` unset), the first turn runs as them, so the write names them; a turn already parked keeps the person it parked with.
+    ``by`` (access-control spec §13 Q1) retains the legacy-row behaviour: an
+    all-null responder ledger may still name the first resumer as
+    ``turn_person``. An active ledger is preserved by a no-instruction resume;
+    it gains no inferred reservation, projection or person. A parked turn keeps
+    the person it parked with.
 
     The write is ONE field-scoped ``patch_if`` of the fields resume changes (``status``, ``pause_requested``, ``workspace_refusal``,
     ``turn_person`` when the row it read never ran a turn, and ``started_at`` when the row it read has none), fenced on the status it read ALONE. It writes no park field, so a park, the hook's
@@ -966,8 +998,9 @@ async def resume_session(
                 # a rested failure (C-024) restarts the clock the stuck-session sweeper's age check reads: it is RUNNING with no lease row until
                 # the claim below is armed, and the sweeper may be on another pod (see ``wake_session``)
                 patch["started_at"] = datetime.now(timezone.utc)
-            if by is not None and s.turn_person is None:
-                # the resumer's input starts the session's first turn (spec §13 Q1); a parked turn's person stays
+            if by is not None and s.turn_person is None and s.responder_epoch is None:
+                # Backward compatibility for a legacy all-null responder row.
+                # Active epochs get authority only from a durable input source.
                 patch["turn_person"] = by
             written = await sessions.patch_if(
                 session_id, to_jsonable_python(patch),

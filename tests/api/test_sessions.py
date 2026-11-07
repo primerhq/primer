@@ -369,6 +369,32 @@ async def test_create_session_default_status_is_created(
     assert body["turn_no"] == 0
 
 
+async def test_authenticated_rest_create_bakes_the_initial_responder_starter(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    from primer.model.workspace_session import WorkspaceSession
+
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "initial_instructions": "hello",
+            "auto_start": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    row = await app.state.storage_provider.get_storage(WorkspaceSession).get(
+        body["id"],
+    )
+    assert row is not None
+    assert row.responder_seq == 1
+    assert len(row.responder_reservations or {}) == 1
+    assert row.turn_person == row.initiated_by
+    assert "responder_epoch" not in body
+    assert "responder_reservations" not in body
+
+
 async def test_create_session_with_auto_start_enqueues(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):

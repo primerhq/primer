@@ -15,7 +15,7 @@ import secrets
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
-from hashlib import blake2b
+from hashlib import blake2b, sha256
 from typing import Any
 
 from primer.int.storage import Storage
@@ -96,6 +96,35 @@ class ProjectionResult:
 
 
 @dataclass(frozen=True)
+class NewSessionResponderLedger:
+    """Storage-only responder fields baked into a newly created session."""
+
+    responder_epoch: str
+    responder_seq: int
+    responder_reservation_version: int
+    responder_reservations: dict[str, ResponderReservation]
+    turn_person: PrincipalRef | None
+
+    def fields(self) -> dict[str, Any]:
+        return {
+            "responder_epoch": self.responder_epoch,
+            "responder_seq": self.responder_seq,
+            "responder_reservation_version": self.responder_reservation_version,
+            "responder_reservations": dict(self.responder_reservations),
+            "turn_person": self.turn_person,
+        }
+
+
+@dataclass(frozen=True)
+class EmptyResponderRotation:
+    """One empty-epoch patch and its scalar responder generations."""
+
+    epoch: str
+    patch: dict[str, Any]
+    where: dict[str, list[str | int | float | bool | None]]
+
+
+@dataclass(frozen=True)
 class ReservationFences:
     """Canonical scalar generations of the caller's live session occurrence."""
 
@@ -150,6 +179,104 @@ def responder_source(domain: str, identity: Any) -> ResponderSource:
     )
 
 
+def new_session_responder_ledger(
+    *,
+    session_id: str,
+    starter: PrincipalRef | None = None,
+    creation_occurrence_id: str | None = None,
+    user_input_seq: int | None = None,
+    user_input_payload: Any = None,
+    accepted_at: datetime | None = None,
+    epoch: str | None = None,
+) -> NewSessionResponderLedger:
+    """Build the complete active responder ledger for a new session row.
+
+    A starter is accepted only through the explicit ``starter`` argument. The
+    caller must derive it from trusted server authentication state; this helper
+    never infers authority from session text or ``initiated_by``.
+    """
+    target = epoch or secrets.token_hex(16)
+    if not re.fullmatch(r"[0-9a-f]{32}", target):
+        raise ValueError("responder epoch must be exactly 32 lowercase hex")
+    if starter is None:
+        return NewSessionResponderLedger(target, 0, 1, {}, None)
+    if person_ref(starter) != starter:
+        raise ValueError("responder starter must name an attributable person")
+    if (
+        creation_occurrence_id is None
+        or not re.fullmatch(r"[0-9a-f]{32}", creation_occurrence_id)
+    ):
+        raise ValueError("creation occurrence id must be exactly 32 lowercase hex")
+    if user_input_seq is None or user_input_seq < 1:
+        raise ValueError("responder starter requires a positive USER_INPUT seq")
+    if accepted_at is None:
+        raise ValueError("responder starter requires accepted_at")
+    canonical_payload = _canonical_json_payload(user_input_payload)
+    source = responder_source(
+        "user_input",
+        {
+            "session_id": session_id,
+            "creation_occurrence_id": creation_occurrence_id,
+            "user_input_seq": user_input_seq,
+            "payload_sha256": sha256(canonical_payload).hexdigest(),
+        },
+    )
+    reservation = ResponderReservation(
+        domain=source.domain,
+        source_identity=source.identity,
+        person=starter,
+        seq=1,
+        accepted_at=accepted_at,
+    )
+    return NewSessionResponderLedger(
+        target,
+        1,
+        1,
+        {source.key: reservation},
+        starter,
+    )
+
+
+def empty_responder_rotation(
+    row: WorkspaceSession, *, epoch: str | None = None,
+) -> EmptyResponderRotation:
+    """Build the responder portion of an atomic structural epoch rotation."""
+    target = epoch or secrets.token_hex(16)
+    if not re.fullmatch(r"[0-9a-f]{32}", target):
+        raise ValueError("responder epoch must be exactly 32 lowercase hex")
+    seq = row.responder_seq if row.responder_seq is not None else 0
+    version = (
+        row.responder_reservation_version
+        if row.responder_reservation_version is not None
+        else 0
+    )
+    fence_fields = (
+        "responder_epoch",
+        "responder_seq",
+        "responder_reservation_version",
+        "turn_person_seq",
+        "turn_person_at",
+        "turn_person_epoch",
+        "turn_person_source_key",
+    )
+    where = {field: [raw_generation(row, field)] for field in fence_fields}
+    return EmptyResponderRotation(
+        epoch=target,
+        patch={
+            "responder_epoch": target,
+            "responder_seq": seq,
+            "responder_reservation_version": version + 1,
+            "responder_reservations": {},
+            "turn_person": None,
+            "turn_person_seq": None,
+            "turn_person_at": None,
+            "turn_person_epoch": None,
+            "turn_person_source_key": None,
+        },
+        where=where,
+    )
+
+
 def _source_digest(framed: bytes) -> str:
     return blake2b(framed, digest_size=32).hexdigest()
 
@@ -178,6 +305,15 @@ def _canonical_identity(identity: Any) -> str:
     except (TypeError, ValueError, UnicodeEncodeError) as exc:
         raise ValueError("responder source identity is not strict JSON") from exc
     return f"json:{encoded}"
+
+
+def _canonical_json_payload(payload: Any) -> bytes:
+    budget = [0]
+    _validate_json(payload, depth=0, budget=budget)
+    try:
+        return _canonical_json(payload).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise ValueError("responder payload is not strict JSON") from exc
 
 
 def _canonical_json(value: Any) -> str:
@@ -516,12 +652,16 @@ def _require_occurrence(
 
 
 __all__ = [
+    "EmptyResponderRotation",
+    "NewSessionResponderLedger",
     "ReservationFences",
     "ReservationResult",
     "ProjectionResult",
     "ResponderSource",
     "RotationResult",
     "RotationStarter",
+    "empty_responder_rotation",
+    "new_session_responder_ledger",
     "project_reservation",
     "reserve_source",
     "responder_source",
