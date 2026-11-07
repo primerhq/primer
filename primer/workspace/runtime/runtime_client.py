@@ -28,7 +28,7 @@ from typing import Any
 import aiohttp
 
 from primer.int.sandbox import ExecResult, FileStat
-from primer.workspace.runtime.protocol import ErrorCode, OpName, Request
+from primer.workspace.runtime.protocol import PROTOCOL_VERSION, ErrorCode, OpName, Request
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ class RuntimeClient:
         *,
         url: str,
         token: str,
-        protocol_version: str = "1.2",
+        protocol_version: str = PROTOCOL_VERSION,
     ) -> None:
         self._url = url
         self._token = token
