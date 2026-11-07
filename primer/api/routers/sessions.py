@@ -183,7 +183,7 @@ async def create_session(
     await require_workspace(
         storage_provider, person_from_request(request), workspace_id, AccessLevel.FULL,
     )
-    from primer.model.principal import PrincipalRef
+    from primer.model.principal import PrincipalRef, person_ref
     from primer.workspace.session_factory import (
         SessionFactoryDeps,
         start_workspace_session,
@@ -222,6 +222,7 @@ async def create_session(
         autonomous=body.autonomous,
         name=body.name,
         initiated_by=initiated_by,
+        trusted_starter=person_ref(initiated_by),
         deps=deps,
         external_tools=body.external_tools,
     )

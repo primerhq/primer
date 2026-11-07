@@ -4,13 +4,20 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.model.except_ import ConflictError
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     AgentSessionBinding,
+    ResponderReservation,
     SessionMessageKind,
     SessionStatus,
     WorkspaceSession,
 )
-from primer.session.reset import SessionResetDeps, reset_session
+from primer.session.reset import (
+    SessionResetDeps,
+    _reopen_ended_locked,
+    reset_session,
+)
+from primer.session.responder_attribution import responder_source
 
 
 class _Storage:
@@ -29,6 +36,12 @@ class _Storage:
         from primer.model.except_ import NotFoundError
         from tests.storage._patch_reference import patch_model
 
+        for allowed in where.values():
+            assert isinstance(allowed, list)
+            assert all(
+                value is None or isinstance(value, (str, int, float, bool))
+                for value in allowed
+            ), "production patch_if guards must contain JSON scalars"
         if self._row is None or self._row.id != sid:
             raise NotFoundError(f"no entity with id {sid!r}")
         updated = patch_model(self._row, patch, where=where, set_paths=set_paths)
@@ -131,6 +144,207 @@ async def test_reset_reopens_row_and_writes_divider():
     assert invocation == 2
     assert len(ws.lines) == 1
     assert SessionMessageKind.INVOCATION_DIVIDER.value in ws.lines[0].decode()
+    assert out.responder_seq == 0
+    assert out.responder_reservation_version == 1
+    assert out.responder_reservations == {}
+    assert out.responder_epoch is not None and len(out.responder_epoch) == 32
+
+
+@pytest.mark.asyncio
+async def test_reset_rotates_active_responder_state_in_the_closing_cas():
+    person = PrincipalRef(
+        type="user", id="u-1", display="alice", role="user", source="local",
+    )
+    source = responder_source("user_input", {"occurrence": "first"})
+    accepted_at = datetime.now(timezone.utc)
+    reservation = ResponderReservation(
+        domain=source.domain,
+        source_identity=source.identity,
+        person=person,
+        seq=4,
+        accepted_at=accepted_at,
+    )
+    row = _ended_row()
+    old_epoch = "a" * 32
+    row = row.model_copy(update={
+        "responder_epoch": old_epoch,
+        "responder_seq": 4,
+        "responder_reservation_version": 7,
+        "responder_reservations": {source.key: reservation},
+        "turn_person": person,
+        "turn_person_seq": 4,
+        "turn_person_at": accepted_at,
+        "turn_person_epoch": old_epoch,
+        "turn_person_source_key": source.key,
+    })
+    deps = SessionResetDeps(
+        storage_provider=_SP(row),
+        workspace_registry=_Registry(_WS(_Slot())),
+    )
+
+    out, _ = await reset_session(
+        workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True,
+    )
+
+    assert out.responder_epoch != old_epoch
+    assert out.responder_seq == 4
+    assert out.responder_reservation_version == 8
+    assert out.responder_reservations == {}
+    assert out.turn_person is None
+    assert out.turn_person_seq is None
+    assert out.turn_person_at is None
+    assert out.turn_person_epoch is None
+    assert out.turn_person_source_key is None
+
+
+@pytest.mark.asyncio
+async def test_reopen_retry_does_not_rotate_or_bump_twice():
+    original = _ended_row()
+    storage_provider = _SP(original)
+    registry = _Registry(_WS(_Slot()))
+    deps = SessionResetDeps(
+        storage_provider=storage_provider,
+        workspace_registry=registry,
+    )
+    first, _ = await reset_session(
+        workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True,
+    )
+
+    retry = await _reopen_ended_locked(
+        row=original,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        sessions=storage_provider._s,
+        workspace_registry=registry,
+        by_a_person=True,
+    )
+
+    assert retry is None
+    current = await storage_provider._s.get("sess-1")
+    assert current.responder_epoch == first.responder_epoch
+    assert current.responder_reservation_version == 1
+
+
+class _MoveResponderBeforeClose(_Storage):
+    def __init__(self, row):
+        super().__init__(row)
+        self.moved = False
+
+    async def patch_if(self, sid, patch=None, *, where, set_paths=None, conn=None):
+        if patch and patch.get("status") == SessionStatus.CREATED and not self.moved:
+            self.moved = True
+            self._row = self._row.model_copy(update={"responder_epoch": "b" * 32})
+        return await super().patch_if(
+            sid, patch, where=where, set_paths=set_paths, conn=conn,
+        )
+
+
+class _MoveOccurrenceBeforeClose(_Storage):
+    def __init__(self, row, race):
+        super().__init__(row)
+        self.race = race
+        self.moved = False
+
+    async def patch_if(self, sid, patch=None, *, where, set_paths=None, conn=None):
+        if patch and patch.get("status") == SessionStatus.CREATED and not self.moved:
+            self.moved = True
+            if self.race == "binding_epoch":
+                updates = {"binding_epoch": self._row.binding_epoch + 1}
+            elif self.race == "last_seq":
+                updates = {"last_seq": self._row.last_seq + 1}
+            else:
+                updates = {
+                    "cancel_requested": True,
+                    "cancel_requested_at": datetime.now(timezone.utc),
+                }
+            self._row = self._row.model_copy(update=updates)
+        return await super().patch_if(
+            sid, patch, where=where, set_paths=set_paths, conn=conn,
+        )
+
+
+@pytest.mark.asyncio
+async def test_reopen_refuses_a_moved_responder_occurrence_without_partial_clear():
+    row = _ended_row().model_copy(update={
+        "responder_epoch": "a" * 32,
+        "responder_seq": 0,
+        "responder_reservation_version": 1,
+        "responder_reservations": {},
+    })
+    storage_provider = _SP(row)
+    storage_provider._s = _MoveResponderBeforeClose(row)
+    deps = SessionResetDeps(
+        storage_provider=storage_provider,
+        workspace_registry=_Registry(_WS(_Slot())),
+    )
+
+    with pytest.raises(ConflictError):
+        await reset_session(
+            workspace_id="ws-1",
+            session_id="sess-1",
+            deps=deps,
+            human_intent=True,
+        )
+
+    current = await storage_provider._s.get("sess-1")
+    assert current.status == SessionStatus.ENDED
+    assert current.responder_epoch == "b" * 32
+    assert current.responder_seq == 0
+    assert current.responder_reservation_version == 1
+    assert current.responder_reservations == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("race", ["binding_epoch", "last_seq", "cancel_requested"])
+async def test_reopen_close_refuses_a_moved_session_occurrence_without_rotation(race):
+    person = PrincipalRef(
+        type="user", id="u-1", display="alice", role="user", source="local",
+    )
+    source = responder_source("user_input", {"occurrence": "first"})
+    reservation = ResponderReservation(
+        domain=source.domain,
+        source_identity=source.identity,
+        person=person,
+        seq=1,
+        accepted_at=datetime.now(timezone.utc),
+    )
+    epoch = "a" * 32
+    row = _ended_row().model_copy(update={
+        "responder_epoch": epoch,
+        "responder_seq": 1,
+        "responder_reservation_version": 3,
+        "responder_reservations": {source.key: reservation},
+        "turn_person": person,
+    })
+    storage_provider = _SP(row)
+    storage_provider._s = _MoveOccurrenceBeforeClose(row, race)
+    deps = SessionResetDeps(
+        storage_provider=storage_provider,
+        workspace_registry=_Registry(_WS(_Slot())),
+    )
+
+    with pytest.raises(ConflictError):
+        await reset_session(
+            workspace_id="ws-1",
+            session_id="sess-1",
+            deps=deps,
+            human_intent=True,
+        )
+
+    current = await storage_provider._s.get("sess-1")
+    assert current.status == SessionStatus.ENDED
+    assert current.responder_epoch == epoch
+    assert current.responder_seq == 1
+    assert current.responder_reservation_version == 3
+    assert current.responder_reservations == {source.key: reservation}
+    assert current.turn_person == person
+    if race == "binding_epoch":
+        assert current.binding_epoch == 1
+    elif race == "last_seq":
+        assert current.last_seq == row.last_seq + 2
+    else:
+        assert current.cancel_requested is True
+        assert current.cancel_requested_at is not None
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,9 @@ Spec §12.5.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +33,7 @@ from primer.model.graph import (
     _StaticEdge,
 )
 from primer.model.storage import OffsetPage
+from primer.model.principal import PrincipalRef
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -42,8 +46,10 @@ from primer.workspace.session_factory import (
     SessionFactoryDeps,
     cancel_session,
     create_session,
+    resume_session,
     start_workspace_session,
 )
+from primer.session.responder_attribution import new_session_responder_ledger
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +150,13 @@ async def test_create_session_no_auto_start_persists_created(
     rehydrated = await storage.get(sess.id)
     assert rehydrated is not None
     assert rehydrated.status == SessionStatus.CREATED
+    assert re.fullmatch(r"[0-9a-f]{32}", rehydrated.responder_epoch or "")
+    assert rehydrated.responder_seq == 0
+    assert rehydrated.responder_reservation_version == 1
+    assert rehydrated.responder_reservations == {}
+    served = rehydrated.model_dump(mode="json")
+    assert "responder_epoch" not in served
+    assert "responder_reservations" not in served
     # Scheduler NOT touched when auto_start=False.
     assert fake_scheduler.enqueued == []
     # Claim engine must NOT receive a upsert when auto_start=False.
@@ -629,6 +642,129 @@ async def test_start_workspace_session_writes_modern_user_input_too(
     # window where a worker's own claim could seed a stale start_seq=0
     # and collide with this record's seq=1.
     assert sess.last_seq == 1
+
+
+@pytest.mark.asyncio
+async def test_trusted_create_starter_is_baked_into_the_initial_ledger(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_workspace(fake_storage_provider)
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+    starter = PrincipalRef(
+        type="user", id="u-1", display="alice", role="user", source="local",
+    )
+    raw_text = "do not put this text in responder identity"
+
+    sess = await start_workspace_session(
+        workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        initial_instructions=raw_text,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        parent_session_id=None,
+        deps=deps,
+        initiated_by=starter,
+        trusted_starter=starter,
+    )
+
+    record = json.loads(live.message_lines[sess.id].decode())
+    reservation = next(iter((sess.responder_reservations or {}).values()))
+    identity = json.loads(reservation.source_identity.removeprefix("json:"))
+    accepted_at = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+    assert reservation.accepted_at == accepted_at
+    assert reservation.person == starter
+    assert reservation.seq == 1
+    assert sess.responder_seq == 1
+    assert sess.responder_reservation_version == 1
+    assert sess.turn_person == starter
+    assert sess.turn_person_seq is None
+    assert identity["session_id"] == sess.id
+    assert re.fullmatch(r"[0-9a-f]{32}", identity["creation_occurrence_id"])
+    assert identity["user_input_seq"] == 1
+    canonical_payload = json.dumps(
+        record["payload"], sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    ).encode()
+    assert identity["payload_sha256"] == hashlib.sha256(canonical_payload).hexdigest()
+    assert raw_text not in reservation.source_identity
+
+    rebuilt = new_session_responder_ledger(
+        session_id=sess.id,
+        starter=starter,
+        creation_occurrence_id=identity["creation_occurrence_id"],
+        user_input_seq=1,
+        user_input_payload=record["payload"],
+        accepted_at=accepted_at,
+        epoch=sess.responder_epoch,
+    )
+    assert rebuilt.responder_reservations == sess.responder_reservations
+
+
+@pytest.mark.asyncio
+async def test_create_does_not_infer_a_starter_from_text_or_initiator(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_workspace(fake_storage_provider)
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    starter = PrincipalRef(
+        type="user", id="u-1", display="alice", role="user", source="local",
+    )
+    sess = await start_workspace_session(
+        workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        initial_instructions="text is not authority",
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        parent_session_id=None,
+        deps=_full_deps(
+            fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+        ),
+        initiated_by=starter,
+    )
+
+    assert sess.responder_seq == 0
+    assert sess.responder_reservations == {}
+    assert sess.turn_person is None
+
+
+@pytest.mark.asyncio
+async def test_no_instruction_resume_preserves_an_active_empty_epoch(
+    deps, fake_storage_provider,
+):
+    sess = await create_session(
+        workspace_id="ws-1",
+        binding=_binding(),
+        initial_instructions=None,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        deps=deps,
+    )
+    epoch = sess.responder_epoch
+    person = PrincipalRef(
+        type="user", id="u-1", display="alice", role="user", source="local",
+    )
+
+    resumed = await resume_session(
+        workspace_id="ws-1",
+        session_id=sess.id,
+        sessions=fake_storage_provider.get_storage(WorkspaceSession),
+        scheduler=deps.scheduler,
+        claim_engine=deps.claim_engine,
+        by=person,
+    )
+
+    assert resumed.responder_epoch == epoch
+    assert resumed.responder_seq == 0
+    assert resumed.responder_reservation_version == 1
+    assert resumed.responder_reservations == {}
+    assert resumed.turn_person is None
 
 
 @pytest.mark.asyncio
