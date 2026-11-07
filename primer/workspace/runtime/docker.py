@@ -50,12 +50,14 @@ logger = logging.getLogger(__name__)
 
 
 _LABEL_KEY = "primer.workspace.id"
+_VOLUME_CREATE_TOKEN_LABEL = "primer.internal.volume-create-token"
 # The image a container runs when its template names none. The model owns the value (the migration that rewrites stored Docker
 # templates writes it too); the module name stays for the imports that use it.
 _RUNTIME_IMAGE = DOCKER_RUNTIME_IMAGE
 _RUNTIME_PORT = 5959
 _READY_POLL_INTERVAL_S = 0.1
 _READY_TIMEOUT_S = 30.0
+_WORKDIR_INIT_TIMEOUT_S = 10.0
 
 
 def _silent_runtime_message(image: str) -> str:
@@ -404,6 +406,10 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
     ) -> Sandbox:
         assert self._docker is not None, "call initialize() first"
 
+        # The backend passes the template's validated workdir as the volume target. Re-validate at the runtime boundary because
+        # direct adapter callers exist in tests and integrations, and the root helper below executes this value as an argv item.
+        volume_target = validate_workspace_root(volume_target)
+
         # The template's image is the image that runs; it must contain the primer workspace runtime, which is its own
         # entrypoint (no ``Cmd`` is set below). An empty image runs the built-in runtime image. This is what is inspected,
         # pulled, run and recorded in the label.
@@ -518,22 +524,74 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         if user is not None:
             container_config["User"] = user
 
-        # What a rollback may remove is only what THIS call made, never what was already there: a retry with the same id finds the
-        # data of an earlier life in the volume, and a create with the id of a LIVE workspace must not remove its container if it
-        # is cancelled before it got to replace it. Each flag is set BEFORE its request is awaited, because a cancel that lands
-        # while the request is in flight may have been carried out by the daemon, and withdrawn when the daemon definitively
-        # refused it (a 4xx).
-        owns_volume = owns_container = False
+        # A random label proves this call created the named volume. Docker's named-volume create is idempotent: when the name
+        # already exists it returns that object and ignores the requested labels, so only a post-create inspect can distinguish
+        # a fresh volume from pre-existing workspace data. The token is kept only in this frame and the volume label. A retry
+        # mints another token, sees the mismatch, and neither initializes nor removes nor relabels that volume.
+        volume_create_token = secrets.token_urlsafe(32)
+        helper_name: str | None = None
+        helper_may_exist = owns_container = False
         try:
-            # Create the named volume.
-            owns_volume = not await self._volume_exists(volume_name)
-            if owns_volume:
+            owns_volume = await self._create_volume_with_token(
+                volume_name, volume_create_token,
+            )
+
+            # The shipped runtime image bakes mode 0777 into /workspace, and Docker copies that mode into a fresh volume mounted
+            # there. A custom target has no image directory to copy from, so initialize ONLY a volume this call proved it made.
+            # The one-shot helper has no runtime token, environment, ports, network, resource limits or template bind mounts.
+            if owns_volume and volume_target != DEFAULT_WORKSPACE_ROOT:
+                helper_name = f"primer-workdir-init-{secrets.token_hex(16)}"
+                helper_config: dict[str, Any] = {
+                    "Image": runtime_image,
+                    "Entrypoint": ["/bin/chmod"],
+                    "Cmd": ["0777", volume_target],
+                    "User": "0:0",
+                    "WorkingDir": "/",
+                    "HostConfig": {
+                        "Mounts": [{
+                            "Type": "volume",
+                            "Source": volume_name,
+                            "Target": volume_target,
+                            "ReadOnly": False,
+                        }],
+                        "NetworkMode": "none",
+                        "ReadonlyRootfs": True,
+                        "SecurityOpt": ["no-new-privileges:true"],
+                    },
+                    "Tty": False,
+                }
+                # Set before the request: a cancellation or transport failure can happen after dockerd created the helper but
+                # before it returned the handle. A 4xx proves the request was refused and withdraws the cleanup claim.
+                helper_may_exist = True
                 try:
-                    await self._docker.volumes.create({"Name": volume_name})
-                except Exception as exc:  # noqa: BLE001 -- volume may exist
-                    logger.debug("volume create returned %s (likely exists)", exc)
+                    helper = await self._docker.containers.create_or_replace(
+                        name=helper_name, config=helper_config,
+                    )
+                except Exception as exc:
                     if _refused(exc):
-                        owns_volume = False
+                        helper_may_exist = False
+                    raise
+                try:
+                    async with asyncio.timeout(_WORKDIR_INIT_TIMEOUT_S):
+                        await helper.start()
+                        status = await helper.wait()
+                except TimeoutError as exc:
+                    raise ConfigError(
+                        f"could not initialize container workspace root {volume_target!r}: "
+                        f"the chmod helper did not start and exit within {_WORKDIR_INIT_TIMEOUT_S:g}s"
+                    ) from exc
+                status_code = status.get("StatusCode") if isinstance(status, dict) else None
+                if status_code != 0:
+                    raise ConfigError(
+                        f"could not initialize container workspace root {volume_target!r}: "
+                        f"the chmod helper exited with status {status_code!r}"
+                    )
+                try:
+                    await helper.delete(force=True, v=False)
+                except Exception as exc:  # noqa: BLE001 -- an already-gone helper is a successful cleanup
+                    if not _is_not_found(exc):
+                        raise
+                helper_may_exist = False
 
             owns_container = True
             try:
@@ -566,12 +624,69 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             # clean up: a readiness timeout, a failed start or connect, a cancel or a caller's timeout anywhere from the
             # volume's creation on left the container and the volume behind with nothing pointing at them. Remove them, on
             # their own task and bounded like the backend's rollback (``roll_back_shielded``).
-            if owns_container or owns_volume:
-                await roll_back_shielded(
-                    self._roll_back_create_sandbox(name, volume_name, owns_container, owns_volume),
-                    what=f"docker create_sandbox rollback of {name}",
-                )
+            await roll_back_shielded(
+                self._roll_back_create_sandbox(
+                    helper_name=helper_name,
+                    name=name,
+                    volume_name=volume_name,
+                    volume_create_token=volume_create_token,
+                    helper_may_exist=helper_may_exist,
+                    owns_container=owns_container,
+                ),
+                what=f"docker create_sandbox rollback of {name}",
+            )
             raise
+
+    async def _inspect_volume_create_token(
+        self, volume_name: str, token: str,
+    ) -> tuple[Any | None, bool]:
+        """Return ``(volume, token_matches)`` after a real volume inspect.
+
+        ``volume is None`` means the name is absent. Any other inspect failure
+        propagates: inability to prove ownership must never become ownership.
+        """
+        assert self._docker is not None
+        try:
+            volume = await self._docker.volumes.get(volume_name)
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc):
+                return None, False
+            raise
+        info = await volume.show()
+        labels = info.get("Labels") if isinstance(info, dict) else None
+        return volume, bool(
+            isinstance(labels, dict)
+            and labels.get(_VOLUME_CREATE_TOKEN_LABEL) == token
+        )
+
+    async def _create_volume_with_token(self, volume_name: str, token: str) -> bool:
+        """Create or reuse ``volume_name`` and prove whether this call made it.
+
+        Docker returns an existing named volume without applying the requested
+        labels. A private per-call token plus the mandatory post-create inspect
+        therefore distinguishes a fresh volume from existing workspace data.
+        """
+        assert self._docker is not None
+        create_error: Exception | None = None
+        try:
+            await self._docker.volumes.create({
+                "Name": volume_name,
+                "Labels": {_VOLUME_CREATE_TOKEN_LABEL: token},
+            })
+        except Exception as exc:  # noqa: BLE001 -- an ambiguous failure may have landed server-side
+            create_error = exc
+            logger.debug("volume create returned %s; inspecting ownership", exc)
+
+        volume, owned = await self._inspect_volume_create_token(volume_name, token)
+        if owned:
+            return True
+        if volume is not None and (create_error is None or _refused(create_error)):
+            return False
+        if create_error is not None:
+            raise create_error
+        raise ConfigError(
+            f"container workspace volume {volume_name!r} was not present after Docker reported it created"
+        )
 
     async def _volume_exists(self, volume_name: str) -> bool:
         """Whether the named volume exists; a daemon that cannot say counts as "exists" (never claim a volume it may not own)."""
@@ -583,22 +698,42 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         return True
 
     async def _roll_back_create_sandbox(
-        self, name: str, volume_name: str, owns_container: bool, owns_volume: bool,
+        self,
+        *,
+        helper_name: str | None,
+        name: str,
+        volume_name: str,
+        volume_create_token: str,
+        helper_may_exist: bool,
+        owns_container: bool,
     ) -> None:
-        """Remove the container and the volume ``create_sandbox`` made, each only if this call made it. The container goes by
-        NAME: the create may have been cancelled before it returned a handle. Each step on its own; a 404 is fine; never raises."""
+        """Remove helper, final container, then the label-proven volume.
+
+        Containers go by name because either create request may have been
+        cancelled before it returned a handle. Each step is independent, a 404
+        is fine, and an existing volume whose token does not match is untouched.
+        """
         assert self._docker is not None
+        if helper_may_exist and helper_name is not None:
+            try:
+                await self._docker.containers.container(helper_name).delete(force=True, v=False)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_not_found(exc):
+                    logger.warning("create_sandbox rollback: removing helper %r failed: %s", helper_name, exc)
         if owns_container:
             try:
                 await self._docker.containers.container(name).delete(force=True, v=False)
             except Exception as exc:  # noqa: BLE001
                 if not _is_not_found(exc):
                     logger.warning("create_sandbox rollback: removing container %r failed: %s", name, exc)
-        if owns_volume:
-            try:
-                await self.remove_volume(volume_name)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("create_sandbox rollback: removing volume %r failed: %s", volume_name, exc)
+        try:
+            volume, owned = await self._inspect_volume_create_token(
+                volume_name, volume_create_token,
+            )
+            if volume is not None and owned:
+                await volume.delete()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("create_sandbox rollback: removing owned volume %r failed: %s", volume_name, exc)
 
     async def get_sandbox(self, name: str) -> Sandbox | None:
         """Re-attach to a running workspace container by name.

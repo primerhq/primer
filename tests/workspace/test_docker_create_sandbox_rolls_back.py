@@ -47,9 +47,25 @@ def _not_found() -> Exception:
 class _Handle:
     """What ``docker.containers.container(name)`` and ``docker.volumes.get(name)`` hand out: ``delete`` removes the object."""
 
-    def __init__(self, owner: set[str], name: str, log: list[str], kind: str, gate: asyncio.Event | None, error: Exception | None):
+    def __init__(
+        self,
+        owner: set[str],
+        name: str,
+        log: list[str],
+        kind: str,
+        gate: asyncio.Event | None,
+        error: Exception | None,
+        *,
+        labels: dict[str, dict[str, str]] | None = None,
+    ):
         self._owner, self._name, self._log, self._kind, self._gate, self._error = owner, name, log, kind, gate, error
+        self._labels = labels
         self.delete_started = 0
+
+    async def show(self) -> dict:
+        if self._name not in self._owner:
+            raise _not_found()
+        return {"Labels": dict((self._labels or {}).get(self._name, {}))}
 
     async def delete(self, **kwargs) -> None:
         self.delete_started += 1
@@ -60,6 +76,8 @@ class _Handle:
         if self._name not in self._owner:
             raise _not_found()
         self._owner.discard(self._name)
+        if self._labels is not None:
+            self._labels.pop(self._name, None)
         self._log.append(f"{self._kind}:{self._name}")
 
 
@@ -69,6 +87,7 @@ class _FakeDocker:
     def __init__(self, *, volume_exists: bool = False) -> None:
         self.containers_present: set[str] = set()
         self.volumes_present: set[str] = {VOLUME} if volume_exists else set()
+        self.volume_labels: dict[str, dict[str, str]] = {VOLUME: {}} if volume_exists else {}
         self.removed: list[str] = []
         self.container_delete_gate: asyncio.Event | None = None
         self.container_delete_error: Exception | None = None
@@ -88,12 +107,21 @@ class _FakeDocker:
     async def _volume_get(self, name: str):
         if name not in self.volumes_present:
             raise _not_found()
-        return _Handle(self.volumes_present, name, self.removed, "volume", None, None)
+        return _Handle(
+            self.volumes_present, name, self.removed, "volume", None, None,
+            labels=self.volume_labels,
+        )
 
     async def _volume_create(self, config) -> None:
         if self.volume_create_error is not None:
             raise self.volume_create_error
+        if config["Name"] in self.volumes_present:
+            return
+        self._record_volume_create(config)
+
+    def _record_volume_create(self, config) -> None:
         self.volumes_present.add(config["Name"])
+        self.volume_labels[config["Name"]] = dict(config.get("Labels") or {})
 
     async def _create_or_replace(self, *, name: str, config):
         if self.create_or_replace_hook is not None:
@@ -121,7 +149,7 @@ def _adapter(docker: _FakeDocker) -> DockerRuntimeAdapter:
 
 async def _create(adapter: DockerRuntimeAdapter):
     return await adapter.create_sandbox(
-        name=NAME, image="img:1", command=["run"], env={}, workdir="/w", volume_name=VOLUME, volume_target="/data",
+        name=NAME, image="img:1", command=["run"], env={}, workdir="/workspace", volume_name=VOLUME, volume_target="/workspace",
         extra_mounts=[], user=None, resources=ResourceLimits(), network="none", pull_policy="if_missing",
         reachability=ContainerReachabilityHostPort(), token="tok",
     )
@@ -145,7 +173,7 @@ async def _until(condition, what: str) -> None:
 
 
 def _nothing_left(docker: _FakeDocker) -> bool:
-    return docker.containers_present == set() and docker.volumes_present == set()
+    return docker.containers_present == set() and docker.volumes_present == set() and docker.volume_labels == {}
 
 
 async def test_a_readiness_timeout_removes_the_container_and_the_volume_it_made(monkeypatch):
@@ -221,8 +249,9 @@ async def test_a_volume_that_was_already_there_is_not_removed(monkeypatch):
     with pytest.raises(ConfigError):
         await _create(_adapter(docker))
     assert docker.containers_present == set() and docker.volumes_present == {VOLUME}
+    assert docker.volume_labels == {VOLUME: {}}
     assert docker.removed == [f"container:{NAME}"]
-    docker.volumes.create.assert_not_awaited()
+    docker.volumes.create.assert_awaited_once()
 
 
 async def test_a_cancel_while_the_volume_request_is_in_flight_removes_the_volume(monkeypatch):
@@ -230,7 +259,7 @@ async def test_a_cancel_while_the_volume_request_is_in_flight_removes_the_volume
     entered = asyncio.Event()
 
     async def volume_request_in_flight(config) -> None:
-        docker.volumes_present.add(config["Name"])  # carried out by the daemon
+        docker._record_volume_create(config)  # carried out by the daemon
         entered.set()
         await asyncio.Event().wait()
 
@@ -246,17 +275,9 @@ async def test_a_cancel_while_the_volume_request_is_in_flight_removes_the_volume
 async def test_a_volume_the_daemon_refused_is_not_claimed(monkeypatch):
     """A 4xx on the create means nothing was made (here it raced another create); a later failure must not remove it."""
     docker = _FakeDocker()
-    absent_at_the_check = {"first": True}
-    real_get = docker._volume_get
-
-    async def get(name):
-        if absent_at_the_check.pop("first", False):
-            raise _not_found()
-        return await real_get(name)
-
-    docker.volumes.get.side_effect = get
     docker.volume_create_error = aiodocker.DockerError(409, {"message": "volume name is already in use"})
     docker.volumes_present.add(VOLUME)  # the other create made it
+    docker.volume_labels[VOLUME] = {}
     _ws_sandbox(monkeypatch, _readiness_times_out)
     with pytest.raises(ConfigError):
         await _create(_adapter(docker))
@@ -268,7 +289,7 @@ async def test_a_volume_request_that_dropped_the_connection_is_still_claimed(mon
     docker = _FakeDocker()
 
     async def create_then_drop(config) -> None:
-        docker.volumes_present.add(config["Name"])
+        docker._record_volume_create(config)
         raise ConnectionResetError("the daemon went away after making it")
 
     docker.volumes.create.side_effect = create_then_drop
@@ -354,7 +375,7 @@ async def test_a_cancel_before_the_container_request_leaves_a_live_container_of_
     entered = asyncio.Event()
 
     async def volume_request_in_flight(config) -> None:
-        docker.volumes_present.add(config["Name"])
+        docker._record_volume_create(config)
         entered.set()
         await asyncio.Event().wait()
 
@@ -401,7 +422,7 @@ async def test_a_container_request_that_dropped_the_connection_is_still_removed(
 
 async def _create_sized(adapter: DockerRuntimeAdapter, resources: ResourceLimits):
     return await adapter.create_sandbox(
-        name=NAME, image="img:1", command=["run"], env={}, workdir="/w", volume_name=VOLUME, volume_target="/data",
+        name=NAME, image="img:1", command=["run"], env={}, workdir="/workspace", volume_name=VOLUME, volume_target="/workspace",
         extra_mounts=[], user=None, resources=resources, network="full", pull_policy="if_missing",
         reachability=ContainerReachabilityHostPort(), token="tok",
     )
