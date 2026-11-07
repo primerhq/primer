@@ -1,13 +1,13 @@
-"""Internal S4.4b responder intent construction and atomic patch helpers.
+"""Responder intent construction and atomic arm/log/promote helpers.
 
-Nothing in this module classifies a public caller as authoritative.  A later
-slice may build :class:`PreparedResponderIntent` only after authenticating a
-person; this slice supplies the crash-safe arm/log/promote protocol.
+Public callers cannot manufacture authority. S4.5B lets the authenticated REST
+route create :class:`TrustedResponderInput`; every other path remains ineligible.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +42,28 @@ _RESPONDER_SCALARS = (
 
 
 @dataclass(frozen=True)
+class TrustedResponderInput:
+    """Server-authenticated authority for one direct USER_INPUT occurrence."""
+
+    person: PrincipalRef
+    domain: str
+    occurrence: str
+    accepted_at: datetime
+
+    def __post_init__(self) -> None:
+        if person_ref(self.person) != self.person:
+            raise ValueError("trusted responder input must name a person")
+        if not re.fullmatch(r"[0-9a-f]{32}", self.occurrence):
+            raise ValueError("trusted responder input occurrence must be 32 lowercase hex")
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]*", self.domain):
+            raise ValueError("trusted responder input domain is invalid")
+        if self.accepted_at.tzinfo is None or self.accepted_at.utcoffset() is None:
+            raise ValueError("trusted responder input accepted_at must be timezone-aware")
+        if self.accepted_at.utcoffset().total_seconds() != 0:
+            raise ValueError("trusted responder input accepted_at must be UTC")
+
+
+@dataclass(frozen=True)
 class PreparedResponderIntent:
     """One trusted input intent plus the exact row generation it may arm."""
 
@@ -60,6 +82,7 @@ def prepare_responder_intent(
     accepted_at: datetime | None = None,
     occurrence_id: str | None = None,
     target_epoch: str | None = None,
+    domain: str = "user_input",
     receipt_required: bool = False,
     pending_message_id: str | None = None,
 ) -> PreparedResponderIntent:
@@ -86,7 +109,7 @@ def prepare_responder_intent(
         "session_id": row.id,
         "user_input_seq": row.last_seq + 1,
     }
-    source = responder_source("user_input", identity)
+    source = responder_source(domain, identity)
     intent = PendingResponderIntent(
         occurrence_id=occurrence,
         target_epoch=epoch,
