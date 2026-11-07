@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.common import dump_for_storage, stored_row_context
+from primer.model.tool_call_task import (
+    TaskGateRepairStage,
+    ToolCallTask,
+    ToolCallTaskState,
+)
 
 
 def _now() -> datetime:
@@ -76,6 +81,8 @@ def test_the_executor_bookkeeping_fields_default_to_a_fresh_unowned_row() -> Non
     assert task.claim_token is None
     assert task.gate_occurrence_token is None
     assert task.gate_resolution is None
+    assert task.gate_state_sha256 is None
+    assert task.repair_stage is TaskGateRepairStage.NONE
     assert task.materialized_at is None
 
 
@@ -87,28 +94,53 @@ def test_the_counters_reject_a_negative_value(field) -> None:
 
 def test_a_row_stored_before_the_fields_existed_still_loads() -> None:
     """Rows written by the park handlers on main carry none of the new keys."""
-    stored = _task().model_dump(mode="json")
+    stored = dump_for_storage(_task())
     for key in (
         "attempts", "claim_token", "gate_seq", "gate_occurrence_token",
-        "gate_resolution", "materialized_at",
+        "gate_resolution", "gate_state_sha256", "repair_stage",
+        "materialized_at",
     ):
         del stored[key]
-    loaded = ToolCallTask.model_validate(stored)
+    loaded = ToolCallTask.model_validate(stored, context=stored_row_context())
     assert (
         loaded.attempts,
         loaded.claim_token,
         loaded.gate_seq,
         loaded.gate_occurrence_token,
         loaded.gate_resolution,
+        loaded.gate_state_sha256,
+        loaded.repair_stage,
         loaded.materialized_at,
-    ) == (0, None, 0, None, None, None)
+    ) == (0, None, 0, None, None, None, TaskGateRepairStage.NONE, None)
 
 
 def test_the_new_fields_round_trip_through_the_stored_json() -> None:
     task = _task(attempts=3, claim_token="wrk-1:2026-10-05T00:00:00+00:00:ab12cd34", gate_seq=2,
                  gate_occurrence_token="a" * 32,
-                 gate_resolution={"schema_version": 1}, materialized_at=_now())
-    assert ToolCallTask.model_validate(task.model_dump(mode="json")) == task
+                 gate_resolution={"schema_version": 1},
+                 gate_state_sha256="b" * 64,
+                 repair_stage=TaskGateRepairStage.PROJECTED,
+                 materialized_at=_now())
+    assert ToolCallTask.model_validate(
+        dump_for_storage(task), context=stored_row_context(),
+    ) == task
+
+
+def test_task_gate_repair_fields_are_storage_only() -> None:
+    task = _task(
+        gate_state_sha256="b" * 64,
+        repair_stage=TaskGateRepairStage.RECEIPT_STAGED,
+    )
+    public = task.model_dump(mode="json")
+    schema = ToolCallTask.model_json_schema(mode="serialization")
+    stored = dump_for_storage(task)
+
+    assert "gate_state_sha256" not in public
+    assert "repair_stage" not in public
+    assert "gate_state_sha256" not in schema["properties"]
+    assert "repair_stage" not in schema["properties"]
+    assert stored["gate_state_sha256"] == "b" * 64
+    assert stored["repair_stage"] == "receipt_staged"
 
 
 @pytest.mark.parametrize("token", ["", "A" * 32, "g" * 32, "a" * 31, "a" * 33])

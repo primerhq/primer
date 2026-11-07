@@ -348,6 +348,8 @@ async def sweep_orphaned_tool_call_tasks(claim_engine, storage_provider) -> None
                     "finished_at": datetime.now(_timezone.utc),
                     "last_error": _reason[:300],
                     "gate_state": None,
+                    "gate_state_sha256": None,
+                    "repair_stage": "none",
                 })
                 _updated = await _task_storage.patch_if(
                     _task.id,

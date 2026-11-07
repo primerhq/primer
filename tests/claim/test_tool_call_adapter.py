@@ -16,9 +16,17 @@ import pytest
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.int.claim import ClaimKind, ParkRequest, PostReleaseWake, ReleaseOutcome
 from primer.model.chat import ToolResultPart
-from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.tool_call_task import (
+    TaskGateRepairStage,
+    ToolCallTask,
+    ToolCallTaskState,
+)
 from primer.model.yield_ import Yielded
-from primer.worker.task_gate_runtime import TaskGateState, decode_task_gate_state
+from primer.worker.task_gate_runtime import (
+    TaskGateState,
+    decode_task_gate_state,
+    gate_state_sha256,
+)
 from tests.conftest import _InMemoryStorage
 
 
@@ -179,6 +187,8 @@ async def test_on_release_gate_sets_gated_state_and_event_key() -> None:
     assert updated.gate_seq == 1
     assert updated.gate_occurrence_token == "0" * 31 + "1"
     assert updated.gate_resolution is None
+    assert updated.gate_state_sha256 == gate_state_sha256(updated.gate_state)
+    assert updated.repair_stage is TaskGateRepairStage.NONE
     assert updated.claim_token is None, "a gated row has no owner; its token must die with the claim"
 
 
@@ -285,6 +295,8 @@ async def test_on_release_terminal_success_sets_done() -> None:
     assert updated.finished_at is not None
     assert updated.last_error is None
     assert updated.gate_state is None
+    assert updated.gate_state_sha256 is None
+    assert updated.repair_stage is TaskGateRepairStage.NONE
 
 
 @pytest.mark.asyncio
@@ -375,6 +387,8 @@ async def test_on_release_retryable_failure_resets_to_queued() -> None:
     assert updated.gate_state is None
     assert updated.gate_event_key is None and updated.gate_until is None
     assert updated.gate_occurrence_token is None and updated.gate_resolution is None
+    assert updated.gate_state_sha256 is None
+    assert updated.repair_stage is TaskGateRepairStage.NONE
     assert updated.result_state is None
     assert updated.claim_token is None, "a requeued row has no owner"
     assert updated.attempts == 1, "a bare requeue (drain, reclaim) does not count as an unclean attempt"
