@@ -33,9 +33,13 @@ import pytest
 import pytest_asyncio
 
 import primer.observability.metrics as metrics
+from primer.int.claim import ClaimKind
+from primer.model.principal import PrincipalRef
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.model.workspace_session import WorkspaceSession
-from primer.session.yields import durably_mark_session_resumable
+from primer.model.yield_ import with_wake_gate
+from primer.session.responder_attribution import classic_gate_responder_decision
+from primer.session.yields import durably_mark_session_resumable, durably_wake_session
 from primer.storage._patch import compile_postgres, validate_patch
 from primer.storage.postgres import PostgresStorageProvider
 from tests.pg_gate import explicit_port, postgres_marks, require_postgres_url
@@ -96,6 +100,33 @@ def _gate(node: str, tcid: str) -> dict:
 
 def _leaves(row: WorkspaceSession) -> dict:
     return {entry["event_key"]: entry["payload"] for entry in ((row.parked_state or {}).get("resume_event_payloads") or {}).values()}
+
+
+async def _raw_parked_until(provider: PostgresStorageProvider, session_id: str, value: datetime) -> str:
+    """Bypass storage canonicalization and return the exact spelling written."""
+    spelling = value.isoformat()
+    table = f'"{provider.schema}"."sessions"'
+    async with provider.pool.acquire() as conn:
+        result = await conn.execute(
+            f"UPDATE {table} SET data = jsonb_set(data, '{{parked_until}}', to_jsonb($2::text)) WHERE id = $1",
+            session_id,
+            spelling,
+        )
+        assert result == "UPDATE 1"
+        return await conn.fetchval(
+            f"SELECT data ->> 'parked_until' FROM {table} WHERE id = $1",
+            session_id,
+        )
+
+
+class _LeaseEngine:
+    """Count the durable flip's lease re-arm without constructing another backend."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[ClaimKind, str]] = []
+
+    async def mark_resumable(self, kind: ClaimKind, entity_id: str, *, priority: int = 50) -> None:
+        self.calls.append((kind, entity_id))
 
 
 class _OnConnection:
@@ -219,3 +250,115 @@ async def test_two_decisions_on_one_gate_that_read_one_snapshot_land_once_and_th
     assert {"landed": landed, "parked_status": after.parked_status, "leaves": _leaves(after), "drift": _drift()} == {
         "landed": (True, False), "parked_status": "resumable", "leaves": {n1["event_key"]: {"response": "first"}}, "drift": 0,
     }, "the second decision on one gate replaced the first"
+
+
+async def test_legacy_isoformat_parked_until_accepts_the_same_decision_only(provider) -> None:
+    """A legacy ``+00:00`` deadline admits its first decision and exact retry, but not a decision whose deadline occurrence moved."""
+    sessions = provider.get_storage(WorkspaceSession)
+    person = PrincipalRef(
+        type="user", id="u1", display="one", role="user", source="local", user_id="u1",
+    )
+    parked_at = datetime(2026, 11, 8, 1, 0, tzinfo=UTC)
+    accepted_at = parked_at + timedelta(minutes=1)
+    gate_id = "1" * 32
+    gate = _gate("n1", "call_1")
+    gate["resume_metadata"]["gate_id"] = gate_id
+    row = _graph_park("gs", parked_at=parked_at, agent_yields=(gate,))
+    payload = with_wake_gate({"response": "first"}, gate_id)
+    engine = _LeaseEngine()
+    async with asyncio.timeout(_BOUND_S):
+        await sessions.create(row)
+        raw = await _raw_parked_until(provider, row.id, row.parked_until)
+        snapshot = await sessions.get(row.id)
+    assert raw == row.parked_until.isoformat() and raw.endswith("+00:00")
+    decision = classic_gate_responder_decision(
+        snapshot,
+        domain="ask_user",
+        event_key=gate["event_key"],
+        gate_id=gate_id,
+        payload=payload,
+        person=person,
+        accepted_at=accepted_at,
+    )
+
+    assert await durably_wake_session(
+        snapshot,
+        event_key=gate["event_key"],
+        payload=payload,
+        session_storage=sessions,
+        engine=engine,
+        responder_decision=decision,
+    )
+    after_first = await sessions.get(row.id)
+    reservation = after_first.responder_reservations[decision.source.key]
+    assert engine.calls == [(ClaimKind.SESSION, row.id)]
+    assert after_first.parked_status == "resumable"
+    assert (after_first.responder_seq, after_first.responder_reservation_version) == (1, 1)
+    assert (after_first.turn_person, after_first.turn_person_seq) == (person, 1)
+    assert after_first.turn_person_at == reservation.accepted_at == accepted_at
+    assert after_first.turn_person_epoch == after_first.responder_epoch
+    assert after_first.turn_person_source_key == decision.source.key
+    retry = classic_gate_responder_decision(
+        snapshot,
+        domain="ask_user",
+        event_key=gate["event_key"],
+        gate_id=gate_id,
+        payload=payload,
+        person=person,
+        accepted_at=accepted_at + timedelta(minutes=1),
+    )
+    assert retry.source.key == decision.source.key
+    assert await durably_wake_session(
+        snapshot,
+        event_key=gate["event_key"],
+        payload=payload,
+        session_storage=sessions,
+        engine=engine,
+        responder_decision=retry,
+    )
+    after_retry = await sessions.get(row.id)
+    assert engine.calls == [
+        (ClaimKind.SESSION, row.id),
+        (ClaimKind.SESSION, row.id),
+    ]
+    assert after_retry.responder_reservations == after_first.responder_reservations
+    assert (after_retry.responder_seq, after_retry.responder_reservation_version) == (1, 1)
+    assert after_retry.turn_person_at == accepted_at
+    assert _drift() == 0
+
+    moved_gate = {
+        **_gate("n2", "call_2"),
+        "event_key": "ask_user:moved:n2:call_2",
+    }
+    moved_gate["resume_metadata"]["gate_id"] = gate_id
+    moved = _graph_park("moved", parked_at=parked_at, agent_yields=(moved_gate,))
+    async with asyncio.timeout(_BOUND_S):
+        await sessions.create(moved)
+        assert await _raw_parked_until(provider, moved.id, moved.parked_until) == moved.parked_until.isoformat()
+        moved_snapshot = await sessions.get(moved.id)
+        assert await _raw_parked_until(
+            provider, moved.id, moved.parked_until + timedelta(minutes=1),
+        ) == (moved.parked_until + timedelta(minutes=1)).isoformat()
+    moved_decision = classic_gate_responder_decision(
+        moved_snapshot,
+        domain="ask_user",
+        event_key=moved_gate["event_key"],
+        gate_id=gate_id,
+        payload=payload,
+        person=person,
+        accepted_at=accepted_at,
+    )
+
+    assert not await durably_wake_session(
+        moved_snapshot,
+        event_key=moved_gate["event_key"],
+        payload=payload,
+        session_storage=sessions,
+        engine=engine,
+        responder_decision=moved_decision,
+    )
+    moved_after = await sessions.get(moved.id)
+    assert moved_after.parked_status == "parked"
+    assert moved_after.responder_reservations in (None, {})
+    assert len(engine.calls) == 2
+    assert _drift() == 0

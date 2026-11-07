@@ -202,7 +202,7 @@ async def _inject_approval_park_async(
         },
         "llm_messages": [],
         "turn_no": 0,
-        "started_at": now.isoformat(),
+        "started_at": to_jsonable_python(now),
         "resume_event_payload": None,
     }
     sql = """
@@ -243,8 +243,8 @@ async def _inject_approval_park_async(
             sql,
             session_id,
             parked_state["yielded"]["event_key"],
-            parked_until.isoformat(),
-            to_jsonable_python(now),  # parked_at as the storage layer spells it (the flip guards on that spelling)
+            to_jsonable_python(parked_until),
+            to_jsonable_python(now),
             json.dumps(parked_state),
         )
     finally:
