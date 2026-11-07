@@ -1332,6 +1332,9 @@ async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
         "turn",
         "binding",
         "park",
+        "paused",
+        "pause_requested",
+        "interrupt_requested",
         "same_seq_source",
         "same_seq_person",
     ],
@@ -1384,6 +1387,18 @@ async def test_resolved_task_ask_stale_authority_executes_no_hook_or_tool(
         changes["parked_state"] = {
             "kind": "tool_wait", "outstanding_task_ids": [],
         }
+    elif stale_part == "paused":
+        changes["status"] = SessionStatus.PAUSED
+    elif stale_part == "pause_requested":
+        changes.update({
+            "pause_requested": True,
+            "pause_requested_at": _now(),
+        })
+    elif stale_part == "interrupt_requested":
+        changes.update({
+            "interrupt_requested": True,
+            "interrupt_requested_at": _now(),
+        })
     elif stale_part == "same_seq_person":
         changes["turn_person"] = PrincipalRef(
             type="user", id="other", display="Other", role="user",
@@ -1406,17 +1421,110 @@ async def test_resolved_task_ask_stale_authority_executes_no_hook_or_tool(
             "turn_person_source_key": other.key,
         })
     session_storage._data[SESSION_ID] = session.model_copy(update=changes)  # noqa: SLF001
+    transient = stale_part in {
+        "paused", "pause_requested", "interrupt_requested",
+    }
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
         await _until(
-            lambda: task_storage._data[TASK_ID].state in {  # noqa: SLF001
-                ToolCallTaskState.DONE, ToolCallTaskState.FAILED,
-            },
+            lambda: task_storage._data[TASK_ID].state  # noqa: SLF001
+            in (
+                {ToolCallTaskState.GATED}
+                if transient
+                else {ToolCallTaskState.DONE, ToolCallTaskState.FAILED}
+            ),
             f"the {stale_part} task ask did not fail closed",
         )
         assert hook_calls == []
         assert toolset.calls == []
+        if transient:
+            task = task_storage._data[TASK_ID]  # noqa: SLF001
+            assert task.repair_stage is TaskGateRepairStage.PROJECTED
+            assert task.gate_resolution is not None
+            assert task.claim_token is None
+            assert (ClaimKind.TOOL_CALL, TASK_ID) not in _engine._leases
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_task_ask_worker_win_holds_then_repair_resumes(
+    monkeypatch,
+):
+    from primer.claim.task_ask_reconcile import repair_task_ask_decision
+    from primer.worker import yield_resume_registry
+
+    hook_calls = []
+
+    def _hook(metadata, payload, context):
+        hook_calls.append((metadata, payload, context))
+        return ToolCallResult(output="resumed-after-repair", is_error=False)
+
+    monkeypatch.setitem(
+        yield_resume_registry._registry,
+        "ask_user",
+        _hook,
+    )
+    _allow_task_ask_access(monkeypatch)
+    pool, engine, provider, toolset, _sessions, _tasks, scheduler, wake_calls = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(
+        provider, payload={"response": "yes"}, tool_name="ask_user",
+        metadata={"question": "continue?"},
+    )
+    sessions = provider.get_storage(WorkspaceSession)
+    session = sessions._data[SESSION_ID]  # noqa: SLF001
+    sessions._data[SESSION_ID] = session.model_copy(update={  # noqa: SLF001
+        "status": SessionStatus.PAUSED,
+    })
+    try:
+        await pool.start()
+        tasks = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: tasks._data[TASK_ID].state is ToolCallTaskState.GATED,  # noqa: SLF001
+            "the worker did not hold the transient claimed ask",
+        )
+        held = tasks._data[TASK_ID]  # noqa: SLF001
+        assert held.repair_stage is TaskGateRepairStage.PROJECTED
+        assert held.claim_token is None
+        assert held.gate_resolution is not None
+        assert hook_calls == []
+        assert toolset.calls == []
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases
+
+        current = sessions._data[SESSION_ID]  # noqa: SLF001
+        sessions._data[SESSION_ID] = current.model_copy(update={  # noqa: SLF001
+            "status": SessionStatus.RUNNING,
+        })
+        assert await repair_task_ask_decision(
+            TASK_ID,
+            task_storage=tasks,
+            session_storage=sessions,
+            engine=engine,
+            source="periodic",
+        ) == "promoted"
+        await _until(
+            lambda: tasks._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the repaired task ask was not reclaimed and released terminally",
+        )
+        finished = tasks._data[TASK_ID]  # noqa: SLF001
+        assert len(hook_calls) == 1
+        assert toolset.calls == []
+        assert finished.result_state == {
+            "type": "tool_result",
+            "id": CALL_ID,
+            "output": "resumed-after-repair",
+            "error": False,
+            "media": None,
+            "metadata": None,
+        }
+        assert finished.gate_state is None
+        assert finished.gate_resolution is None
+        assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases
+        assert len(wake_calls) == 1
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
@@ -1544,7 +1652,13 @@ async def test_resolved_task_ask_accepts_later_projected_authority(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolved_task_ask_fresh_reads_after_access_boundary(monkeypatch):
+@pytest.mark.parametrize(
+    "post_access_change",
+    ["binding", "paused", "pause_requested", "interrupt_requested"],
+)
+async def test_resolved_task_ask_fresh_reads_after_access_boundary(
+    monkeypatch, post_access_change,
+):
     from primer.worker import executor_builders, yield_resume_registry
 
     hook_calls = []
@@ -1567,9 +1681,19 @@ async def test_resolved_task_ask_fresh_reads_after_access_boundary(monkeypatch):
 
     async def _workspace(_storage, _session, _principal):
         current = sessions._data[SESSION_ID]  # noqa: SLF001
-        sessions._data[SESSION_ID] = current.model_copy(update={  # noqa: SLF001
-            "binding_epoch": current.binding_epoch + 1,
-        })
+        changes = {
+            "binding": {"binding_epoch": current.binding_epoch + 1},
+            "paused": {"status": SessionStatus.PAUSED},
+            "pause_requested": {
+                "pause_requested": True,
+                "pause_requested_at": _now(),
+            },
+            "interrupt_requested": {
+                "interrupt_requested": True,
+                "interrupt_requested_at": _now(),
+            },
+        }[post_access_change]
+        sessions._data[SESSION_ID] = current.model_copy(update=changes)  # noqa: SLF001
 
     monkeypatch.setattr(executor_builders, "resolve_run_principal", _principal)
     monkeypatch.setattr(
@@ -1578,12 +1702,22 @@ async def test_resolved_task_ask_fresh_reads_after_access_boundary(monkeypatch):
     try:
         await pool.start()
         task_storage = provider.get_storage(ToolCallTask)
+        transient = post_access_change != "binding"
         await _until(
-            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            lambda: task_storage._data[TASK_ID].state  # noqa: SLF001
+            is (
+                ToolCallTaskState.GATED
+                if transient else ToolCallTaskState.FAILED
+            ),
             "the post-access binding race did not fail closed",
         )
         assert hook_calls == []
         assert toolset.calls == []
+        if transient:
+            task = task_storage._data[TASK_ID]  # noqa: SLF001
+            assert task.repair_stage is TaskGateRepairStage.PROJECTED
+            assert task.gate_resolution is not None
+            assert task.claim_token is None
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
