@@ -337,6 +337,7 @@ async def test_get_evicts_gone_cached_handle_and_reattaches(
         root=tmp_path / name, sandbox_id=name, adapter=adapter,
     )
     fresh.mapped_host_port = 32100
+    fresh.workspace_root = "/runtime-root"
     adapter._sandboxes[name] = fresh
 
     # get() must NOT return the gone handle: it evicts + re-attaches.
@@ -344,6 +345,7 @@ async def test_get_evicts_gone_cached_handle_and_reattaches(
     assert reattached is not None
     assert reattached is not ws, "get() returned the dead, gone handle"
     assert reattached.gone is False
+    assert reattached._workspace_root == "/runtime-root"
     # The fresh handle is now cached and stable on the next call.
     assert await backend.get(wid, template=template) is reattached
     await backend.aclose()

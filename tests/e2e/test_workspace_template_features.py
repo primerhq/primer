@@ -887,52 +887,18 @@ async def _build_for(
     "target", _only_targets("container"), ids=lambda t: t.name
 )
 async def test_container_workdir(target: Target) -> None:
-    """The container backend accepts a non-default ``workdir`` and materializes
-    a running workspace with it.
-
-    ``make_template_workspace(..., workdir=...)`` overrides the backend recipe's
-    ``workdir``, which the container backend threads into the docker
-    ``WorkingDir`` and the workspace volume mount target / workspace root. We
-    assert the workspace reaches running with the override (this part works:
-    the volume mounts at ``/srv/work``, files seed there, the runtime launches).
-
-    PARITY GAP (traced xfail, see below): the diagnostic-exec path, which runs
-    a whitelisted command from ``workspace_root`` (== the overridden workdir),
-    returns 500 for EVERY command when the workdir is non-default - so we cannot
-    confirm ``pwd`` prints the override. With the DEFAULT workdir (``/workspace``)
-    the identical ``pwd``/``echo`` diagnostics return 200. The override is
-    accepted and the workspace runs, but exec against it is broken. Likely call
-    site: ``WSSandbox.exec`` -> ``RuntimeClient.exec`` -> the in-container
-    runtime server's EXEC op, which appears to resolve/validate the exec
-    ``workdir`` against a hardcoded ``/workspace`` root and raises (surfacing as
-    a 500 on ``POST /v1/workspaces/{id}/diagnostic``) when the cwd is outside it.
-    """
+    """A non-default workdir is the container runtime and diagnostic root."""
     suffix = uuid.uuid4().hex[:12]
     workdir = "/srv/work"
     track: list[_Created] = []
     client: httpx.AsyncClient | None = None
     try:
-        # Part that WORKS (strict): the override is accepted and the workspace
-        # materializes running with the custom workdir.
         client, wid = await _build_for(target, track, suffix, workdir=workdir)
 
-        # Part that's BROKEN (traced xfail): the diagnostic exec runs from the
-        # overridden workspace_root and 500s for every command on a non-default
-        # workdir. xfail(strict=True) so this flips to a hard failure (alerting
-        # the coordinator to re-roll) the moment the platform starts honoring it.
         diag = await client.post(
             f"/v1/workspaces/{wid}/diagnostic",
             json={"command": "pwd", "timeout_seconds": 30},
         )
-        if diag.status_code == 500:
-            pytest.xfail(
-                "container backend PARITY GAP: a non-default workdir "
-                f"({workdir!r}) materializes running, but diagnostic exec "
-                "(WSSandbox.exec -> RuntimeClient.exec -> runtime EXEC op) "
-                "returns 500 for every command; default workdir (/workspace) "
-                "diagnostics return 200. Likely the runtime server resolves the "
-                "exec cwd against a hardcoded /workspace root."
-            )
         assert diag.status_code in (200, 201), diag.text
         body = diag.json()
         assert body["exit_code"] == 0, body

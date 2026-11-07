@@ -67,7 +67,7 @@ class WSSandbox(Sandbox):
     ) -> None:
         self._client = runtime_client
         self._container_id = container_id
-        self._workspace_root = workspace_root.rstrip("/")
+        self._workspace_root = workspace_root.rstrip("/") or "/"
         self._container_handle = container_handle
 
     # ------------------------------------------------------------------
@@ -77,6 +77,11 @@ class WSSandbox(Sandbox):
     @property
     def id(self) -> str:
         return self._container_id
+
+    @property
+    def workspace_root(self) -> str:
+        """Absolute path the runtime uses for relative workspace operations."""
+        return self._workspace_root
 
     @property
     def gone(self) -> bool:

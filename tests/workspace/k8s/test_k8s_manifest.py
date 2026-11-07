@@ -396,7 +396,16 @@ def _pvc_request(m):
 def test_override_env_reaches_the_pod_and_wins_over_the_template():
     t = _template(); t.env = {"A": SecretStr("base"), "B": SecretStr("keep")}
     env = {e["name"]: e["value"] for e in _c(_m(t, WorkspaceTemplateOverrides(env={"A": "over", "C": "new"})))["env"]}
-    assert env == {"A": "over", "B": "keep", "C": "new"}
+    assert env == {"A": "over", "B": "keep", "C": "new", "WORKSPACE_ROOT": "/workspace"}
+
+
+def test_custom_workdir_is_the_protected_runtime_root():
+    t = _template(workdir="/srv/work"); t.env = {"WORKSPACE_ROOT": SecretStr("/template")}
+    c = _c(_m(t, WorkspaceTemplateOverrides(env={"WORKSPACE_ROOT": "/override"})))
+    env = [e for e in c["env"] if e["name"] == "WORKSPACE_ROOT"]
+    assert env == [{"name": "WORKSPACE_ROOT", "value": "/srv/work"}]
+    assert c["workingDir"] == "/srv/work"
+    assert {"name": "ws", "mountPath": "/srv/work"} in c["volumeMounts"]
 
 
 def test_the_override_env_does_not_change_the_template():
@@ -424,7 +433,7 @@ def test_neither_source_can_set_a_runtime_token_name_and_the_rest_of_the_env_sta
     else:
         overrides = WorkspaceTemplateOverrides(env={name: "y", "KEEP": "1"})
     env = {e["name"]: e["value"] for e in _c(_m(t, overrides))["env"]}
-    assert env == {"KEEP": "1"}
+    assert env == {"KEEP": "1", "WORKSPACE_ROOT": "/workspace"}
 
 
 def test_the_token_names_are_the_ones_the_workspace_secret_carries():
@@ -434,7 +443,7 @@ def test_the_token_names_are_the_ones_the_workspace_secret_carries():
 def test_the_strict_locking_variable_still_comes_after_the_env():
     t = _template(); t.strict_write_locking = True; t.env = {"A": SecretStr("1")}
     env = _c(_m(t, WorkspaceTemplateOverrides(env={"B": "2"})))["env"]
-    assert [e["name"] for e in env] == ["A", "B", "PRIMER_STRICT_WRITE_LOCKING"]
+    assert [e["name"] for e in env] == ["A", "B", "WORKSPACE_ROOT", "PRIMER_STRICT_WRITE_LOCKING"]
 
 
 def test_size_overrides_replace_the_template_resources():

@@ -11,10 +11,10 @@ badly:
   :data:`MAX_ENV_NAME_LENGTH` characters. The rule is Kubernetes' and not POSIX's on purpose: ``my-var`` and ``a.b`` are valid on
   Kubernetes, on Docker and on the local backend, and a stored template that has one must keep creating workspaces. The first
   version of this rule was POSIX-only and turned such a template into a 422 on every create, the boot's default workspace included.
-* **A name the platform sets itself**, ``PRIMER_RUNTIME_TOKEN`` and ``RUNTIME_TOKEN`` (:data:`RUNTIME_TOKEN_ENV_NAMES`): the
-  per-workspace bearer the platform dials the runtime with. The Kubernetes manifest never takes them from a template or an
-  override (an explicit ``env`` entry beats the Secret the pod ``envFrom``s, so it would replace the token) and Docker overwrites
-  them, so a person who set one saw nothing happen except a line in the log. Now it is refused, and the message names it.
+* **A name the platform sets itself.** ``PRIMER_RUNTIME_TOKEN`` and ``RUNTIME_TOKEN``
+  (:data:`RUNTIME_TOKEN_ENV_NAMES`) carry the per-workspace bearer, while
+  ``WORKSPACE_ROOT`` (:data:`WORKSPACE_ROOT_ENV_NAME`) binds the runtime to the
+  template's canonical workdir. A template or override may set none of them.
 
 Both are a 422 (:class:`EnvNameRefused`), raised by ``WorkspaceRegistry.materialise`` BEFORE any backend runs, so nothing is
 created. A name in the request (``overrides.env``) comes with a ``loc`` (``body.overrides.env.<name>``, the name as it was sent, a
@@ -46,6 +46,13 @@ MAX_ENV_NAME_LENGTH = 256
 #: ``primer.workspace.k8s.backend._RUNTIME_TOKEN_ENV_NAMES``, which is this set.
 RUNTIME_TOKEN_ENV_NAMES: frozenset[str] = frozenset({"PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"})
 
+#: The runtime path contract. Kept separate from :data:`RUNTIME_TOKEN_ENV_NAMES`
+#: because it is not a credential and token-only filters must stay token-only.
+WORKSPACE_ROOT_ENV_NAME = "WORKSPACE_ROOT"
+
+#: Every environment name owned by the workspace platform.
+RESERVED_WORKSPACE_ENV_NAMES: frozenset[str] = RUNTIME_TOKEN_ENV_NAMES | {WORKSPACE_ROOT_ENV_NAME}
+
 #: How many bad names one refusal lists; the rest are counted.
 MAX_LISTED = 10
 
@@ -56,8 +63,9 @@ _SENTENCES = {
         f"An environment variable name is 1 to {MAX_ENV_NAME_LENGTH} characters of ASCII letters, digits, '_', '-' and '.'. "
         "It does not start with a digit or with '..', and it is not '.'. Rename or remove it."
     ),
-    _RESERVED: "This name is reserved for the workspace runtime's token and cannot be set. Remove it.",
 }
+_TOKEN_RESERVED_SENTENCE = "This name is reserved for the workspace runtime's token and cannot be set. Remove it."
+_ROOT_RESERVED_SENTENCE = "This name is reserved for the workspace runtime's root and cannot be set. Use backend.workdir instead."
 _SHOWN_MAX = 80
 
 
@@ -69,11 +77,19 @@ def _has_chdir_prefix(name: str) -> bool:
 
 def _problem(name: str) -> str | None:
     """The error type for ``name``, or ``None`` when it is acceptable. ``fullmatch``: ``$`` alone would let a trailing newline through."""
-    if name in RUNTIME_TOKEN_ENV_NAMES:
+    if name in RESERVED_WORKSPACE_ENV_NAMES:
         return _RESERVED
     if len(name) > MAX_ENV_NAME_LENGTH or re.fullmatch(ENV_NAME_PATTERN, name) is None or _has_chdir_prefix(name):
         return _INVALID
     return None
+
+
+def _sentence(name: str, kind: str) -> str:
+    if kind != _RESERVED:
+        return _SENTENCES[kind]
+    if name == WORKSPACE_ROOT_ENV_NAME:
+        return _ROOT_RESERVED_SENTENCE
+    return _TOKEN_RESERVED_SENTENCE
 
 
 def _shown(name: str) -> str:
@@ -118,11 +134,11 @@ class EnvNameRefused(ValidationError):
         listed_request = self.request_items[:MAX_LISTED]
         listed_template = self.template_items[: MAX_LISTED - len(listed_request)]
         self._errors = [
-            {"loc": ["body", "overrides", "env", _escaped(name)], "msg": _SENTENCES[kind], "type": kind}
+            {"loc": ["body", "overrides", "env", _escaped(name)], "msg": _sentence(name, kind), "type": kind}
             for name, kind in listed_request
         ]
-        parts = [f"overrides.env.{_shown(name)}: {_SENTENCES[kind]}" for name, kind in listed_request]
-        parts += [f"template {template_id!r} sets env.{_shown(name)}: {_SENTENCES[kind]}" for name, kind in listed_template]
+        parts = [f"overrides.env.{_shown(name)}: {_sentence(name, kind)}" for name, kind in listed_request]
+        parts += [f"template {template_id!r} sets env.{_shown(name)}: {_sentence(name, kind)}" for name, kind in listed_template]
         hidden = len(self.request_items) + len(self.template_items) - len(listed_request) - len(listed_template)
         if hidden:
             parts.append(f"... and {hidden} more.")
@@ -148,7 +164,9 @@ __all__ = [
     "ENV_NAME_PATTERN",
     "MAX_ENV_NAME_LENGTH",
     "MAX_LISTED",
+    "RESERVED_WORKSPACE_ENV_NAMES",
     "RUNTIME_TOKEN_ENV_NAMES",
+    "WORKSPACE_ROOT_ENV_NAME",
     "EnvNameRefused",
     "refuse_bad_env_names",
 ]

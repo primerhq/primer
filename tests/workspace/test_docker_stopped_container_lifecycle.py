@@ -32,7 +32,9 @@ def _adapter(docker: MagicMock) -> DockerRuntimeAdapter:
 def _with_container(state: str, *, env: list[str] | None = None, start_error: Exception | None = None):
     container = MagicMock()
     container.show = AsyncMock(return_value={
-        "State": {"Status": state}, "Config": {"Env": ["PRIMER_RUNTIME_TOKEN=tok"] if env is None else env},
+        "State": {"Status": state},
+        "Config": {"WorkingDir": "/workspace", "Env": ["PRIMER_RUNTIME_TOKEN=tok"] if env is None else env},
+        "Mounts": [{"Type": "volume", "Destination": "/workspace"}],
     })
     container.start = AsyncMock(side_effect=start_error)
     docker = MagicMock()
@@ -44,7 +46,7 @@ def _recording_reconnect(monkeypatch, container: MagicMock) -> list[tuple[str, i
     """Replace the reconnect; record the token it was given and how often the container had been started by then."""
     made: list[tuple[str, int]] = []
 
-    async def _fake_make(docker, cont, name, token, *, reachability):
+    async def _fake_make(docker, cont, name, token, *, reachability, workspace_root):
         made.append((token, container.start.await_count))
         return MagicMock()
 

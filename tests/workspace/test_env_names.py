@@ -8,9 +8,9 @@ workspace included. The first version of the rule was POSIX-only and turned such
 tests are flipped here.
 
 ``1BAD``, ``a b``, ``A=B``, an empty name, ``café`` and a name over 256 characters were accepted and came back as a generic 500 after
-the create had been rolled back, when the cluster refused the manifest. The two names the platform sets itself,
-``PRIMER_RUNTIME_TOKEN`` and ``RUNTIME_TOKEN``, were dropped from the Kubernetes pod with a line in the log, so a person who set
-one saw nothing. All of them are a 422 now that names the variable, raised before any backend runs.
+the create had been rolled back, when the cluster refused the manifest. The platform-owned names
+``PRIMER_RUNTIME_TOKEN``, ``RUNTIME_TOKEN`` and ``WORKSPACE_ROOT`` were overwritten or dropped, so a person who set one saw
+nothing. All of them are a 422 now that names the variable, raised before any backend runs.
 """
 
 from __future__ import annotations
@@ -27,13 +27,16 @@ from primer.workspace import env_names
 from primer.workspace.env_names import (
     ENV_NAME_PATTERN,
     MAX_ENV_NAME_LENGTH,
+    RESERVED_WORKSPACE_ENV_NAMES,
     RUNTIME_TOKEN_ENV_NAMES,
+    WORKSPACE_ROOT_ENV_NAME,
     EnvNameRefused,
     refuse_bad_env_names,
 )
 
 _INVALID = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.'. It does not start with a digit or with '..', and it is not '.'. Rename or remove it."
 _RESERVED = "This name is reserved for the workspace runtime's token and cannot be set. Remove it."
+_ROOT_RESERVED = "This name is reserved for the workspace runtime's root and cannot be set. Use backend.workdir instead."
 
 #: Names Kubernetes accepts: the plain ones, the ones the first (POSIX-only) version of the rule refused, a dot anywhere but at the
 #: ``.`` / ``..`` / ``..x`` start, and the longest allowed.
@@ -62,6 +65,8 @@ def test_the_pattern_is_the_rulings():
     assert ENV_NAME_PATTERN == r"^[-._a-zA-Z][-._a-zA-Z0-9]*$"
     assert MAX_ENV_NAME_LENGTH == 256
     assert RUNTIME_TOKEN_ENV_NAMES == frozenset({"PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"})
+    assert WORKSPACE_ROOT_ENV_NAME == "WORKSPACE_ROOT"
+    assert RESERVED_WORKSPACE_ENV_NAMES == RUNTIME_TOKEN_ENV_NAMES | {WORKSPACE_ROOT_ENV_NAME}
 
 
 @pytest.mark.parametrize("name", _ACCEPTED)
@@ -149,6 +154,21 @@ def test_a_runtime_token_name_in_a_stored_template_is_a_422_that_names_the_templ
     assert exc.value.message == f"template 'big' sets env.'{name}': {_RESERVED}"
     assert exc.value.template_items == [(name, "reserved_env_name")]
     assert exc.value.problem_extensions == {} and "stolen" not in exc.value.message
+
+
+def test_workspace_root_is_reserved_without_calling_it_a_token():
+    with pytest.raises(EnvNameRefused) as request:
+        refuse_bad_env_names(_t(), _o({WORKSPACE_ROOT_ENV_NAME: "/stolen"}))
+    assert request.value.problem_extensions["errors"] == [{
+        "loc": ["body", "overrides", "env", WORKSPACE_ROOT_ENV_NAME],
+        "msg": _ROOT_RESERVED,
+        "type": "reserved_env_name",
+    }]
+    assert request.value.message == f"overrides.env.'WORKSPACE_ROOT': {_ROOT_RESERVED}"
+
+    with pytest.raises(EnvNameRefused) as stored:
+        refuse_bad_env_names(_t({WORKSPACE_ROOT_ENV_NAME: "/stolen"}, template_id="big"), None)
+    assert stored.value.message == f"template 'big' sets env.'WORKSPACE_ROOT': {_ROOT_RESERVED}"
 
 
 def test_every_bad_name_in_the_overrides_is_listed_in_order():
