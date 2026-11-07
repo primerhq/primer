@@ -58,6 +58,9 @@ _RUNTIME_PORT = 5959
 _READY_POLL_INTERVAL_S = 0.1
 _READY_TIMEOUT_S = 30.0
 _WORKDIR_INIT_TIMEOUT_S = 10.0
+_READINESS_DIAGNOSTIC_TIMEOUT_S = 2.0
+_READINESS_LOG_TAIL_LINES = 20
+_READINESS_LOG_MAX_CHARS = 4096
 
 
 def _silent_runtime_message(image: str) -> str:
@@ -66,6 +69,124 @@ def _silent_runtime_message(image: str) -> str:
     return (
         f"the workspace runtime did not answer within {_READY_TIMEOUT_S:g}s in a container of image {image!r}. "
         f"A custom image must contain the primer workspace runtime (build it FROM {DOCKER_RUNTIME_IMAGE})."
+    )
+
+
+def _workspace_volume_mount(
+    volume_name: str,
+    volume_target: str,
+    *,
+    no_copy: bool,
+) -> dict[str, Any]:
+    """Build the named workspace-volume mount sent to Docker."""
+    mount: dict[str, Any] = {
+        "Type": "volume",
+        "Source": volume_name,
+        "Target": volume_target,
+        "ReadOnly": False,
+    }
+    if no_copy:
+        mount["VolumeOptions"] = {"NoCopy": True}
+    return mount
+
+
+def _sanitize_readiness_text(
+    value: Any,
+    *,
+    sensitive_values: tuple[str, ...],
+) -> str | None:
+    """Return bounded printable diagnostic text with known env values redacted."""
+    if value is None:
+        return None
+
+    secrets_to_redact = sorted(set(sensitive_values), key=len, reverse=True)
+    retained_chars = _READINESS_LOG_MAX_CHARS + max(
+        (len(secret) for secret in secrets_to_redact),
+        default=0,
+    )
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    parts: list[str] = []
+    for item in values:
+        if isinstance(item, bytes):
+            item_text = item.decode("utf-8", errors="replace")
+        else:
+            item_text = str(item)
+        parts.append(item_text[-retained_chars:])
+    text = "\n".join(parts)[-retained_chars:]
+    for secret in secrets_to_redact:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    text = "".join(
+        char if char in "\n\r\t" or char.isprintable() else "?"
+        for char in text
+    )
+    return text[-_READINESS_LOG_MAX_CHARS:]
+
+
+async def _log_readiness_timeout(
+    container,
+    *,
+    name: str,
+    owns_volume: bool,
+    helper_ran: bool,
+    sensitive_values: tuple[str, ...],
+) -> None:
+    """Log bounded, redacted container evidence before readiness rollback."""
+    status: str | None = None
+    exit_code: int | None = None
+    state_error: str | None = None
+    log_tail: str | None = None
+    inspect_failure: str | None = None
+    logs_failure: str | None = None
+    diagnostic_timed_out = False
+
+    try:
+        async with asyncio.timeout(_READINESS_DIAGNOSTIC_TIMEOUT_S):
+            try:
+                info = await container.show()
+                state = info.get("State") if isinstance(info, dict) else None
+                if isinstance(state, dict):
+                    status = _sanitize_readiness_text(
+                        state.get("Status"), sensitive_values=sensitive_values,
+                    )
+                    raw_exit_code = state.get("ExitCode")
+                    if isinstance(raw_exit_code, int):
+                        exit_code = raw_exit_code
+                    state_error = _sanitize_readiness_text(
+                        state.get("Error"), sensitive_values=sensitive_values,
+                    )
+            except Exception as exc:  # noqa: BLE001 -- diagnostics must not replace the create error
+                inspect_failure = type(exc).__name__
+
+            try:
+                lines = await container.log(
+                    stdout=True,
+                    stderr=True,
+                    tail=_READINESS_LOG_TAIL_LINES,
+                    timeout=_READINESS_DIAGNOSTIC_TIMEOUT_S,
+                )
+                log_tail = _sanitize_readiness_text(
+                    lines, sensitive_values=sensitive_values,
+                )
+            except Exception as exc:  # noqa: BLE001 -- diagnostics must not replace the create error
+                logs_failure = type(exc).__name__
+    except TimeoutError:
+        diagnostic_timed_out = True
+
+    logger.warning(
+        "docker runtime readiness timeout: container=%r status=%r exit_code=%r "
+        "state_error=%r stdout_stderr_tail=%r owns_volume=%s helper_ran=%s "
+        "inspect_failure=%r logs_failure=%r diagnostic_timed_out=%s",
+        name,
+        status,
+        exit_code,
+        state_error,
+        log_tail,
+        owns_volume,
+        helper_ran,
+        inspect_failure,
+        logs_failure,
+        diagnostic_timed_out,
     )
 
 
@@ -423,8 +544,8 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         if token is None:
             token = secrets.token_urlsafe(32)
 
-        # Pull runtime image per policy. A pull failure — the image is absent
-        # from every registry (e.g. a local-only name that was never built) —
+        # Pull runtime image per policy. A pull failure - the image is absent
+        # from every registry (e.g. a local-only name that was never built) -
         # is a provisioning/config problem, not an internal error. Surface it
         # as a ConfigError (503 service-unavailable) instead of letting the raw
         # aiodocker DockerError escape the request as an unhandled 500.
@@ -443,13 +564,13 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 f"({exc}); the workspace cannot be provisioned"
             ) from exc
 
+        custom_volume_target = volume_target != DEFAULT_WORKSPACE_ROOT
         mounts = [
-            {
-                "Type": "volume",
-                "Source": volume_name,
-                "Target": volume_target,
-                "ReadOnly": False,
-            },
+            _workspace_volume_mount(
+                volume_name,
+                volume_target,
+                no_copy=custom_volume_target,
+            ),
         ]
         for vm in extra_mounts:
             mounts.append({
@@ -530,7 +651,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         # mints another token, sees the mismatch, and neither initializes nor removes nor relabels that volume.
         volume_create_token = secrets.token_urlsafe(32)
         helper_name: str | None = None
-        helper_may_exist = owns_container = False
+        helper_may_exist = owns_container = owns_volume = helper_ran = False
         try:
             owns_volume = await self._create_volume_with_token(
                 volume_name, volume_create_token,
@@ -548,12 +669,13 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                     "User": "0:0",
                     "WorkingDir": "/",
                     "HostConfig": {
-                        "Mounts": [{
-                            "Type": "volume",
-                            "Source": volume_name,
-                            "Target": volume_target,
-                            "ReadOnly": False,
-                        }],
+                        "Mounts": [
+                            _workspace_volume_mount(
+                                volume_name,
+                                volume_target,
+                                no_copy=True,
+                            ),
+                        ],
                         "NetworkMode": "none",
                         "ReadonlyRootfs": True,
                         "SecurityOpt": ["no-new-privileges:true"],
@@ -574,6 +696,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 try:
                     async with asyncio.timeout(_WORKDIR_INIT_TIMEOUT_S):
                         await helper.start()
+                        helper_ran = True
                         status = await helper.wait()
                 except TimeoutError as exc:
                     raise ConfigError(
@@ -618,6 +741,13 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 # hello did not come): say which image, since an image without the runtime is the likeliest cause. Inside
                 # the ``try`` so the rollback below still removes the container and the volume. A cancel, or a caller's
                 # ``asyncio.timeout`` (which reaches this frame as a cancel), is not a TimeoutError here and passes through.
+                await _log_readiness_timeout(
+                    container,
+                    name=name,
+                    owns_volume=owns_volume,
+                    helper_ran=helper_ran,
+                    sensitive_values=tuple(merged_env.values()),
+                )
                 raise ConfigError(_silent_runtime_message(runtime_image)) from exc
         except BaseException:
             # Nothing has been handed back yet, so the backend (whose own rollback works on the returned sandbox) cannot
