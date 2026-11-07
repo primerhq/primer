@@ -18,34 +18,13 @@ from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.adapters.triggers import TriggerClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
-from primer.int.claim import ClaimKind, PostReleaseWake
+from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
 
 if TYPE_CHECKING:
     from primer.api.registries.workspace_registry import WorkspaceRegistry
     from primer.int.claim import ClaimEngine
-    from primer.int.storage import Storage
     from primer.int.storage_provider import StorageProvider
-    from primer.model.tool_call_task import ToolCallTask
-
-
-async def _post_release_wake_ready(
-    signal: PostReleaseWake,
-    task_storage: "Storage[ToolCallTask]",
-) -> bool:
-    """Evaluate a wake's optional tool-batch fence after release commit."""
-    if not signal.required_terminal_task_ids:
-        return True
-    from primer.model.tool_call_task import ToolCallTaskState
-
-    for task_id in signal.required_terminal_task_ids:
-        task = await task_storage.get(task_id)
-        if task is None or task.state not in (
-            ToolCallTaskState.DONE,
-            ToolCallTaskState.FAILED,
-        ):
-            return False
-    return True
 
 
 class ClaimEngineFactory:
@@ -123,19 +102,17 @@ class ClaimEngineFactory:
         task_storage = storage_provider.get_storage(ToolCallTask)
 
         async def _wake_session_on_tool_wait_ready(signal) -> None:
-            from primer.session.yields import durably_mark_session_resumable
+            from primer.claim.tool_wait_reconcile import (
+                verify_and_mark_batch_resumable,
+            )
 
-            if not await _post_release_wake_ready(signal, task_storage):
-                return
-            session = await session_storage.get(signal.session_id)
-            if session is None:
-                return
-            await durably_mark_session_resumable(
-                session,
-                event_key=signal.event_key,
-                payload=signal.payload,
+            await verify_and_mark_batch_resumable(
+                session_id=signal.session_id,
                 session_storage=session_storage,
+                task_storage=task_storage,
                 engine=engine,
+                source="hook",
+                signal=signal,
             )
 
         engine.bind_post_release_hook(_wake_session_on_tool_wait_ready)

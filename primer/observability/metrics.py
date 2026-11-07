@@ -363,6 +363,20 @@ tool_wait_malformed_scoped_id_total = Counter(
     registry=registry,
 )
 
+tool_wait_reconcile_candidates_total = Counter(
+    "tool_wait_reconcile_candidates_total",
+    "Marked session parks examined by terminal tool-wait reconciliation, by source.",
+    ["source"],
+    registry=registry,
+)
+
+tool_wait_reconcile_outcomes_total = Counter(
+    "tool_wait_reconcile_outcomes_total",
+    "Terminal tool-wait reconciliation results, by source and closed outcome.",
+    ["source", "outcome"],
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Cardinality guard (S7 section 4, crosscheck m2)
@@ -474,6 +488,7 @@ def reset_for_test() -> None:
     global llm_prompt_estimate_ratio  # noqa: PLW0603
     global compaction_outcomes_total  # noqa: PLW0603
     global tool_wait_malformed_scoped_id_total  # noqa: PLW0603
+    global tool_wait_reconcile_candidates_total, tool_wait_reconcile_outcomes_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -740,6 +755,18 @@ def reset_for_test() -> None:
         ["site"],
         registry=registry,
     )
+    tool_wait_reconcile_candidates_total = Counter(
+        "tool_wait_reconcile_candidates_total",
+        "Marked session parks examined by terminal tool-wait reconciliation, by source.",
+        ["source"],
+        registry=registry,
+    )
+    tool_wait_reconcile_outcomes_total = Counter(
+        "tool_wait_reconcile_outcomes_total",
+        "Terminal tool-wait reconciliation results, by source and closed outcome.",
+        ["source", "outcome"],
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -787,4 +814,6 @@ __all__ = [
     "message_write_abandoned_total",
     # Tool-call claims
     "tool_wait_malformed_scoped_id_total",
+    "tool_wait_reconcile_candidates_total",
+    "tool_wait_reconcile_outcomes_total",
 ]

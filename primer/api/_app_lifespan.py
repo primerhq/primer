@@ -483,6 +483,7 @@ def _make_lifespan(config: AppConfig):
         workspace_event_bridge = None
         stuck_session_sweeper = None
         session_messaging_sweeper = None
+        tool_wait_reconciler = None
         harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
@@ -842,6 +843,22 @@ def _make_lifespan(config: AppConfig):
             # pool's first claim cycle sees a clean task table. Shares the
             # executor's own liveness predicate, so the two cannot drift.
             await sweep_orphaned_tool_call_tasks(claim_engine, storage_provider)
+            from primer.bus.scheduler_tasks import ToolWaitWakeReconciler
+            from primer.claim.tool_wait_reconcile import (
+                reconcile_terminal_tool_wait_parks,
+            )
+
+            # One bounded boot page closes the release-commit/post-hook crash
+            # window before workers claim. The leader loop continues the
+            # keyset scan and repairs crashes that happen after boot.
+            await reconcile_terminal_tool_wait_parks(
+                storage_provider, claim_engine, source="boot",
+            )
+            tool_wait_reconciler = ToolWaitWakeReconciler(
+                storage_provider=storage_provider,
+                claim_engine=claim_engine,
+            )
+            tool_wait_reconciler.start(coordinator.leader_elector)
 
         # --- Chat recovery on startup --------------------------------------
         # Same shape as session recovery above but for the chat surface.
@@ -1122,6 +1139,7 @@ def _make_lifespan(config: AppConfig):
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
                 (session_messaging_sweeper, "session_messaging_sweeper"),
+                (tool_wait_reconciler, "tool_wait_reconciler"),
                 (timer_scheduler, "timer_scheduler"),
                 (yield_listener, "yield_listener"),
             ):

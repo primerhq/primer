@@ -11,6 +11,7 @@ from primer.int.storage import Storage
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import SessionStatus
 from primer.model.workspace_refusal import WorkspaceRefusedError
+from primer.session.tool_wait_batches import strict_batches_referenced_by_park
 from primer.storage import raw_generation
 
 if TYPE_CHECKING:
@@ -191,6 +192,7 @@ class SessionClaimAdapter(ClaimAdapter):
         # writes the columns and clears the stash together.
         if outcome.park is not None:
             p = outcome.park
+            strict_batches = strict_batches_referenced_by_park(p.parked_state)
             owned = {
                 "parked_status": "parked",
                 "parked_event_key": p.parked_event_key,
@@ -198,6 +200,10 @@ class SessionClaimAdapter(ClaimAdapter):
                 "parked_until": p.parked_until,
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
+                "parked_tool_batches": (
+                    True if any(ref.well_formed for ref in strict_batches.values()) else None
+                ),
+                "resumable_at": None,
                 "pending_park": None,
             }
             if p.drained_reply_keys is None:
@@ -234,6 +240,8 @@ class SessionClaimAdapter(ClaimAdapter):
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,
+            "parked_tool_batches": None,
+            "resumable_at": None,
             "pending_park": None,
         }, bump=outcome.success)
         if written is None:
@@ -272,6 +280,7 @@ class SessionClaimAdapter(ClaimAdapter):
             if kept:
                 last = next(reversed(kept.values()))
                 patch["parked_status"] = "resumable"
+                patch["resumable_at"] = datetime.now(timezone.utc)
                 patch["parked_state"] = {
                     **park.parked_state, "resume_event_payloads": kept,
                     "resume_event_key": last["event_key"], "resume_event_payload": last.get("payload"),

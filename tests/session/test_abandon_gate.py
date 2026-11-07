@@ -139,7 +139,20 @@ class TestAbandonGate:
 
     async def test_clears_both_park_fields_and_advances_last_seq(self):
         """M15: leaving parked_state populated would look resumable."""
-        row = _row()
+        row = _row(
+            parked_tool_batches=True,
+            resumable_at=datetime.now(UTC),
+            parked_state={
+                "graph_checkpoint": {"pending_tool_waits": [{
+                    "node_id": "A",
+                    "outstanding_task_ids": ["s/A:tool:0:1"],
+                    "notifying_results": [],
+                }]},
+                "tool_call_id": "tc-9",
+                "yielded": {"tool_name": "ask_user"},
+                "mode": "ask_user",
+            },
+        )
         sessions = _Sessions(row)
         updated = await abandon_session_gate(
             sessions=sessions, workspace_io=_IO(), row=row,
@@ -147,6 +160,8 @@ class TestAbandonGate:
         )
         assert updated.parked_status is None
         assert updated.parked_state is None
+        assert updated.parked_tool_batches is None
+        assert updated.resumable_at is None
         assert updated.last_seq == 7
 
     async def test_noop_when_nothing_is_parked(self):

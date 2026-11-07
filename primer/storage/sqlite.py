@@ -127,6 +127,11 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         ("binding_graph_id", False, "(json_extract(data,'$.binding.graph_id'))"),
         ("turn_status", False, "(json_extract(data,'$.turn_status'))"),
         ("parked_status", False, "(json_extract(data,'$.parked_status'))"),
+        (
+            "tool_wait_reconcile",
+            False,
+            "(json_extract(data,'$.parked_tool_batches'), id)",
+        ),
     ],
     "subscription": [
         ("trigger_id", False, "(json_extract(data,'$.trigger_id'))"),

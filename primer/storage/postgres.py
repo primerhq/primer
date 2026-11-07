@@ -634,6 +634,11 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         ("binding_graph_id", False, "((data->'binding'->>'graph_id'))"),
         ("turn_status", False, "((data->>'turn_status'))"),
         ("parked_status", False, "((data->>'parked_status'))"),
+        (
+            "tool_wait_reconcile",
+            False,
+            "((data->>'parked_tool_batches'), id)",
+        ),
         # The default list order (`ORDER BY data->>'created_at' DESC NULLS LAST, id`).
         ("created_at_desc", False, "((data->>'created_at') DESC NULLS LAST, id)"),
     ],
