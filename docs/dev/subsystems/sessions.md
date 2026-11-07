@@ -150,6 +150,12 @@ A session has two persisted faces that are reconciled at turn boundaries:
   ``mcp_steer`` capability follows direct and queued delivery exactly like the
   other responder producers. Session tools, delegated or system calls and other
   machine entrypoints remain ineligible, and the tool schema is unchanged.
+- The dormant task ask-user S1 schema adds no responder producer. It extends
+  the task-gate codec with a backward-readable version-2 resolution whose
+  `ask_user` form requires one server-principal responder receipt in the
+  `ask_user` domain. A storage-only envelope digest and scalar repair stage
+  prepare later field-scoped repair scans. No route, claim, executor, repair or
+  capability behavior changes, and human task gates remain hard-disabled.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
