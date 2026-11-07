@@ -820,9 +820,28 @@ async def interrupt_session(
                 "(an approval, an answer or a timer). Use Cancel to end it."
             )
         if s.status == SessionStatus.RUNNING:
-            s.interrupt_requested = True
-            s.cancel_requested_at = datetime.now(timezone.utc)
-            await sessions.update(s)
+            now = datetime.now(timezone.utc)
+            where = {
+                field: [raw_generation(s, field)]
+                for field in (
+                    "status", "parked_status", "parked_event_key", "turn_no",
+                    "turn_status", "binding_epoch", "pause_requested",
+                    "cancel_requested",
+                )
+            }
+            written = await sessions.patch_if(
+                session_id,
+                to_jsonable_python({
+                    "interrupt_requested": True,
+                    "cancel_requested_at": now,
+                }),
+                where=where,
+            )
+            if written is None:
+                raise ConflictError(
+                    f"Session {session_id!r} changed while it was being interrupted; try again"
+                )
+            s = written
             if event_bus is not None:
                 try:
                     await event_bus.publish(

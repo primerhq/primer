@@ -95,7 +95,7 @@ async def test_a_row_that_ends_between_the_read_and_the_write_is_not_overwritten
     row = await storage.get(sid)
     row.status = SessionStatus.RUNNING
     await storage.update(row)
-    real_get, real_update, real_update_unless = storage.get, storage.update, storage.update_unless
+    real_get, real_update, real_patch_if = storage.get, storage.update, storage.patch_if
     state = {"pending": False}
 
     async def get(entity_id, **kwargs):
@@ -115,11 +115,11 @@ async def test_a_row_that_ends_between_the_read_and_the_write_is_not_overwritten
         await end_it_now()
         return await real_update(entity, **kwargs)
 
-    async def update_unless(entity, **kwargs):
+    async def patch_if(entity_id, patch, **kwargs):
         await end_it_now()
-        return await real_update_unless(entity, **kwargs)
+        return await real_patch_if(entity_id, patch, **kwargs)
 
-    storage.get, storage.update, storage.update_unless = get, update, update_unless
+    storage.get, storage.update, storage.patch_if = get, update, patch_if
 
     result = await _write(storage, sid, SessionStatus.ENDED, "completed")
 
@@ -128,6 +128,34 @@ async def test_a_row_that_ends_between_the_read_and_the_write_is_not_overwritten
         f"a row that ended between the read and the write was overwritten with {stored.status}/{stored.ended_reason}"
     )
     assert (result.landed, result.ended_reason) == (False, "force_deleted")
+
+
+async def test_terminal_field_patch_preserves_concurrent_unrelated_change(
+    seeded_session, fake_storage_provider,
+) -> None:
+    sid = seeded_session.id
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(sid)
+    await storage.update(row.model_copy(update={"status": SessionStatus.RUNNING}))
+    real_patch = storage.patch_if
+    raced = False
+
+    async def race_then_patch(entity_id, patch, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            await real_patch(
+                entity_id, {"last_worker_id": "other-worker"},
+                where={"status": ["running"]},
+            )
+        return await real_patch(entity_id, patch, **kwargs)
+
+    storage.patch_if = race_then_patch
+    result = await _write(storage, sid, SessionStatus.ENDED, "completed")
+    stored = await storage.get(sid)
+    assert result.landed is True
+    assert stored.status is SessionStatus.ENDED
+    assert stored.last_worker_id == "other-worker"
 
 
 @pytest.mark.parametrize("row_reason", ["completed", "failed", "cancelled", "tool_turn_cap"])

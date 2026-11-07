@@ -20,12 +20,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic_core import to_jsonable_python
+
+from primer.model.except_ import ConflictError
 from primer.model.workspace_session import (
     SessionMessageKind,
     SessionMessageRecord,
     WorkspaceSession,
 )
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.storage import raw_generation
 
 
 async def abandon_session_gate(
@@ -103,13 +107,26 @@ async def abandon_session_gate(
     ))
     await writer.flush()
 
-    updated = row.model_copy(update={
+    patch = {
         "parked_status": None,
         "parked_state": None,
         "parked_event_key": None,
         "last_seq": last_seq,
-    })
-    await sessions.update(updated)
+    }
+    where = {
+        field: [raw_generation(row, field)]
+        for field in (
+            "status", "turn_status", "turn_no", "binding_epoch", "last_seq",
+            "parked_status", "parked_event_key", "parked_at", "parked_until",
+        )
+    }
+    updated = await sessions.patch_if(
+        row.id, to_jsonable_python(patch), where=where,
+    )
+    if updated is None:
+        raise ConflictError(
+            f"Session {row.id!r} changed while its gate was being abandoned; retry"
+        )
     return updated
 
 
