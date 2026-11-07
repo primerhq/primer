@@ -1343,7 +1343,9 @@ async def delete_workspace(
 @workspace_router.post(
     "/workspaces/{workspace_id}/pause",
     status_code=501,
-    summary="Pause a workspace (reserved - not implemented in v1)",
+    summary="Deprecated workspace pause compatibility response",
+    deprecated=True,
+    include_in_schema=False,
 )
 async def pause_workspace(workspace_id: str) -> dict:
     raise HTTPException(
@@ -1362,7 +1364,9 @@ async def pause_workspace(workspace_id: str) -> dict:
 @workspace_router.post(
     "/workspaces/{workspace_id}/resume",
     status_code=501,
-    summary="Resume a workspace (reserved - not implemented in v1)",
+    summary="Deprecated workspace resume compatibility response",
+    deprecated=True,
+    include_in_schema=False,
 )
 async def resume_workspace(workspace_id: str) -> dict:
     raise HTTPException(
