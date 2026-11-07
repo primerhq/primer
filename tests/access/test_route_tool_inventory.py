@@ -37,8 +37,8 @@ ACCESS_CALL = re.compile(
 #: (method, path) -> why the route needs no per-user access check. An entry is a review decision, not a shortcut.
 ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
     ("GET", "/v1/toolsets/builtin"): "static catalogue of the built-in toolset ids and descriptions; no per-user row is read",
-    ("POST", "/v1/workspaces/{workspace_id}/pause"): "reserved: answers 501 and reads no row",
-    ("POST", "/v1/workspaces/{workspace_id}/resume"): "reserved: answers 501 and reads no row",
+    ("POST", "/v1/workspaces/{workspace_id}/pause"): "deprecated compatibility route: hidden from OpenAPI, answers 501 and reads no row",
+    ("POST", "/v1/workspaces/{workspace_id}/resume"): "deprecated compatibility route: hidden from OpenAPI, answers 501 and reads no row",
 }
 
 #: tool id -> why the tool needs no per-user access check (a tool of an access kind whose handler shows none).

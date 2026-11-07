@@ -229,20 +229,6 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
         <Btn
           size="sm"
           kind="ghost"
-          icon="pause"
-          disabled
-          title="Workspace pause is reserved (501) — coming soon"
-        >Pause</Btn>
-        <Btn
-          size="sm"
-          kind="ghost"
-          icon="play"
-          disabled
-          title="Workspace resume is reserved (501) — coming soon"
-        >Resume</Btn>
-        <Btn
-          size="sm"
-          kind="ghost"
           icon="zap"
           onClick={() => setDiagOpen(true)}
         >Run diagnostic</Btn>
