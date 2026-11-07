@@ -21,6 +21,7 @@ from primer.access.policy import level_of
 from primer.model.access import LEVEL_RANK, AccessLevel
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from primer.authz import RunRefused, WorkspaceAccessRevoked
@@ -333,6 +334,222 @@ def build_graph_invocation_services(
     )
 
 
+async def _resolve_bound_agent(pool: "WorkerPool", session: WorkspaceSession):
+    """Resolve the session's snapshot-first agent without building a turn."""
+    from primer.model.agent import Agent
+    from primer.model.except_ import NotFoundError
+
+    binding = session.binding
+    agent = binding.agent_snapshot
+    if agent is None:
+        agent = await pool._storage.get_storage(Agent).get(binding.agent_id)
+        if agent is None:
+            raise NotFoundError(
+                f"Agent {binding.agent_id!r} not found for session {session.id!r}"
+            )
+    return agent
+
+
+@dataclass(frozen=True)
+class _AgentToolManagerContext:
+    """Authorized inputs shared by the full and narrow manager builders."""
+
+    agent: object
+    tools: list[str]
+    toolset_providers: dict
+    agent_session: object
+    initiated_by: PrincipalRef
+
+
+async def _task_resume_tools(
+    pool: "WorkerPool",
+    agent,
+    required_tool_name: str,
+) -> list[str]:
+    """Return the exact allowlist for one approved task resume.
+
+    Ordinary provider tools must already belong to the frozen agent surface.
+    Memory tools are the sole provider-backed dynamic addition and only while
+    memory remains enabled. Workspace tools and the external/client per-turn
+    grants keep their manager-native bypass semantics and are never appended.
+    """
+    from primer.agent.external_tools import EXTERNAL_TOOLSET_ID
+    from primer.agent.tool_manager import WORKSPACE_TOOLSET_ID
+    from primer.memory.runtime import MEMORY_TOOL_IDS, memory_enabled
+    from primer.model.except_ import ConfigError
+    from primer.toolset.client import CLIENT_TOOLSET_ID
+
+    tools = list(agent.tools)
+    if required_tool_name in tools:
+        return tools
+    if required_tool_name in MEMORY_TOOL_IDS:
+        if pool._storage is not None and await memory_enabled(pool._storage, agent):
+            return [*tools, required_tool_name]
+        raise ConfigError(
+            f"resolved memory tool {required_tool_name!r} is no longer enabled"
+        )
+    required_scopes = _toolset_ids_from_scoped([required_tool_name])
+    if required_scopes and required_scopes[0] in {
+        WORKSPACE_TOOLSET_ID,
+        EXTERNAL_TOOLSET_ID,
+        CLIENT_TOOLSET_ID,
+    }:
+        return tools
+    raise ConfigError(
+        f"resolved tool {required_tool_name!r} is not in the agent's registered tool list"
+    )
+
+
+async def _prepare_agent_tool_manager_context(
+    pool: "WorkerPool",
+    session: WorkspaceSession,
+    workspace,
+    *,
+    agent,
+    existing_slot_only: bool,
+    required_tool_name: str | None = None,
+) -> _AgentToolManagerContext:
+    """Resolve the authorized context without constructing a manager.
+
+    This is the shared security boundary for a full agent executor and an
+    approved task-gate resume. It resolves the current acting principal,
+    workspace and bound-agent access, the agent's tool providers and existing
+    workspace slot. Manager construction stays separate so the full executor
+    preserves its historical LLM, graph and memory-materialisation order.
+    """
+    from primer.model.agent import Agent
+    from primer.model.except_ import NotFoundError
+
+    binding = session.binding
+    tools = (
+        await _task_resume_tools(pool, agent, required_tool_name)
+        if required_tool_name is not None
+        else list(agent.tools)
+    )
+
+    toolset_ids = _toolset_ids_from_scoped(tools)
+    if required_tool_name is not None:
+        # These scopes are assembled by the manager itself, rather than by the
+        # provider registry. Preserve the ordinary full-executor lookup path;
+        # only the narrow resume path needs to exclude manager-native grants.
+        from primer.agent.external_tools import EXTERNAL_TOOLSET_ID
+        from primer.agent.tool_manager import WORKSPACE_TOOLSET_ID
+        from primer.toolset.client import CLIENT_TOOLSET_ID
+
+        reserved = {WORKSPACE_TOOLSET_ID, EXTERNAL_TOOLSET_ID, CLIENT_TOOLSET_ID}
+        toolset_ids = [
+            toolset_id for toolset_id in toolset_ids if toolset_id not in reserved
+        ]
+    toolset_providers: dict = {}
+    for toolset_id in toolset_ids:
+        toolset_providers[toolset_id] = (
+            await pool._provider_registry.get_toolset(toolset_id)
+        )
+    toolset_providers.update(await client_toolset_for(pool, session))
+
+    if existing_slot_only:
+        agent_session = await workspace.get_session(session.id)
+        if agent_session is None:
+            raise NotFoundError(
+                f"Agent session slot {session.id!r} not found for approved resume"
+            )
+    else:
+        from primer.workspace.session_factory import ensure_agent_slot
+
+        agent_session = await ensure_agent_slot(workspace, session, agent)
+
+    initiated_by = await resolve_run_principal(pool._storage, session)
+    await refuse_run_without_workspace_access(
+        pool._storage, session, initiated_by,
+    )
+    if pool._storage is not None:
+        live_agent = (
+            agent
+            if binding.agent_snapshot is None
+            else (
+                await pool._storage.get_storage(Agent).get(binding.agent_id)
+                or agent
+            )
+        )
+        if (
+            live_agent is None
+            or level_of(person_from_ref(initiated_by), live_agent.access) is None
+        ):
+            raise NotFoundError(f"Agent {binding.agent_id!r} not found")
+
+    return _AgentToolManagerContext(
+        agent=agent,
+        tools=tools,
+        toolset_providers=toolset_providers,
+        agent_session=agent_session,
+        initiated_by=initiated_by,
+    )
+
+
+def _construct_agent_tool_manager(
+    pool: "WorkerPool",
+    session: WorkspaceSession,
+    context: _AgentToolManagerContext,
+    *,
+    graph_services=None,
+):
+    """Construct the manager after its caller's prerequisite ordering."""
+    from primer.agent.inform import SessionInformSink
+    from primer.agent.tool_manager import ToolExecutionManager
+    from primer.model.external_tool import ExternalToolCall
+
+    agent = context.agent
+    agent_session = context.agent_session
+    manager = ToolExecutionManager.for_workspace(
+        toolset_providers=context.toolset_providers,
+        session=agent_session,
+        approval_resolver=pool._approval_resolver,
+        provider_registry=pool._provider_registry,
+        parallel_readonly=pool.config.parallel_readonly_tool_calls,
+        tools=context.tools,
+        graph_invocation_services=graph_services,
+        initiated_by=context.initiated_by,
+        event_recorder=_pool_event_recorder(pool),
+        external_tools=_external_defs_for(session, agent),
+        external_call_storage=(
+            pool._storage.get_storage(ExternalToolCall)
+            if pool._storage is not None
+            else None
+        ),
+        turn_no=session.turn_no,
+        actor=ActorRef(kind="agent", id=agent.id),
+    )
+    manager.set_inform_sink(SessionInformSink(
+        dispatcher=pool._channel_dispatcher,
+        workspace_id=agent_session.workspace_id,
+        session_id=agent_session.session_id,
+        session=session,
+        workspace_registry=pool._workspace_registry,
+        artifact_registry=pool._artifact_storage_registry,
+    ))
+    return manager
+
+
+async def build_agent_tool_manager(
+    pool: "WorkerPool",
+    session: WorkspaceSession,
+    workspace,
+    *,
+    required_tool_name: str,
+):
+    """Build only the authorized manager for one approved task-gate call."""
+    agent = await _resolve_bound_agent(pool, session)
+    context = await _prepare_agent_tool_manager_context(
+        pool,
+        session,
+        workspace,
+        agent=agent,
+        existing_slot_only=True,
+        required_tool_name=required_tool_name,
+    )
+    return _construct_agent_tool_manager(pool, session, context)
+
+
 async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, workspace):
     """Build a turn-driver around :class:`WorkspaceAgentExecutor`.
 
@@ -347,25 +564,12 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     ``invoke`` to completion so the worker can await it as a single
     coroutine rather than iterating the stream directly.
     """
-    from primer.agent.tool_manager import ToolExecutionManager
     from primer.agent.workspace_executor import WorkspaceAgentExecutor
-    from primer.model.agent import Agent
-    from primer.model.except_ import NotFoundError
     from primer.worker.pool import _TurnDriver
     from primer.workspace.instructions import load_workspace_instructions
 
     binding = session.binding  # AgentSessionBinding
-    # Resolve the Agent: prefer the snapshot if the API froze one
-    # at create time, otherwise look up the live row.
-    agent = binding.agent_snapshot
-    if agent is None:
-        agent_storage = pool._storage.get_storage(Agent)
-        agent = await agent_storage.get(binding.agent_id)
-        if agent is None:
-            raise NotFoundError(
-                f"Agent {binding.agent_id!r} not found for session "
-                f"{session.id!r}"
-            )
+    agent = await _resolve_bound_agent(pool, session)
 
     # Resolve the profile, then the adapter it names. The profile
     # carries the provider id, the provider-side model name, the
@@ -382,65 +586,26 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     if memory_on:
         agent = agent.model_copy(update={"tools": with_memory_tools(agent.tools)})
 
-    # agent.tools holds scoped tool ids (toolset_id__tool_name).
-    # Derive the unique toolset prefixes so we only resolve the
-    # toolset providers the agent actually needs.
-    toolset_ids = _toolset_ids_from_scoped(agent.tools)
-    toolset_providers: dict = {}
-    for toolset_id in toolset_ids:
-        provider = await pool._provider_registry.get_toolset(toolset_id)
-        toolset_providers[toolset_id] = provider
-
-    # Client tools ride the turn only while a browser has the session
-    # open. Gated by attachment alone: allow_external_tools stays the
-    # API-caller gate and says nothing about notifying client tools.
-    toolset_providers.update(await client_toolset_for(pool, session))
-
-    # Get the on-disk AgentSession the API allocated at create
-    # time (Wave 2). The id matches session.id.
-    # A row that has no slot yet (the main operator session of an install that predates its slot allocation at creation) is given one now.
-    from primer.workspace.session_factory import ensure_agent_slot
-
-    agent_session = await ensure_agent_slot(workspace, session, agent)
-
-    # Build a workspace-aware ToolExecutionManager. The factory
-    # composes the agent's tool surface with the session's
-    # workspace tools and binds them to this AgentSession. The
-    # ``tools`` list is the agent's scoped-tool surface - the
-    # manager exposes exactly those tools to the LLM and rejects
-    # dispatch on anything else.
-    #
-    # ``initiated_by`` propagates this session's own attribution onto the
-    # ToolExecutionManager so a tool that spawns a child session
-    # (create_workspace_session) inherits it instead of falling back to
-    # the system principal. ``session.initiated_by`` is absent on rows
-    # created before this attribution landed and on the "main" session a
-    # workspace create used to seed with none; a user can reach both, so
-    # they rank as an ordinary user, never as system (security review A-20).
-    # The role is the creator's CURRENT one, capped by the recorded one, and a creator that cannot be resolved refuses the run (G7 ruling 2, G6-6).
-    initiated_by = await resolve_run_principal(pool._storage, session)
-    await refuse_run_without_workspace_access(pool._storage, session, initiated_by)
-    # The turn's person must still be able to read the bound agent (a revoked grant stops the next turn). A frozen snapshot's
-    # access may be stale, so the live row decides.
-    # A pool built without storage (tests only) has no row to ask, as resolve_run_principal does.
-    if pool._storage is not None:
-        # The live row decides; a snapshot whose row was deleted keeps the access it was frozen with.
-        live_agent = agent if binding.agent_snapshot is None else (await pool._storage.get_storage(Agent).get(binding.agent_id) or agent)
-        if live_agent is None or level_of(person_from_ref(initiated_by), live_agent.access) is None:
-            raise NotFoundError(f"Agent {binding.agent_id!r} not found")
+    manager_context = await _prepare_agent_tool_manager_context(
+        pool,
+        session,
+        workspace,
+        agent=agent,
+        existing_slot_only=False,
+    )
+    initiated_by = manager_context.initiated_by
+    agent_session = manager_context.agent_session
     # The profile the turn runs on (the session's override, else the agent's), used as the turn's person: it and the LLM providers behind it
     # must be usable by them, else the turn is refused (ProfileUnusable, access-control P4 Task 4).
     llm, llm_model = await resolve_llm_and_model(
         pool, agent, getattr(binding, "profile_id", None), person=person_from_ref(initiated_by),
     )
-    gis = pool._build_graph_invocation_services(
+    graph_services = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
         graph_session_id=session.id,
         initiated_by=initiated_by,
     )
-    from primer.model.external_tool import ExternalToolCall
-
     # The memory index and instructions for the prompt: the index is frozen on the session's first turn (its metadata), so this reads the same
     # text every turn.
     memory_parts, memory_index = (
@@ -455,41 +620,12 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         if memory_on else None
     )
 
-    tool_manager = ToolExecutionManager.for_workspace(
-        toolset_providers=toolset_providers,
-        session=agent_session,
-        approval_resolver=pool._approval_resolver,
-        provider_registry=pool._provider_registry,
-        parallel_readonly=pool.config.parallel_readonly_tool_calls,
-        tools=agent.tools,
-        graph_invocation_services=gis,
-        initiated_by=initiated_by,
-        event_recorder=_pool_event_recorder(pool),
-        external_tools=_external_defs_for(session, agent),
-        # ``pool._storage`` is always present in production; some pool
-        # unit-tests construct the pool with ``storage=None`` (see the
-        # same tolerance in WorkerPool._dispatch). Harmless to pass None:
-        # ToolExecutionManager only builds the external dispatcher when
-        # the agent actually has external tools, and an agent that has
-        # them always came through a pool with storage.
-        external_call_storage=(
-            pool._storage.get_storage(ExternalToolCall)
-            if pool._storage is not None
-            else None
-        ),
-        turn_no=session.turn_no,
-        actor=ActorRef(kind="agent", id=agent.id),
+    tool_manager = _construct_agent_tool_manager(
+        pool,
+        session,
+        manager_context,
+        graph_services=graph_services,
     )
-
-    from primer.agent.inform import SessionInformSink
-    tool_manager.set_inform_sink(SessionInformSink(
-        dispatcher=pool._channel_dispatcher,
-        workspace_id=agent_session.workspace_id,
-        session_id=agent_session.session_id,
-        session=session,
-        workspace_registry=pool._workspace_registry,
-        artifact_registry=pool._artifact_storage_registry,
-    ))
 
     # The workspace's agents.md, read now: one executor is built per turn, so an
     # edit to the file reaches the next turn. A missing file is None; an

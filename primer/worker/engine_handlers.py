@@ -431,18 +431,27 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
        FAILED carrying a SYNTHESIZED error result_state, so the resume
        coordinator hands the model a tool_result for its tool_use instead of
        the turn wedging on an unbounded requeue.
-    4. REHYDRATE THE CALL: the task row is ref-only; the durable TOOL_CALL
-       record the ``record_seq`` points at carries the name and arguments
-       (``read_tool_call_record`` fails loudly on any invariant break, which
-       terminates the task instead of requeueing a known-bad row).
-    5. EXECUTE through the session's own executor build (the same
+    4. ROUTE RESOLVED GATES FIRST: a resolved occurrence is fresh-read and
+       fenced against its RUNNING row, claim token, live session park,
+       binding epoch and full canonical envelope before any ordinary-call
+       dependency is touched. Generic yields and refused approvals consume
+       without a workspace or manager; approved approvals build only the
+       authorized manager they need, without constructing a full executor.
+       A resolved setup or hook failure becomes one
+       terminal, credential-redacted result and never a transient requeue.
+    5. REHYDRATE AN ORDINARY CALL: the task row is ref-only; the durable
+       TOOL_CALL record the ``record_seq`` points at carries the name and
+       arguments (``read_tool_call_record`` fails loudly on any invariant
+       break, which terminates the task instead of requeueing a known-bad
+       row).
+    6. EXECUTE an ordinary call through the session's own executor build (the same
        ``build_agent_executor`` the turn path uses, so the tool surface, the
        approval gate and the run's principal are the turn's own), mapping the
        outcome exactly one way each: success (a tool-level error is still a
        successful execution and stays DONE with the result), gate (the
        approval/yield YieldToWorker parks the TASK, not the session), and
        transient failure (requeue with the config's backoff).
-    6-7. Heartbeat and cancel ride the pool's generic loops (the pool's
+    7. Heartbeat and cancel ride the pool's generic loops (the pool's
        ``_release_lease`` marks the scope lease-returned; a lost lease preempts
        the execution). A cancelled execution re-raises: the row keeps the
        token and the next claim takes it over (at-least-once, step 8).
@@ -518,15 +527,25 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
     if task.gate_state is not None or task.gate_resolution is not None:
         try:
             decoded_gate = decode_task_gate_state(task.gate_state, task=task)
+            decision_class = (
+                classify_task_gate_decision(task, decoded_gate.resolution)
+                if isinstance(decoded_gate, TaskGateState)
+                and decoded_gate.resolution is not None
+                else None
+            )
             if (
                 not isinstance(decoded_gate, TaskGateState)
                 or decoded_gate.resolution is None
-                or classify_task_gate_decision(
-                    task, decoded_gate.resolution,
-                ) is not TaskGateDecisionClass.IDENTICAL
+                or not (
+                    decision_class is TaskGateDecisionClass.IDENTICAL
+                    or (
+                        task.state is ToolCallTaskState.RUNNING
+                        and decision_class is TaskGateDecisionClass.RUNNING
+                    )
+                )
             ):
                 raise TaskGateStateError(
-                    "queued task does not carry one exact resolved v1 gate"
+                    "task does not carry one exact resumable v1 gate"
                 )
             resolved_gate = decoded_gate
         except TaskGateStateError as exc:
@@ -609,6 +628,24 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         )
         return
 
+    if resolved_gate is not None:
+        # A resolved occurrence is already its own durable source of truth.
+        # Fence it against the freshly claimed row and live session before
+        # touching any ordinary-call dependency (workspace, transcript,
+        # executor or tool manager). Generic yields and rejected approvals do
+        # not need those dependencies at all; an approved approval builds only
+        # its narrow authorized manager after the fence holds.
+        await _run_resolved_task_gate(
+            pool,
+            engine_lease,
+            task_storage=task_storage,
+            session_storage=session_storage,
+            claimed_row=claimed_row,
+            token=token,
+            gate=resolved_gate,
+        )
+        return
+
     # ---- 4. rehydrate the call ---------------------------------------------------
     workspace = None
     if pool._workspace_registry is not None:
@@ -675,72 +712,8 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         return
 
 
-    if resolved_gate is not None:
-        current_task = await task_storage.get(task.id)
-        current_session = await session_storage.get(task.session_id)
-        if current_task is None:
-            current_live = False
-            current_reason = "the task row disappeared after it was claimed"
-        else:
-            current_live, current_reason = task_is_live_for_session(
-                current_task, current_session,
-            )
-        park_holds_task = False
-        if current_session is not None:
-            from primer.session.tool_wait_batches import batches_referenced_by_park
-
-            park_holds_task = any(
-                task.id in (*ref.outstanding_ids, *ref.notifying_ids)
-                for ref in batches_referenced_by_park(
-                    current_session.parked_state,
-                ).values()
-            )
-        if (
-            current_task is None
-            or current_task.state is not ToolCallTaskState.RUNNING
-            or current_task.claim_token != token
-            or not current_live
-            or not park_holds_task
-            or resolved_gate.binding_epoch != current_session.binding_epoch
-        ):
-            reason = current_reason or (
-                "the resolved task gate no longer matches the live session binding"
-            )
-            await _fail_claimed_tool_call_task(
-                pool, engine_lease, token, claimed_row, reason,
-            )
-            return
-        try:
-            current_gate = decode_task_gate_state(
-                current_task.gate_state, task=current_task,
-            )
-        except TaskGateStateError as exc:
-            await _fail_claimed_tool_call_task(
-                pool, engine_lease, token, claimed_row,
-                f"resolved task gate changed after claim: {_short_error(exc)}",
-            )
-            return
-        from primer.storage._patch import json_equal
-
-        if (
-            not isinstance(current_gate, TaskGateState)
-            or not json_equal(
-                current_gate.to_jsonable(), resolved_gate.to_jsonable(),
-            )
-        ):
-            await _fail_claimed_tool_call_task(
-                pool, engine_lease, token, claimed_row,
-                "resolved task gate changed after claim",
-            )
-            return
-
     try:
-        if resolved_gate is not None:
-            result = await _consume_resolved_task_gate(
-                pool, resolved_gate, current_session, tool_manager,
-            )
-        else:
-            result = await tool_manager.execute(call, principal=None)
+        result = await tool_manager.execute(call, principal=None)
     except asyncio.CancelledError:
         # A lost lease (or a drain) preempted the execution: the pool owns the
         # lease from here. Re-raise so the pool's scope machinery runs; the row
@@ -818,23 +791,11 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
             ),
         )
         return
-    except Exception as exc:  # noqa: BLE001 - resolved resumes synthesize; ordinary calls retry
-        if resolved_gate is None:
-            await _transient_tool_call_failure(
-                pool, engine_lease, token, claimed_row.attempts, exc,
-            )
-            return
-        logger.exception(
-            "resolved task gate for %s raised; synthesising an error result",
-            task.id,
+    except Exception as exc:  # noqa: BLE001 - ordinary setup/execution retries
+        await _transient_tool_call_failure(
+            pool, engine_lease, token, claimed_row.attempts, exc,
         )
-        from primer.worker.yield_runtime import resume_failure_result
-
-        result = resume_failure_result(
-            tool_call_id=task.wire_call_id,
-            tool_name=resolved_gate.yielded.tool_name,
-            exc=exc,
-        )
+        return
 
     # A tool-level error (result.error) is still a SUCCESSFUL execution: the
     # row stays DONE carrying the real result_state, so the resume coordinator
@@ -852,6 +813,211 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
             },
         ),
     )
+
+
+async def _run_resolved_task_gate(
+    pool,
+    engine_lease,
+    *,
+    task_storage,
+    session_storage,
+    claimed_row,
+    token: str,
+    gate,
+) -> None:
+    """Fence and consume one resolved occurrence before ordinary-call setup."""
+    from primer.int.claim import ParkRequest, ReleaseOutcome
+    from primer.model.tool_call_task import ToolCallTaskState
+    from primer.model.yield_ import YieldToWorker
+    from primer.session.tool_wait_batches import (
+        batches_referenced_by_park,
+        task_is_live_for_session,
+    )
+    from primer.storage._patch import json_equal
+    from primer.worker.task_gate_runtime import (
+        TaskGateState,
+        TaskGateStateError,
+        decode_task_gate_state,
+        new_task_gate_state,
+    )
+
+    current_task = await task_storage.get(claimed_row.id)
+    current_session = await session_storage.get(claimed_row.session_id)
+    if current_task is None:
+        current_live = False
+        current_reason = "the task row disappeared after it was claimed"
+    else:
+        current_live, current_reason = task_is_live_for_session(
+            current_task, current_session,
+        )
+    park_holds_task = False
+    if current_session is not None:
+        park_holds_task = any(
+            claimed_row.id in (*ref.outstanding_ids, *ref.notifying_ids)
+            for ref in batches_referenced_by_park(
+                current_session.parked_state,
+            ).values()
+        )
+    if (
+        current_task is None
+        or current_task.state is not ToolCallTaskState.RUNNING
+        or current_task.claim_token != token
+        or not current_live
+        or not park_holds_task
+        or gate.binding_epoch != current_session.binding_epoch
+    ):
+        reason = current_reason or (
+            "the resolved task gate no longer matches the live session binding"
+        )
+        await _fail_claimed_tool_call_task(
+            pool, engine_lease, token, claimed_row, reason,
+        )
+        return
+    try:
+        current_gate = decode_task_gate_state(
+            current_task.gate_state, task=current_task,
+        )
+    except TaskGateStateError as exc:
+        await _fail_claimed_tool_call_task(
+            pool, engine_lease, token, claimed_row,
+            f"resolved task gate changed after claim: {_short_error(exc)}",
+        )
+        return
+    if (
+        not isinstance(current_gate, TaskGateState)
+        or not json_equal(current_gate.to_jsonable(), gate.to_jsonable())
+    ):
+        await _fail_claimed_tool_call_task(
+            pool, engine_lease, token, claimed_row,
+            "resolved task gate changed after claim",
+        )
+        return
+
+    try:
+        tool_manager = None
+        if _resolved_gate_needs_tool_manager(gate):
+            workspace = None
+            if pool._workspace_registry is not None:
+                workspace = await pool._workspace_registry.get_workspace(
+                    current_session.workspace_id,
+                )
+            if workspace is None:
+                raise RuntimeError(
+                    f"workspace {current_session.workspace_id!r} could not be resolved for approved task-gate resume"
+                )
+            tool_manager = await pool._build_agent_tool_manager(
+                current_session,
+                workspace,
+                required_tool_name=current_task.tool_name,
+            )
+        result = await _consume_resolved_task_gate(
+            pool, gate, current_session, tool_manager,
+        )
+    except asyncio.CancelledError:
+        # A lost lease or drain leaves the RUNNING row, its claim token and
+        # exact receipt intact. A later takeover re-fences and re-consumes it.
+        raise
+    except YieldToWorker as yld:
+        y = yld.yielded
+        now = _now()
+        timeout = (
+            y.timeout if y.timeout is not None
+            else _TASK_GATE_DEFAULT_TIMEOUT_SECONDS
+        )
+        deadline = now + timedelta(seconds=timeout)
+        try:
+            next_gate = new_task_gate_state(
+                yld,
+                task=claimed_row,
+                gate_seq=claimed_row.gate_seq + 1,
+                parked_at=now,
+                deadline=deadline,
+                binding_epoch=current_session.binding_epoch,
+                tool_arguments=gate.tool_arguments,
+            )
+        except TaskGateStateError as exc:
+            reason = _short_error(exc)
+            logger.error(
+                "tool-call task %s produced an unsupported resumed gate: %s",
+                claimed_row.id,
+                reason,
+            )
+            await pool._release_lease(
+                engine_lease,
+                ReleaseOutcome(
+                    success=False,
+                    drop_lease=True,
+                    claim_token=token,
+                    last_error=reason,
+                    entity_update={
+                        "result_state": {
+                            "id": claimed_row.wire_call_id,
+                            "output": reason,
+                            "error": True,
+                        },
+                        "attempts": claimed_row.attempts,
+                        "last_error": reason,
+                    },
+                ),
+            )
+            return
+        await pool._release_lease(
+            engine_lease,
+            ReleaseOutcome(
+                success=True,
+                drop_lease=True,
+                claim_token=token,
+                park=ParkRequest(
+                    parked_state=next_gate.to_jsonable(),
+                    parked_event_key=y.event_key,
+                    parked_until=deadline,
+                    parked_at=now,
+                ),
+            ),
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - resolved resumes fail terminally
+        logger.exception(
+            "resolved task gate for %s raised; synthesising an error result",
+            claimed_row.id,
+        )
+        from primer.worker.yield_runtime import resume_failure_result
+
+        result = resume_failure_result(
+            tool_call_id=claimed_row.wire_call_id,
+            tool_name=gate.yielded.tool_name,
+            exc=exc,
+        )
+
+    await pool._release_lease(
+        engine_lease,
+        ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            claim_token=token,
+            entity_update={
+                "result_state": result.model_dump(mode="json"),
+                "attempts": claimed_row.attempts,
+                "last_error": result.output[:300] if result.error else None,
+            },
+        ),
+    )
+
+
+def _resolved_gate_needs_tool_manager(gate) -> bool:
+    """Whether consuming ``gate`` can dispatch its approved original call."""
+    if gate.yielded.tool_name != "_approval":
+        return False
+    from primer.worker.yield_runtime import (
+        classify_approval_payload,
+        classify_marker_payload,
+    )
+
+    resume = classify_marker_payload(
+        gate.resolution.payload, parked_at=gate.parked_at,
+    )
+    decision, _reason, _kind = classify_approval_payload(resume.payload)
+    return decision == "approved"
 
 
 async def _consume_resolved_task_gate(pool, gate, session, tool_manager):
