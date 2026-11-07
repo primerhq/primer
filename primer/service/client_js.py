@@ -1,9 +1,9 @@
 """The served gateway client (/svc/_client/primer.js).
 
-Phases 1-2 expose functions only; ``Primer.tool`` arrives with the tool
-dispatch in phase 3. The client resolves gateway URLs RELATIVE to the
-page (``/svc/{name}/``), so a bundle needs no configuration to call its
-own service.
+The implemented client exposes ``Primer.fn`` only. ``Primer.tool`` is
+reserved for the planned phase-3 tool gateway and is not available. The
+client resolves gateway URLs RELATIVE to the page (``/svc/{name}/``), so
+a bundle needs no configuration to call its own service.
 """
 
 PRIMER_JS = """\

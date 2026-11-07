@@ -1,5 +1,5 @@
 /* global React, Icon, Btn, Modal, Banner, PR_fetchAllPages, PR_usePagedResource, PR_PagedNote */
-// Services console page — agent-published web apps served at /svc/{name}/.
+// Services console page: versioned web apps served at /svc/{name}/.
 // Spec: docs/superpowers/specs/2026-08-08-services-design.md section 9.
 //
 // Prefix SV_ to avoid global name collisions (ui-pages convention).
@@ -8,9 +8,9 @@
 //   GET/POST/PUT/DELETE /services            — CRUD (make_crud_router)
 //   GET  /services/{id}/versions             — published versions, newest first
 //   POST /services/{id}/_activate            — activate / roll back
-// Publishing itself is NOT a console affordance: agents publish via the
-// publish_service tool (spec phase 4); the
-// Versions tab says so in its empty state.
+// Publishing itself is not a console affordance. The implemented surface is
+// POST /v1/services/{id}/versions; the Versions tab points to that REST route.
+// The planned agent publishing tool is not available.
 
 // ============================================================================
 // Helpers
@@ -50,7 +50,7 @@ function SV_AuthPill({ mode }) {
     <span
       className="mono"
       title={anon
-        ? "Served without login; the manifest tool allowlist still applies"
+        ? "Static files and published functions are served without login"
         : "Console login required to view and call"}
       style={{
         fontSize: 11, padding: "1px 8px", borderRadius: 9,
@@ -129,8 +129,8 @@ function SV_ServicesList() {
           <div className="ico-wrap"><Icon name="box" size={22} /></div>
           <div className="head">{q ? "No services match" : "No services yet"}</div>
           <div className="sub">
-            A service is an agent-published web app served at /svc/&#123;name&#125;/.
-            Create one here, then publish a bundle from an agent workspace.
+            A service is a versioned web app served at /svc/&#123;name&#125;/.
+            Create one here, then upload its bundle through the service versions REST endpoint.
           </div>
         </div>
       )}
@@ -210,8 +210,8 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
     if (viewerAuth === "none" && (!existing || existing.viewer_auth !== "none")) {
       const ok = await window.confirmDialog({
         title: "Serve without login?",
-        message: "Anonymous viewing serves this app WITHOUT login. The "
-          + "manifest tool allowlist still applies to gateway calls.",
+        message: "Anonymous viewing serves this app and its published "
+          + "functions WITHOUT login.",
         confirmLabel: "Continue",
         danger: true,
       });
@@ -444,9 +444,9 @@ function SV_ServiceDetail({ serviceId }) {
               <div className="ico-wrap"><Icon name="box" size={22} /></div>
               <div className="head">No versions published</div>
               <div className="sub">
-                Publish from an agent with the publish_service tool. Each
-                publish is an immutable version; activation is a pointer
-                swap.
+                Publish a gzipped bundle through POST
+                /v1/services/&#123;id&#125;/versions. Each publish is an immutable
+                version; activation is a pointer swap.
               </div>
             </div>
           )}

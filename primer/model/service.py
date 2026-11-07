@@ -31,11 +31,11 @@ RESERVED_SERVICE_NAMES = frozenset({"_client"})
 
 
 class ServiceViewerAuth(str, Enum):
-    """Who may view (and, with it, call) a service.
+    """Who may view a service and call its published functions.
 
     ``CONSOLE`` requires the console's own authentication on every
-    ``/svc/{name}/*`` request. ``NONE`` serves anonymously; the manifest
-    tool allowlist still applies to gateway calls in both modes.
+    ``/svc/{name}/*`` request. ``NONE`` serves static files and published
+    functions anonymously. The planned tool gateway is not implemented.
     """
 
     CONSOLE = "console"
@@ -43,16 +43,22 @@ class ServiceViewerAuth(str, Enum):
 
 
 class ServiceToolGrant(BaseModel):
-    """One allowlist entry: a toolset, optionally narrowed to named tools."""
+    """One reserved tool-gateway grant for the planned phase-3 surface."""
 
     toolset_id: str = Field(
         ...,
         min_length=1,
-        description="Identifier of the granted Toolset.",
+        description=(
+            "Toolset identifier stored for planned phase-3 dispatch; "
+            "the current gateway does not use it."
+        ),
     )
     tool_names: list[str] | None = Field(
         default=None,
-        description="Specific tools granted; None grants every tool in the toolset.",
+        description=(
+            "Tool names reserved for planned phase-3 dispatch; None is the "
+            "future whole-toolset form. No service tool dispatch exists today."
+        ),
     )
 
 
@@ -80,7 +86,8 @@ class ServiceManifest(BaseModel):
     tools: list[ServiceToolGrant] = Field(
         default_factory=list,
         description=(
-            "Gateway tool allowlist, enforced in BOTH viewer_auth modes."
+            "Reserved phase-3 tool grants. Publish validates and stores "
+            "them, but Primer.tool and tool dispatch are not available yet."
         ),
     )
 

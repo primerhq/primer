@@ -2,8 +2,8 @@
 
 ## 1. Purpose
 
-Agent-published web apps, versioned as immutable snapshots and served at
-`/svc/{name}/` by any API replica. A service's dynamic behaviour is
+Web apps published through the REST API, versioned as immutable snapshots,
+and served at `/svc/{name}/` by any API replica. A service's dynamic behaviour is
 stateless by construction: bundle python functions execute per-request
 in the python-runner sandbox, so serving scales with API replicas and no
 workspace is ever in the serving path. Workspaces are where agents
@@ -12,10 +12,10 @@ author bundles; publishing detaches the app from them entirely.
 Design rationale and the full decision trail live in the (local, not
 committed) spec `docs/superpowers/specs/2026-08-08-services-design.md`.
 This page documents what is implemented: spec phases 1-2. Phase 3 (tool
-dispatch through a manifest allowlist, `viewer_auth="none"` end-to-end
-with an anonymous service principal) and phase 4 (system tools
-parity, agent-usage docs) are not built yet; where they change behaviour
-below it is called out.
+dispatch through a manifest allowlist and an anonymous service principal)
+and phase 4 (the agent/system `publish_service` tool and agent-usage docs)
+are not built yet. `viewer_auth="none"` already applies to static files and
+published functions; it does not make an unbuilt tool gateway available.
 
 ## 2. Conceptual model
 
@@ -72,8 +72,9 @@ console surface is `ui/components/services.jsx`.
   re-parses source. Immutable once created.
 - `ServiceManifest` (`service.yaml`, `extra="forbid"`): `entry`
   (default `index.html`), `functions` (python files; auto-populated
-  with `functions.py` when present), `tools` (the gateway allowlist;
-  validated to existing toolsets at publish, ENFORCED in phase 3).
+  with `functions.py` when present), `tools` (reserved phase-3 grants;
+  validated to existing toolsets and stored at publish, but not callable
+  because `Primer.tool` and tool dispatch are not implemented).
 
 ## 6. Lifecycle
 
@@ -149,9 +150,10 @@ Mounted WITHOUT the `/v1` prefix. `GET /svc/{name}/{path}`:
 **Same-origin risk (open).** Published bundles are served on the console
 origin, so a bundle's own script runs first-party: it rides the console
 session cookie and can call `/v1/*` as the viewing operator, which the
-gateway tool allowlist does not contain. Only an agent or operator who
-can publish can plant such a bundle, so this is a hardening gap, not an
-anonymous exploit. The recommended direction is to serve `/svc` from a
+reserved manifest tool grants cannot constrain. Only an authenticated API
+client or operator with publish access can plant such a bundle, so this is a
+hardening gap, not an anonymous exploit. The recommended direction is to serve
+`/svc` from a
 separate origin (for example `svc.<host>`) whose cookies are not the
 console session, with the gateway authenticated by a scoped,
 service-bound token; a sandboxed-iframe host is the alternative.
@@ -178,7 +180,8 @@ session, workspace, or `inform`. Failures map to: 404 unknown
 function, 422 schema mismatch, 503 runner unavailable, 500 with the
 exception type/message (traceback included only under
 `viewer_auth=console`). `GET /svc/_client/primer.js` serves the no-build
-client (`Primer.fn(name, args)`; `Primer.tool` arrives with phase 3).
+client. It exposes `Primer.fn(name, args)` only. `Primer.tool` is planned
+for phase 3 and is not available.
 
 The gateway admits a bounded number of calls at once (`limits.gateway_max_concurrent`, default 32, plus an optional
 `limits.gateway_max_per_service`): a call over a cap answers `503` with the fixed title "the service is busy, try again shortly" and
@@ -197,9 +200,10 @@ directories included (`MAX_BUNDLE_MEMBERS`, 1000), against its cap.
 
 The shell reaches services through the `services` overlay (list,
 create/edit/delete with the standard modal) and `services::{id}` (Config
-plus Versions tabs; activate/rollback; open-app link). Publishing is
-deliberately not a console affordance: agents use the phase-4
-`publish_service` tool.
+plus Versions tabs; activate/rollback; open-app link). The console has no
+bundle upload control. Publishing is available today through
+`POST /v1/services/{id}/versions`; the planned phase-4 `publish_service`
+agent/system tool is not implemented.
 
 ## 9. Internal contracts
 
@@ -236,6 +240,8 @@ deliberately not a console affordance: agents use the phase-4
   Why: publish and activate invalidate in-process, and other replicas
   converge within 5 seconds. A cross-replica invalidation protocol would
   add a coordination dependency to the one plane built to avoid them.
-- **Publishing is a tool, not a console button.** Why: services are
-  authored by agents in a workspace. An operator publishing by hand would
-  be publishing a bundle they did not build.
+- **The roadmap keeps publishing out of the console.** Today an operator or
+  API client publishes through `POST /v1/services/{id}/versions`; there is no
+  console upload control or agent tool. The planned phase-4 design adds a
+  `publish_service` tool for workspace-authored bundles rather than a console
+  button that uploads a bundle the operator did not build.

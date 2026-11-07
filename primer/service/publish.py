@@ -3,8 +3,9 @@
 The router validates (via :func:`primer.service.bundle.validate_bundle`
 plus storage-dependent checks like toolset grants); this module persists:
 artifact rows for every file, the version row, the active pointer, and
-retention pruning. Kept separate from the router so the
-publish_service tool reuses it verbatim.
+retention pruning. The REST publish route is its current caller. A
+planned phase-4 system tool can reuse the same persistence path, but no
+``publish_service`` tool is implemented today.
 """
 
 from __future__ import annotations

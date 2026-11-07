@@ -49,6 +49,22 @@ def test_tool_grant_shape() -> None:
     assert g.tool_names is None
 
 
+def test_tool_grants_are_described_as_reserved_in_the_api_schema() -> None:
+    schema = ServiceManifest.model_json_schema()
+    description = schema["properties"]["tools"]["description"]
+    assert "Reserved phase-3 tool grants" in description
+    assert "not available yet" in description
+
+    grant_properties = schema["$defs"]["ServiceToolGrant"]["properties"]
+    assert "stored for planned phase-3 dispatch" in grant_properties["toolset_id"][
+        "description"
+    ]
+    tool_names_description = grant_properties["tool_names"]["description"]
+    assert "reserved for planned phase-3 dispatch" in tool_names_description
+    assert "future whole-toolset form" in tool_names_description
+    assert "No service tool dispatch exists today" in tool_names_description
+
+
 def test_version_schema_alias() -> None:
     v = ServiceVersion(
         service_id="service-x",
