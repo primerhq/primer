@@ -59,6 +59,12 @@ model may name fields in `_storage_only_fields` and mark those Pydantic fields
 omit them, while `dump_for_storage` adds their typed JSON values back under the
 same storage context used for secrets and masked URLs. Storage backends do not
 special-case model classes. The session responder ledger is the first consumer.
+Its S3a reservation helper replaces the whole bounded current-epoch map through
+`patch_if`, guarded by the current scalar epoch/sequence/version plus the
+caller's scalar lifecycle, binding and park occurrence generations. A refused
+write re-reads and retries from the winning map, so concurrent additions are
+not lost; pause/cancel/interrupt flags and their stored timestamps plus
+`last_seq` are in the fence, and no container value appears in `where`.
 
 ## 3. Public surface
 

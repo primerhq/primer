@@ -34,6 +34,19 @@ A session has two persisted faces that are reconciled at turn boundaries:
   never appear in public session JSON or OpenAPI. S2 defines storage and
   validation only: it does not reserve sources, rotate epochs, write task receipts,
   or connect lifecycle writers, so human task-gate decisions remain hard-disabled.
+- S3a adds only the internal source codec and active-epoch reservation primitive
+  (`primer/session/responder_attribution.py`). The codec stores a typed canonical
+  JSON/bytes identity and hashes an unambiguous version/domain/identity frame into
+  a fixed `rs1_` BLAKE2b-256 key. `reserve_source` allocates through a bounded
+  field-scoped CAS, is idempotent for the exact same source and person, and fails
+  closed on digest collision, cap, stale epoch or moved session occurrence. It
+  canonicalizes finite numbers by exact rational value (`1` equals `1.0`, and
+  `0` equals `-0.0`) while keeping booleans and strings distinct. Its occurrence
+  fence includes pause/cancel/interrupt requests and their stored timestamps and
+  `last_seq`, so a request or durable message that lands after the read refuses
+  the stale reservation. It
+  does not rotate epochs, create starter reservations, project `turn_person`,
+  write task receipts, expose a route, or enable human task gates.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
