@@ -33,6 +33,9 @@ from primer.bootstrap.seeded_agents_v1 import (
 from primer.model.storage import OffsetPage
 from primer.storage.migrations import LATEST_VERSION, MIGRATIONS, run_migrations
 from primer.storage.migrations.m011_seeded_agents_core_kit import Agent as AgentView
+from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
+
+_M030_PRIOR_VERSION = M030SeededAgentsV4.version - 1
 
 #: Every build that seeded agents before v4, oldest first (v3 is the base).
 _BUILDS: dict[str, dict[str, SeededDefinition]] = {
@@ -87,7 +90,7 @@ async def test_an_install_seeded_at_a_shipped_build_is_upgraded(sqlite_provider,
     for agent_id, definition in _BUILDS[build].items():
         await _write(sqlite_provider, agent_id, definition)
     # a deployed install at the version this migration lands on: the chain from here is this migration alone
-    await _at_schema(sqlite_provider, LATEST_VERSION - 1)
+    await _at_schema(sqlite_provider, _M030_PRIOR_VERSION)
 
     assert await run_migrations(sqlite_provider, is_fresh_install=False) == LATEST_VERSION
 
@@ -103,7 +106,7 @@ async def test_the_deployed_install_reaches_v4(sqlite_provider):
     """The headline case: a v3 row (what every deployed install carries) reaches v4."""
     for agent_id, definition in SEEDED_AGENTS_V3.items():
         await _write(sqlite_provider, agent_id, definition)
-    await _at_schema(sqlite_provider, LATEST_VERSION - 1)
+    await _at_schema(sqlite_provider, _M030_PRIOR_VERSION)
 
     await run_migrations(sqlite_provider, is_fresh_install=False)
 
@@ -119,7 +122,7 @@ async def test_the_deployed_install_reaches_v4(sqlite_provider):
 async def test_v4_carries_the_identity_block_and_the_loop(sqlite_provider):
     for agent_id, definition in SEEDED_AGENTS_V3.items():
         await _write(sqlite_provider, agent_id, definition)
-    await _at_schema(sqlite_provider, LATEST_VERSION - 1)
+    await _at_schema(sqlite_provider, _M030_PRIOR_VERSION)
 
     await run_migrations(sqlite_provider, is_fresh_install=False)
 
@@ -133,8 +136,6 @@ async def test_v4_carries_the_identity_block_and_the_loop(sqlite_provider):
 
 
 async def test_an_edited_agent_is_left_alone_with_one_warning(sqlite_provider, caplog):
-    from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
-
     v3 = SEEDED_AGENTS_V3
     await _write(sqlite_provider, "builder", v3["builder"]._replace(system_prompt=("mine",)))
     await _write(sqlite_provider, "operator", v3["operator"]._replace(tools=v3["operator"].tools + ("web__web_fetch",)))
@@ -154,8 +155,6 @@ async def test_an_edited_agent_is_left_alone_with_one_warning(sqlite_provider, c
 
 
 async def test_tool_order_does_not_count_as_an_edit(sqlite_provider):
-    from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
-
     v3 = SEEDED_AGENTS_V3["operator"]
     await _write(sqlite_provider, "operator", v3._replace(tools=tuple(reversed(v3.tools))))
 
@@ -165,8 +164,6 @@ async def test_tool_order_does_not_count_as_an_edit(sqlite_provider):
 
 
 async def test_other_fields_survive(sqlite_provider):
-    from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
-
     await _write(
         sqlite_provider, "operator", SEEDED_AGENTS_V3["operator"],
         temperature=0.2, max_tool_turns=7,
@@ -182,8 +179,6 @@ async def test_other_fields_survive(sqlite_provider):
 
 
 async def test_a_second_run_changes_nothing_and_warns_nothing(sqlite_provider, caplog):
-    from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
-
     for agent_id, definition in SEEDED_AGENTS_V3.items():
         await _write(sqlite_provider, agent_id, definition)
     migration = M030SeededAgentsV4()
@@ -200,8 +195,6 @@ async def test_a_second_run_changes_nothing_and_warns_nothing(sqlite_provider, c
 
 
 async def test_a_missing_agent_is_skipped(sqlite_provider):
-    from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
-
     await M030SeededAgentsV4().apply(sqlite_provider)
 
     page = await sqlite_provider.get_storage(AgentView).list(OffsetPage(offset=0, length=100))
@@ -231,7 +224,5 @@ async def test_a_fresh_install_baselines_and_seeds_v4(sqlite_provider):
 
 
 def test_is_registered_as_version_30():
-    from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
-
     assert isinstance(MIGRATIONS[29], M030SeededAgentsV4)
     assert MIGRATIONS[29].version == 30

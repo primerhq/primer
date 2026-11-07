@@ -7,7 +7,8 @@ retry, gate, takeover, mismatch, refusal, and deletion handling.
 
 They are not evidence that the default-off feature is ready for production.
 Graph binding execution is unsupported, GATED decisions are unwired, and cancel,
-reconciliation, nested topology, and the post-release crash residual remain.
+nested topology, and live flag-on coverage remain. Exact terminal-batch wake
+reconciliation is covered separately.
 """
 
 from __future__ import annotations

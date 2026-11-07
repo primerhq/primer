@@ -238,10 +238,11 @@ async def test_factory_bound_hook_wakes_session_on_last_sibling_release():
     task_storage = storage_provider.get_storage(ToolCallTask)
 
     session_id = "s-factory-wake"
-    # scoped_task_id="x:tool:0:1" -> node segment "x" (tool_wait_event_key's
-    # own split) - matches the chat/workspace surface's node_id=None
-    # convention, so this is the exact key the factory-wired adapter's
-    # last-sibling check must reconstruct.
+    parked_at = datetime.now(timezone.utc)
+    batch = [
+        f"{session_id}/x:tool:0:1",
+        f"{session_id}/x:tool:0:2",
+    ]
     session = WorkspaceSession(
         id=session_id,
         workspace_id="ws-1",
@@ -250,17 +251,22 @@ async def test_factory_bound_hook_wakes_session_on_last_sibling_release():
         turn_status="idle",
         parked_status="parked",
         parked_event_key=f"tool_wait:{session_id}:0:x",
-        parked_state={"kind": "tool_wait"},
-        created_at=datetime.now(timezone.utc),
+        parked_at=parked_at,
+        parked_tool_batches=True,
+        parked_state={
+            "kind": "tool_wait",
+            "outstanding_task_ids": list(batch),
+            "notifying_task_ids": [],
+        },
+        created_at=parked_at,
     )
     await session_storage.create(session)
 
-    batch = ["x:tool:0:1", "x:tool:0:2"]
     for tid in batch:
         await task_storage.create(ToolCallTask(
             id=tid, session_id=session_id, turn_no=0, tool_name="t",
             state=ToolCallTaskState.QUEUED, record_seq=1,
-            created_at=datetime.now(timezone.utc), batch_task_ids=list(batch),
+            created_at=parked_at, batch_task_ids=list(batch),
         ))
 
     engine = ClaimEngineFactory.create(
