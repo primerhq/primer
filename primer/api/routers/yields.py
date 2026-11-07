@@ -26,6 +26,7 @@ code changes.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Path, Request
@@ -45,14 +46,29 @@ from primer.api.deps import (
     require_user,
 )
 from primer.api.errors import common_responses
+from primer.claim.task_ask_resume import (
+    TaskAskResumeOutcome,
+    project_task_ask_responder,
+    promote_task_ask_resumable,
+    stage_task_ask_receipt,
+)
+from primer.claim.task_gate_decisions import (
+    TaskAskUserGate,
+    TaskAskUserLookupKind,
+    exact_task_ask_user,
+    pending_task_ask_users,
+    task_approval_park_present,
+)
 from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
+    PrimerError,
     ValidationError,
 )
 from primer.model.principal import PrincipalRef, person_ref
+from primer.model.tool_call_task import ToolCallTask
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import (
     GATE_ID_PATTERN,
@@ -73,6 +89,13 @@ from primer.worker.yield_runtime import make_cancelled_payload
 logger = logging.getLogger(__name__)
 
 yields_router = APIRouter(tags=["yields"])
+
+
+def _task_ask_user_decisions_enabled(request: Request) -> bool:
+    """Return the reserved capability; WorkerConfig rejects true in S0."""
+    config = getattr(request.app.state, "config", None)
+    worker = getattr(config, "worker", None)
+    return bool(getattr(worker, "task_gate_human_decisions_enabled", False))
 
 
 # ===========================================================================
@@ -340,6 +363,19 @@ class AskUserPendingResponse(BaseModel):
     )
 
 
+def _build_task_ask_pending_response(
+    match: TaskAskUserGate,
+) -> AskUserPendingResponse:
+    metadata = match.gate.yielded.resume_metadata
+    return AskUserPendingResponse(
+        tool_call_id=match.gate.tool_call_id,
+        prompt=metadata.get("prompt", ""),
+        response_schema=metadata.get("response_schema"),
+        gate_id=match.gate.occurrence_token,
+        parked_at=match.gate.parked_at.isoformat(),
+    )
+
+
 @yields_router.get(
     "/sessions/{session_id}/ask_user/pending",
     response_model=AskUserPendingResponse,
@@ -353,8 +389,17 @@ async def get_ask_user_pending(
 ) -> AskUserPendingResponse:
     # Access (P2 Task 3): reading a session's prompt needs read on the
     # workspace it lives in; a stranger answers the session's missing-row text.
-    await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.READ)
-    sess = await _load_session_or_404(session_storage, session_id)
+    storage_provider = get_storage_provider(request)
+    sess = await require_session(
+        storage_provider, person_from_request(request), session_id,
+        AccessLevel.READ,
+    )
+    if _task_ask_user_decisions_enabled(request):
+        task_gates = await pending_task_ask_users(
+            storage_provider.get_storage(ToolCallTask), sess,
+        )
+        if task_gates:
+            return _build_task_ask_pending_response(task_gates[0])
     blob = _parked_blob(sess)
     if blob is None:
         raise NotFoundError(
@@ -483,6 +528,12 @@ async def _validate_response_against_schema(
         ) from exc
 
 
+def _task_ask_refusal(outcome: TaskAskResumeOutcome) -> Exception:
+    if outcome is TaskAskResumeOutcome.REFUSED_CONFLICT:
+        return decided_gate_error("ask_user")
+    return GateNotPendingError("the task ask_user gate is no longer pending")
+
+
 @yields_router.post(
     "/sessions/{session_id}/ask_user/respond",
     status_code=202,
@@ -501,12 +552,125 @@ async def post_ask_user_respond(
     # A prompt that is no longer pending while the session is there and its park reads (answered elsewhere and the session moved on, re-parked
     # under a fresh id, parked on another tool) is a 404 ``gate_not_pending`` (GateNotPendingError), so a client reloads instead of showing an
     # error. A missing session and a park that cannot be read (no state, no tool, no call id, no event key) stay a plain 404.
-    sess = await _load_session_or_404(session_storage, session_id)
+    storage_provider = get_storage_provider(request)
     # An answer is a person's input into the session's run: full on the workspace the
     # session lives in (P2 Task 3), before the park is read and before anything moves.
-    await require_session(get_storage_provider(request), person_from_request(request), session_id, AccessLevel.FULL)
+    sess = await require_session(
+        storage_provider, person_from_request(request), session_id,
+        AccessLevel.FULL,
+    )
     # The answer is model input, like a steer: the resumed turn runs as its sender, computed as the steer route does (final access review F6).
     by = PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None
+    task_match = None
+    task_storage = None
+    task_park = False
+    if _task_ask_user_decisions_enabled(request):
+        task_storage = storage_provider.get_storage(ToolCallTask)
+        task_park = task_approval_park_present(sess)
+    if task_storage is not None and body.gate_id is not None:
+        lookup = await exact_task_ask_user(
+            task_storage, sess, occurrence_token=body.gate_id,
+        )
+        task_match = lookup.match
+        if task_match is not None and task_match.gate.tool_call_id != body.tool_call_id:
+            raise GateNotPendingError(
+                f"No pending ask_user prompt with tool_call_id "
+                f"{body.tool_call_id!r} on session {session_id!r}"
+            )
+        if lookup.kind in {
+            TaskAskUserLookupKind.CORRUPT,
+            TaskAskUserLookupKind.MOVED,
+        }:
+            raise GateNotPendingError(
+                "the task ask_user gate is no longer pending"
+            )
+        if lookup.kind is TaskAskUserLookupKind.ABSENT and task_park:
+            replacements = await pending_task_ask_users(task_storage, sess)
+            if any(
+                match.gate.tool_call_id == body.tool_call_id
+                for match in replacements
+            ):
+                count_gate_token(
+                    kind="ask_user", session_id=session_id,
+                    token=body.gate_id, stale=True,
+                )
+                raise stale_gate_error("ask_user")
+            raise GateNotPendingError(
+                "the task ask_user gate is no longer pending"
+            )
+    elif task_storage is not None and task_park:
+        raise GateNotPendingError(
+            "a task ask_user decision must name its gate_id"
+        )
+    if task_match is not None:
+        metadata = task_match.gate.yielded.resume_metadata
+        await _validate_response_against_schema(
+            response=body.response, schema=metadata.get("response_schema"),
+        )
+        if engine is None:
+            raise PrimerError(
+                "claim_engine is required to resolve a task ask_user gate"
+            )
+        # Access and liveness are re-read immediately before stage A.
+        fresh_session = await require_session(
+            storage_provider, person_from_request(request), session_id,
+            AccessLevel.FULL,
+        )
+        fresh_lookup = await exact_task_ask_user(
+            task_storage, fresh_session, occurrence_token=body.gate_id,
+        )
+        fresh_match = fresh_lookup.match
+        if fresh_match is None or fresh_match.task.id != task_match.task.id:
+            raise GateNotPendingError(
+                "the task ask_user gate is no longer pending"
+            )
+        responder = (
+            PrincipalRef.from_principal(request.state.actor)
+            if getattr(request.state, "actor", None) is not None else None
+        )
+        if responder is None or person_ref(responder) != responder:
+            raise PrimerError(
+                "an authenticated person is required to answer task ask_user"
+            )
+        payload = {"response": body.response}
+        count_gate_token(
+            kind="ask_user", session_id=session_id, token=body.gate_id,
+        )
+        outcome = await stage_task_ask_receipt(
+            fresh_match.task.id,
+            occurrence_token=fresh_match.gate.occurrence_token,
+            gate_seq=fresh_match.gate.gate_seq,
+            event_key=fresh_match.gate.event_key,
+            payload=payload,
+            person=responder,
+            responder_epoch=fresh_session.responder_epoch or "",
+            accepted_at=datetime.now(UTC),
+            task_storage=task_storage,
+            engine=engine,
+        )
+        if outcome not in {
+            TaskAskResumeOutcome.RECEIPT_STAGED,
+            TaskAskResumeOutcome.PROJECTED,
+            TaskAskResumeOutcome.PROMOTED,
+        }:
+            raise _task_ask_refusal(outcome)
+        outcome = await project_task_ask_responder(
+            fresh_match.task.id,
+            task_storage=task_storage,
+            session_storage=session_storage,
+            engine=engine,
+        )
+        if outcome not in {
+            TaskAskResumeOutcome.PROJECTED,
+            TaskAskResumeOutcome.PROMOTED,
+        }:
+            raise _task_ask_refusal(outcome)
+        outcome = await promote_task_ask_resumable(
+            fresh_match.task.id, task_storage=task_storage, engine=engine,
+        )
+        if outcome is not TaskAskResumeOutcome.PROMOTED:
+            raise _task_ask_refusal(outcome)
+        return {"status": "accepted"}
     blob = _parked_blob(sess)
     if blob is None:
         if sess.parked_status not in ("parked", "resumable"):
