@@ -28,7 +28,7 @@ from primer_runtime.events_sub import (
     EventBroadcaster,
     start_events_subscribe,
 )
-from primer_runtime.protocol import ErrorCode, OpName, Response, serialize
+from primer_runtime.protocol import PROTOCOL_VERSION, ErrorCode, OpName, Response, serialize
 from primer_runtime.pty_op import PtyRegistry, start_pty
 from primer_runtime.watch import WatchRegistry, cancel_watch, start_watch
 
@@ -50,7 +50,6 @@ _KEY_BROADCASTER: web.AppKey["EventBroadcaster"] = web.AppKey(
 # Version constants
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION: str = "1.5"
 RUNTIME_VERSION: str = "1.0.0"
 
 _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])
