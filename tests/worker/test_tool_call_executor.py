@@ -25,9 +25,10 @@ from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimAdapter, ClaimKind
 from primer.int.toolset import ToolsetProvider
 from primer.model.agent import Agent, AgentModel
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolResultPart
 from primer.model.scheduler import WorkerConfig
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.yield_ import Yielded
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
@@ -619,12 +620,293 @@ class _GatingToolManager:
         )
 
 
+class _ResolvedGateToolManager:
+    def __init__(self, *, re_yield: bool = False) -> None:
+        self.calls: list[tuple[object, dict]] = []
+        self.re_yield = re_yield
+
+    async def execute(self, call, **kwargs):
+        self.calls.append((call, kwargs))
+        if self.re_yield:
+            from primer.model.yield_ import YieldToWorker, Yielded
+
+            raise YieldToWorker(
+                Yielded(
+                    tool_name="test_task_gate_followup",
+                    event_key=f"followup:{SESSION_ID}:{CALL_ID}",
+                    resume_metadata={"phase": 2},
+                ),
+                tool_call_id=CALL_ID,
+            )
+        return ToolResultPart(id=call.id, output="resumed-ok", error=False)
+
+
+def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=None):
+    from primer.worker.task_gate_runtime import (
+        TaskGateState,
+        make_resolution_receipt,
+    )
+
+    task_storage = provider.get_storage(ToolCallTask)
+    task = task_storage._data[TASK_ID]  # noqa: SLF001
+    token = "a" * 32
+    event_key = f"tool_approval:{SESSION_ID}:{CALL_ID}"
+    receipt = make_resolution_receipt(
+        occurrence_token=token,
+        gate_seq=1,
+        event_key=event_key,
+        payload=payload,
+    )
+    gate = TaskGateState(
+        occurrence_token=token,
+        gate_seq=1,
+        event_key=event_key,
+        yielded=Yielded(
+            tool_name=tool_name,
+            event_key=event_key,
+            resume_metadata=metadata or {
+                "original_call": {
+                    "id": CALL_ID,
+                    "name": f"{TOOLSET_ID}__do_thing",
+                    "arguments": {"n": 7},
+                },
+            },
+        ),
+        tool_call_id=CALL_ID,
+        tool_arguments={"n": 7},
+        parked_at=_now(),
+        deadline=_now() + timedelta(minutes=5),
+        binding_epoch=1,
+        resolution=receipt,
+    )
+    task_storage._data[TASK_ID] = task.model_copy(update={  # noqa: SLF001
+        "gate_occurrence_token": token,
+        "gate_event_key": event_key,
+        "gate_until": gate.deadline,
+        "gate_seq": 1,
+        "gate_state": gate.to_jsonable(),
+        "gate_resolution": receipt.to_jsonable(),
+    })
+    return gate
+
+
 def _executor_with(tool_manager) -> object:
     import types
 
     return types.SimpleNamespace(
         _executor=types.SimpleNamespace(_tool_manager=tool_manager),
     )
+
+
+@pytest.mark.parametrize(
+    "payload,expected_calls,expected_output",
+    [
+        ({"decision": "approved", "decided_by": "user-1"}, 1, "resumed-ok"),
+        ({"decision": "rejected", "reason": "no"}, 0, '"reason": "no"'),
+        ({"__yield_timeout__": True}, 0, '"reason": "timed-out"'),
+        ({"__yield_cancelled__": True, "reason": "stopped"}, 0, '"reason": "stopped"'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_resolved_approval_uses_shared_resume_semantics(
+    payload, expected_calls, expected_output,
+):
+    pool, engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    gate = _resolve_task_gate(provider, payload=payload)
+    manager = _ResolvedGateToolManager()
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the resolved gate did not reach DONE",
+        )
+        assert len(manager.calls) == expected_calls
+        if expected_calls:
+            assert manager.calls[0][1] == {"bypass_approval": True}
+        assert expected_output in task_storage._data[TASK_ID].result_state["output"]  # noqa: SLF001
+        from primer.model.tool_approval import ToolApprovalRecord
+
+        records = provider.get_storage(ToolApprovalRecord)._data.values()  # noqa: SLF001
+        assert [r.gate_event_key for r in records] == [
+            f"{gate.event_key}@{gate.occurrence_token}",
+        ]
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
+    from primer.worker import yield_resume_registry
+
+    seen = []
+
+    async def _hook(metadata, payload, context):
+        seen.append((metadata, payload, context))
+        return ToolCallResult(output="hook-ok", is_error=False)
+
+    monkeypatch.setitem(
+        yield_resume_registry._registry, "test_task_gate", _hook,  # noqa: SLF001
+    )
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(
+        provider,
+        payload={"answer": [1, {"ok": True}]},
+        tool_name="test_task_gate",
+        metadata={"question": "continue?"},
+    )
+    manager = _ResolvedGateToolManager()
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the generic resolved gate did not reach DONE",
+        )
+        metadata, payload, context = seen.pop()
+        assert metadata == {"question": "continue?"}
+        assert payload == {"answer": [1, {"ok": True}]}
+        assert (context.tool_name, context.tool_call_id, context.session_id) == (
+            "test_task_gate", CALL_ID, SESSION_ID,
+        )
+        assert manager.calls == []
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_approval_reyield_gets_a_new_occurrence():
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    old = _resolve_task_gate(provider, payload={"decision": "approved"})
+    manager = _ResolvedGateToolManager(re_yield=True)
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.GATED,  # noqa: SLF001
+            "the resumed task did not re-gate",
+        )
+        task = task_storage._data[TASK_ID]  # noqa: SLF001
+        assert task.gate_seq == 2
+        assert task.gate_occurrence_token != old.occurrence_token
+        assert len(manager.calls) == 1
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_gate_binding_mismatch_executes_nothing():
+    pool, _engine, provider, _toolset, sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    sessions[SESSION_ID] = sessions[SESSION_ID].model_copy(update={
+        "binding_epoch": 2,
+    })
+    provider.get_storage(WorkspaceSession)._data[SESSION_ID] = sessions[SESSION_ID]  # noqa: SLF001
+    manager = _ResolvedGateToolManager()
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the stale-binding gate did not fail closed",
+        )
+        assert manager.calls == []
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_gate_with_stale_session_park_executes_nothing():
+    pool, _engine, provider, _toolset, sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    sessions[SESSION_ID] = sessions[SESSION_ID].model_copy(update={
+        "parked_state": {"kind": "tool_wait", "outstanding_task_ids": []},
+    })
+    provider.get_storage(WorkspaceSession)._data[SESSION_ID] = sessions[SESSION_ID]  # noqa: SLF001
+    manager = _ResolvedGateToolManager()
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the stale-session gate did not fail closed",
+        )
+        assert manager.calls == []
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_approval_audit_failure_does_not_block_resumed_execution():
+    from primer.model.tool_approval import ToolApprovalRecord
+
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    audit_storage = provider.get_storage(ToolApprovalRecord)
+
+    async def _fail_audit(_record):
+        raise RuntimeError("audit unavailable")
+
+    audit_storage.create = _fail_audit
+    manager = _ResolvedGateToolManager()
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the audit failure blocked resolved execution",
+        )
+        assert len(manager.calls) == 1
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
 
 
 @pytest.mark.asyncio

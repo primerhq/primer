@@ -37,14 +37,11 @@ read-and-materialize step, NOT re-execution:
    "next claim runs an ordinary turn" handoff the session-level resume
    already uses; no special "continue the turn" call is needed.
 
-NOT YET WIRED: gated-then-resumed siblings' ``ToolApprovalRecord``
-write (ruling 3's cross-team-consistency rider). The claim executor can
-now produce a GATED sibling (its approval/yield gate parks the TASK, not
-the session), so that write lands with the decisions slice (respond ->
-flip), which is separate from this arc. Until then a GATED sibling
-reaching this function simply has no ``result_state`` to assemble from,
-which the guard below turns into a loud failure rather than a malformed
-tool_result.
+Gated-then-resumed siblings write ``ToolApprovalRecord`` in the claim
+executor immediately before it consumes the validated resolution receipt.
+The write is best-effort and deduplicated by the gate event key plus occurrence
+token; this coordinator remains a pure terminal-result materializer and never
+replays that audit side effect.
 
 REQUIRED INVARIANT FOR THE CLAIM-BASED TOOL-CALL WORKER (design note,
 01a0518b review, pinned before that worker existed; it now exists at
