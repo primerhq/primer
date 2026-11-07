@@ -11,6 +11,7 @@ import base64
 import json
 import math
 import re
+import secrets
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
@@ -67,6 +68,31 @@ class ReservationResult:
     source_key: str
     reservation: ResponderReservation
     created: bool
+
+
+@dataclass(frozen=True)
+class RotationStarter:
+    """A server-classified possible starter for a newly rotated epoch."""
+
+    eligible: bool
+    person: PrincipalRef | None = None
+    domain: str | None = None
+    identity: Any = None
+    accepted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class RotationResult:
+    epoch: str
+    row: WorkspaceSession
+    rotated: bool
+    starter: ResponderReservation | None
+
+
+@dataclass(frozen=True)
+class ProjectionResult:
+    row: WorkspaceSession
+    applied: bool
 
 
 @dataclass(frozen=True)
@@ -283,6 +309,199 @@ async def reserve_source(
     raise ConflictError("responder reservation changed too often; retry")
 
 
+async def rotate_responder_epoch(
+    sessions: Storage[WorkspaceSession],
+    session_id: str,
+    *,
+    current_epoch: str | None,
+    fences: ReservationFences,
+    new_epoch: str | None = None,
+    starter: RotationStarter | None = None,
+    max_attempts: int = 8,
+) -> RotationResult:
+    """Rotate one stable session occurrence into a fresh responder epoch."""
+    target = new_epoch or secrets.token_hex(16)
+    if not re.fullmatch(r"[0-9a-f]{32}", target):
+        raise ValueError("new responder epoch must be exactly 32 lowercase hex")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    fence_where = fences.where()
+    source, starter_person = _rotation_starter(starter)
+    current = await sessions.get(session_id)
+
+    for _ in range(max_attempts):
+        if current is None:
+            raise ConflictError(f"session {session_id!r} no longer exists")
+        if current.responder_epoch == target:
+            existing = _matching_rotation(
+                current,
+                target,
+                source,
+                starter_person,
+            )
+            return RotationResult(target, current, False, existing)
+        if not fences.matches(current):
+            raise ConflictError("session lifecycle, binding, or park occurrence moved")
+        if current.responder_epoch != current_epoch:
+            raise ConflictError("responder epoch moved before rotation")
+
+        seq = current.responder_seq if current.responder_seq is not None else 0
+        version = (
+            current.responder_reservation_version
+            if current.responder_reservation_version is not None
+            else 0
+        )
+        reservation: ResponderReservation | None = None
+        reservations: dict[str, Any] = {}
+        next_seq = seq
+        if source is not None and starter_person is not None:
+            assert starter is not None and starter.accepted_at is not None
+            next_seq += 1
+            reservation = ResponderReservation(
+                domain=source.domain,
+                source_identity=source.identity,
+                person=starter_person,
+                seq=next_seq,
+                accepted_at=starter.accepted_at,
+            )
+            reservations[source.key] = reservation.model_dump(mode="json")
+
+        where = {
+            "responder_epoch": [raw_generation(current, "responder_epoch")],
+            "responder_seq": [raw_generation(current, "responder_seq")],
+            "responder_reservation_version": [
+                raw_generation(current, "responder_reservation_version")
+            ],
+            **fence_where,
+        }
+        patch = {
+            "responder_epoch": target,
+            "responder_seq": next_seq,
+            "responder_reservation_version": version + 1,
+            "responder_reservations": reservations,
+            "turn_person": (
+                starter_person.model_dump(mode="json")
+                if starter_person is not None
+                else None
+            ),
+            "turn_person_seq": None,
+            "turn_person_at": None,
+            "turn_person_epoch": None,
+            "turn_person_source_key": None,
+        }
+        try:
+            written, current = await patch_if_or_current(
+                sessions, session_id, patch, where=where,
+            )
+        except NotFoundError as exc:
+            raise ConflictError(f"session {session_id!r} no longer exists") from exc
+        if written is not None:
+            return RotationResult(target, written, True, reservation)
+
+    raise ConflictError("responder epoch rotation changed too often; retry")
+
+
+async def project_reservation(
+    sessions: Storage[WorkspaceSession],
+    session_id: str,
+    *,
+    responder_epoch: str,
+    source_key: str,
+    fences: ReservationFences,
+    max_attempts: int = 8,
+) -> ProjectionResult:
+    """Project an existing current-epoch reservation, without regressing."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    fence_where = fences.where()
+    current = await sessions.get(session_id)
+
+    for _ in range(max_attempts):
+        if current is None:
+            raise ConflictError(f"session {session_id!r} no longer exists")
+        _require_occurrence(current, responder_epoch, fences)
+        assert current.responder_reservations is not None
+        reservation = current.responder_reservations.get(source_key)
+        if reservation is None:
+            raise ConflictError("responder reservation does not exist in this epoch")
+
+        projected_seq = current.turn_person_seq
+        if projected_seq is not None and projected_seq > reservation.seq:
+            return ProjectionResult(current, False)
+        if projected_seq == reservation.seq:
+            if (
+                current.turn_person_epoch == responder_epoch
+                and current.turn_person_source_key == source_key
+                and current.turn_person == reservation.person
+                and current.turn_person_at == reservation.accepted_at
+            ):
+                return ProjectionResult(current, False)
+            raise ConflictError("responder projection conflicts at the same sequence")
+
+        where = {
+            "responder_epoch": [current.responder_epoch],
+            "responder_seq": [current.responder_seq],
+            "responder_reservation_version": [current.responder_reservation_version],
+            "turn_person_seq": [raw_generation(current, "turn_person_seq")],
+            "turn_person_at": [raw_generation(current, "turn_person_at")],
+            "turn_person_epoch": [raw_generation(current, "turn_person_epoch")],
+            "turn_person_source_key": [
+                raw_generation(current, "turn_person_source_key")
+            ],
+            **fence_where,
+        }
+        patch = {
+            "turn_person": reservation.person.model_dump(mode="json"),
+            "turn_person_seq": reservation.seq,
+            "turn_person_at": reservation.accepted_at.isoformat(),
+            "turn_person_epoch": responder_epoch,
+            "turn_person_source_key": source_key,
+        }
+        try:
+            written, current = await patch_if_or_current(
+                sessions, session_id, patch, where=where,
+            )
+        except NotFoundError as exc:
+            raise ConflictError(f"session {session_id!r} no longer exists") from exc
+        if written is not None:
+            return ProjectionResult(written, True)
+
+    raise ConflictError("responder projection changed too often; retry")
+
+
+def _rotation_starter(
+    starter: RotationStarter | None,
+) -> tuple[ResponderSource | None, PrincipalRef | None]:
+    if starter is None or not starter.eligible:
+        return None, None
+    if starter.person is None or person_ref(starter.person) != starter.person:
+        raise ValueError("eligible responder starter requires an attributable person")
+    if starter.domain is None or starter.accepted_at is None:
+        raise ValueError("eligible responder starter requires source and accepted_at")
+    return responder_source(starter.domain, starter.identity), starter.person
+
+
+def _matching_rotation(
+    row: WorkspaceSession,
+    epoch: str,
+    source: ResponderSource | None,
+    starter_person: PrincipalRef | None,
+) -> ResponderReservation | None:
+    if row.responder_epoch != epoch or row.responder_reservations is None:
+        raise ConflictError("responder rotation target is corrupt")
+    if source is None or starter_person is None:
+        return None
+    existing = row.responder_reservations.get(source.key)
+    if (
+        existing is None
+        or existing.domain != source.domain
+        or existing.source_identity != source.identity
+        or existing.person != starter_person
+    ):
+        raise ConflictError("responder rotation target has a different starter")
+    return existing
+
+
 def _require_occurrence(
     row: WorkspaceSession,
     responder_epoch: str,
@@ -299,7 +518,12 @@ def _require_occurrence(
 __all__ = [
     "ReservationFences",
     "ReservationResult",
+    "ProjectionResult",
     "ResponderSource",
+    "RotationResult",
+    "RotationStarter",
+    "project_reservation",
     "reserve_source",
     "responder_source",
+    "rotate_responder_epoch",
 ]
