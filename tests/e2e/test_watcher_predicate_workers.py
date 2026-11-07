@@ -189,7 +189,7 @@ async def _inject_park(
         },
         "llm_messages": [],
         "turn_no": 0,
-        "started_at": now.isoformat(),
+        "started_at": to_jsonable_python(now),
         "resume_event_payload": None,
         "graph_checkpoint": None,
     }
@@ -216,7 +216,7 @@ async def _inject_park(
         await _wait_for_worker_idle(conn, session_id)
         await conn.execute(
             sql, session_id, event_key,
-            parked_until.isoformat(), to_jsonable_python(now),  # parked_at as the storage layer spells it (the flip guards on that spelling)
+            to_jsonable_python(parked_until), to_jsonable_python(now),
             json.dumps(parked_state), parked_status,
         )
     finally:

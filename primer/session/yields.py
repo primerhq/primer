@@ -78,6 +78,16 @@ class _ResponderDecisionRefused(Exception):
     """The classic park already carries a conflicting responder decision."""
 
 
+def _datetime_fence_spellings(row: WorkspaceSession, field: str) -> list[Any]:
+    """Canonical storage spelling plus ``isoformat`` for the same aware datetime."""
+    canonical = raw_generation(row, field)
+    value = getattr(row, field)
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        return [canonical]
+    isoformat = value.isoformat()
+    return [canonical] if isoformat == canonical else [canonical, isoformat]
+
+
 def _reservation_matches_decision(
     reservation: ResponderReservation | None,
     decision: ResponderDecision,
@@ -153,6 +163,11 @@ def _responder_decision_patch(
     )
     patch = {field: stored[field] for field in fields}
     where = ReservationFences.from_session(row).where()
+    # A rolling-upgrade or raw-SQL park can hold the same UTC deadline in
+    # datetime.isoformat()'s ``+00:00`` spelling instead of pydantic's
+    # canonical ``Z`` spelling. Admit only those two spellings of the exact
+    # datetime this decision read; every other responder fence stays exact.
+    where["parked_until"] = _datetime_fence_spellings(row, "parked_until")
     where.update({
         field: [raw_generation(row, field)]
         for field in _RESPONDER_GENERATIONS
