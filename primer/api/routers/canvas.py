@@ -29,6 +29,7 @@ session that does not exist or is on another workspace than the path names.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from datetime import UTC, datetime
@@ -77,6 +78,25 @@ canvas_settings_router = APIRouter(tags=["canvas"])
 
 #: The one answer of every refused file URL.
 FILE_REFUSED = "This canvas file link is not valid, or it has expired."
+
+
+def _trusted_canvas_responder_input(*, event: Any, workspace_id: str, session_id: str, actor: Any):
+    """Build authority only from the authenticated actor and stored event occurrence."""
+    from primer.model.principal import PrincipalRef, person_ref
+    from primer.session.responder_wake_intent import TrustedResponderInput
+
+    person = person_ref(PrincipalRef.from_principal(actor)) if actor is not None else None
+    if person is None or not event.wake:
+        return None
+    occurrence = hashlib.sha256(
+        f"canvas-responder-v1\0{workspace_id}\0{session_id}\0{event.id}\0{event.seq}".encode()
+    ).hexdigest()[:32]
+    return TrustedResponderInput(
+        person=person,
+        domain="canvas_event",
+        occurrence=occurrence,
+        accepted_at=event.at.astimezone(UTC),
+    )
 
 
 def _ui_dir():
@@ -565,6 +585,8 @@ async def post_canvas_event(
             # ``recorded`` and the click is redelivered by the next retry, or was never lost to begin with.
             deliver = True                           # the first POST's delivery failed long ago: deliver it now, or the click is lost
     if deliver and event is not None:
+        actor = getattr(request.state, "actor", None)
+        by = PrincipalRef.from_principal(actor) if actor is not None else None
         delivery = await deliver_canvas_event(
             event=event,
             state=service.state_of(row) if row is not None else service.state_of(SessionCanvas(id=session_id, workspace_id=workspace_id)),
@@ -576,7 +598,13 @@ async def post_canvas_event(
             workspace_registry=registry,
             event_bus=event_bus,
             # The clicker (spec §13 Q1): a click that wakes the session runs the turn as them.
-            by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
+            by=by,
+            trusted_responder_input=_trusted_canvas_responder_input(
+                event=event,
+                workspace_id=session.workspace_id,
+                session_id=session_id,
+                actor=actor,
+            ),
         )
     return CanvasEventAccepted(
         event_id=recorded.event_id,

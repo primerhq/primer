@@ -20,6 +20,7 @@ from primer.model.common import dump_for_storage
 from primer.model.principal import PrincipalRef, person_ref
 from primer.model.responder_source import canonical_responder_payload
 from primer.model.workspace_session import (
+    CANVAS_EVENT_PAYLOAD_KEY,
     PendingResponderIntent,
     ResponderReservation,
     SessionMessageKind,
@@ -55,8 +56,8 @@ class TrustedResponderInput:
             raise ValueError("trusted responder input must name a person")
         if not re.fullmatch(r"[0-9a-f]{32}", self.occurrence):
             raise ValueError("trusted responder input occurrence must be 32 lowercase hex")
-        if not re.fullmatch(r"[a-z][a-z0-9_.-]*", self.domain):
-            raise ValueError("trusted responder input domain is invalid")
+        if self.domain not in ("user_input", "canvas_event"):
+            raise ValueError("trusted responder input domain is not a server-owned capability")
         if self.accepted_at.tzinfo is None or self.accepted_at.utcoffset() is None:
             raise ValueError("trusted responder input accepted_at must be timezone-aware")
         if self.accepted_at.utcoffset().total_seconds() != 0:
@@ -307,7 +308,16 @@ def classify_intent_user_input(
     record = at_seq[0]
     if record.kind != SessionMessageKind.USER_INPUT:
         return "corrupt", None
-    digest = sha256(canonical_responder_payload(record.payload)).hexdigest()
+    payload = record.payload
+    if intent.domain == "canvas_event":
+        canvas_event = payload.get(CANVAS_EVENT_PAYLOAD_KEY)
+        if not isinstance(canvas_event, dict):
+            return "corrupt", None
+        payload = {
+            "text": payload.get("text"),
+            CANVAS_EVENT_PAYLOAD_KEY: canvas_event,
+        }
+    digest = sha256(canonical_responder_payload(payload)).hexdigest()
     if digest != intent.payload_sha256:
         return "corrupt", None
     return "exact", record.model_dump(mode="json")
