@@ -60,6 +60,7 @@ ROLE_SESSION_MESSAGING_SWEEPER = "session-messaging-sweeper"
 ROLE_EVENT_DISPATCHER = "event-dispatcher"
 ROLE_EVENT_RETENTION = "event-retention"
 ROLE_SESSION_RETENTION = "session-retention"
+ROLE_WEBHOOK_DELIVERY_RETENTION = "webhook-delivery-retention"
 ROLE_WORKSPACE_EVENTS = "workspace-events"
 ROLE_VECTOR_MAINTENANCE = "vector-maintenance"
 

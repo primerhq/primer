@@ -39,6 +39,7 @@ from primer.int.coordinator import (
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
     ROLE_TIMER_SCHEDULER,
+    ROLE_WEBHOOK_DELIVERY_RETENTION,
 )
 from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
@@ -937,6 +938,57 @@ class SessionRetentionSweeper(_BackgroundTask):
                 break
 
 
+class WebhookDeliveryRetentionPruner(_BackgroundTask):
+    """Prune old terminal webhook deliveries in bounded batches."""
+
+    role = ROLE_WEBHOOK_DELIVERY_RETENTION
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        retention_days: int,
+        batch: int = 100,
+        interval_seconds: float = 3600.0,
+        busy_seconds: float = 30.0,
+    ) -> None:
+        super().__init__(name="webhook-delivery-retention")
+        self._sp = storage_provider
+        self._days = retention_days
+        self._batch = batch
+        self._interval = interval_seconds
+        self._busy = busy_seconds
+
+    async def sweep_once(self, *, now: datetime | None = None) -> int:
+        from primer.trigger.webhook_retention import prune_webhook_deliveries
+
+        return await prune_webhook_deliveries(
+            self._sp,
+            retention_days=self._days,
+            batch=self._batch,
+            now=now,
+        )
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            deleted = 0
+            try:
+                deleted = await self.sweep_once()
+                if deleted:
+                    logger.info(
+                        "webhook-delivery-retention: deleted %d terminal delivery row(s)",
+                        deleted,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("webhook-delivery-retention: sweep failed")
+            try:
+                await asyncio.sleep(
+                    self._busy if deleted >= self._batch else self._interval
+                )
+            except asyncio.CancelledError:
+                break
+
+
 # ===========================================================================
 # Storage-based lookup helpers
 # ===========================================================================
@@ -1035,4 +1087,5 @@ __all__ = [
     "SessionMessagingSweeper",
     "TimeoutSweeper",
     "TimerScheduler",
+    "WebhookDeliveryRetentionPruner",
 ]

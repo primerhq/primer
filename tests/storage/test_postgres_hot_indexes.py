@@ -45,13 +45,139 @@ def test_registry_declares_the_hot_tables():
     }
 
 
-def test_webhookdelivery_index_covers_the_recovery_status_filter():
-    """Startup webhook recovery filters status='pending' on every boot; an
-    expression index on the extracted scalar serves that."""
-    (suffix, unique, expr), = _HOT_FIELD_INDEXES["webhookdelivery"]
-    assert suffix == "status"
+def _webhook_index(registry, suffix):
+    (entry,) = [item for item in registry["webhookdelivery"] if item[0] == suffix]
+    return entry
+
+
+def test_webhookdelivery_indexes_cover_recovery_and_global_retention_order():
+    assert _webhook_index(_HOT_FIELD_INDEXES, "status") == (
+        "status",
+        False,
+        "((data->>'status'))",
+    )
+    suffix, unique, expr = _webhook_index(
+        _HOT_FIELD_INDEXES, "terminal_completed_at_id"
+    )
+    assert suffix == "terminal_completed_at_id"
     assert unique is False
-    assert expr == "((data->>'status'))"
+    assert expr.startswith("((data->>'completed_at'), id) WHERE ")
+    assert "(data->>'completed_at') IS NOT NULL" in expr
+    assert "status" not in expr
+
+    assert _webhook_index(_SQLITE_HOT_FIELD_INDEXES, "status") == (
+        "status",
+        False,
+        "(json_extract(data,'$.status'))",
+    )
+    sqlite_suffix, sqlite_unique, sqlite_expr = _webhook_index(
+        _SQLITE_HOT_FIELD_INDEXES, "terminal_completed_at_id"
+    )
+    assert sqlite_suffix == suffix
+    assert sqlite_unique is False
+    assert sqlite_expr.startswith(
+        "((json_extract(data,'$.completed_at') IS NULL), "
+        "json_extract(data,'$.completed_at'), id) WHERE "
+    )
+    assert "json_extract(data,'$.completed_at') IS NOT NULL" in sqlite_expr
+    assert "status" not in sqlite_expr
+
+
+def test_webhookdelivery_index_ddl_matches_the_retention_order():
+    statements = _hot_field_index_ddl(
+        "webhookdelivery", '"public"."webhookdelivery"'
+    )
+    assert len(statements) == 2
+    status, terminal = statements
+    assert '"webhookdelivery_status"' in status
+    assert "((data->>'status'))" in status
+    assert '"webhookdelivery_terminal_completed_at_id"' in terminal
+    assert "((data->>'completed_at'), id) WHERE" in terminal
+    assert "(data->>'completed_at') IS NOT NULL" in terminal
+    assert "status" not in terminal
+
+
+async def test_sqlite_creates_the_webhook_recovery_and_retention_indexes(tmp_path):
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(
+        SqliteConfig(path=str(tmp_path / "webhook.sqlite"))
+    )
+    await provider.initialize()
+    try:
+        from primer.model.webhook_delivery import WebhookDelivery
+
+        await provider.get_storage(WebhookDelivery).get("__bootstrap__")
+        cursor = await provider.connection.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND tbl_name = 'webhookdelivery'"
+        )
+        indexes = {name: sql for name, sql in await cursor.fetchall()}
+    finally:
+        await provider.aclose()
+
+    assert "webhookdelivery_status" in indexes
+    terminal = indexes["webhookdelivery_terminal_completed_at_id"]
+    assert "(json_extract(data,'$.completed_at') IS NULL)" in terminal
+    assert "json_extract(data,'$.completed_at'), id" in terminal
+    assert "json_extract(data,'$.completed_at') IS NOT NULL" in terminal
+    assert "status" not in terminal
+
+
+async def test_sqlite_parameterized_retention_query_uses_the_order_index(tmp_path):
+    from primer.model.provider import SqliteConfig
+    from primer.model.storage import OffsetPage, OrderBy
+    from primer.model.webhook_delivery import WebhookDelivery
+    from primer.storage._sqlite_predicate import (
+        _SqlitePredicateTranslator,
+        render_order_by_sqlite,
+    )
+    from primer.storage.q import Q
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(
+        SqliteConfig(path=str(tmp_path / "webhook-plan.sqlite"))
+    )
+    await provider.initialize()
+    try:
+        await provider.get_storage(WebhookDelivery).get("__bootstrap__")
+        await provider.connection.execute(
+            "WITH RECURSIVE seq(i) AS ("
+            "SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < 1000"
+            ") INSERT INTO webhookdelivery(id, data) "
+            "SELECT 'delivery-' || printf('%04d', i), "
+            "json_object("
+            "'status', CASE WHEN i % 2 = 0 THEN 'done' ELSE 'failed' END, "
+            "'completed_at', printf('2026-01-01T00:00:00.%06dZ', i)"
+            ") FROM seq"
+        )
+        await provider.connection.execute("ANALYZE webhookdelivery")
+        predicate = (
+            Q(WebhookDelivery)
+            .where_in("status", ("done", "failed"))
+            .where_not_null("completed_at")
+            .build()
+        )
+        translator = _SqlitePredicateTranslator(WebhookDelivery)
+        where_sql, params = translator.translate(predicate)
+        order_sql = render_order_by_sqlite(
+            WebhookDelivery,
+            [OrderBy(field="completed_at", direction="asc")],
+        )
+        page = OffsetPage(offset=0, length=100, want_total=False)
+        cursor = await provider.connection.execute(
+            "EXPLAIN QUERY PLAN "
+            'SELECT id, data FROM "webhookdelivery" '
+            f"WHERE {where_sql} {order_sql} LIMIT ? OFFSET ?",
+            [*params, page.length, page.offset],
+        )
+        plan = "\n".join(str(row[3]) for row in await cursor.fetchall())
+    finally:
+        await provider.aclose()
+
+    assert "webhookdelivery_terminal_completed_at_id" in plan
+    assert "USE TEMP B-TREE FOR ORDER BY" not in plan
 
 
 def test_webhook_delivery_model_maps_to_the_webhookdelivery_table():

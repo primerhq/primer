@@ -703,15 +703,17 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         ("trigger_id", False, "((data->>'trigger_id'))"),
     ],
     "webhookdelivery": [
-        # Startup webhook recovery filters status='pending' on every boot;
-        # without this the sweep seq-scans every delivery ever received (and
-        # OffsetPage adds a COUNT(*) per page over that scan). Table name is
-        # the lowercased class name -- see _table_name_for.
-        #
-        # NOTE: delivery rows are never pruned, so this table grows with
-        # lifetime webhook volume. The index keeps the boot sweep off a full
-        # scan, but a retention/prune policy is still owed as a follow-up.
+        # Startup recovery filters status='pending' on every boot.
         ("status", False, "((data->>'status'))"),
+        # Both terminal statuses share one global chronological order.
+        # Keeping status out of this key lets completed_at ASC, id ASC be
+        # read directly instead of sorting two status-leading ranges.
+        (
+            "terminal_completed_at_id",
+            False,
+            "((data->>'completed_at'), id) "
+            "WHERE ((data->>'completed_at') IS NOT NULL)",
+        ),
     ],
     "toolapprovalrecord": [
         # 01a068da: makes a decision queryable by the gate that produced

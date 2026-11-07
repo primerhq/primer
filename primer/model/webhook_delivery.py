@@ -25,19 +25,50 @@ Lifecycle:
 Startup recovery re-dispatches ``pending`` rows older than a small grace
 window (their owning process died before marking them), giving inbound
 webhooks at-least-once delivery instead of fire-and-forget.
+
+A leader-elected retention task deletes only ``done`` and ``failed`` rows
+whose ``completed_at`` is older than the configured window. It never uses
+``created_at`` to expire ``pending`` work, so an in-flight dispatch, a long
+interactive hold, or a row eligible for startup recovery remains durable.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import AfterValidator, Field, PlainSerializer
 
 from primer.model.common import Identifiable
 
 
 WebhookDeliveryStatus = Literal["pending", "done", "failed"]
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Canonical webhook timestamps as aware UTC datetimes."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _serialize_timestamp(
+    value: datetime,
+) -> str:
+    """Use a fixed-width UTC spelling so JSON text order is time order."""
+    value = _as_utc(value)
+    return (
+        f"{value.year:04d}-{value.month:02d}-{value.day:02d}T"
+        f"{value.hour:02d}:{value.minute:02d}:{value.second:02d}."
+        f"{value.microsecond:06d}Z"
+    )
+
+
+WebhookTimestamp = Annotated[
+    datetime,
+    AfterValidator(_as_utc),
+    PlainSerializer(_serialize_timestamp, return_type=str, when_used="json"),
+]
 
 
 class WebhookDelivery(Identifiable):
@@ -65,13 +96,19 @@ class WebhookDelivery(Identifiable):
         default="pending",
         description="pending -> done/failed. Recovery re-fires stale 'pending'.",
     )
-    created_at: datetime = Field(
+    created_at: WebhookTimestamp = Field(
         ...,
-        description="When the endpoint accepted the webhook (the fire instant).",
+        description=(
+            "When the endpoint accepted the webhook (the fire instant), "
+            "normalized to UTC. Naive input is interpreted as UTC."
+        ),
     )
-    completed_at: datetime | None = Field(
+    completed_at: WebhookTimestamp | None = Field(
         default=None,
-        description="When the dispatch was marked done/failed; None while pending.",
+        description=(
+            "When the dispatch was marked done/failed, normalized to UTC; "
+            "None while pending. Naive input is interpreted as UTC."
+        ),
     )
     attempts: int = Field(
         default=0,
@@ -102,4 +139,4 @@ class WebhookDelivery(Identifiable):
     )
 
 
-__all__ = ["WebhookDelivery", "WebhookDeliveryStatus"]
+__all__ = ["WebhookDelivery", "WebhookDeliveryStatus", "WebhookTimestamp"]

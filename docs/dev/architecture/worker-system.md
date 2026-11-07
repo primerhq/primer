@@ -119,6 +119,11 @@ Yielding-tool runtime (`primer/worker/yield_runtime.py`, `primer/worker/yield_re
 
 Background tasks (all `_BackgroundTask` subclasses, leader-elected): `TimerScheduler` (fans out `timer:*` parks on schedule), `TimeoutSweeper` (catches non-timer parks past `parked_until`), `SessionMessagingSweeper` (realizes the queue head of a session at rest that no turn boundary will drain: idle, not parked or paused, no SESSION lease row; audit G7-14), `ChatSweeper` and `HarnessSweeper` (legacy reconcilers), `WatcherManager` (`primer/bus/watcher.py`, resolves a per-workspace `HostInotifyProbe` or `WSWatchProbe` for `watch_files` parks), `McpTaskBridge` (`primer/bus/mcp_tasks.py`, polls parked `mcp_task:*` sessions; an upstream task's failure text, and every string of a task that completed as an error result (its content parts, an embedded resource's text, `structuredContent`), is masked with `redact_credentials` where the `session.wake` payload is built, because that payload is persisted in the event log and served by `GET /v1/events`; a task that completed with data is published as it was), and `CoordinatorSweeper` (`primer/coordinator/sweeper.py`, deletes expired rate-limit and leader leases every 30s, started only when the bus is Postgres-backed). `YieldEventListener` (`primer/bus/listener.py`) is a non-elected per-process listener that flips parked rows to resumable on bus events.
 
+`SessionRetentionSweeper` and `WebhookDeliveryRetentionPruner` share that same
+leader-elected lifecycle. The former is optional and deletes old ENDED sessions;
+the latter deletes only old terminal webhook-delivery rows in bounded batches and
+leaves every pending or recovery-eligible delivery untouched.
+
 ### Tool-call claims
 
 The pool side of Phase 3 stage 7a (the `ToolCallTask` entity, its adapter, the flag and the dispatch seam are described in `docs/dev/architecture/claim-machine.md`, section 5) is three pieces plus one gap.

@@ -131,6 +131,16 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "subscription": [
         ("trigger_id", False, "(json_extract(data,'$.trigger_id'))"),
     ],
+    "webhookdelivery": [
+        ("status", False, "(json_extract(data,'$.status'))"),
+        (
+            "terminal_completed_at_id",
+            False,
+            "((json_extract(data,'$.completed_at') IS NULL), "
+            "json_extract(data,'$.completed_at'), id) "
+            "WHERE (json_extract(data,'$.completed_at') IS NOT NULL)",
+        ),
+    ],
     "artifactlocation": [
         (
             "provider_id",
