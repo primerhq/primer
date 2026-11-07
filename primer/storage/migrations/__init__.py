@@ -100,6 +100,9 @@ from primer.storage.migrations.m028_infrastructure_public import (
 )
 from primer.storage.migrations.m029_mcp_oauth_per_user import M029McpOAuthPerUser
 from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
+from primer.storage.migrations.m031_webhook_delivery_timestamps import (
+    M031WebhookDeliveryTimestamps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M028InfrastructurePublic(),
     M029McpOAuthPerUser(),
     M030SeededAgentsV4(),
+    M031WebhookDeliveryTimestamps(),
 )
 
 #: Highest version this build knows how to apply.
@@ -166,17 +170,32 @@ async def is_fresh_install(sp: StorageProvider) -> bool:
     from primer.model.channel import Channel
     from primer.model.collection import Collection, Document
     from primer.model.graph import Graph
-    from primer.model.storage import CursorPage
     from primer.model.providers.toolset import Toolset
+    from primer.model.storage import CursorPage
     from primer.model.trigger import Trigger
     from primer.model.user import User
+    from primer.model.webhook_delivery import WebhookDelivery
     from primer.model.workspace import Workspace, WorkspaceTemplate
     from primer.model.workspace_session import WorkspaceSession
 
     state = await sp.get_system_state()
     if state.bootstrap_completed_at is not None or state.last_migration_at is not None:
         return False
-    for model in (User, Agent, Graph, Toolset, Collection, Document, Workspace, WorkspaceSession, WorkspaceTemplate, Channel, Trigger, ApiToken):
+    for model in (
+        User,
+        Agent,
+        Graph,
+        Toolset,
+        Collection,
+        Document,
+        Workspace,
+        WorkspaceSession,
+        WorkspaceTemplate,
+        Channel,
+        Trigger,
+        WebhookDelivery,
+        ApiToken,
+    ):
         # find, not list: boot recovery pins that session reads go through find (index-friendly), and a cursor page needs no COUNT.
         page = await sp.get_storage(model).find(None, CursorPage(length=1))
         if page.items:

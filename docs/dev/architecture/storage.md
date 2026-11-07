@@ -131,8 +131,12 @@ base table and its broad GIN index. The scalar and compound entries cover:
   ordering);
 - inbound channel routing (`channel.provider_id` plus `external_id`),
   collection and trigger children (`document.collection_id`,
-  `subscription.trigger_id`), and the boot sweep of
-  `webhookdelivery.status` (delivery retention remains a follow-up);
+  `subscription.trigger_id`), webhook delivery recovery
+  (`webhookdelivery.status`), and terminal delivery retention (a separate
+  `completed_at`, `id` index, partial only on literal `completed_at IS NOT
+  NULL`, so the parameterized status filter cannot prevent planner use and
+  both terminal statuses share one chronological order; SQLite prefixes the
+  otherwise-constant NULL-order expression emitted by its sorter);
 - cross-workspace tool lists (`toolapprovalrecord.workspace_id` and
   `externaltoolcall.workspace_id`) and the UNIQUE
   `toolapprovalrecord.gate_event_key` that makes competing decision writes

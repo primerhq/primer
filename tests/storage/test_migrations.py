@@ -7,6 +7,7 @@ for Postgres by construction.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -20,6 +21,9 @@ from primer.storage.migrations import (
     LATEST_VERSION,
     MIGRATIONS,
     run_migrations,
+)
+from primer.storage.migrations.m031_webhook_delivery_timestamps import (
+    M031WebhookDeliveryTimestamps,
 )
 from primer.storage.sqlite import SqliteStorageProvider
 
@@ -54,10 +58,56 @@ class TestRegistry:
 
     def test_latest_version_matches_registry(self) -> None:
         assert LATEST_VERSION == len(MIGRATIONS)
-        assert LATEST_VERSION == 30
+        assert LATEST_VERSION == 31
 
     def test_every_migration_has_a_description(self) -> None:
         assert all(m.description.strip() for m in MIGRATIONS)
+
+
+async def test_m031_canonicalizes_existing_offset_and_naive_timestamps(
+    sp: StorageProvider,
+) -> None:
+    from datetime import UTC, datetime
+
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    assert isinstance(sp, SqliteStorageProvider)
+    storage = sp.get_storage(WebhookDelivery)
+    await storage.create(
+        WebhookDelivery(
+            id="legacy-delivery",
+            trigger_id="trigger-1",
+            status="done",
+            created_at=datetime(2026, 11, 1, tzinfo=UTC),
+            completed_at=datetime(2026, 10, 1, tzinfo=UTC),
+        )
+    )
+    cursor = await sp.connection.execute(
+        'SELECT data FROM "webhookdelivery" WHERE id = ?',
+        ("legacy-delivery",),
+    )
+    raw = json.loads((await cursor.fetchone())[0])
+    raw["created_at"] = "2026-11-01T05:30:00+05:30"
+    raw["completed_at"] = "2026-10-01T00:00:00"
+    raw["legacy_marker"] = "preserved"
+    await sp.connection.execute(
+        'UPDATE "webhookdelivery" SET data = ? WHERE id = ?',
+        (json.dumps(raw), "legacy-delivery"),
+    )
+    await sp.connection.commit()
+
+    migration = M031WebhookDeliveryTimestamps()
+    await migration.apply(sp)
+    await migration.apply(sp)
+
+    cursor = await sp.connection.execute(
+        'SELECT data FROM "webhookdelivery" WHERE id = ?',
+        ("legacy-delivery",),
+    )
+    migrated = json.loads((await cursor.fetchone())[0])
+    assert migrated["created_at"] == "2026-11-01T00:00:00.000000Z"
+    assert migrated["completed_at"] == "2026-10-01T00:00:00.000000Z"
+    assert migrated["legacy_marker"] == "preserved"
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +139,51 @@ class TestIsFreshInstall:
 
         await sp.get_storage(User).create(User(id="u1", username="ada", created_at=datetime.now(UTC), role="admin"))
         assert await is_fresh_install(sp) is False
+
+    async def test_legacy_webhook_only_install_runs_m031(
+        self,
+        sp: StorageProvider,
+    ) -> None:
+        """A delivery is durable user data, so it forbids a fresh baseline."""
+        from datetime import UTC, datetime
+
+        from primer.model.webhook_delivery import WebhookDelivery
+        from primer.storage.migrations import is_fresh_install
+
+        assert isinstance(sp, SqliteStorageProvider)
+        await sp.get_storage(WebhookDelivery).create(
+            WebhookDelivery(
+                id="legacy-only-delivery",
+                trigger_id="trigger-legacy",
+                status="done",
+                created_at=datetime(2026, 11, 1, tzinfo=UTC),
+                completed_at=datetime(2026, 10, 1, tzinfo=UTC),
+            )
+        )
+        cursor = await sp.connection.execute(
+            'SELECT data FROM "webhookdelivery" WHERE id = ?',
+            ("legacy-only-delivery",),
+        )
+        raw = json.loads((await cursor.fetchone())[0])
+        raw["created_at"] = "2026-11-01T04:00:00+04:00"
+        raw["completed_at"] = "2026-10-01T00:00:00"
+        await sp.connection.execute(
+            'UPDATE "webhookdelivery" SET data = ? WHERE id = ?',
+            (json.dumps(raw), "legacy-only-delivery"),
+        )
+        await sp.connection.commit()
+
+        fresh = await is_fresh_install(sp)
+        assert fresh is False
+        assert await run_migrations(sp, is_fresh_install=fresh) == LATEST_VERSION
+
+        cursor = await sp.connection.execute(
+            'SELECT data FROM "webhookdelivery" WHERE id = ?',
+            ("legacy-only-delivery",),
+        )
+        migrated = json.loads((await cursor.fetchone())[0])
+        assert migrated["created_at"] == "2026-11-01T00:00:00.000000Z"
+        assert migrated["completed_at"] == "2026-10-01T00:00:00.000000Z"
 
     async def test_a_completed_bootstrap_makes_it_an_existing_install(self, sp: StorageProvider) -> None:
         from datetime import UTC, datetime

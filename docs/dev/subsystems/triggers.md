@@ -60,6 +60,7 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 | `primer/trigger/channel_access.py` | The channel READ a channel trigger needs on the channel it fires from; every save door calls it, and a provider-wide config (no `channel_id`) is admin-only. |
 | `primer/api/routers/webhooks.py` | Public `POST /v1/webhooks/{token}` endpoint (no auth dep); HMAC verification; per-token rate limit; body cap; fire-and-forget dispatch. |
 | `primer/trigger/hold.py` | The interactive webhook hold: opens a bus subscription before firing, then awaits the fired runs' terminals on the completion bus (never a poll). |
+| `primer/trigger/webhook_retention.py` | Bounded pruning of terminal `WebhookDelivery` rows after their configured retention window. |
 | `primer/trigger/subscribers/__init__.py` | `Dispatcher` protocol, `SubscriptionDispatchResult`, `DispatchDeps`, `register` / `get_dispatcher`. |
 | `primer/trigger/subscribers/agent_fresh_session.py` | Creates a fresh agent-bound `WorkspaceSession` via the session factory. |
 | `primer/trigger/subscribers/graph_fresh_session.py` | Parses the payload as a JSON object and creates a fresh graph-bound session. |
@@ -110,6 +111,22 @@ The interactive webhook hold (`primer/trigger/hold.py`): an interactive `POST /v
 
 The wait cap is the caller-visible bound, not the hold's. The hold runs as its own task; when `wait_timeout_seconds` expires the endpoint answers 202 `{delivery_id, status: "pending"}` and a BackgroundTask keeps awaiting the task and writes its outcome onto the delivery row. The caller finishes the exchange with `GET /v1/webhooks/{token}/deliveries/{id}`, which reads `fire_id` and `results` off that row. `HOLD_MAX_SECONDS` (3600) only stops an orphaned wait living forever.
 
+Completed delivery rows have bounded retention. The leader-elected
+`WebhookDeliveryRetentionPruner` runs hourly and deletes at most 100 rows per
+tick whose status is `done` or `failed` and whose `completed_at` is strictly
+older than `webhook_delivery_retention_days` (default 30; env
+`PRIMER_WEBHOOK_DELIVERY_RETENTION_DAYS`). A full batch schedules another pass
+after 30 seconds; an idle pass waits the normal hour. It never uses
+`created_at` as the cutoff and never deletes a `pending` row, including an
+in-flight dispatch, a long interactive hold carrying `fire_id`, or a stale row
+that startup recovery may retry. A malformed terminal row without
+`completed_at` is retained and excluded by the storage predicate, so any number
+of malformed NULL rows cannot consume a page. Webhook timestamps are stored as
+fixed-width UTC text (naive model input means UTC), which makes generic JSON
+storage ordering chronological. Migration M031 rewrites existing offset,
+naive, or variable-width spellings to that form. Repeated passes converge, and
+a racing delete is an idempotent success.
+
 The `subscribe_to_trigger` park/resume flow:
 
 ```mermaid
@@ -143,7 +160,7 @@ The subscription row is written before the `Yielded` sentinel is returned so a f
 
 ## 7. Persistence
 
-`Trigger` and `Subscription` are persisted as JSONB-backed `Identifiable` rows through the storage provider's `get_storage(Trigger)` / `get_storage(Subscription)` handles; there is no bespoke trigger table schema beyond what the storage layer provides. Slug uniqueness is enforced by a pre-write `find` in `create_trigger` (the storage `create` only protects the surrogate `id`). Cascade delete is manual: `delete_trigger` pages through and deletes every bound subscription before deleting the trigger. The claim lease lives in the shared leases table managed by the claim engine, keyed by `ClaimKind.TRIGGER` + the trigger id, with `next_attempt_at` set to `next_fire_at`; a save that disables the trigger and a delete drop it (`delete_lease`, no-op when missing), and a re-enable re-arms it (ticket 01a16ede). The `parked_session` dispatcher deletes its subscription row after a successful wake (one-shot); a failed delete is logged, not propagated, since the orphan row fail-skips on its next attempt.
+`Trigger`, `Subscription`, and `WebhookDelivery` are persisted as JSONB-backed `Identifiable` rows through the storage provider's model-bound handles; there is no bespoke trigger table schema beyond what the storage layer provides. Slug uniqueness is enforced by a pre-write `find` in `create_trigger` (the storage `create` only protects the surrogate `id`). Cascade delete is manual: `delete_trigger` pages through and deletes every bound subscription before deleting the trigger. The claim lease lives in the shared leases table managed by the claim engine, keyed by `ClaimKind.TRIGGER` + the trigger id, with `next_attempt_at` set to `next_fire_at`; a save that disables the trigger and a delete drop it (`delete_lease`, no-op when missing), and a re-enable re-arms it (ticket 01a16ede). The `parked_session` dispatcher deletes its subscription row after a successful wake (one-shot); a failed delete is logged, not propagated, since the orphan row fail-skips on its next attempt. Webhook delivery pruning uses ordinary storage `find` and `delete` operations. A `status` hot index remains dedicated to startup recovery, while a separate `completed_at`, `id` index gives terminal `done` and `failed` rows one global chronological order. Its partial predicate is only literal `completed_at IS NOT NULL`, which the parameterized retention query itself contains, so status bind parameters cannot prevent planner use. It runs inside the established leader-task lifecycle; M031 is the one-time migration that canonicalizes historical timestamp spellings, not a separate cleanup service. Fresh-install detection includes `WebhookDelivery`, so an unstamped legacy database containing only deliveries still runs M031 instead of baselining past it.
 
 ## 8. Public surfaces
 
@@ -204,7 +221,7 @@ A trigger is an owned row (`Trigger` mixes in `Owned`, migration 26): read to se
 
 ## 10. Testing patterns
 
-Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron.py`), the three sources and the source registry (`test_sources_delayed.py`, `test_sources_scheduled.py`, `test_sources_registry.py`, `test_webhook_trigger.py`), payload rendering (`test_payload.py`), the claim adapter (`test_claim_adapter.py`), the fire orchestrator (`test_dispatch.py`), each dispatcher (`test_subscribers_fresh_session.py`, `test_subscribers_session_append.py`, `test_subscribers_parked_session.py`), the deleted subscription kinds (`test_deleted_chat_kinds.py`), the model (`test_model.py`), and the end-to-end park-fire-resume path (`test_parked_session_e2e.py`). The REST surface is covered by `tests/api/test_triggers_router.py`; the webhook endpoint by `tests/api/test_webhook_endpoint.py`; the `subscribe_to_trigger` yielding tool by `tests/toolset/test_subscribe_to_trigger.py`. E2E coverage lives in `tests/e2e/test_webhook_trigger_e2e.py`. UI static tests live at `tests/ui/test_triggers_list_page.py`, `test_triggers_create_dialog.py`, `test_triggers_detail_page.py`, and `test_triggers_sub_dialog.py`. The common pattern is to drive the service or dispatcher directly with a `ServiceDeps` / `DispatchDeps` built over in-memory storage and an in-memory event bus, asserting on the structured `SubscriptionDispatchResult` / `FireResult` envelopes rather than on side-effect logs.
+Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron.py`), the three sources and the source registry (`test_sources_delayed.py`, `test_sources_scheduled.py`, `test_sources_registry.py`, `test_webhook_trigger.py`), payload rendering (`test_payload.py`), the claim adapter (`test_claim_adapter.py`), the fire orchestrator (`test_dispatch.py`), each dispatcher (`test_subscribers_fresh_session.py`, `test_subscribers_session_append.py`, `test_subscribers_parked_session.py`), webhook delivery retention (`test_webhook_delivery_retention.py`), the deleted subscription kinds (`test_deleted_chat_kinds.py`), the model (`test_model.py`), and the end-to-end park-fire-resume path (`test_parked_session_e2e.py`). The REST surface is covered by `tests/api/test_triggers_router.py`; the webhook endpoint by `tests/api/test_webhook_endpoint.py`; the `subscribe_to_trigger` yielding tool by `tests/toolset/test_subscribe_to_trigger.py`. E2E coverage lives in `tests/e2e/test_webhook_trigger_e2e.py`. UI static tests live at `tests/ui/test_triggers_list_page.py`, `test_triggers_create_dialog.py`, `test_triggers_detail_page.py`, and `test_triggers_sub_dialog.py`. The common pattern is to drive the service or dispatcher directly with a `ServiceDeps` / `DispatchDeps` built over in-memory storage and an in-memory event bus, asserting on the structured `SubscriptionDispatchResult` / `FireResult` envelopes rather than on side-effect logs.
 
 ## 11. Historical decisions
 

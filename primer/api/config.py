@@ -452,6 +452,17 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    webhook_delivery_retention_days: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Days a completed webhook delivery is kept after it reaches done "
+            "or failed. A leader-elected pruner deletes older terminal rows in "
+            "bounded batches; pending and recovery-eligible rows are never "
+            "deleted. Env: PRIMER_WEBHOOK_DELIVERY_RETENTION_DAYS."
+        ),
+    )
+
     event_dispatch_poll_seconds: float = Field(
         default=5.0,
         description=(
