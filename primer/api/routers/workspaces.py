@@ -2486,11 +2486,7 @@ async def steer_session(
                 workspace_registry=registry,
                 event_bus=event_bus,
                 by=by,
-                trusted_responder_starter=(
-                    trusted_responder_input.person
-                    if trusted_responder_input is not None
-                    else None
-                ),
+                trusted_responder_input=trusted_responder_input,
             )
             return await sessions.get(session_id)
 

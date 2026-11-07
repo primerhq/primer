@@ -29,8 +29,9 @@ from primer.canvas.files import referenced_files
 from primer.model.access import Access
 from primer.model.canvas import MAX_EVENT_BODY_BYTES, MAX_SILENT_EVENTS_PER_MINUTE, SessionCanvas
 from primer.model.principal import PrincipalRef
+from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
-from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
 from tests.api.test_session_steer_restart_rank import WHO, _token_client, _user_id, _workspace as _seed_workspace
 from tests.canvas._fakes import FakeWorkspace
 
@@ -213,6 +214,59 @@ async def test_a_click_on_an_idle_session_wakes_it(app, client, fake_storage_pro
     assert logged.payload["by"] == "testuser" and logged.actor == f"user:{await _user_id(app, 'testuser')}"
 
 
+@pytest.mark.parametrize("status", [SessionStatus.CREATED, SessionStatus.PAUSED])
+async def test_an_authenticated_canvas_wake_rotates_responder_authority(
+    status, app, client, fake_storage_provider, ws,
+):
+    await _seed(
+        fake_storage_provider,
+        status=status,
+        responder_epoch="a" * 32,
+        responder_seq=0,
+        responder_reservation_version=1,
+        responder_reservations={},
+    )
+    await _draw(client)
+
+    response = await client.post(_url(tail="/events"), json={"element": "play", "kind": "click"})
+
+    assert response.status_code == 202 and response.json()["delivery"] == "woken"
+    row = await fake_storage_provider.get_storage(WorkspaceSession).get("s1")
+    assert row is not None and row.turn_person is not None
+    assert row.turn_person.user_id == await _user_id(app, "testuser")
+    assert row.responder_epoch != "a" * 32
+    assert (row.responder_seq, row.responder_reservation_version) == (1, 2)
+    assert len(row.responder_reservations) == 1
+    assert row.last_responder_intent_receipt is None
+
+
+async def test_an_authenticated_busy_canvas_wake_queues_server_proof(app, client, fake_storage_provider, ws):
+    await _seed(
+        fake_storage_provider,
+        status=SessionStatus.RUNNING,
+        turn_status="running",
+        responder_epoch="a" * 32,
+        responder_seq=0,
+        responder_reservation_version=1,
+        responder_reservations={},
+    )
+    await _draw(client)
+
+    response = await client.post(_url(tail="/events"), json={"element": "play", "kind": "click"})
+
+    assert response.status_code == 202 and response.json()["delivery"] == "queued"
+    pending = (
+        await fake_storage_provider.get_storage(PendingSessionMessage).list(
+            OffsetPage(offset=0, length=10),
+        )
+    ).items
+    assert len(pending) == 1 and pending[0].responder_proof is not None
+    assert pending[0].responder_proof.starter.user_id == await _user_id(app, "testuser")
+    row = await fake_storage_provider.get_storage(WorkspaceSession).get("s1")
+    assert row is not None
+    assert (row.responder_epoch, row.responder_seq, row.responder_reservation_version) == ("a" * 32, 0, 1)
+
+
 async def test_a_silent_event_is_recorded(client, fake_storage_provider, ws):
     await _seed(fake_storage_provider)
     await _draw(client)
@@ -232,7 +286,13 @@ async def test_a_click_while_a_turn_runs_is_queued(client, fake_storage_provider
 
 
 async def test_a_retried_post_records_and_delivers_once(client, fake_storage_provider, ws):
-    await _seed(fake_storage_provider)
+    await _seed(
+        fake_storage_provider,
+        responder_epoch="a" * 32,
+        responder_seq=0,
+        responder_reservation_version=1,
+        responder_reservations={},
+    )
     await _draw(client)
     body = {"element": "play", "kind": "click", "client_event_id": "c-1"}
     first = await client.post(_url(tail="/events"), json=body)
@@ -242,6 +302,10 @@ async def test_a_retried_post_records_and_delivers_once(client, fake_storage_pro
     assert len(ws.slots["s1"].appended) == 1, "the retried click was not delivered again"
     row = await _canvas(fake_storage_provider)
     assert (row.event_seq, len(row.events)) == (1, 1)
+    session = await fake_storage_provider.get_storage(WorkspaceSession).get("s1")
+    assert session is not None
+    assert (session.responder_seq, session.responder_reservation_version) == (1, 2)
+    assert len(session.responder_reservations) == 1
 
 
 async def test_a_retry_whose_first_delivery_raised_delivers_the_click(client, fake_storage_provider, ws, monkeypatch):
@@ -311,8 +375,6 @@ async def test_a_retry_landing_while_the_first_post_is_still_delivering_is_not_d
 
 async def test_a_retry_of_a_queued_click_is_not_queued_again(client, fake_storage_provider, ws):
     from primer.model.workspace_session import PendingSessionMessage
-    from primer.model.storage import OffsetPage
-
     await _seed(fake_storage_provider, status=SessionStatus.RUNNING, turn_status="running")
     await _draw(client)
     body = {"element": "play", "kind": "click", "client_event_id": "c-1"}

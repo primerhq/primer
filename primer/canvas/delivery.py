@@ -60,6 +60,7 @@ from primer.model.workspace_session import (
 from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.pending_messages import store_pending_steer
+from primer.session.responder_wake_intent import TrustedResponderInput
 from primer.session.steer_routing import ROUTE_PENDING, route_steer
 
 logger = logging.getLogger(__name__)
@@ -149,6 +150,7 @@ async def deliver_canvas_event(
     workspace_registry: Any,
     event_bus: Any,
     by: PrincipalRef | None = None,
+    trusted_responder_input: TrustedResponderInput | None = None,
 ) -> str:
     """Deliver the recorded ``event`` to ``session_id`` by the session's state (see the module docstring) and say how.
 
@@ -157,7 +159,8 @@ async def deliver_canvas_event(
     ``wait``, ``woken``, ``queued`` and ``recorded``.
 
     ``by`` (access-control spec §13 Q1) names the clicker: a click that wakes the session runs the turn as them, and a click that queues
-    behind an open turn carries them into the queue's attribution.
+    behind an open turn carries them into the queue's attribution. Only the authenticated HTTP route supplies
+    ``trusted_responder_input``; internal callers cannot infer responder authority from ``by`` or the event body.
     """
     row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
     if row is None or row.status == SessionStatus.ENDED:
@@ -186,6 +189,7 @@ async def deliver_canvas_event(
         await store_pending_steer(
             storage_provider=storage_provider, session=row, text=block, workspace_registry=workspace_registry, event_bus=event_bus,
             attribution=carried, by=by,
+            trusted_responder_input=trusted_responder_input,
         )
         return DELIVERY_QUEUED
     receipt = SessionWakeReceipt()
@@ -198,6 +202,7 @@ async def deliver_canvas_event(
             extra_payload=carried,
             receipt=receipt,
             by=by,
+            trusted_responder_input=trusted_responder_input,
             deps=SessionWakeDeps(
                 storage_provider=storage_provider, scheduler=scheduler, claim_engine=claim_engine,
                 workspace_registry=workspace_registry, event_bus=event_bus,

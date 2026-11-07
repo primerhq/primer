@@ -134,6 +134,15 @@ A session has two persisted faces that are reconciled at turn boundaries:
   Busy steers carry the existing queue proof instead. Tool results, external
   tools, attachments, no-instruction wakes, auth-off callers, peers, machines,
   canvas, MCP and channels remain ineligible and preserve prior authority.
+- S4.5C also activates the authenticated canvas event route after its existing
+  FULL-access check, and only for a stored event whose server policy says
+  ``wake=true``. The stored canvas event id, sequence and timestamp provide the
+  retry-stable occurrence and acceptance time; the request actor provides the
+  person. Direct delivery uses the receipt-free arm protocol and busy delivery
+  stores the same row-owned queue proof as an authenticated REST steer. Silent
+  events and internal canvas delivery callers remain ineligible. Canvas event
+  recording, ordering and public response shapes are unchanged; MCP, channels,
+  tasks and other producers remain outside this activation slice.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

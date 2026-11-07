@@ -423,11 +423,6 @@ async def wake_session(
         raise ValueError("prepared responder intent is reserved for queued realization")
     if trusted_responder_input is not None and not instruction:
         raise ValueError("trusted responder input requires an instruction")
-    trusted_responder_starter = (
-        trusted_responder_input.person
-        if trusted_responder_input is not None
-        else None
-    )
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     # A plain text instruction from a routed caller can wait in the pending queue, so the open turn is decided for it here (see the docstring).
     # Calls carrying per-turn tools or attachment parts stay on their existing path: PendingSessionMessage cannot represent those payloads. A
@@ -505,7 +500,7 @@ async def wake_session(
                             return await _defer_routed(
                                 deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
                                 receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
-                                trusted_responder_starter=trusted_responder_starter,
+                                trusted_responder_input=trusted_responder_input,
                             )
                         continue
                     done = await _reopen_ended_locked(
@@ -588,7 +583,7 @@ async def wake_session(
                             # So does the person whose input this is (spec §13 Q1): the realized turn runs as it.
                             attribution=_attribution_to_queue(peer, by_a_person=sent_by_a_person, extra_payload=extra_payload),
                             by=by,
-                            trusted_responder_starter=trusted_responder_starter,
+                            trusted_responder_input=trusted_responder_input,
                         )
                         pending_id = pending.id
                     await _record_pause_superseded(
@@ -612,7 +607,7 @@ async def wake_session(
                         return await _defer_routed(
                             deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
                             receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
-                            trusted_responder_starter=trusted_responder_starter,
+                            trusted_responder_input=trusted_responder_input,
                         )
 
                 if not instruction:
@@ -638,7 +633,14 @@ async def wake_session(
                         row,
                         starter=trusted_responder_input.person,
                         domain=trusted_responder_input.domain,
-                        user_input_payload={"text": instruction},
+                        user_input_payload={
+                            "text": instruction,
+                            **(
+                                extra_payload
+                                if trusted_responder_input.domain == "canvas_event" and extra_payload is not None
+                                else {}
+                            ),
+                        },
                         accepted_at=trusted_responder_input.accepted_at,
                         occurrence_id=trusted_responder_input.occurrence,
                         target_epoch=target_epoch,
@@ -674,7 +676,7 @@ async def wake_session(
                 return await _defer_routed(
                     deps, row=fresh, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
                     receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
-                    trusted_responder_starter=trusted_responder_starter,
+                    trusted_responder_input=trusted_responder_input,
                 )
 
             # 1. Append the user message to the on-disk slot FIFO (the queue) and
@@ -1021,7 +1023,7 @@ async def _defer_routed(
     queued_message_id: str | None,
     extra_payload: dict | None = None,
     by: PrincipalRef | None = None,
-    trusted_responder_starter: PrincipalRef | None = None,
+    trusted_responder_input: TrustedResponderInput | None = None,
 ) -> WorkspaceSession:
     """The routed message waits: the turn is open, or older messages are queued. ``skip`` drops it; a message the drain is realizing stays where
     it is in the queue; any other is stored at the back of the queue, carrying its sender (``queued_attribution``) and the canvas click it is
@@ -1042,7 +1044,7 @@ async def _defer_routed(
         event_bus=deps.event_bus,
         attribution=_attribution_to_queue(peer, by_a_person=by_a_person, extra_payload=extra_payload),
         by=by,
-        trusted_responder_starter=trusted_responder_starter,
+        trusted_responder_input=trusted_responder_input,
     )
     receipt.outcome = "queued"
     return row
