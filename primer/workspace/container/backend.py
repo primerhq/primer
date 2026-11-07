@@ -366,6 +366,9 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
                 mapped_host_port=reattach_host_port,
             )
             recovered_token = getattr(sandbox, "recovered_token", None)
+            workspace_root = getattr(
+                sandbox, "workspace_root", template.backend.workdir,
+            )
             runtime_meta = WorkspaceRuntimeMeta(
                 url=reattach_url,
                 token=SecretStr(recovered_token) if recovered_token else SecretStr(""),
@@ -377,7 +380,7 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
                 sandbox=sandbox,
                 backend_kind="container",
                 runtime_meta=runtime_meta,
-                workspace_root=template.backend.workdir,
+                workspace_root=workspace_root,
             )
             async with self._lock:
                 # Race: another caller may have built the same wrapper.

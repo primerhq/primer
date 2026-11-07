@@ -27,7 +27,12 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext
 from primer.toolset.workspaces import build_workspaces_toolset
-from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
+from primer.workspace.env_names import (
+    ENV_NAME_PATTERN,
+    MAX_ENV_NAME_LENGTH,
+    RUNTIME_TOKEN_ENV_NAMES,
+    WORKSPACE_ROOT_ENV_NAME,
+)
 from tests._support.workspace_providers import seed_public_workspace_providers
 from tests.toolset._desc_conformance import assert_tool_conforms
 from tests.toolset.test_workspaces import _SP, _StubBackend
@@ -90,6 +95,7 @@ def test_create_workspace_carries_the_environment_name_rule(tools) -> None:
     assert "``..``" in d and "``.``" in d
     for name in sorted(RUNTIME_TOKEN_ENV_NAMES):
         assert name in d, name
+    assert WORKSPACE_ROOT_ENV_NAME in d and "backend.workdir" in d
     assert "reaches the pod" in d, "on Kubernetes the override env reaches the pod itself"
 
 
@@ -110,6 +116,15 @@ def test_template_tools_name_the_placement_fields_and_the_admin_only_ones(tools,
         "resources.cpu_cores", "backend.cpu_cores", "pvc_size", DOCKER_RUNTIME_IMAGE,
     ):
         assert word in d, word
+
+
+@pytest.mark.parametrize("name", _TEMPLATE_TOOLS)
+def test_template_tools_disclose_the_platform_owned_workspace_volume_name(tools, name) -> None:
+    description = tools[name].description
+
+    assert "volume name ``ws`` is platform-owned" in description
+    assert "``backend.extra_volumes``" in description
+    assert "``backend.extra_volume_mounts``" in description
 
 
 @pytest.mark.parametrize("name", _TEMPLATE_TOOLS)

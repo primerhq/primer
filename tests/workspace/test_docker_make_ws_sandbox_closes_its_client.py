@@ -18,6 +18,9 @@ from primer.workspace.runtime import docker as docker_mod
 from primer.workspace.runtime.ws_sandbox import WSSandbox
 
 
+_real_wait_for_ready = docker_mod._wait_for_ready
+
+
 class _Client:
     def __init__(self, *, connect_gate: asyncio.Event | None = None) -> None:
         self.connect_gate = connect_gate
@@ -57,10 +60,11 @@ def _no_wait_for_the_runtime(monkeypatch):
     monkeypatch.setattr(docker_mod, "_wait_for_ready", ready)
 
 
-def _make(container: _Container, client: _Client, monkeypatch):
+def _make(container: _Container, client: _Client, monkeypatch, *, workspace_root: str = "/workspace"):
     monkeypatch.setattr(docker_mod, "RuntimeClient", lambda **kwargs: client)
     return docker_mod._make_ws_sandbox(
         object(), container, "workspace-ws-1", "token", reachability=ContainerReachabilityBridge(network_name="primer-net"),
+        workspace_root=workspace_root,
     )
 
 
@@ -104,3 +108,46 @@ async def test_a_sandbox_that_is_returned_keeps_its_client_open(monkeypatch):
     client = _Client()
     sandbox = await _make(_Container(), client, monkeypatch)
     assert isinstance(sandbox, WSSandbox) and client.connected and client.closed == 0
+
+
+async def test_custom_root_reaches_the_ready_wait_and_ws_sandbox(monkeypatch):
+    seen = {}
+
+    async def ready(container, *, workspace_root, **kwargs):
+        seen["workspace_root"] = workspace_root
+
+    monkeypatch.setattr(docker_mod, "_wait_for_ready", ready)
+    sandbox = await _make(_Container(), _Client(), monkeypatch, workspace_root="/srv/work")
+    assert seen == {"workspace_root": "/srv/work"}
+    assert sandbox.workspace_root == "/srv/work"
+
+
+class _ReadyStream:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def read_out(self):
+        return None
+
+
+class _ReadyExec:
+    def start(self, *, detach):
+        return _ReadyStream()
+
+    async def inspect(self):
+        return {"ExitCode": 0}
+
+
+class _ReadyContainer:
+    async def exec(self, **kwargs):
+        self.exec_kwargs = kwargs
+        return _ReadyExec()
+
+
+async def test_ready_marker_is_polled_below_the_custom_root():
+    container = _ReadyContainer()
+    await _real_wait_for_ready(container, workspace_root="/srv/work", timeout_s=0)
+    assert container.exec_kwargs["cmd"] == ["cat", "/srv/work/.runtime.ready"]

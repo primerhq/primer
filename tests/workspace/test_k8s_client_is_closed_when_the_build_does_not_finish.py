@@ -33,6 +33,18 @@ TEMPLATE = WorkspaceTemplate(
 )
 
 
+def _statefulset() -> SimpleNamespace:
+    container = SimpleNamespace(
+        name="workspace",
+        working_dir="/workspace",
+        env=[SimpleNamespace(name="WORKSPACE_ROOT", value="/workspace")],
+        volume_mounts=[SimpleNamespace(name="ws", mount_path="/workspace")],
+    )
+    return SimpleNamespace(
+        spec=SimpleNamespace(template=SimpleNamespace(spec=SimpleNamespace(containers=[container]))),
+    )
+
+
 class _Client:
     """A ``RuntimeClient`` that records what happens to it."""
 
@@ -71,7 +83,7 @@ def _backend() -> KubernetesWorkspaceBackend:
     backend._lock = asyncio.Lock()
     backend._initialised = True
     backend._wait_for_pod_running = AsyncMock()
-    backend._apps_v1.read_namespaced_stateful_set = AsyncMock()
+    backend._apps_v1.read_namespaced_stateful_set = AsyncMock(return_value=_statefulset())
     backend._core_v1.read_namespaced_secret = AsyncMock(
         return_value=SimpleNamespace(data=None, string_data={"RUNTIME_TOKEN": "the-stored-token"}),
     )

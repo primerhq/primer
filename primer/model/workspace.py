@@ -28,6 +28,7 @@ full design.
 from __future__ import annotations
 
 import logging
+import posixpath
 import re
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -51,6 +52,34 @@ from primer.model.common import Describeable, Identifiable, reading_a_stored_row
 from primer.model.masked_url import MaskedUserinfoUrl
 
 _log = logging.getLogger(__name__)
+
+
+DEFAULT_WORKSPACE_ROOT = "/workspace"
+KUBERNETES_WORKSPACE_VOLUME_NAME = "ws"
+
+
+def validate_workspace_root(value: Any) -> str:
+    """Return an absolute canonical POSIX workspace root, or raise ``ValueError``.
+
+    Roots are persisted into runtime configuration and later trusted for file
+    and exec operations, so validation is lexical and never normalizes a value
+    on the caller's behalf.
+    """
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ValueError(
+            "workspace root must be a non-empty absolute canonical POSIX path without NUL bytes"
+        )
+    if (
+        not posixpath.isabs(value)
+        or value == "/"
+        or value.startswith("//")
+        or posixpath.normpath(value) != value
+    ):
+        raise ValueError(
+            "workspace root must be an absolute canonical POSIX path other than '/' "
+            f"(for example {DEFAULT_WORKSPACE_ROOT!r}); got {value!r}"
+        )
+    return value
 
 
 # A workspace id names a directory under the local workspace root
@@ -546,8 +575,8 @@ class ContainerTemplateConfig(BaseModel):
         description="uid:gid override; null = image default.",
     )
     workdir: str = Field(
-        default="/workspace",
-        description="Container workdir.",
+        default=DEFAULT_WORKSPACE_ROOT,
+        description="Absolute canonical POSIX workspace root inside the container; cannot be '/'.",
     )
     cpu_cores: float | None = Field(
         default=None,
@@ -581,20 +610,49 @@ class ContainerTemplateConfig(BaseModel):
     def _sizes_are_positive(cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
         return _positive_unless_stored(value, handler, info)
 
+    @field_validator("workdir", mode="before")
+    @classmethod
+    def _workdir_is_a_workspace_root(cls, value: Any, info: ValidationInfo) -> Any:
+        if reading_a_stored_row(info):
+            return value
+        return validate_workspace_root(value)
+
 
 class K8sVolume(BaseModel):
     """K8s Volume spec; passthrough to k8s. Forbidden 'name' must be present;
     other fields (configMap/secret/emptyDir/etc.) are validated by k8s itself."""
     model_config = ConfigDict(extra="allow")
-    name: str
+    name: str = Field(
+        description="Volume name. The name 'ws' is reserved for the platform workspace PVC.",
+    )
 
 
 class K8sVolumeMount(BaseModel):
     """K8s VolumeMount spec; passthrough. `name` + `mountPath` required."""
     model_config = ConfigDict(extra="allow")
-    name: str
+    name: str = Field(
+        description="Volume name to mount. The name 'ws' is reserved for the platform workspace PVC.",
+    )
     mountPath: str
     readOnly: bool | None = None
+
+
+def validate_kubernetes_workspace_volume_identity(
+    extra_volumes: list[K8sVolume],
+    extra_volume_mounts: list[K8sVolumeMount],
+) -> None:
+    """Refuse extras that reuse the platform-owned workspace PVC identity."""
+    fields = []
+    if any(volume.name == KUBERNETES_WORKSPACE_VOLUME_NAME for volume in extra_volumes):
+        fields.append("extra_volumes")
+    if any(mount.name == KUBERNETES_WORKSPACE_VOLUME_NAME for mount in extra_volume_mounts):
+        fields.append("extra_volume_mounts")
+    if fields:
+        locations = " and ".join(f"backend.{field}" for field in fields)
+        raise ValueError(
+            f"Kubernetes volume name {KUBERNETES_WORKSPACE_VOLUME_NAME!r} is reserved for the platform workspace PVC; "
+            f"remove entries named {KUBERNETES_WORKSPACE_VOLUME_NAME!r} from {locations}"
+        )
 
 
 class K8sToleration(BaseModel):
@@ -718,7 +776,10 @@ class KubernetesTemplateConfig(BaseModel):
     )
     entrypoint: list[str] | None = Field(default=None)
     args: list[str] | None = Field(default=None)
-    workdir: str = Field(default="/workspace")
+    workdir: str = Field(
+        default=DEFAULT_WORKSPACE_ROOT,
+        description="Absolute canonical POSIX workspace root inside the pod; cannot be '/'.",
+    )
 
     cpu_request: str | None = Field(
         default=None,
@@ -765,8 +826,14 @@ class KubernetesTemplateConfig(BaseModel):
         description="StorageClass name; null = cluster default.",
     )
 
-    extra_volumes: list[K8sVolume] = Field(default_factory=list)
-    extra_volume_mounts: list[K8sVolumeMount] = Field(default_factory=list)
+    extra_volumes: list[K8sVolume] = Field(
+        default_factory=list,
+        description="Additional pod volumes. The name 'ws' is reserved for the platform workspace PVC.",
+    )
+    extra_volume_mounts: list[K8sVolumeMount] = Field(
+        default_factory=list,
+        description="Additional workspace-container volume mounts. The name 'ws' is reserved for the platform workspace PVC.",
+    )
 
     network_policy_name: str | None = Field(
         default=None,
@@ -833,6 +900,22 @@ class KubernetesTemplateConfig(BaseModel):
                 "starting and ending with a letter or digit (at most 253 characters)"
             )
         return value
+
+    @field_validator("workdir", mode="before")
+    @classmethod
+    def _workdir_is_a_workspace_root(cls, value: Any, info: ValidationInfo) -> Any:
+        if reading_a_stored_row(info):
+            return value
+        return validate_workspace_root(value)
+
+    @model_validator(mode="after")
+    def _workspace_volume_identity_is_reserved(self, info: ValidationInfo) -> "KubernetesTemplateConfig":
+        if not reading_a_stored_row(info):
+            validate_kubernetes_workspace_volume_identity(
+                self.extra_volumes,
+                self.extra_volume_mounts,
+            )
+        return self
 
     @field_validator("pvc_size")
     @classmethod
@@ -917,7 +1000,10 @@ class WorkspaceTemplate(Owned, Describeable):
     )
     env: dict[str, SecretStr] = Field(
         default_factory=dict,
-        description="Environment variables injected for every shell session.",
+        description=(
+            "Environment variables injected for every shell session. PRIMER_RUNTIME_TOKEN and RUNTIME_TOKEN are reserved "
+            "for the runtime token; WORKSPACE_ROOT is reserved for the runtime root. Set backend.workdir to control the root."
+        ),
     )
     init_commands: list[str] = Field(
         default_factory=list,
@@ -1057,7 +1143,14 @@ class WorkspaceTemplateOverrides(BaseModel):
       ``primer/workspace/size_overrides.py``).
     """
 
-    env: dict[str, SecretStr] = Field(default_factory=dict)
+    env: dict[str, SecretStr] = Field(
+        default_factory=dict,
+        description=(
+            "Environment variables overlaid on the template for this workspace. PRIMER_RUNTIME_TOKEN and RUNTIME_TOKEN are "
+            "reserved for the runtime token; WORKSPACE_ROOT is reserved for the runtime root. Set backend.workdir on the "
+            "template to control the root."
+        ),
+    )
     files: list[FileMount] = Field(default_factory=list)
     init_commands: list[str] = Field(default_factory=list)
     resources: WorkspaceResourceOverrides | None = Field(
@@ -1703,8 +1796,9 @@ class Workspace(Owned, Identifiable):
         description=(
             "Optional per-instantiation overrides applied at "
             "materialisation time. Recorded so the original create-time "
-            "intent stays inspectable; not consulted on subsequent "
-            "operations."
+            "intent stays inspectable; not consulted on subsequent operations. "
+            "Environment overrides cannot set PRIMER_RUNTIME_TOKEN, RUNTIME_TOKEN, or WORKSPACE_ROOT; the template's "
+            "backend.workdir controls the runtime root."
         ),
     )
     created_at: datetime = Field(
@@ -1794,6 +1888,7 @@ __all__ = [
     "ContainerRuntimeConfig",
     "ContainerTemplateConfig",
     "ContainerWorkspaceConfig",
+    "DEFAULT_WORKSPACE_ROOT",
     "DEFAULT_GPU_RESOURCE_NAME",
     "DOCKER_RUNTIME_IMAGE",
     "DockerRuntimeConfig",
@@ -1804,6 +1899,7 @@ __all__ = [
     "K8S_LABEL_VALUE_PATTERN",
     "K8S_RESOURCE_NAME_PATTERN",
     "K8S_SERVICE_ACCOUNT_PATTERN",
+    "KUBERNETES_WORKSPACE_VOLUME_NAME",
     "K8sConnectionConfig",
     "K8sConnectionInCluster",
     "K8sConnectionKubeconfig",
@@ -1846,4 +1942,6 @@ __all__ = [
     "WorkspaceTemplate",
     "WorkspaceTemplateBackendConfig",
     "WorkspaceTemplateOverrides",
+    "validate_kubernetes_workspace_volume_identity",
+    "validate_workspace_root",
 ]

@@ -22,20 +22,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 import secrets
 from typing import Any, Literal
 
 from primer.int.sandbox import Sandbox
 from primer.model.except_ import ConfigError
 from primer.model.workspace import (
+    DEFAULT_WORKSPACE_ROOT,
     DOCKER_RUNTIME_IMAGE,
     ContainerReachabilityBridge,
     ContainerReachabilityConfig,
     ContainerReachabilityHostPort,
     ResourceLimits,
     VolumeMount,
+    validate_workspace_root,
 )
 from primer.workspace.base_backend import close_shielded, roll_back_shielded
+from primer.workspace.env_names import WORKSPACE_ROOT_ENV_NAME
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.size_overrides import ProviderSizeRefused
 from primer.workspace.runtime.runtime_client import RuntimeClient
@@ -145,8 +149,13 @@ def _refused_size(exc: BaseException, resources: ResourceLimits) -> ProviderSize
     return ProviderSizeRefused("container", fields, reason) if fields else None
 
 
-async def _wait_for_ready(container, *, timeout_s: float = _READY_TIMEOUT_S) -> None:
-    """Poll /workspace/.runtime.ready inside the container via docker exec.
+async def _wait_for_ready(
+    container,
+    *,
+    workspace_root: str = DEFAULT_WORKSPACE_ROOT,
+    timeout_s: float = _READY_TIMEOUT_S,
+) -> None:
+    """Poll the runtime ready marker inside the container via docker exec.
 
     Retries every ``_READY_POLL_INTERVAL_S`` seconds.  Raises
     :class:`TimeoutError` if the file does not appear within *timeout_s*.
@@ -155,7 +164,7 @@ async def _wait_for_ready(container, *, timeout_s: float = _READY_TIMEOUT_S) -> 
     while True:
         try:
             exec_inst = await container.exec(
-                cmd=["cat", "/workspace/.runtime.ready"],
+                cmd=["cat", posixpath.join(workspace_root, ".runtime.ready")],
                 stdout=True,
                 stderr=False,
                 stdin=False,
@@ -181,6 +190,22 @@ async def _wait_for_ready(container, *, timeout_s: float = _READY_TIMEOUT_S) -> 
         await asyncio.sleep(_READY_POLL_INTERVAL_S)
 
 
+def _env_from_inspect(info: dict) -> dict[str, str]:
+    """Return string environment entries from a ``docker inspect`` payload."""
+    config = info.get("Config", {})
+    if not isinstance(config, dict):
+        return {}
+    env_list = config.get("Env", []) or []
+    if not isinstance(env_list, list):
+        return {}
+    found: dict[str, str] = {}
+    for entry in env_list:
+        if isinstance(entry, str) and "=" in entry:
+            key, _, value = entry.partition("=")
+            found[key] = value
+    return found
+
+
 def _token_from_inspect(info: dict) -> str | None:
     """Recover the runtime bearer token from a ``docker inspect`` payload.
 
@@ -190,19 +215,60 @@ def _token_from_inspect(info: dict) -> str | None:
     the env as a list of ``"KEY=VALUE"`` strings under ``Config.Env``.
     Returns the first key that is present, or ``None`` if neither is.
     """
-    env_list = (info.get("Config", {}) or {}).get("Env", []) or []
-    found: dict[str, str] = {}
-    for entry in env_list:
-        if not isinstance(entry, str) or "=" not in entry:
-            continue
-        key, _, value = entry.partition("=")
-        if key in ("PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"):
-            found[key] = value
+    found = _env_from_inspect(info)
     # Prefer the canonical key the runtime reads.
     for key in ("PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"):
         if key in found:
             return found[key]
     return None
+
+
+def _workspace_root_from_inspect(info: dict) -> str:
+    """Recover a root proven consistent with the inspected container config."""
+    config = info.get("Config", {})
+    if not isinstance(config, dict):
+        raise ConfigError("container inspect returned no usable Config for its workspace root")
+    working_dir = config.get("WorkingDir")
+    try:
+        working_dir = validate_workspace_root(working_dir)
+    except ValueError as exc:
+        raise ConfigError(f"container has an unsafe configured WorkingDir: {exc}") from exc
+
+    env = _env_from_inspect(info)
+    if WORKSPACE_ROOT_ENV_NAME not in env:
+        if working_dir != DEFAULT_WORKSPACE_ROOT:
+            raise ConfigError(
+                "legacy container has no WORKSPACE_ROOT but its configured WorkingDir is "
+                f"{working_dir!r}; only the legacy default {DEFAULT_WORKSPACE_ROOT!r} can be recovered safely"
+            )
+        root = DEFAULT_WORKSPACE_ROOT
+    else:
+        try:
+            root = validate_workspace_root(env[WORKSPACE_ROOT_ENV_NAME])
+        except ValueError as exc:
+            raise ConfigError(f"container has an unsafe WORKSPACE_ROOT: {exc}") from exc
+        if root != working_dir:
+            raise ConfigError(
+                f"container WORKSPACE_ROOT {root!r} does not match its configured WorkingDir {working_dir!r}"
+            )
+
+    mounts = info.get("Mounts")
+    if not isinstance(mounts, list):
+        raise ConfigError("container inspect returned no usable Mounts inventory for its workspace root")
+    volume_roots: list[str] = []
+    for mount in mounts:
+        if not isinstance(mount, dict) or mount.get("Type") != "volume":
+            continue
+        destination = mount.get("Destination", mount.get("Target"))
+        try:
+            volume_roots.append(validate_workspace_root(destination))
+        except ValueError as exc:
+            raise ConfigError(f"container has an unsafe workspace volume destination: {exc}") from exc
+    if root not in volume_roots:
+        raise ConfigError(
+            f"container workspace root {root!r} does not match an inspected workspace volume mount"
+        )
+    return root
 
 
 async def _discover_host_port(container, container_port: int) -> int:
@@ -228,6 +294,7 @@ async def _make_ws_sandbox(
     token: str,
     *,
     reachability: ContainerReachabilityConfig,
+    workspace_root: str,
 ) -> WSSandbox:
     """Wait for runtime, connect RuntimeClient, wrap in WSSandbox.
 
@@ -242,7 +309,7 @@ async def _make_ws_sandbox(
       DNS at ``workspace-<id>:5959``. The container name is the docker
       hostname, so we use it verbatim.
     """
-    await _wait_for_ready(container)
+    await _wait_for_ready(container, workspace_root=workspace_root)
     mapped_host_port: int | None = None
     if isinstance(reachability, ContainerReachabilityHostPort):
         mapped_host_port = await _discover_host_port(container, _RUNTIME_PORT)
@@ -262,7 +329,7 @@ async def _make_ws_sandbox(
         sandbox = WSSandbox(
             runtime_client=runtime_client,
             container_id=container_id,
-            workspace_root="/workspace",
+            workspace_root=workspace_root,
             container_handle=handle,
         )
     except BaseException:
@@ -393,6 +460,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         # so both startup paths work without operator-side adjustment.
         merged_env["PRIMER_RUNTIME_TOKEN"] = token
         merged_env["RUNTIME_TOKEN"] = token
+        merged_env[WORKSPACE_ROOT_ENV_NAME] = workdir
 
         host_config: dict[str, Any] = {
             "Mounts": mounts,
@@ -483,7 +551,9 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             await container.start()
             try:
                 return await _make_ws_sandbox(
-                    self._docker, container, name, token, reachability=reachability,
+                    self._docker, container, name, token,
+                    reachability=reachability,
+                    workspace_root=workdir,
                 )
             except TimeoutError as exc:
                 # The container started and its runtime never answered (the ready marker did not appear in time, or the
@@ -581,6 +651,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 name,
             )
             return None
+        workspace_root = _workspace_root_from_inspect(info)
         reachability = self._reachability_for_reattach()
         if state != "running":
             try:
@@ -593,6 +664,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             sandbox = await _make_ws_sandbox(
                 self._docker, container, name, token,
                 reachability=reachability,
+                workspace_root=workspace_root,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
