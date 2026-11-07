@@ -64,9 +64,17 @@ A session has two persisted faces that are reconciled at turn boundaries:
   row rotates to a fresh empty epoch in the existing closing CAS, preserving the
   lifetime sequence and incrementing the mutation version once. A no-instruction
   resume preserves an active epoch, while legacy all-null rows retain their old
-  compatibility behavior. Binding switches, wake-time USER_INPUT attribution,
-  classic gates, task receipts and public human-gate activation remain unwired
-  until later S4 slices; human task gates therefore remain hard-disabled.
+  compatibility behavior. Wake-time USER_INPUT attribution, classic gates,
+  task receipts and public human-gate activation remain unwired until later S4
+  slices; human task gates therefore remain hard-disabled.
+- S4.2 wires only the binding-switch structural boundary. The same fenced CAS
+  that commits a new binding now rotates to a fresh empty responder epoch,
+  preserves the lifetime responder sequence, increments the mutation version
+  once, and clears old-binding reservations and person projection. Its scalar
+  occurrence fence covers the binding, log cursor, lifecycle requests, parks
+  and responder generations. A failed marker append or refused close therefore
+  leaves the old authority intact, while an exact retry cannot rotate twice.
+  Compaction, rewind and ordinary terminal writes remain preservation paths.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

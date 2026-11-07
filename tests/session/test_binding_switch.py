@@ -10,17 +10,23 @@ binding rather than the outgoing one.
 import json
 from datetime import UTC, datetime
 
+import pytest
+
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
+    ResponderReservation,
     SessionStatus,
     WorkspaceSession,
 )
 from primer.session.binding_switch import (
+    _responder_epoch_for_switch,
     agent_marker_payload,
     apply_binding_switch,
     build_switched_binding,
 )
+from primer.session.responder_attribution import responder_source
 
 
 def _row(**kw):
@@ -33,6 +39,41 @@ def _row(**kw):
     }
     base.update(kw)
     return WorkspaceSession(**base)
+
+
+_PERSON = PrincipalRef(
+    type="user", id="u1", display="User", role="user", source="local",
+    user_id="u1",
+)
+_ACCEPTED_AT = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
+
+
+def _attribution_fields():
+    source = responder_source("user_input", {"occurrence": "old-binding"})
+    reservation = ResponderReservation(
+        domain=source.domain,
+        source_identity=source.identity,
+        person=_PERSON,
+        seq=2,
+        accepted_at=_ACCEPTED_AT,
+    )
+    return {
+        "responder_epoch": "a" * 32,
+        "responder_seq": 2,
+        "responder_reservation_version": 7,
+        "responder_reservations": {source.key: reservation},
+        "turn_person": _PERSON,
+        "turn_person_seq": 2,
+        "turn_person_at": _ACCEPTED_AT,
+        "turn_person_epoch": "a" * 32,
+        "turn_person_source_key": source.key,
+    }
+
+
+def _attributed_row(**kw):
+    fields = _attribution_fields()
+    fields.update(kw)
+    return _row(**fields)
 
 
 async def _stored(row):
@@ -53,6 +94,26 @@ class _IO:
 
     async def append_message_line(self, session_id, line):
         self.lines.append(line)
+
+
+class _MutatingIO(_IO):
+    def __init__(self, sessions, patch, where):
+        super().__init__()
+        self._sessions = sessions
+        self._patch = patch
+        self._where = where
+
+    async def append_message_line(self, session_id, line):
+        await super().append_message_line(session_id, line)
+        changed = await self._sessions.patch_if(
+            session_id, self._patch, where=self._where,
+        )
+        assert changed is not None
+
+
+class _FailingIO(_IO):
+    async def append_message_line(self, session_id, line):
+        raise OSError("workspace unavailable")
 
 
 async def _no_snapshot(_binding):
@@ -110,10 +171,25 @@ class TestMarkerPayload:
         assert payload["to_binding"]["agent_id"] == "agent-b"
         assert payload["actor"] == "user"
 
+    def test_responder_epoch_is_stable_per_occurrence_and_changes_with_it(self):
+        request = {"kind": "agent", "agent_id": "agent-b", "actor": "user"}
+        row = _row(binding_epoch=3, pending_binding_switch=request)
+
+        epoch = _responder_epoch_for_switch(row, request)
+
+        assert len(epoch) == 32
+        assert epoch == _responder_epoch_for_switch(row, dict(request))
+        assert epoch != _responder_epoch_for_switch(
+            row.model_copy(update={"binding_epoch": 4}), request,
+        )
+        assert epoch != _responder_epoch_for_switch(
+            row, {**request, "agent_id": "agent-c"},
+        )
+
 
 class TestApply:
     async def test_bumps_epoch_writes_marker_and_clears_the_queue(self):
-        row = _row(
+        row = _attributed_row(
             binding_epoch=3,
             pending_binding_switch={
                 "kind": "agent", "agent_id": "agent-b", "actor": "agent",
@@ -129,6 +205,18 @@ class TestApply:
         assert updated.binding_epoch == 4
         assert updated.pending_binding_switch is None
         assert updated.last_seq == 7
+        assert updated.responder_epoch != "a" * 32
+        assert len(updated.responder_epoch) == 32
+        assert updated.responder_seq == 2
+        assert updated.responder_reservation_version == 8
+        assert updated.responder_reservations == {}
+        assert updated.turn_person is None
+        assert (
+            updated.turn_person_seq,
+            updated.turn_person_at,
+            updated.turn_person_epoch,
+            updated.turn_person_source_key,
+        ) == (None, None, None, None)
         # The marker is a closed structural record, so the cursor may
         # pass it: leaving it behind would hand route_steer a record it
         # cannot classify.
@@ -138,6 +226,22 @@ class TestApply:
         assert marker["kind"] == "agent_marker"
         assert marker["seq"] == 7
         assert marker["payload"]["binding_epoch"] == 4
+
+    async def test_legacy_switch_activates_one_empty_epoch(self):
+        row = _row(pending_binding_switch={
+            "kind": "agent", "agent_id": "agent-b", "actor": "user",
+        })
+        updated = await apply_binding_switch(
+            sessions=await _stored(row), workspace_io=_IO(), row=row,
+            request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+
+        assert updated.responder_epoch is not None
+        assert len(updated.responder_epoch) == 32
+        assert updated.responder_seq == 0
+        assert updated.responder_reservation_version == 1
+        assert updated.responder_reservations == {}
 
     async def test_noop_without_a_request(self):
         row = _row()
@@ -247,6 +351,112 @@ class TestApplyProtocol:
         stored = await sessions.get("s")
         assert (stored.last_seq, stored.binding.agent_id, stored.binding_epoch) == (7, "agent-a", 0)
         assert stored.parked_status == "parked"
+
+    @pytest.mark.parametrize(
+        ("patch", "where"),
+        [
+            ({"binding_epoch": 4}, {"binding_epoch": [3]}),
+            ({"last_seq": 8}, {"last_seq": [7]}),
+            (
+                {"responder_reservation_version": 8},
+                {"responder_reservation_version": [7]},
+            ),
+            (
+                {"pause_requested": True},
+                {"pause_requested": [False]},
+            ),
+            (
+                {"pending_binding_switch": {
+                    "kind": "agent", "agent_id": "agent-c", "actor": "user",
+                }},
+                {("pending_binding_switch", "agent_id"): ["agent-b"]},
+            ),
+        ],
+        ids=["binding", "log", "responder", "lifecycle", "pending-switch"],
+    )
+    async def test_moved_occurrence_refuses_without_clearing_old_authority(
+        self, patch, where,
+    ):
+        row = self._queued(
+            binding_epoch=3,
+            **_attribution_fields(),
+        )
+        sessions = await _stored(row)
+        io = _MutatingIO(sessions, patch, where)
+
+        result = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row,
+            request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+
+        assert result is None
+        stored = await sessions.get("s")
+        assert stored.binding.agent_id == "agent-a"
+        assert stored.responder_epoch == "a" * 32
+        assert stored.responder_seq == 2
+        assert stored.responder_reservation_version == patch.get(
+            "responder_reservation_version", 7,
+        )
+        assert stored.responder_reservations == row.responder_reservations
+        assert stored.turn_person == _PERSON
+
+    async def test_marker_failure_leaves_the_responder_ledger_untouched(self):
+        row = self._queued(
+            **_attribution_fields(),
+        )
+        sessions = await _stored(row)
+
+        with pytest.raises(OSError, match="workspace unavailable"):
+            await apply_binding_switch(
+                sessions=sessions, workspace_io=_FailingIO(), row=row,
+                request=row.pending_binding_switch, actor="user",
+                resolve_snapshot=_no_snapshot, guard=_GUARD,
+            )
+
+        stored = await sessions.get("s")
+        assert stored.responder_epoch == row.responder_epoch
+        assert stored.responder_reservation_version == 7
+        assert stored.responder_reservations == row.responder_reservations
+        assert stored.turn_person == _PERSON
+
+    async def test_exact_retry_does_not_rotate_twice(self):
+        row = self._queued(
+            **_attribution_fields(),
+        )
+        sessions, io = await _stored(row), _IO()
+        first = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row,
+            request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+        retry = await apply_binding_switch(
+            sessions=sessions, workspace_io=io, row=row,
+            request=row.pending_binding_switch, actor="user",
+            resolve_snapshot=_no_snapshot, guard=_GUARD,
+        )
+
+        stored = await sessions.get("s")
+        assert retry is None
+        assert stored.responder_epoch == first.responder_epoch
+        assert stored.responder_reservation_version == 8
+
+    async def test_unrelated_mutation_survives_the_successful_close(self):
+        row = self._queued()
+        sessions = await _stored(row)
+        updated = await apply_binding_switch(
+            sessions=sessions,
+            workspace_io=_MutatingIO(sessions, {"name": "concurrent"}, {"name": [None]}),
+            row=row,
+            request=row.pending_binding_switch,
+            actor="user",
+            resolve_snapshot=_no_snapshot,
+            guard=_GUARD,
+        )
+
+        assert updated is not None
+        assert updated.name == "concurrent"
+        assert updated.binding.agent_id == "agent-b"
 
 
 def test_switch_is_applied_before_the_queue_drains():

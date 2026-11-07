@@ -19,9 +19,11 @@ a seq a steer had just taken and erased the steer's ``last_seq`` and armed turn.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from hashlib import blake2b
 from typing import Any
 
 from pydantic_core import to_jsonable_python
@@ -34,9 +36,59 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.responder_attribution import (
+    ReservationFences,
+    empty_responder_rotation,
+)
 from primer.session.seq_reservation import reserve_seq
+from primer.storage import raw_generation
 
 logger = logging.getLogger(__name__)
+
+_JSON_SCALARS = (str, int, float, bool, type(None))
+_PENDING_SWITCH_FIELDS = frozenset({
+    "actor", "agent_id", "graph_id", "kind", "profile_id", "reason",
+})
+
+
+def _responder_epoch_for_switch(
+    row: WorkspaceSession, request: Mapping[str, Any],
+) -> str:
+    """Derive one stable epoch for this binding-switch occurrence."""
+    identity = {
+        "binding_epoch": row.binding_epoch,
+        "request": to_jsonable_python(dict(request)),
+        "session_id": row.id,
+    }
+    encoded = json.dumps(
+        identity, allow_nan=False, ensure_ascii=False, separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return blake2b(
+        b"primer.responder.binding-switch.v1\x00" + encoded,
+        digest_size=16,
+    ).hexdigest()
+
+
+def _pending_switch_where(
+    row: WorkspaceSession,
+) -> dict[str | tuple[str, ...], list[str | int | float | bool | None]]:
+    """Fence the pending switch without comparing its JSON object wholesale."""
+    pending = row.pending_binding_switch
+    if pending is None:
+        return {"pending_binding_switch": [None]}
+    fields = _PENDING_SWITCH_FIELDS | pending.keys()
+    where: dict[
+        str | tuple[str, ...], list[str | int | float | bool | None]
+    ] = {}
+    for field in sorted(fields):
+        value = pending.get(field)
+        if not isinstance(value, _JSON_SCALARS):
+            raise ValueError(
+                f"pending binding switch field {field!r} must be a JSON scalar"
+            )
+        where[("pending_binding_switch", field)] = [value]
+    return where
 
 
 def build_switched_binding(
@@ -166,6 +218,16 @@ async def apply_binding_switch(
         )
 
     new_epoch = row.binding_epoch + 1
+    responder_rotation = empty_responder_rotation(
+        row, epoch=_responder_epoch_for_switch(row, request),
+    )
+    occurrence_where = ReservationFences.from_session(row).where()
+    occurrence_where.update(_pending_switch_where(row))
+    occurrence_where.update(responder_rotation.where)
+    occurrence_where.update({
+        "armed_at": [raw_generation(row, "armed_at")],
+        "next_unprocessed_seq": [raw_generation(row, "next_unprocessed_seq")],
+    })
     # (1) RESERVE the marker's seq: the guard and "last_seq is still what the caller read" are one atomic condition,
     # so a steer that took last_seq + 1 in the meantime rejects this and nothing has been written.
     seq = await reserve_seq(sessions, row.id, last_seq=row.last_seq, where=guard)
@@ -204,8 +266,9 @@ async def apply_binding_switch(
             "binding_epoch": new_epoch,
             "pending_binding_switch": None,
             "next_unprocessed_seq": seq + 1,
+            **responder_rotation.patch,
         }),
-        where={**guard, "last_seq": [seq]},
+        where={**guard, **occurrence_where, "last_seq": [seq]},
     )
     if updated is None:
         logger.warning(
