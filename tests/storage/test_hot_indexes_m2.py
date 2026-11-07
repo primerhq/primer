@@ -56,15 +56,40 @@ def test_the_ddl_is_idempotent_and_plain():
 
 
 def test_terminal_tool_wait_index_matches_the_bounded_scan() -> None:
+    from primer.claim.tool_wait_reconcile import (
+        _terminal_tool_wait_candidate_predicate,
+    )
+    from primer.storage._predicate import _PredicateTranslator
+
     _, unique, pg_expr = _entry("sessions", "tool_wait_reconcile")
     assert unique is False
     assert pg_expr == "((data->>'parked_tool_batches'), id)"
+    _, v2_unique, pg_v2_expr = _entry("sessions", "tool_wait_reconcile_v2")
+    assert v2_unique is False
+    assert pg_v2_expr == (
+        "(id) WHERE (data->>'parked_tool_batches' IS NOT NULL)"
+    )
     (suffix, sqlite_unique, sqlite_expr), = [
         entry for entry in _SQLITE_HOT_FIELD_INDEXES["sessions"]
         if entry[0] == "tool_wait_reconcile"
     ]
     assert suffix == "tool_wait_reconcile" and sqlite_unique is False
     assert sqlite_expr == "(json_extract(data,'$.parked_tool_batches'), id)"
+    (v2_suffix, sqlite_v2_unique, sqlite_v2_expr), = [
+        entry for entry in _SQLITE_HOT_FIELD_INDEXES["sessions"]
+        if entry[0] == "tool_wait_reconcile_v2"
+    ]
+    assert v2_suffix == "tool_wait_reconcile_v2" and sqlite_v2_unique is False
+    assert sqlite_v2_expr == (
+        "(id, data) "
+        "WHERE (json_extract(data,'$.parked_tool_batches') IS NOT NULL)"
+    )
+
+    predicate = _terminal_tool_wait_candidate_predicate()
+    pg_sql, pg_params = _PredicateTranslator(WorkspaceSession).translate(predicate)
+    assert "data->>'parked_tool_batches' IS NOT NULL" in pg_sql
+    assert "data->>'parked_status' = ANY($1::text[])" in pg_sql
+    assert pg_params == [["parked", "resumable"]]
 
 
 @pytest.mark.asyncio
@@ -112,19 +137,73 @@ async def test_sqlite_tool_wait_reconcile_query_uses_the_id_order_index(tmp_path
     sp = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "reconcile.sqlite")))
     try:
         await sp.initialize()
-        from primer.storage._sqlite_predicate import render_order_by_sqlite
-        from primer.storage.q import Q
+        from datetime import datetime, timezone
 
-        store = sp.get_storage(WorkspaceSession)
-        await store.list(OffsetPage(offset=0, length=1))
-        predicate = (
-            Q(WorkspaceSession)
-            .where("parked_tool_batches", True)
-            .where_in("parked_status", ["parked", "resumable"])
-            .build()
+        from primer.model.storage import OffsetPage
+        from primer.model.workspace_session import AgentSessionBinding, SessionStatus
+        from primer.claim.tool_wait_reconcile import (
+            _terminal_tool_wait_candidate_predicate,
         )
+        from primer.storage._sqlite_predicate import render_order_by_sqlite
+
+        await sp.connection.execute(
+            'CREATE TABLE "sessions" ('
+            "id TEXT PRIMARY KEY, data TEXT NOT NULL, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await sp.connection.execute(
+            'CREATE INDEX "sessions_tool_wait_reconcile" ON "sessions" '
+            "(json_extract(data,'$.parked_tool_batches'), id)"
+        )
+        await sp.connection.commit()
+        store = sp.get_storage(WorkspaceSession)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for session_id, marker in (("marked", True), ("cleared", None)):
+            await store.create(WorkspaceSession(
+                id=session_id,
+                workspace_id="w",
+                binding=AgentSessionBinding(agent_id="a"),
+                status=SessionStatus.RUNNING,
+                parked_status="parked",
+                parked_tool_batches=marker,
+                created_at=now,
+            ))
+        await sp.connection.execute(
+            "WITH RECURSIVE seq(i) AS ("
+            "SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < 1000"
+            ") INSERT INTO sessions(id, data) "
+            "SELECT 'cleared-' || printf('%04d', i), "
+            "json_object("
+            "'workspace_id', 'w', "
+            "'binding', json_object('type', 'agent', 'agent_id', 'a'), "
+            "'status', 'running', "
+            "'parked_status', 'parked', "
+            "'parked_tool_batches', NULL, "
+            "'created_at', '2026-01-01T00:00:00Z'"
+            ") FROM seq"
+        )
+        await sp.connection.execute(
+            "INSERT INTO sessions(id, data) VALUES (?, json_object("
+            "'workspace_id', 'w', "
+            "'binding', json_object('type', 'agent', 'agent_id', 'a'), "
+            "'status', 'running', "
+            "'parked_status', 'corrupt', "
+            "'parked_tool_batches', json('true'), "
+            "'created_at', '2026-01-01T00:00:00Z'))",
+            ("corrupt-status",),
+        )
+        await sp.connection.execute("ANALYZE sessions")
+        await sp.connection.commit()
+        predicate = _terminal_tool_wait_candidate_predicate()
+        found = await store.find(
+            predicate, OffsetPage(offset=0, length=10, want_total=False),
+        )
+        assert [row.id for row in found.items] == ["marked"]
         translator = store._translator()
         where_sql = await store._where(translator, predicate)
+        assert "IS NOT NULL" in where_sql
+        assert translator._params == ["parked", "resumable"]
         translator.append_param(201)
         sql = (
             'EXPLAIN QUERY PLAN SELECT id, data FROM "sessions" '
@@ -132,8 +211,20 @@ async def test_sqlite_tool_wait_reconcile_query_uses_the_id_order_index(tmp_path
         )
         async with sp.connection.execute(sql, list(translator._params)) as cur:
             plan = " ".join(str(value) for row in await cur.fetchall() for value in row)
-        assert "sessions_tool_wait_reconcile" in plan
+        assert "sessions_tool_wait_reconcile_v2" in plan
         assert "USE TEMP B-TREE FOR ORDER BY" not in plan
+        async with sp.connection.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE name IN (?, ?) ORDER BY name",
+            ("sessions_tool_wait_reconcile", "sessions_tool_wait_reconcile_v2"),
+        ) as cur:
+            indexes = dict(await cur.fetchall())
+        assert set(indexes) == {
+            "sessions_tool_wait_reconcile",
+            "sessions_tool_wait_reconcile_v2",
+        }
+        assert "parked_tool_batches'), id" in indexes["sessions_tool_wait_reconcile"]
+        assert "(id, data)" in indexes["sessions_tool_wait_reconcile_v2"]
     finally:
         await sp.aclose()
 
