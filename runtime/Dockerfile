@@ -60,6 +60,11 @@ RUN pip install --no-cache-dir aiohttp watchfiles pydantic && \
 # mode the (root-owned) volume is unwritable by a non-root UID and the
 # runtime crashes writing its readiness marker. World-writable is safe:
 # /workspace is the isolated per-workspace sandbox tree.
+#
+# This baked mode covers the default /workspace only. For a fresh volume at
+# a custom workdir, the Docker adapter uses a one-shot root chmod helper only
+# after a private per-create label proves it owns that volume. It never
+# initializes or relabels an existing named volume.
 RUN mkdir -p /workspace && chmod 0777 /workspace
 
 # Switch cwd to /workspace so relative paths in ops resolve correctly.
