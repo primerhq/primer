@@ -457,13 +457,17 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         read_tool_call_record,
     )
     from primer.int.claim import ParkRequest, ReleaseOutcome
-    from primer.model.chat import ToolCallPart
+    from primer.model.chat import ToolCallPart, ToolResultPart
     from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
     from primer.model.yield_ import YieldToWorker
     from primer.model.workspace_session import WorkspaceSession
     from primer.session.tool_wait_batches import task_is_live_for_session
     from primer.worker.task_gate_runtime import (
+        TaskGateDecisionClass,
+        TaskGateState,
         TaskGateStateError,
+        classify_task_gate_decision,
+        decode_task_gate_state,
         new_task_gate_state,
     )
 
@@ -508,6 +512,25 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
             ),
         )
         return
+
+    resolved_gate = None
+    gate_error = None
+    if task.gate_state is not None or task.gate_resolution is not None:
+        try:
+            decoded_gate = decode_task_gate_state(task.gate_state, task=task)
+            if (
+                not isinstance(decoded_gate, TaskGateState)
+                or decoded_gate.resolution is None
+                or classify_task_gate_decision(
+                    task, decoded_gate.resolution,
+                ) is not TaskGateDecisionClass.IDENTICAL
+            ):
+                raise TaskGateStateError(
+                    "queued task does not carry one exact resolved v1 gate"
+                )
+            resolved_gate = decoded_gate
+        except TaskGateStateError as exc:
+            gate_error = exc
 
     session = await session_storage.get(task.session_id)
     live, void_reason = task_is_live_for_session(task, session)
@@ -579,6 +602,13 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         )
         return
 
+    if gate_error is not None:
+        await _fail_claimed_tool_call_task(
+            pool, engine_lease, token, claimed_row,
+            f"resolved task gate is corrupt: {_short_error(gate_error)}",
+        )
+        return
+
     # ---- 4. rehydrate the call ---------------------------------------------------
     workspace = None
     if pool._workspace_registry is not None:
@@ -644,8 +674,66 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
         )
         return
 
+
+    if resolved_gate is not None:
+        current_task = await task_storage.get(task.id)
+        current_session = await session_storage.get(task.session_id)
+        if current_task is None:
+            current_live = False
+            current_reason = "the task row disappeared after it was claimed"
+        else:
+            current_live, current_reason = task_is_live_for_session(
+                current_task, current_session,
+            )
+        park_holds_task = False
+        if current_session is not None:
+            from primer.session.tool_wait_batches import batches_referenced_by_park
+
+            park_holds_task = any(
+                task.id in (*ref.outstanding_ids, *ref.notifying_ids)
+                for ref in batches_referenced_by_park(
+                    current_session.parked_state,
+                ).values()
+            )
+        if (
+            current_task is None
+            or current_task.state is not ToolCallTaskState.RUNNING
+            or current_task.claim_token != token
+            or not current_live
+            or not park_holds_task
+            or resolved_gate.binding_epoch != current_session.binding_epoch
+        ):
+            reason = current_reason or (
+                "the resolved task gate no longer matches the live session binding"
+            )
+            await _fail_claimed_tool_call_task(
+                pool, engine_lease, token, claimed_row, reason,
+            )
+            return
+        try:
+            current_gate = decode_task_gate_state(
+                current_task.gate_state, task=current_task,
+            )
+        except TaskGateStateError as exc:
+            await _fail_claimed_tool_call_task(
+                pool, engine_lease, token, claimed_row,
+                f"resolved task gate changed after claim: {_short_error(exc)}",
+            )
+            return
+        if current_gate != resolved_gate:
+            await _fail_claimed_tool_call_task(
+                pool, engine_lease, token, claimed_row,
+                "resolved task gate changed after claim",
+            )
+            return
+
     try:
-        result = await tool_manager.execute(call, principal=None)
+        if resolved_gate is not None:
+            result = await _consume_resolved_task_gate(
+                pool, resolved_gate, current_session, tool_manager,
+            )
+        else:
+            result = await tool_manager.execute(call, principal=None)
     except asyncio.CancelledError:
         # A lost lease (or a drain) preempted the execution: the pool owns the
         # lease from here. Re-raise so the pool's scope machinery runs; the row
@@ -723,9 +811,23 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
             ),
         )
         return
-    except Exception as exc:  # noqa: BLE001 - every non-gate failure is transient here
-        await _transient_tool_call_failure(pool, engine_lease, token, claimed_row.attempts, exc)
-        return
+    except Exception as exc:  # noqa: BLE001 - resolved resumes synthesize; ordinary calls retry
+        if resolved_gate is None:
+            await _transient_tool_call_failure(
+                pool, engine_lease, token, claimed_row.attempts, exc,
+            )
+            return
+        logger.exception(
+            "resolved task gate for %s raised; synthesising an error result",
+            task.id,
+        )
+        result = ToolResultPart(
+            id=task.wire_call_id,
+            output=(
+                f"resume failed: {type(exc).__name__}: {_short_error(exc)}"
+            ),
+            error=True,
+        )
 
     # A tool-level error (result.error) is still a SUCCESSFUL execution: the
     # row stays DONE carrying the real result_state, so the resume coordinator
@@ -740,6 +842,110 @@ async def run_engine_tool_call(pool: "WorkerPool", engine_lease: "ClaimLease") -
                 "result_state": result.model_dump(mode="json"),
                 "attempts": claimed_row.attempts,
                 "last_error": result.output[:300] if result.error else None,
+            },
+        ),
+    )
+
+
+async def _consume_resolved_task_gate(pool, gate, session, tool_manager):
+    """Consume one already-validated v1 receipt through shared resume semantics."""
+    from primer.model.chat import ToolResultPart
+    from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
+    from primer.worker.yield_runtime import (
+        _resume_tool_approval,
+        classify_approval_payload,
+        classify_marker_payload,
+    )
+
+    receipt = gate.resolution
+    if receipt is None:  # defensive; the caller validated this already
+        raise ValueError("resolved task gate has no resolution receipt")
+    resume = classify_marker_payload(
+        receipt.payload, parked_at=gate.parked_at,
+    )
+    if gate.yielded.tool_name == "_approval":
+        from primer.agent.approval_record import (
+            gate_record_key,
+            record_from_parked_blob,
+            write_approval_record,
+        )
+        from primer.model.tool_approval import ToolApprovalRecord
+
+        decision, reason, _kind = classify_approval_payload(resume.payload)
+        record = record_from_parked_blob(
+            blob=gate.to_jsonable(),
+            decision=decision,
+            reason=reason,
+            agent_id=getattr(session.binding, "agent_id", None),
+            session_id=session.id,
+            workspace_id=session.workspace_id,
+            requested_at=gate.parked_at,
+            decided_by=(
+                resume.payload.get("decided_by")
+                if isinstance(resume.payload, dict) else None
+            ),
+            gate_event_key=gate.event_key,
+        ).model_copy(update={
+            "gate_event_key": gate_record_key(
+                gate.event_key, gate.occurrence_token,
+            ),
+        })
+        await write_approval_record(
+            pool._storage.get_storage(ToolApprovalRecord),
+            record,
+            warn_on_decision_mismatch=True,
+        )
+        return await _resume_tool_approval(
+            blob=gate.to_jsonable(),
+            payload=resume.payload,
+            tool_manager=tool_manager,
+        )
+
+    hook = get_resume_hook(gate.yielded.tool_name)
+    registry = getattr(pool, "_provider_registry", None)
+    hook_result = hook(
+        gate.yielded.resume_metadata,
+        resume.payload,
+        ResumeContext(
+            tool_name=gate.yielded.tool_name,
+            tool_call_id=gate.tool_call_id,
+            session_id=session.id,
+            resolve_provider=(
+                registry.get_toolset if registry is not None else None
+            ),
+        ),
+    )
+    if asyncio.iscoroutine(hook_result):
+        hook_result = await hook_result
+    return ToolResultPart(
+        id=gate.tool_call_id,
+        output=hook_result.output,
+        error=hook_result.is_error,
+    )
+
+
+async def _fail_claimed_tool_call_task(
+    pool, engine_lease, token: str, row, reason: str,
+) -> None:
+    """Fail one claimed task terminally without clearing its gate early."""
+    from primer.int.claim import ReleaseOutcome
+
+    reason = reason[:300]
+    await pool._release_lease(
+        engine_lease,
+        ReleaseOutcome(
+            success=False,
+            drop_lease=True,
+            claim_token=token,
+            last_error=reason,
+            entity_update={
+                "result_state": {
+                    "id": row.wire_call_id,
+                    "output": reason,
+                    "error": True,
+                },
+                "attempts": row.attempts,
+                "last_error": reason,
             },
         ),
     )
