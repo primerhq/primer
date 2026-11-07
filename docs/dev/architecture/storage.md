@@ -53,6 +53,13 @@ classDiagram
 
 A provider is constructed once per process at lifespan start, `initialize`-d, then queried for one `Storage` handle per model class. The provider caches handles by model class, so repeated `get_storage(Document)` calls return the same instance sharing the pool. Neither backend eagerly creates per-model tables; DDL runs lazily on first use of each handle.
 
+`Identifiable` also provides one model-level storage-only serialization seam. A
+model may name fields in `_storage_only_fields` and mark those Pydantic fields
+`exclude=True`: ordinary `model_dump`, REST responses and serialization schemas
+omit them, while `dump_for_storage` adds their typed JSON values back under the
+same storage context used for secrets and masked URLs. Storage backends do not
+special-case model classes. The session responder ledger is the first consumer.
+
 ## 3. Public surface
 
 `StorageProvider` (`primer/int/storage_provider.py`) exposes:

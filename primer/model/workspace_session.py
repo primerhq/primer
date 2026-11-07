@@ -26,11 +26,11 @@ full design.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
@@ -448,6 +448,45 @@ SessionBinding = Annotated[
 ]
 
 
+RESPONDER_RESERVATION_LIMIT = 128
+RESPONDER_SOURCE_IDENTITY_MAX_BYTES = 2048
+RESPONDER_SOURCE_DOMAIN_MAX_BYTES = 64
+ResponderEpoch = Annotated[
+    str, Field(pattern=r"^[0-9a-f]{32}$", min_length=32, max_length=32),
+]
+ResponderSourceKey = Annotated[
+    str, Field(pattern=r"^rs1_[0-9a-f]{64}$", max_length=68),
+]
+
+
+class ResponderReservation(BaseModel):
+    """One durable allocation in a session's current responder epoch."""
+
+    domain: str = Field(
+        min_length=1,
+        max_length=RESPONDER_SOURCE_DOMAIN_MAX_BYTES,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    source_identity: str = Field(min_length=1)
+    person: PrincipalRef
+    seq: int = Field(ge=1)
+    accepted_at: datetime
+
+    @model_validator(mode="after")
+    def _validate_reservation(self) -> "ResponderReservation":
+        if len(self.source_identity.encode("utf-8")) > RESPONDER_SOURCE_IDENTITY_MAX_BYTES:
+            raise ValueError(
+                "source_identity exceeds the responder reservation byte limit"
+            )
+        _require_aware_utc(self.accepted_at, "accepted_at")
+        return self
+
+
+def _require_aware_utc(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValueError(f"{name} must be timezone-aware UTC")
+
+
 class WorkspaceSession(Identifiable):
     """Persisted session row - scheduler's source of truth.
 
@@ -517,6 +556,28 @@ class WorkspaceSession(Identifiable):
             "initiated_by."
         ),
     )
+    _storage_only_fields: ClassVar[frozenset[str]] = frozenset({
+        "responder_seq",
+        "responder_epoch",
+        "responder_reservation_version",
+        "responder_reservations",
+        "turn_person_seq",
+        "turn_person_at",
+        "turn_person_epoch",
+        "turn_person_source_key",
+    })
+    responder_seq: int | None = Field(default=None, ge=0, exclude=True)
+    responder_epoch: ResponderEpoch | None = Field(default=None, exclude=True)
+    responder_reservation_version: int | None = Field(
+        default=None, ge=0, exclude=True,
+    )
+    responder_reservations: dict[ResponderSourceKey, Any] | None = Field(
+        default=None, max_length=RESPONDER_RESERVATION_LIMIT, exclude=True,
+    )
+    turn_person_seq: int | None = Field(default=None, ge=1, exclude=True)
+    turn_person_at: datetime | None = Field(default=None, exclude=True)
+    turn_person_epoch: ResponderEpoch | None = Field(default=None, exclude=True)
+    turn_person_source_key: ResponderSourceKey | None = Field(default=None, exclude=True)
     _validate_response_format = field_validator("response_format")(
         _validate_response_format_schema
     )
@@ -903,6 +964,81 @@ class WorkspaceSession(Identifiable):
             "without advancing to the next turn.  Cleared on resume."
         ),
     )
+
+    @field_validator("responder_reservations", mode="before")
+    @classmethod
+    def _parse_responder_reservations(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, dict):
+            return value
+        return {
+            key: (
+                reservation
+                if isinstance(reservation, ResponderReservation)
+                else ResponderReservation.model_validate(reservation)
+            )
+            for key, reservation in value.items()
+        }
+
+    @model_validator(mode="after")
+    def _validate_responder_ledger(self) -> "WorkspaceSession":
+        base = (
+            self.responder_seq,
+            self.responder_epoch,
+            self.responder_reservation_version,
+            self.responder_reservations,
+        )
+        projection = (
+            self.turn_person_seq,
+            self.turn_person_at,
+            self.turn_person_epoch,
+            self.turn_person_source_key,
+        )
+        if all(value is None for value in base):
+            if any(value is not None for value in projection):
+                raise ValueError("responder projection requires an active ledger")
+            return self
+        if any(value is None for value in base):
+            raise ValueError("active responder ledger fields must be all present")
+
+        seq = self.responder_seq
+        reservations = self.responder_reservations
+        assert seq is not None and reservations is not None
+        reservation_seqs = [entry.seq for entry in reservations.values()]
+        if len(set(reservation_seqs)) != len(reservation_seqs):
+            raise ValueError("responder reservation seq values must be unique")
+        if reservation_seqs:
+            expected = list(range(seq - len(reservation_seqs) + 1, seq + 1))
+            if sorted(reservation_seqs) != expected:
+                raise ValueError(
+                    "responder reservation seq values must form a contiguous "
+                    "suffix ending at responder_seq"
+                )
+
+        projected = [value is not None for value in projection]
+        if any(projected) and not all(projected):
+            raise ValueError("turn_person responder projection must be all present")
+        if not any(projected):
+            return self
+        if self.turn_person is None:
+            raise ValueError("responder projection requires turn_person")
+
+        assert self.turn_person_source_key is not None
+        assert self.turn_person_seq is not None
+        assert self.turn_person_at is not None
+        assert self.turn_person_epoch is not None
+        _require_aware_utc(self.turn_person_at, "turn_person_at")
+        if self.turn_person_epoch != self.responder_epoch:
+            raise ValueError("turn_person_epoch must match responder_epoch")
+        reservation = reservations.get(self.turn_person_source_key)
+        if reservation is None:
+            raise ValueError("turn_person_source_key must name a current reservation")
+        if (
+            reservation.seq != self.turn_person_seq
+            or reservation.accepted_at != self.turn_person_at
+            or reservation.person != self.turn_person
+        ):
+            raise ValueError("turn_person projection must match its reservation")
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -1370,6 +1506,12 @@ __all__ = [
     "PEER_PAYLOAD_KEY",
     "PeerAttribution",
     "PeerMessage",
+    "RESPONDER_RESERVATION_LIMIT",
+    "RESPONDER_SOURCE_DOMAIN_MAX_BYTES",
+    "RESPONDER_SOURCE_IDENTITY_MAX_BYTES",
+    "ResponderEpoch",
+    "ResponderReservation",
+    "ResponderSourceKey",
     "SessionMessageKind",
     "SessionMessageRecord",
     "WorkspaceSession",
