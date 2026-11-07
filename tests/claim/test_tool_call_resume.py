@@ -15,10 +15,14 @@ from primer.claim.tool_call_resume import (
 )
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.model.provider import SqliteConfig
-from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.tool_call_task import (
+    TaskGateRepairStage,
+    ToolCallTask,
+    ToolCallTaskState,
+)
 from primer.model.yield_ import Yielded
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.worker.task_gate_runtime import TaskGateState
+from primer.worker.task_gate_runtime import TaskGateState, gate_state_sha256
 
 
 TOKEN = "a" * 32
@@ -114,6 +118,8 @@ async def test_decision_lands_receipt_and_rearms_exact_occurrence(sqlite_provide
     assert row.claim_token is None
     assert row.gate_resolution == row.gate_state["resolution"]
     assert row.gate_resolution["payload"] == {"decision": "approved"}
+    assert row.gate_state_sha256 == gate_state_sha256(row.gate_state)
+    assert row.repair_stage is TaskGateRepairStage.PROMOTED
     assert engine.calls == 1
 
 
@@ -273,5 +279,40 @@ async def test_live_claim_winning_between_read_and_cas_is_not_cleared(
     assert (row.state, row.claim_token) == (
         ToolCallTaskState.RUNNING, "new-live-token",
     )
+    assert row.gate_resolution is None
+    assert engine.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "moved",
+    [
+        {"gate_state_sha256": "b" * 64},
+        {"repair_stage": TaskGateRepairStage.RECEIPT_STAGED},
+    ],
+)
+async def test_digest_or_repair_stage_moving_between_read_and_cas_refuses(
+    sqlite_provider, monkeypatch, moved,
+):
+    storage = sqlite_provider.get_storage(ToolCallTask)
+    initial = _task()
+    await storage.create(initial)
+    original_patch = storage.patch_if_or_current
+
+    async def _generation_wins(id, patch=None, *, where, set_paths=None, conn=None):
+        current = await storage.get(id)
+        await storage.update(current.model_copy(update=moved))
+        return await original_patch(
+            id, patch, where=where, set_paths=set_paths, conn=conn,
+        )
+
+    monkeypatch.setattr(storage, "patch_if_or_current", _generation_wins)
+    engine = _Engine()
+
+    outcome = await _decide(storage, engine)
+
+    assert outcome is TaskGateResumeOutcome.REFUSED_CORRUPT
+    row = await storage.get(initial.id)
+    assert row.state is ToolCallTaskState.GATED
     assert row.gate_resolution is None
     assert engine.calls == 0

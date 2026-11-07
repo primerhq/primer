@@ -9,24 +9,34 @@ resolved executor consumption are deliberately outside this slice.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 import secrets
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any
 
 from pydantic_core import to_jsonable_python
 
+from primer.model.principal import PrincipalRef, person_ref
+from primer.model.responder_source import (
+    canonical_responder_payload,
+    canonical_responder_source,
+    responder_source_key,
+    validate_canonical_responder_identity,
+)
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.storage._patch import json_equal
 
 
 TASK_GATE_STATE_VERSION = 1
-TASK_GATE_RESOLUTION_VERSION = 1
+TASK_GATE_RESOLUTION_VERSION = 2
 _TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+_SOURCE_KEY_RE = re.compile(r"rs1_[0-9a-f]{64}")
 
 
 class TaskGateStateError(ValueError):
@@ -46,6 +56,89 @@ class TaskGateDecisionClass(StrEnum):
 
 
 @dataclass(frozen=True)
+class TaskGateResponderReceipt:
+    """Server-owned responder attribution for one dormant task ask decision."""
+
+    person: PrincipalRef
+    responder_epoch: str
+    domain: str
+    source_identity: str
+    source_key: str
+    accepted_at: datetime
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return copy.deepcopy({
+            "person": self.person.model_dump(mode="json"),
+            "responder_epoch": self.responder_epoch,
+            "domain": self.domain,
+            "source_identity": self.source_identity,
+            "source_key": self.source_key,
+            "accepted_at": self.accepted_at.isoformat(),
+        })
+
+    @classmethod
+    def from_jsonable(cls, raw: Any) -> "TaskGateResponderReceipt":
+        data = _mapping(raw, "task-gate responder receipt")
+        _exact_keys(
+            data,
+            {
+                "person", "responder_epoch", "domain", "source_identity",
+                "source_key", "accepted_at",
+            },
+            "task-gate responder receipt",
+        )
+        principal = _mapping(data["person"], "task-gate responder receipt person")
+        _exact_keys(
+            principal,
+            {"type", "id", "display", "role", "source", "user_id"},
+            "task-gate responder receipt person",
+        )
+        try:
+            person = PrincipalRef.model_validate(principal)
+        except Exception as exc:
+            raise TaskGateStateError(
+                "task-gate responder receipt person is invalid"
+            ) from exc
+        if person_ref(person) != person:
+            raise TaskGateStateError(
+                "task-gate responder receipt must name a person"
+            )
+        domain = _nonempty_text(data["domain"], "responder domain")
+        if domain != "ask_user":
+            raise TaskGateStateError(
+                "task-gate responder receipt domain must be ask_user"
+            )
+        source_identity = _nonempty_text(
+            data["source_identity"], "responder source_identity",
+        )
+        try:
+            validate_canonical_responder_identity(source_identity)
+        except ValueError as exc:
+            raise TaskGateStateError(
+                "task-gate responder receipt source_identity is invalid"
+            ) from exc
+        source_key = data["source_key"]
+        if not isinstance(source_key, str) or _SOURCE_KEY_RE.fullmatch(source_key) is None:
+            raise TaskGateStateError(
+                "task-gate responder receipt source_key is invalid"
+            )
+        if source_key != responder_source_key(domain, source_identity):
+            raise TaskGateStateError(
+                "task-gate responder receipt source_key does not match its identity"
+            )
+        return cls(
+            person=person,
+            responder_epoch=_epoch(data["responder_epoch"]),
+            domain=domain,
+            source_identity=source_identity,
+            source_key=source_key,
+            accepted_at=_aware_utc_datetime(
+                data["accepted_at"], "responder accepted_at",
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class TaskGateResolutionReceipt:
     """Deterministic receipt of the decision for exactly one gate occurrence."""
 
@@ -53,39 +146,49 @@ class TaskGateResolutionReceipt:
     gate_seq: int
     event_key: str
     payload: dict[str, Any]
-    schema_version: int = TASK_GATE_RESOLUTION_VERSION
+    responder: TaskGateResponderReceipt | None = None
+    schema_version: int = 1
 
     def to_jsonable(self) -> dict[str, Any]:
-        return copy.deepcopy({
+        encoded = {
             "schema_version": self.schema_version,
             "occurrence_token": self.occurrence_token,
             "gate_seq": self.gate_seq,
             "event_key": self.event_key,
             "payload": self.payload,
-        })
+        }
+        if self.schema_version == 2:
+            encoded["responder"] = (
+                self.responder.to_jsonable()
+                if self.responder is not None else None
+            )
+        return copy.deepcopy(encoded)
 
     @classmethod
     def from_jsonable(cls, raw: Any) -> "TaskGateResolutionReceipt":
         data = _mapping(raw, "task-gate resolution")
-        _exact_keys(
-            data,
-            {
-                "schema_version", "occurrence_token", "gate_seq",
-                "event_key", "payload",
-            },
-            "task-gate resolution",
-        )
         version = _integer(data["schema_version"], "resolution schema_version", minimum=1)
-        if version != TASK_GATE_RESOLUTION_VERSION:
+        expected = {
+            "schema_version", "occurrence_token", "gate_seq",
+            "event_key", "payload",
+        }
+        if version == 2:
+            expected.add("responder")
+        _exact_keys(data, expected, "task-gate resolution")
+        if version not in {1, TASK_GATE_RESOLUTION_VERSION}:
             raise TaskGateStateError(
                 f"unknown task-gate resolution schema_version {version!r}; "
-                f"this runtime understands {TASK_GATE_RESOLUTION_VERSION}"
+                "this runtime understands 1 and 2"
             )
         return cls(
             occurrence_token=_token(data["occurrence_token"]),
             gate_seq=_integer(data["gate_seq"], "resolution gate_seq", minimum=1),
             event_key=_nonempty_text(data["event_key"], "resolution event_key"),
             payload=copy.deepcopy(_mapping(data["payload"], "resolution payload")),
+            responder=(
+                TaskGateResponderReceipt.from_jsonable(data["responder"])
+                if version == 2 and data["responder"] is not None else None
+            ),
             schema_version=version,
         )
 
@@ -110,6 +213,7 @@ class TaskGateState:
         self, receipt: TaskGateResolutionReceipt,
     ) -> "TaskGateState":
         _receipt_matches_state(receipt, self)
+        _validate_resolution_for_gate(self, receipt)
         return replace(self, resolution=receipt)
 
     def to_jsonable(self) -> dict[str, Any]:
@@ -186,6 +290,7 @@ class TaskGateState:
             raise TaskGateStateError("task-gate deadline precedes parked_at")
         if receipt is not None:
             _receipt_matches_state(receipt, state)
+            _validate_resolution_for_gate(state, receipt)
         _validate_approval_original_call(state)
         return state
 
@@ -269,6 +374,13 @@ def decode_task_gate_state(
         state = TaskGateState.from_jsonable(data)
         if task is not None:
             _state_matches_task(state, task)
+            if (
+                task.gate_state_sha256 is not None
+                and task.gate_state_sha256 != gate_state_sha256(data)
+            ):
+                raise TaskGateStateError(
+                    "task-gate state digest does not match its envelope"
+                )
         return state
     if task is None:
         raise TaskGateStateError(
@@ -290,6 +402,24 @@ def make_resolution_receipt(
         payload=copy.deepcopy(_mapping(encoded, "resolution payload")),
     )
     return TaskGateResolutionReceipt.from_jsonable(receipt.to_jsonable())
+
+
+def gate_state_sha256(raw: Any) -> str:
+    """Return the canonical scalar generation of one task-gate envelope."""
+    try:
+        storage_json = to_jsonable_python(raw)
+        encoded = json.dumps(
+            storage_json,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (OverflowError, RecursionError, TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise TaskGateStateError(
+            "task-gate state is not canonical storage JSON"
+        ) from exc
+    return sha256(encoded).hexdigest()
 
 
 def classify_task_gate_decision(
@@ -390,6 +520,7 @@ def _state_matches_task(state: TaskGateState, task: ToolCallTask) -> None:
         state.resolution, TaskGateResolutionReceipt.from_jsonable(raw_receipt),
     ):
         raise TaskGateStateError("task-gate resolution mirrors disagree")
+    _validate_resolution_for_gate(state, state.resolution, task=task)
 
 
 def validate_task_gate_call(state: TaskGateState, task: ToolCallTask) -> None:
@@ -410,7 +541,104 @@ def resolution_receipts_equal(
         and left.gate_seq == right.gate_seq
         and left.event_key == right.event_key
         and json_equal(left.payload, right.payload)
+        and _responder_receipts_equal(left.responder, right.responder)
     )
+
+
+def _responder_receipts_equal(
+    left: TaskGateResponderReceipt | None,
+    right: TaskGateResponderReceipt | None,
+) -> bool:
+    if left is None or right is None:
+        return left is right
+    return json_equal(left.to_jsonable(), right.to_jsonable())
+
+
+def _validate_resolution_for_gate(
+    state: TaskGateState,
+    receipt: TaskGateResolutionReceipt,
+    *,
+    task: ToolCallTask | None = None,
+) -> None:
+    if receipt.schema_version == 1:
+        if state.yielded.tool_name != "_approval":
+            raise TaskGateStateError(
+                "version-1 task-gate resolutions are approval-only"
+            )
+        return
+    if state.yielded.tool_name == "ask_user":
+        if receipt.responder is None:
+            raise TaskGateStateError(
+                "version-2 ask_user resolution requires one responder receipt"
+            )
+        _validate_task_ask_responder_identity(state, receipt, task=task)
+        return
+    if receipt.responder is not None:
+        raise TaskGateStateError(
+            "task-gate responder receipt is only valid for ask_user"
+        )
+
+
+def _validate_task_ask_responder_identity(
+    state: TaskGateState,
+    receipt: TaskGateResolutionReceipt,
+    *,
+    task: ToolCallTask | None,
+) -> None:
+    responder = receipt.responder
+    if responder is None:  # guarded by the caller; keeps type narrowing explicit
+        raise TaskGateStateError(
+            "version-2 ask_user resolution requires one responder receipt"
+        )
+    try:
+        decoded = validate_canonical_responder_identity(responder.source_identity)
+    except ValueError as exc:
+        raise TaskGateStateError(
+            "task-gate responder source identity is invalid"
+        ) from exc
+    if not isinstance(decoded, dict) or set(decoded) != {
+        "session_id", "task_id", "occurrence_token", "gate_seq",
+        "event_key", "payload_sha256",
+    }:
+        raise TaskGateStateError(
+            "task-gate responder source identity fields are invalid"
+        )
+    session_id = decoded["session_id"]
+    task_id = decoded["task_id"]
+    if not isinstance(session_id, str) or not session_id:
+        raise TaskGateStateError(
+            "task-gate responder source identity session_id is invalid"
+        )
+    if not isinstance(task_id, str) or not task_id:
+        raise TaskGateStateError(
+            "task-gate responder source identity task_id is invalid"
+        )
+    expected = canonical_responder_source(
+        "ask_user",
+        {
+            "session_id": session_id,
+            "task_id": task_id,
+            "occurrence_token": state.occurrence_token,
+            "gate_seq": state.gate_seq,
+            "event_key": state.event_key,
+            "payload_sha256": sha256(
+                canonical_responder_payload(receipt.payload)
+            ).hexdigest(),
+        },
+    )
+    if (
+        responder.source_identity != expected.identity
+        or responder.source_key != expected.key
+    ):
+        raise TaskGateStateError(
+            "task-gate responder source identity does not match the decision"
+        )
+    if task is not None and (
+        session_id != task.session_id or task_id != task.id
+    ):
+        raise TaskGateStateError(
+            "task-gate responder source identity does not match its task row"
+        )
 
 
 def _validate_approval_original_call(
@@ -528,6 +756,21 @@ def _aware_datetime(raw: Any, label: str) -> datetime:
     return _ensure_aware(value, label)
 
 
+def _aware_utc_datetime(raw: Any, label: str) -> datetime:
+    value = _aware_datetime(raw, label)
+    if value.utcoffset() != UTC.utcoffset(value):
+        raise TaskGateStateError(f"{label} must be UTC")
+    return value
+
+
+def _epoch(raw: Any) -> str:
+    if not isinstance(raw, str) or _TOKEN_RE.fullmatch(raw) is None:
+        raise TaskGateStateError(
+            "task-gate responder epoch must be 32 lowercase hex characters"
+        )
+    return raw
+
+
 def _ensure_aware(value: datetime, label: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise TaskGateStateError(f"{label} must carry a timezone")
@@ -540,10 +783,12 @@ __all__ = [
     "TASK_GATE_STATE_VERSION",
     "TaskGateDecisionClass",
     "TaskGateResolutionReceipt",
+    "TaskGateResponderReceipt",
     "TaskGateState",
     "TaskGateStateError",
     "classify_task_gate_decision",
     "decode_task_gate_state",
+    "gate_state_sha256",
     "make_resolution_receipt",
     "new_task_gate_state",
     "resolution_receipts_equal",

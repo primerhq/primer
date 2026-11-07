@@ -187,6 +187,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 TaskGateState,
                 TaskGateStateError,
                 decode_task_gate_state,
+                gate_state_sha256,
                 validate_task_gate_call,
             )
 
@@ -228,6 +229,7 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 raise _InvalidEntityUpdate(
                     "it gave a task-gate envelope that does not match the release",
                 )
+            gate_blob = gate.to_jsonable()
             patch = {
                 "state": ToolCallTaskState.GATED.value,
                 "gate_event_key": p.parked_event_key,
@@ -237,7 +239,9 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 # here on the task since a bare ToolCallTask has no other
                 # durable home to point at. Cleared on every other branch
                 # below so it never survives past the gate it belongs to.
-                "gate_state": gate.to_jsonable(),
+                "gate_state": gate_blob,
+                "gate_state_sha256": gate_state_sha256(gate_blob),
+                "repair_stage": "none",
                 "gate_seq": current.gate_seq + 1,
                 "gate_occurrence_token": gate.occurrence_token,
                 "gate_resolution": None,
@@ -272,6 +276,8 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 "gate_event_key": None,
                 "gate_until": None,
                 "gate_state": None,
+                "gate_state_sha256": None,
+                "repair_stage": "none",
                 "gate_occurrence_token": None,
                 "gate_resolution": None,
                 **update,
@@ -299,6 +305,8 @@ class ToolCallClaimAdapter(ClaimAdapter):
             "gate_event_key": None,
             "gate_until": None,
             "gate_state": None,
+            "gate_state_sha256": None,
+            "repair_stage": "none",
             "gate_occurrence_token": None,
             "gate_resolution": None,
             "result_state": None,
@@ -359,6 +367,8 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 "gate_event_key": None,
                 "gate_until": None,
                 "gate_state": None,
+                "gate_state_sha256": None,
+                "repair_stage": "none",
                 "gate_occurrence_token": None,
                 "gate_resolution": None,
             },

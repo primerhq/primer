@@ -20,6 +20,7 @@ from primer.worker.task_gate_runtime import (
     TaskGateStateError,
     classify_task_gate_decision,
     decode_task_gate_state,
+    gate_state_sha256,
     make_resolution_receipt,
 )
 
@@ -94,10 +95,13 @@ async def durably_mark_tool_call_task_resumable(
     if not isinstance(gate, TaskGateState):
         return TaskGateResumeOutcome.REFUSED_CORRUPT
     resolved_gate = gate.with_resolution(receipt)
+    resolved_blob = resolved_gate.to_jsonable()
     patch = {
         "state": ToolCallTaskState.QUEUED.value,
-        "gate_state": resolved_gate.to_jsonable(),
+        "gate_state": resolved_blob,
+        "gate_state_sha256": gate_state_sha256(resolved_blob),
         "gate_resolution": receipt.to_jsonable(),
+        "repair_stage": "promoted",
     }
     where = {
         "state": [ToolCallTaskState.GATED.value],
@@ -106,6 +110,8 @@ async def durably_mark_tool_call_task_resumable(
         "gate_event_key": [event_key],
         "claim_token": [None],
         "gate_resolution": [None],
+        "gate_state_sha256": [task.gate_state_sha256],
+        "repair_stage": [task.repair_stage.value],
     }
     try:
         landed, current = await patch_if_or_current(

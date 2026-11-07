@@ -765,7 +765,11 @@ class _ResolvedGateToolManager:
 
 
 def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=None):
+    from primer.model.principal import PrincipalRef
+    from primer.model.responder_source import canonical_responder_source
     from primer.worker.task_gate_runtime import (
+        TaskGateResolutionReceipt,
+        TaskGateResponderReceipt,
         TaskGateState,
         make_resolution_receipt,
     )
@@ -774,12 +778,35 @@ def _resolve_task_gate(provider, *, payload, tool_name="_approval", metadata=Non
     task = task_storage._data[TASK_ID]  # noqa: SLF001
     token = "a" * 32
     event_key = f"tool_approval:{SESSION_ID}:{CALL_ID}"
-    receipt = make_resolution_receipt(
-        occurrence_token=token,
-        gate_seq=1,
-        event_key=event_key,
-        payload=payload,
-    )
+    if tool_name == "ask_user":
+        source = canonical_responder_source(
+            "ask_user", {"session_id": SESSION_ID, "task_id": TASK_ID},
+        )
+        receipt = TaskGateResolutionReceipt(
+            occurrence_token=token,
+            gate_seq=1,
+            event_key=event_key,
+            payload=payload,
+            responder=TaskGateResponderReceipt(
+                person=PrincipalRef(
+                    type="user", id="person-1", display="Person One",
+                    role="user", source="local", user_id="person-1",
+                ),
+                responder_epoch="e" * 32,
+                domain=source.domain,
+                source_identity=source.identity,
+                source_key=source.key,
+                accepted_at=_now(),
+            ),
+            schema_version=2,
+        )
+    else:
+        receipt = make_resolution_receipt(
+            occurrence_token=token,
+            gate_seq=1,
+            event_key=event_key,
+            payload=payload,
+        )
     gate = TaskGateState(
         occurrence_token=token,
         gate_seq=1,
