@@ -179,7 +179,7 @@ async def test_the_refusal_is_documented_in_the_openapi_schema(app):
         schema = (await c.get("/openapi.json")).json()
 
     login = schema["paths"]["/v1/auth/login"]["post"]["responses"]
-    assert "429" in login and "401" in login
+    assert {"400", "401", "429", "503"} <= login.keys()
 
 
 def test_only_the_first_refusal_of_a_wait_is_announced(clock):

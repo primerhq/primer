@@ -249,6 +249,13 @@ server side.
   without bound. `POST /v1/auth/change-password` is throttled per user
   the same way (`429` after five wrong current passwords). Passwords are
   at most 4096 characters.
+- **Session-signing auth flows do not apply when authentication is disabled.**
+  Every request already acts as the synthetic system admin, so register,
+  password login, and SSO login, link and callback answer `400` problem+json
+  (`extensions.error` is `auth_disabled`) before checking credentials or
+  writing a user, identity, signed state or session cookie. SSO identity unlink
+  is refused before reading its row or revoking sessions. Only provider and
+  linked-identity listing retain ordinary synthetic-admin access.
 - **Approval-required tools are not callable over MCP.** Even with the
   `mcp` scope and the tool allowlisted, a tool whose effective approval
   policy is `required` is refused at `tools/call` - MCP has no surface
