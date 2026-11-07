@@ -13,6 +13,7 @@ reconciliation, nested topology, and the post-release crash residual remain.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -621,12 +622,17 @@ class _GatingToolManager:
 
 
 class _ResolvedGateToolManager:
-    def __init__(self, *, re_yield: bool = False) -> None:
+    def __init__(
+        self, *, re_yield: bool = False, error: str | None = None,
+    ) -> None:
         self.calls: list[tuple[object, dict]] = []
         self.re_yield = re_yield
+        self.error = error
 
     async def execute(self, call, **kwargs):
         self.calls.append((call, kwargs))
+        if self.error is not None:
+            raise RuntimeError(self.error)
         if self.re_yield:
             from primer.model.yield_ import YieldToWorker, Yielded
 
@@ -745,24 +751,26 @@ async def test_resolved_approval_uses_shared_resume_semantics(
 
 @pytest.mark.asyncio
 async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
+    from primer.model.yield_ import YieldTimeout
+    from primer.toolset._system_tools import ask_user_resume
     from primer.worker import yield_resume_registry
 
     seen = []
 
-    async def _hook(metadata, payload, context):
+    def _hook(metadata, payload, context):
         seen.append((metadata, payload, context))
-        return ToolCallResult(output="hook-ok", is_error=False)
+        return ask_user_resume(metadata, payload, context)
 
     monkeypatch.setitem(
-        yield_resume_registry._registry, "test_task_gate", _hook,  # noqa: SLF001
+        yield_resume_registry._registry, "ask_user", _hook,  # noqa: SLF001
     )
     pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
         outstanding_task_ids=[TASK_ID],
     )
-    _resolve_task_gate(
+    gate = _resolve_task_gate(
         provider,
-        payload={"answer": [1, {"ok": True}]},
-        tool_name="test_task_gate",
+        payload={"__yield_timeout__": True},
+        tool_name="ask_user",
         metadata={"question": "continue?"},
     )
     manager = _ResolvedGateToolManager()
@@ -779,11 +787,15 @@ async def test_resolved_generic_gate_calls_hook_with_exact_state(monkeypatch):
             "the generic resolved gate did not reach DONE",
         )
         metadata, payload, context = seen.pop()
-        assert metadata == {"question": "continue?"}
-        assert payload == {"answer": [1, {"ok": True}]}
+        assert metadata == {
+            "question": "continue?",
+            "parked_at_iso": gate.parked_at.isoformat(),
+        }
+        assert isinstance(payload, YieldTimeout)
         assert (context.tool_name, context.tool_call_id, context.session_id) == (
-            "test_task_gate", CALL_ID, SESSION_ID,
+            "ask_user", CALL_ID, SESSION_ID,
         )
+        assert "parked_at_iso" not in gate.yielded.resume_metadata
         assert manager.calls == []
     finally:
         await pool.drain_and_stop(timeout=3)
@@ -904,6 +916,100 @@ async def test_approval_audit_failure_does_not_block_resumed_execution():
             "the audit failure blocked resolved execution",
         )
         assert len(manager.calls) == 1
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolved_resume_exception_is_redacted_and_terminal():
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(provider, payload={"decision": "approved"})
+    secret = "Authorization: Bearer sk-task-gate-secret"
+    manager = _ResolvedGateToolManager(error=secret)
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        task_storage = provider.get_storage(ToolCallTask)
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.DONE,  # noqa: SLF001
+            "the failed resolved resume did not terminate",
+        )
+        result = task_storage._data[TASK_ID].result_state  # noqa: SLF001
+        body = json.loads(result["output"])
+        assert result["error"] is True and body["is_error"] is True
+        assert body["tool_name"] == "_approval"
+        assert body["reason"].startswith("resume failed: RuntimeError")
+        assert "sk-task-gate-secret" not in body["reason"]
+        assert len(manager.calls) == 1
+    finally:
+        await pool.drain_and_stop(timeout=3)
+        await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_post_claim_gate_mutation_uses_json_typed_equality(monkeypatch):
+    from primer.model.tool_approval import ToolApprovalRecord
+    from primer.worker import yield_resume_registry
+
+    hook_calls = []
+
+    def _hook(metadata, payload, context):
+        hook_calls.append((metadata, payload, context))
+        return ToolCallResult(output="must not run", is_error=False)
+
+    monkeypatch.setitem(
+        yield_resume_registry._registry, "test_task_gate", _hook,  # noqa: SLF001
+    )
+    pool, _engine, provider, _toolset, _sessions, _tasks, scheduler, _wake = await _build_pool(
+        outstanding_task_ids=[TASK_ID],
+    )
+    _resolve_task_gate(
+        provider,
+        payload={"answer": "yes"},
+        tool_name="test_task_gate",
+        metadata={"flag": True},
+    )
+    task_storage = provider.get_storage(ToolCallTask)
+    original_get = task_storage.get
+    mutated = False
+
+    async def _mutate_on_post_claim_read(task_id, *, conn=None):
+        nonlocal mutated
+        row = await original_get(task_id, conn=conn)
+        if (
+            task_id == TASK_ID
+            and row.state is ToolCallTaskState.RUNNING
+            and not mutated
+        ):
+            mutated = True
+            gate_state = copy.deepcopy(row.gate_state)
+            gate_state["yielded"]["resume_metadata"]["flag"] = 1
+            row = row.model_copy(update={"gate_state": gate_state})
+            task_storage._data[task_id] = row  # noqa: SLF001
+        return row
+
+    monkeypatch.setattr(task_storage, "get", _mutate_on_post_claim_read)
+    manager = _ResolvedGateToolManager()
+
+    async def _executor(session, workspace):
+        return _executor_with(manager)
+
+    pool._build_agent_executor = _executor  # type: ignore[method-assign]
+    try:
+        await pool.start()
+        await _until(
+            lambda: task_storage._data[TASK_ID].state is ToolCallTaskState.FAILED,  # noqa: SLF001
+            "the post-claim envelope mutation did not fail closed",
+        )
+        assert hook_calls == [] and manager.calls == []
+        assert provider.get_storage(ToolApprovalRecord)._data == {}  # noqa: SLF001
     finally:
         await pool.drain_and_stop(timeout=3)
         await scheduler.aclose()
