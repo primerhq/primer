@@ -27,7 +27,10 @@ def test_page_conventions() -> None:
     # Switching to anonymous confirms, through the console's own dialog
     # rather than the browser's.
     assert "confirmDialog(" in src
-    assert "publish_service" in src  # versions empty state names the tool
+    assert "publish_service" not in src
+    assert "Primer.tool" not in src
+    assert "/v1/services/&#123;id&#125;/versions" in src
+    assert "service versions REST endpoint" in src
 
 
 def test_open_app_links_to_svc() -> None:
