@@ -80,6 +80,36 @@ async def test_on_release_park_writes_columns_no_turn_bump(storage: FakeStorage)
     assert row.turn_no == 3  # NOT bumped
 
 
+async def test_on_release_foreign_graph_park_does_not_set_tool_batch_marker(
+    storage: FakeStorage,
+) -> None:
+    adapter = SessionClaimAdapter(session_storage=storage)
+    now = datetime.now(timezone.utc)
+    park = ParkRequest(
+        parked_state={
+            "kind": "foreign",
+            "graph_checkpoint": {
+                "pending_tool_waits": [
+                    {
+                        "node_id": "A",
+                        "outstanding_task_ids": ["sess-1/A:tool:0:1"],
+                        "notifying_results": [],
+                    },
+                ],
+            },
+        },
+        parked_event_key="foreign:sess-1:tc-1",
+        parked_until=now,
+        parked_at=now,
+    )
+    await adapter.on_release(
+        conn=None,
+        entity_id="sess-1",
+        outcome=ReleaseOutcome(success=True, drop_lease=True, park=park),
+    )
+    assert storage._session.parked_tool_batches is None
+
+
 async def test_on_release_success_without_park_clears_and_bumps(storage: FakeStorage) -> None:
     """A successful release with no park clears park columns and bumps turn_no."""
     adapter = SessionClaimAdapter(session_storage=storage)

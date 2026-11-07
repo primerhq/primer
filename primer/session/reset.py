@@ -278,7 +278,11 @@ async def _reopen_ended_locked(
             "agent_phase_stamped_at": None,
             **responder_rotation.patch,
         }),
-        set_paths={("metadata", "invocation"): invocation},
+        set_paths={
+            ("metadata", "invocation"): invocation,
+            ("parked_tool_batches",): None,
+            ("resumable_at",): None,
+        },
         where={
             **occurrence_where,
             "armed_at": [raw_generation(reserved_row, "armed_at")],

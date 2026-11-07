@@ -303,7 +303,8 @@ def test_session_model_maps_to_the_sessions_table():
         ("apitoken", ["apitoken_token_hash_uniq"]),
         ("sessions", [
             "sessions_status", "sessions_workspace_id", "sessions_parent_session_id", "sessions_last_worker_id", "sessions_binding_agent_id",
-            "sessions_binding_graph_id", "sessions_turn_status", "sessions_parked_status", "sessions_created_at_desc",
+            "sessions_binding_graph_id", "sessions_turn_status", "sessions_parked_status", "sessions_tool_wait_reconcile",
+            "sessions_created_at_desc",
         ]),
         ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
@@ -383,6 +384,37 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     assert "channel_provider_external" in await _index_names(sp, "channel")
     assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
     assert "document_collection_id" in await _index_names(sp, "document")
+
+
+@pg
+@pytest.mark.asyncio
+async def test_terminal_tool_wait_query_uses_marker_and_id_order_index(postgres_storage_provider):
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.storage._predicate import render_order_by
+    from primer.storage.q import Q
+
+    sp = postgres_storage_provider
+    store = sp.get_storage(WorkspaceSession)
+    await store.get("__bootstrap__")
+    predicate = (
+        Q(WorkspaceSession)
+        .where("parked_tool_batches", True)
+        .where_in("parked_status", ["parked", "resumable"])
+        .build()
+    )
+    translator = store._translator()
+    where_sql = await store._where(translator, predicate)
+    limit = translator.append_param(201)
+    sql = (
+        f"EXPLAIN SELECT id, data FROM {store._qualified} "
+        f"WHERE {where_sql} {render_order_by(WorkspaceSession, None)} LIMIT {limit}"
+    )
+    async with sp.pool.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL enable_seqscan = off")
+        rows = await conn.fetch(sql, *translator._params)
+    plan = " ".join(row[0] for row in rows)
+    assert "sessions_tool_wait_reconcile" in plan
+    assert "Sort" not in plan
 
 
 @pytest.mark.parametrize("table", ["toolapprovalrecord", "externaltoolcall"])

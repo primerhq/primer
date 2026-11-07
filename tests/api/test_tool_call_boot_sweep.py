@@ -264,6 +264,14 @@ def test_the_lifespan_runs_the_sweep_before_the_pool_starts():
 
     src = inspect.getsource(_app_lifespan)
     sweep_call = src.index("await sweep_orphaned_tool_call_tasks(")
+    reconcile_call = src.index("await reconcile_terminal_tool_wait_parks(")
+    leader_start = src.index(
+        "tool_wait_reconciler.start(coordinator.leader_elector)",
+    )
     pool_start = src.index("await worker_pool.start()")
     recover_call = src.index("await recover_sessions(")
-    assert recover_call < sweep_call < pool_start
+    assert recover_call < sweep_call < reconcile_call < leader_start < pool_start
+    assert '(tool_wait_reconciler, "tool_wait_reconciler")' in src
+    assert src.index('(tool_wait_reconciler, "tool_wait_reconciler")') < src.index(
+        "await scheduler.aclose()",
+    )

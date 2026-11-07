@@ -123,7 +123,18 @@ def _ended_row(reason="completed", last_seq=5):
 
 @pytest.mark.asyncio
 async def test_reset_reopens_row_and_writes_divider():
-    row = _ended_row()
+    row = _ended_row().model_copy(update={
+        "parked_status": "resumable",
+        "parked_event_key": "tool_wait:sess-1:x:tool:0:1",
+        "parked_at": datetime.now(timezone.utc),
+        "parked_state": {
+            "kind": "tool_wait",
+            "outstanding_task_ids": ["sess-1/x:tool:0:1"],
+            "notifying_task_ids": [],
+        },
+        "parked_tool_batches": True,
+        "resumable_at": datetime.now(timezone.utc),
+    })
     slot = _Slot()
     ws = _WS(slot)
     deps = SessionResetDeps(
@@ -148,6 +159,8 @@ async def test_reset_reopens_row_and_writes_divider():
     assert out.responder_reservation_version == 1
     assert out.responder_reservations == {}
     assert out.responder_epoch is not None and len(out.responder_epoch) == 32
+    assert out.parked_status is None and out.parked_state is None
+    assert out.parked_tool_batches is None and out.resumable_at is None
 
 
 @pytest.mark.asyncio

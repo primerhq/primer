@@ -34,7 +34,11 @@ from primer.model.tool_call_task import tool_call_task_id
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
-from primer.session.tool_wait_batches import BatchRef, batches_referenced_by_park
+from primer.session.tool_wait_batches import (
+    BatchRef,
+    batches_referenced_by_park,
+    strict_batches_referenced_by_park,
+)
 from primer.worker.yield_runtime import ParkedState, ToolWaitParkedState
 
 from tests.conftest import _FakeStorageProvider
@@ -571,3 +575,110 @@ class TestRealModelLiveness:
             ),
         )
         assert not live and reason
+
+
+def test_strict_batch_metadata_keeps_tolerant_projection_unchanged() -> None:
+    blob = {
+        "kind": "tool_wait",
+        "outstanding_task_ids": ["s/x:tool:0:1", 7],
+        "notifying_task_ids": [],
+    }
+    assert batches_referenced_by_park(blob)["s/x:tool:0:1"].outstanding_ids == (
+        "s/x:tool:0:1",
+    )
+    assert not strict_batches_referenced_by_park(blob)["s/x:tool:0:1"].well_formed
+
+
+def test_strict_graph_batches_are_independent() -> None:
+    blob = {
+        "graph_checkpoint": {
+            "pending_tool_waits": [
+                {
+                    "node_id": "A",
+                    "outstanding_task_ids": ["s/A:tool:0:1"],
+                    "notifying_results": [],
+                },
+                {
+                    "node_id": "B",
+                    "outstanding_task_ids": ["s/B:tool:0:1", None],
+                    "notifying_results": [],
+                },
+            ],
+        },
+    }
+    strict = strict_batches_referenced_by_park(blob)
+    assert strict["s/A:tool:0:1"].well_formed
+    assert not strict["s/B:tool:0:1"].well_formed
+
+
+def test_strict_graph_reports_unkeyable_sources_without_changing_tolerant_projection() -> None:
+    valid = "s/A:tool:0:1"
+    blob = {
+        "graph_checkpoint": {
+            "pending_tool_waits": [
+                {
+                    "node_id": "A",
+                    "outstanding_task_ids": [valid],
+                    "notifying_results": [],
+                },
+                {
+                    "node_id": "bad",
+                    "outstanding_task_ids": [7],
+                    "notifying_results": [],
+                },
+                "not-a-mapping",
+            ],
+        },
+    }
+    assert list(batches_referenced_by_park(blob)) == [valid]
+    strict = strict_batches_referenced_by_park(blob)
+    assert list(strict) == [valid]
+    assert strict[valid].well_formed
+    assert strict.malformed_count == 2
+    assert strict.malformed_sources[0].source_index == 1
+    assert strict.malformed_sources[0].node_id == "bad"
+    assert strict.malformed_sources[0].reason == "missing_usable_key"
+    assert strict.malformed_sources[1].source_index == 2
+    assert strict.malformed_sources[1].reason == "entry_not_mapping"
+
+
+def test_strict_foreign_kind_rejects_graph_batches_before_parsing() -> None:
+    blob = {
+        "kind": "foreign",
+        "graph_checkpoint": {
+            "pending_tool_waits": [
+                {
+                    "node_id": "A",
+                    "outstanding_task_ids": ["s/A:tool:0:1"],
+                    "notifying_results": [],
+                },
+                {"node_id": "bad", "outstanding_task_ids": [7], "notifying_results": []},
+            ],
+        },
+    }
+    strict = strict_batches_referenced_by_park(blob)
+    assert not strict
+    assert strict.malformed_count == 0
+    assert strict.malformed_sources == ()
+
+
+def test_strict_graph_rejects_duplicate_ids_across_batches() -> None:
+    duplicate = "s/shared:tool:0:1"
+    strict = strict_batches_referenced_by_park({
+        "graph_checkpoint": {
+            "pending_tool_waits": [
+                {
+                    "node_id": "A",
+                    "outstanding_task_ids": [duplicate],
+                    "notifying_results": [],
+                },
+                {
+                    "node_id": "B",
+                    "outstanding_task_ids": [duplicate],
+                    "notifying_results": [],
+                },
+            ],
+        },
+    })
+    assert list(strict) == [duplicate]
+    assert not strict[duplicate].well_formed

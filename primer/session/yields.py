@@ -462,6 +462,7 @@ async def _rearm_if_redelivered(
     session_storage: "Storage[WorkspaceSession]",
     engine: "ClaimEngine | None",
     responder_decision: ResponderDecision | None = None,
+    occurrence_where: dict[str, list[Any]] | None = None,
 ) -> bool:
     """Whether a wake the flip refused is a redelivery of the wake the row already holds; if so the lease is re-armed, as a landed flip re-arms it.
 
@@ -472,6 +473,11 @@ async def _rearm_if_redelivered(
     """
     fresh = await session_storage.get(session.id)
     if fresh is None or fresh.status == SessionStatus.ENDED or fresh.parked_status != "resumable" or fresh.parked_at != session.parked_at:
+        return False
+    if occurrence_where is not None and any(
+        raw_generation(fresh, field) not in allowed
+        for field, allowed in occurrence_where.items()
+    ):
         return False
     held = dump_for_storage(fresh).get("parked_state") or {}
     mine = dumped["parked_state"]
@@ -506,6 +512,7 @@ async def durably_mark_session_resumable(
     responder_decision: ResponderDecision | None = None,
     _decision_epoch: str | None = None,
     _decision_attempt: int = 0,
+    _occurrence_where: dict[str, list[Any]] | None = None,
 ) -> bool:
     """Guarded, durable ``parked -> resumable`` flip for one session row.
 
@@ -604,13 +611,18 @@ async def durably_mark_session_resumable(
         leaf_key = leaf_key_for(_dispatch_key_for(event_key, session_id=session.id) or event_key)
         own["resume_event_payloads"] = {leaf_key: {"payload": dict(payload or {}), "event_key": event_key}}
     # Dumped as the model stores them (a NaN in a payload becomes null), the form a whole-document write gave them.
-    dumped = dump_for_storage(session.model_copy(update={"parked_status": "resumable", "parked_state": own}))
+    dumped = dump_for_storage(session.model_copy(update={
+        "parked_status": "resumable",
+        "parked_state": own,
+        "resumable_at": datetime.now(timezone.utc),
+    }))
     if session.parked_status not in allowed:
         # A single-event park advances from ``parked`` only: this one already took a wake. Refused, unless that wake is this one.
         return session.parked_status == "resumable" and await _rearm_if_redelivered(
             session, event_key=event_key, leaf_key=leaf_key, dumped=dumped,
             session_storage=session_storage, engine=engine,
             responder_decision=responder_decision,
+            occurrence_where=_occurrence_where,
         )
     if _wake_names_another_gate(session, event_key=event_key, payload=payload):
         return False
@@ -647,7 +659,10 @@ async def durably_mark_session_resumable(
         # One wake per key (ticket 01a12606): ``resumable`` is admitted for a reply to ANOTHER key of the park, never over the entry this key already
         # holds. In the guard, so a second wake that read the same row is refused by the backend, not by a check of the snapshot.
         where[("parked_state", "resume_event_payloads", leaf_key)] = [None]
-    patch: dict[str, Any] = {"parked_status": dumped["parked_status"]}
+    patch: dict[str, Any] = {
+        "parked_status": dumped["parked_status"],
+        "resumable_at": dumped["resumable_at"],
+    }
     where_extra: dict[str, list[Any]] = {}
     if responder_decision is not None:
         try:
@@ -661,6 +676,7 @@ async def durably_mark_session_resumable(
                 session, event_key=event_key, leaf_key=leaf_key, dumped=dumped,
                 session_storage=session_storage, engine=engine,
                 responder_decision=responder_decision,
+                occurrence_where=_occurrence_where,
             )
         decision_patch, where_extra = decision_mutation
         patch.update(decision_patch)
@@ -680,6 +696,8 @@ async def durably_mark_session_resumable(
             )
         })
     where.update(where_extra)
+    if _occurrence_where is not None:
+        where.update(_occurrence_where)
     where["parked_at"] = parked_at_spellings
     landed = await patch_if_checked(
         session_storage,
@@ -694,6 +712,7 @@ async def durably_mark_session_resumable(
         redelivered = await _rearm_if_redelivered(
             session, event_key=event_key, leaf_key=leaf_key, dumped=dumped, session_storage=session_storage, engine=engine,
             responder_decision=responder_decision,
+            occurrence_where=_occurrence_where,
         )
         retry_attribution = responder_decision is not None or by is not None
         if redelivered or not retry_attribution or _decision_attempt >= 2:
@@ -716,6 +735,7 @@ async def durably_mark_session_resumable(
             responder_decision=responder_decision,
             _decision_epoch=decision_epoch,
             _decision_attempt=_decision_attempt + 1,
+            _occurrence_where=_occurrence_where,
         )
     # Re-arm the engine lease (park dropped it). mark_resumable upserts a
     # fresh claimable lease when none exists.

@@ -55,6 +55,18 @@ def test_the_ddl_is_idempotent_and_plain():
             assert "IF NOT EXISTS" in stmt and "CONCURRENTLY" not in stmt
 
 
+def test_terminal_tool_wait_index_matches_the_bounded_scan() -> None:
+    _, unique, pg_expr = _entry("sessions", "tool_wait_reconcile")
+    assert unique is False
+    assert pg_expr == "((data->>'parked_tool_batches'), id)"
+    (suffix, sqlite_unique, sqlite_expr), = [
+        entry for entry in _SQLITE_HOT_FIELD_INDEXES["sessions"]
+        if entry[0] == "tool_wait_reconcile"
+    ]
+    assert suffix == "tool_wait_reconcile" and sqlite_unique is False
+    assert sqlite_expr == "(json_extract(data,'$.parked_tool_batches'), id)"
+
+
 @pytest.mark.asyncio
 async def test_sqlite_creates_the_same_hot_fields_and_survives_a_second_boot(tmp_path):
     path = str(tmp_path / "m2.sqlite")
@@ -93,6 +105,37 @@ async def test_sqlite_session_find_by_an_indexed_field_returns_the_same_rows(tmp
     )
     assert sorted(r.id for r in found.items) == ["s0", "s2"]
     await sp.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_tool_wait_reconcile_query_uses_the_id_order_index(tmp_path):
+    sp = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "reconcile.sqlite")))
+    try:
+        await sp.initialize()
+        from primer.storage._sqlite_predicate import render_order_by_sqlite
+        from primer.storage.q import Q
+
+        store = sp.get_storage(WorkspaceSession)
+        await store.list(OffsetPage(offset=0, length=1))
+        predicate = (
+            Q(WorkspaceSession)
+            .where("parked_tool_batches", True)
+            .where_in("parked_status", ["parked", "resumable"])
+            .build()
+        )
+        translator = store._translator()
+        where_sql = await store._where(translator, predicate)
+        translator.append_param(201)
+        sql = (
+            'EXPLAIN QUERY PLAN SELECT id, data FROM "sessions" '
+            f"WHERE {where_sql} {render_order_by_sqlite(WorkspaceSession, None)} LIMIT ?"
+        )
+        async with sp.connection.execute(sql, list(translator._params)) as cur:
+            plan = " ".join(str(value) for row in await cur.fetchall() for value in row)
+        assert "sessions_tool_wait_reconcile" in plan
+        assert "USE TEMP B-TREE FOR ORDER BY" not in plan
+    finally:
+        await sp.aclose()
 
 
 # ---------------------------------------------------------------------------
