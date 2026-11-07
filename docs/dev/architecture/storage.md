@@ -65,6 +65,9 @@ caller's scalar lifecycle, binding and park occurrence generations. A refused
 write re-reads and retries from the winning map, so concurrent additions are
 not lost; pause/cancel/interrupt flags and their stored timestamps plus
 `last_seq` are in the fence, and no container value appears in `where`.
+S3b uses the same scalar fence for epoch rotation and reservation projection:
+rotation replaces the storage-only ledger envelope in one guarded patch, while
+projection patches only `turn_person` and its four storage-only receipt fields.
 
 ## 3. Public surface
 
