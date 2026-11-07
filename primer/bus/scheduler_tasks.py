@@ -38,6 +38,7 @@ from primer.int.coordinator import (
     ROLE_SESSION_MESSAGING_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
+    ROLE_TOOL_WAIT_RECONCILER,
     ROLE_TIMER_SCHEDULER,
     ROLE_WEBHOOK_DELIVERY_RETENTION,
 )
@@ -235,6 +236,51 @@ class TimerScheduler(_BackgroundTask):
                 await emit_session_wake(self._sp, self._bus, event_key, {})
             else:
                 await self._bus.publish(event_key, payload={})
+
+
+class ToolWaitWakeReconciler(_BackgroundTask):
+    """Leader-elected bounded repair for terminal tool-wait batches."""
+
+    role = ROLE_TOOL_WAIT_RECONCILER
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        claim_engine: "ClaimEngine",
+        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+    ) -> None:
+        super().__init__(name="tool-wait-wake-reconciler")
+        self._sp = storage_provider
+        self._engine = claim_engine
+        self._poll = poll_seconds
+        self._cursor: str | None = None
+
+    async def _run(self) -> None:
+        from primer.claim.tool_wait_reconcile import (
+            reconcile_terminal_tool_wait_parks,
+        )
+
+        while not self._stopping:
+            try:
+                next_cursor, count = await reconcile_terminal_tool_wait_parks(
+                    self._sp,
+                    self._engine,
+                    source="periodic",
+                    cursor=self._cursor,
+                )
+                self._cursor = next_cursor
+                if count:
+                    logger.info(
+                        "tool-wait reconciliation examined %d marked sessions",
+                        count,
+                    )
+            except Exception:
+                logger.exception("tool-wait reconciliation tick failed")
+            try:
+                await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
 
 
 class TimeoutSweeper(_BackgroundTask):

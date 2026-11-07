@@ -111,6 +111,8 @@ async def abandon_session_gate(
         "parked_status": None,
         "parked_state": None,
         "parked_event_key": None,
+        "parked_tool_batches": None,
+        "resumable_at": None,
         "last_seq": last_seq,
     }
     where = {

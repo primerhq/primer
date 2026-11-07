@@ -1,8 +1,8 @@
 """Which tool_wait batches a park references: the one membership test over a ``parked_state`` blob.
 
 Phase 3 stage 7a (plan 3.3, the lead's ruling C1). :func:`batches_referenced_by_park` is THE answer to "which
-batches does this park hold, and which task ids are in them": the executor's liveness check, the wake hook, the
-resolver, the reconciler and the timeout step are to ask it (none of them exists yet, so it has no caller today).
+batches does this park hold, and which task ids are in them": the executor liveness check, wake hook, resolver,
+strict terminal-wake reconciler and timeout step all build on this contract.
 The modules that read the blob's batch keys themselves on main are a frozen allowlist in a hygiene test
 (``tests/session/test_tool_wait_batch_readers.py``) that fails any new reader; later PRs shrink the list as they
 move those readers here.
@@ -29,8 +29,10 @@ entry hides neither its well-formed siblings nor the rest of the park.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # The blob's own discriminator (``primer.worker.yield_runtime.TOOL_WAIT_PARKED_STATE_KIND``), spelled here so this
 # module imports nothing and the claim adapters can use it; the tests build their blobs with ``ToolWaitParkedState``
@@ -50,6 +52,56 @@ class BatchRef:
     node_id: str | None
     outstanding_ids: tuple[str, ...]
     notifying_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StrictBatchRef:
+    """One batch plus the exact stored-shape proof used by wake repair.
+
+    The tolerant :class:`BatchRef` contract above is deliberately unchanged.
+    ``well_formed`` is false when its source list/pairs contained anything the
+    tolerant reader filtered out, or when the combined ids are empty or not
+    unique. Repair code must never treat such a projection as complete.
+    """
+
+    node_id: str | None
+    outstanding_ids: tuple[str, ...]
+    notifying_ids: tuple[str, ...]
+    well_formed: bool
+
+    @property
+    def task_ids(self) -> tuple[str, ...]:
+        return self.outstanding_ids + self.notifying_ids
+
+
+@dataclass(frozen=True)
+class StrictMalformedSource:
+    """A graph batch source that cannot be represented by a keyed ref."""
+
+    source_index: int
+    node_id: str | None
+    reason: Literal["entry_not_mapping", "missing_usable_key"]
+
+
+@dataclass(frozen=True)
+class StrictBatchParseResult(Mapping[str, StrictBatchRef]):
+    """Keyed strict refs plus bounded metadata for unkeyable sources."""
+
+    batches: dict[str, StrictBatchRef]
+    malformed_sources: tuple[StrictMalformedSource, ...] = ()
+
+    def __getitem__(self, key: str) -> StrictBatchRef:
+        return self.batches[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.batches)
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
+    @property
+    def malformed_count(self) -> int:
+        return len(self.malformed_sources)
 
 
 def _ids(value: Any) -> tuple[str, ...]:
@@ -115,6 +167,115 @@ def batches_referenced_by_park(blob: Any) -> dict[str, BatchRef]:
     return batches
 
 
+def strict_batches_referenced_by_park(blob: Any) -> StrictBatchParseResult:
+    """Return tolerant batch projections annotated with exact-shape validity.
+
+    This is orthogonal to :func:`batches_referenced_by_park`: existing
+    liveness callers keep its forgiving behaviour, while reconciliation can
+    fail closed instead of mistaking filtered malformed ids for a complete
+    batch.
+    """
+
+    empty = StrictBatchParseResult({})
+    if not isinstance(blob, dict):
+        return empty
+    kind = blob.get("kind")
+    if kind is not None and kind != _TOOL_WAIT_KIND:
+        return empty
+    sources: list[Any]
+    checkpoint = blob.get("graph_checkpoint")
+    if checkpoint is not None:
+        sources = list(checkpoint.get("pending_tool_waits") or []) if isinstance(checkpoint, dict) else []
+    elif kind == _TOOL_WAIT_KIND:
+        sources = [blob]
+    else:
+        return empty
+    parsed: list[tuple[str, str | None, tuple[str, ...], tuple[str, ...], bool]] = []
+    malformed_sources: list[StrictMalformedSource] = []
+    for source_index, source in enumerate(sources):
+        if not isinstance(source, dict):
+            malformed_sources.append(StrictMalformedSource(
+                source_index=source_index,
+                node_id=None,
+                reason="entry_not_mapping",
+            ))
+            continue
+        if checkpoint is not None:
+            raw_out = source.get("outstanding_task_ids")
+            raw_notify = source.get("notifying_results")
+            out = _ids(raw_out)
+            notifying = _notifying_ids(raw_notify)
+            out_ok = isinstance(raw_out, list | tuple) and len(out) == len(raw_out)
+            notify_ok = isinstance(raw_notify, list | tuple) and all(
+                isinstance(pair, list | tuple)
+                and len(pair) == 2
+                and isinstance(pair[0], str)
+                and bool(pair[0])
+                for pair in raw_notify
+            )
+            node_id = source.get("node_id")
+            node_ok = isinstance(node_id, str) and bool(node_id)
+        else:
+            raw_out = source.get("outstanding_task_ids")
+            raw_notify = source.get("notifying_task_ids")
+            out = _ids(raw_out)
+            notifying = _ids(raw_notify)
+            out_ok = isinstance(raw_out, list | tuple) and len(out) == len(raw_out)
+            notify_ok = isinstance(raw_notify, list | tuple) and len(notifying) == len(raw_notify)
+            node_id = None
+            node_ok = True
+        ids = out + notifying
+        key_ids = out or notifying
+        if not key_ids:
+            malformed_sources.append(StrictMalformedSource(
+                source_index=source_index,
+                node_id=node_id if isinstance(node_id, str) else None,
+                reason="missing_usable_key",
+            ))
+            continue
+        parsed.append((
+            key_ids[0],
+            node_id if isinstance(node_id, str) else None,
+            out,
+            notifying,
+            (
+                out_ok
+                and notify_ok
+                and node_ok
+                and all(bool(task_id) for task_id in ids)
+                and len(ids) == len(set(ids))
+            ),
+        ))
+    id_counts = Counter(task_id for _, _, out, notifying, _ in parsed for task_id in (*out, *notifying))
+    key_counts = Counter(key for key, *_ in parsed)
+    strict: dict[str, StrictBatchRef] = {}
+    for key, node_id, out, notifying, locally_well_formed in parsed:
+        ref = StrictBatchRef(
+            node_id=node_id,
+            outstanding_ids=out,
+            notifying_ids=notifying,
+            well_formed=(
+                locally_well_formed
+                and key_counts[key] == 1
+                and all(id_counts[task_id] == 1 for task_id in (*out, *notifying))
+            ),
+        )
+        if key in strict:
+            previous = strict[key]
+            strict[key] = StrictBatchRef(
+                node_id=previous.node_id,
+                outstanding_ids=previous.outstanding_ids,
+                notifying_ids=previous.notifying_ids,
+                well_formed=False,
+            )
+        else:
+            strict[key] = ref
+    return StrictBatchParseResult(
+        batches=strict,
+        malformed_sources=tuple(malformed_sources),
+    )
+
+
 def task_is_live_for_session(task, session) -> "tuple[bool, str]":
     """Whether a non-terminal ``ToolCallTask`` row is still live for its owning
     session row - the one liveness rule the executor's two consumers share.
@@ -173,4 +334,10 @@ def task_is_live_for_session(task, session) -> "tuple[bool, str]":
     return False, "orphaned: the task belongs to a turn the session has moved past"
 
 
-__all__ = ["BatchRef", "batches_referenced_by_park", "task_is_live_for_session"]
+__all__ = [
+    "BatchRef",
+    "StrictBatchRef",
+    "batches_referenced_by_park",
+    "strict_batches_referenced_by_park",
+    "task_is_live_for_session",
+]

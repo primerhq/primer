@@ -24,8 +24,10 @@ import asyncpg
 
 from primer.api._app_lifespan_phases import sweep_orphaned_tool_call_tasks
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
+from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.postgres import PostgresClaimEngine
-from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimKind
+from primer.claim.tool_wait_reconcile import verify_and_mark_batch_resumable
+from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimKind, PostReleaseWake
 from primer.model.agent import Agent, AgentModel
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -200,3 +202,42 @@ async def test_the_sweep_voids_the_orphan_and_keeps_the_live_row(pg_storage):
     assert await engine.has_lease(ClaimKind.TOOL_CALL, live_id), (
         "the live row keeps its lease for the pool to claim"
     )
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_terminal_batch_repair_uses_committed_rows_and_rearms_session(pg_storage):
+    task_storage = pg_storage.get_storage(ToolCallTask)
+    session_storage = pg_storage.get_storage(WorkspaceSession)
+    task_id = f"{_SESSION_ID}/x:tool:0:9"
+    blob = _park_blob([task_id])
+    session = _session_row(SessionStatus.RUNNING, blob).model_copy(update={
+        "parked_tool_batches": True,
+    })
+    await session_storage.create(session)
+    await task_storage.create(ToolCallTask(
+        id=task_id, session_id=_SESSION_ID, turn_no=0,
+        tool_name="workspace__write", state=ToolCallTaskState.DONE,
+        record_seq=1, created_at=_now(), batch_task_ids=[task_id],
+    ))
+    engine = PostgresClaimEngine(
+        storage_provider=pg_storage,
+        adapters={
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage),
+            ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage),
+        },
+    )
+    signal = PostReleaseWake(
+        session_id=_SESSION_ID,
+        event_key=tool_wait_event_key(_SESSION_ID, scoped_task_id=task_id),
+        payload={"tool_wait_ready": True},
+        required_terminal_task_ids=(task_id,),
+    )
+    assert await verify_and_mark_batch_resumable(
+        session_id=_SESSION_ID, session_storage=session_storage,
+        task_storage=task_storage, engine=engine, source="hook", signal=signal,
+    ) == "advanced"
+    repaired = await session_storage.get(_SESSION_ID)
+    assert repaired is not None and repaired.parked_status == "resumable"
+    assert repaired.resumable_at is not None
+    assert await engine.has_lease(ClaimKind.SESSION, _SESSION_ID)

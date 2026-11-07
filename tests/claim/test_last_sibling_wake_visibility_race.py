@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
-from primer.claim.factory import _post_release_wake_ready
 from primer.int.claim import ReleaseOutcome
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -41,6 +40,17 @@ def _token(task_id: str) -> str:
 
 def _release(task_id: str) -> ReleaseOutcome:
     return ReleaseOutcome(success=True, drop_lease=True, claim_token=_token(task_id))
+
+
+async def _batch_is_terminal(signal, storage) -> bool:
+    """The transaction-visibility assertion isolated from session wake policy."""
+    for task_id in signal.required_terminal_task_ids:
+        task = await storage.get(task_id)
+        if task is None or task.state not in {
+            ToolCallTaskState.DONE, ToolCallTaskState.FAILED,
+        }:
+            return False
+    return True
 
 
 class _PerConnVisibilityStorage:
@@ -98,18 +108,18 @@ async def test_concurrent_last_two_commits_recover_the_wake_post_commit() -> Non
     assert signal_b is not None
     assert signal_a.required_terminal_task_ids == tuple(batch)
     assert signal_b.required_terminal_task_ids == tuple(batch)
-    assert not await _post_release_wake_ready(signal_a, storage)
+    assert not await _batch_is_terminal(signal_a, storage)
 
     # The first commit is still not enough, so there is no premature wake.
     storage.commit(conn_a)
-    assert not await _post_release_wake_ready(signal_a, storage)
+    assert not await _batch_is_terminal(signal_a, storage)
 
     # The second commit makes either candidate ready. In production each
     # engine invokes its hook immediately after its own commit; therefore
     # the later commit always supplies at least one ready candidate.
     storage.commit(conn_b)
-    assert await _post_release_wake_ready(signal_a, storage)
-    assert await _post_release_wake_ready(signal_b, storage)
+    assert await _batch_is_terminal(signal_a, storage)
+    assert await _batch_is_terminal(signal_b, storage)
     assert storage._committed[a].state == ToolCallTaskState.DONE
     assert storage._committed[b].state == ToolCallTaskState.DONE
 
@@ -127,14 +137,14 @@ async def test_sequential_non_final_then_final_release_wakes_only_when_ready() -
     signal_a = await adapter.on_release(conn_a, a, outcome=_release(a))
     assert signal_a is not None
     storage.commit(conn_a)
-    assert not await _post_release_wake_ready(signal_a, storage)
+    assert not await _batch_is_terminal(signal_a, storage)
 
     signal_b = await adapter.on_release(conn_b, b, outcome=_release(b))
     assert signal_b is not None
-    assert not await _post_release_wake_ready(signal_b, storage)
+    assert not await _batch_is_terminal(signal_b, storage)
     storage.commit(conn_b)
 
-    assert await _post_release_wake_ready(signal_b, storage)
+    assert await _batch_is_terminal(signal_b, storage)
 
 
 @pytest.mark.asyncio
@@ -147,9 +157,9 @@ async def test_single_task_batch_is_ready_only_after_its_commit() -> None:
     signal = await adapter.on_release(conn, task_id, outcome=_release(task_id))
 
     assert signal is not None
-    assert not await _post_release_wake_ready(signal, storage)
+    assert not await _batch_is_terminal(signal, storage)
     storage.commit(conn)
-    assert await _post_release_wake_ready(signal, storage)
+    assert await _batch_is_terminal(signal, storage)
 
 
 @pytest.mark.asyncio
@@ -205,7 +215,7 @@ async def test_in_memory_engine_post_commit_check_wakes_exactly_once() -> None:
     signals: list = []
 
     async def _hook(signal) -> None:
-        if await _post_release_wake_ready(signal, storage):
+        if await _batch_is_terminal(signal, storage):
             signals.append(signal)
 
     engine.bind_post_release_hook(_hook)
