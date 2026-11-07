@@ -10,8 +10,9 @@ on, not a channel anything subscribes to) - so the intended caller is
 the respond endpoint for a task-level gate, calling this helper
 directly, the same way the session-level respond endpoints call
 :func:`~primer.session.yields.durably_wake_session`. NOT WIRED: no
-production code calls this helper yet (only tests do), and nothing can
-produce a GATED task until the claim worker is built.
+production decision endpoint calls this helper yet (only tests do).
+The claim worker can produce a GATED task, but no decision path advances
+that row back to QUEUED.
 
 Unlike the session version, there is no ``ToolCallTaskState`` value
 equivalent to ``"resumable"``: :class:`~primer.claim.adapters.tool_calls.
@@ -27,8 +28,8 @@ how the session-level write happens in the RESUME coordinator
 (``primer.worker.session_resume_coordinator``), not in
 ``durably_wake_session`` itself. That resume-time write does not exist
 yet: ``primer.worker.tool_wait_resume_coordinator`` only reads
-terminal tasks and has no ``ToolApprovalRecord`` write, because no
-GATED task can occur until the claim worker exists.
+terminal tasks and has no ``ToolApprovalRecord`` write. This missing
+decision and resume wiring is one reason the feature flag remains off.
 """
 
 from __future__ import annotations

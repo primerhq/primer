@@ -8,15 +8,14 @@ session row of its own to park on, so it must NEVER receive this flag -
 the same deliberate scope-cut class as artifact_storage's own cut for
 that exact surface (see run_agent_turn's docstring).
 
-Two invariants pinned here:
+The standalone non-gated agent executor exists, but nested topology remains
+outside its supported surface. Two nested-subagent invariants are pinned here:
 
 * Structural: run_subagent / resume_subagent don't even ACCEPT the flag
   as a parameter - the scope-cut is enforced by the signature itself,
   not by a runtime check someone could accidentally bypass.
-* Propagation: the executors DO thread it correctly at the top level
-  (construction time, mirroring artifact_storage/turn_no's own pattern),
-  and a subgraph node's child executor inherits it (same session row as
-  its parent, unlike a subagent turn - see _build_sub_executor).
+These signature checks do not prove graph binding support. The graph binding
+executor remains unsupported, and subgraph children force the flag off.
 """
 
 from __future__ import annotations

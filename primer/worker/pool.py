@@ -249,10 +249,9 @@ class WorkerPool:
 
         # Build the dispatch table now that _worker_id is known. TOOL_CALL is
         # registered UNCONDITIONALLY (the executor slice, BPF wave 1): the
-        # reserved tool slice's own `TOOL_CALL in self._dispatch` guard below
-        # still keeps a flag-off build from claiming tool leases nothing enqueues
-        # into, and a pool test that starts the pool with a hand-rolled dispatch
-        # table opts in or out of the handler explicitly.
+        # feature flag controls whether task rows are produced and whether the
+        # reserved claim loop is selected. A pool test that starts the pool with
+        # a hand-rolled dispatch table can still opt out of the handler.
         self._dispatch = {
             ClaimKind.SESSION: self._run_engine_session,
             ClaimKind.HARNESS: self._run_engine_harness,
@@ -551,13 +550,10 @@ class WorkerPool:
         reserve" is the whole test. It is deliberately NOT keyed on whether TOOL_CALL is in
         ``_dispatch``: since the executor slice (BPF wave 1) the handler is registered
         unconditionally by the ``_dispatch`` build, so a membership key here would be a constant
-        and would have hidden the loop selection from the flag. (Before that slice landed the
-        docstring at this site falsely stated the registration as present fact while it did not
-        exist - the D-A2-02 fix; the forward-looking claim is stated here as the precondition it
-        is: the executor slice must register the handler unconditionally, OR the reserved slice's
-        own ``TOOL_CALL in self._dispatch`` guard - which stays - is the only thing keeping it
-        from claiming unrunnable leases.) A reserve set with the flag
-        off selects the unreserved loop (pinned in tests/worker/test_pool.py).
+        and would have hidden the loop selection from the flag. The reserved slice keeps its
+        ``TOOL_CALL in self._dispatch`` check as a defensive guard for tests and custom pools.
+        A reserve set with the flag off selects the unreserved loop (pinned in
+        tests/worker/test_pool.py).
 
         Extracted to its own method (rather than inlined in start()) so this decision is testable
         without fighting start()'s own _dispatch construction.
