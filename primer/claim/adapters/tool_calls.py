@@ -181,6 +181,26 @@ class ToolCallClaimAdapter(ClaimAdapter):
         # is not built yet.
         if outcome.park is not None:
             p = outcome.park
+            # Lazy import keeps the claim adapter importable without pulling
+            # worker execution modules into every claim-engine process.
+            from primer.worker.task_gate_runtime import (
+                TaskGateState,
+                TaskGateStateError,
+                decode_task_gate_state,
+                validate_task_gate_call,
+            )
+
+            try:
+                gate = decode_task_gate_state(p.parked_state)
+            except TaskGateStateError as exc:
+                raise _InvalidEntityUpdate(
+                    "it gave an invalid task-gate envelope",
+                    detail=str(exc)[:300],
+                ) from exc
+            if not isinstance(gate, TaskGateState):
+                raise _InvalidEntityUpdate(
+                    "it gave a legacy task-gate envelope for a new release",
+                )
             # gate_seq is a counter: a read, then a write that names the value read, so a
             # concurrent change rejects the write instead of being lost. A row stored before
             # the field existed has no ``gate_seq`` key and reads as 0; ``patch_if`` lets a guard
@@ -190,6 +210,24 @@ class ToolCallClaimAdapter(ClaimAdapter):
             current = await self._read(entity_id, conn)
             if current is None:
                 return None
+            try:
+                validate_task_gate_call(gate, current)
+            except TaskGateStateError as exc:
+                raise _InvalidEntityUpdate(
+                    "it gave a task-gate envelope that does not identify the task",
+                    detail=str(exc)[:300],
+                ) from exc
+            if (
+                gate.gate_seq != current.gate_seq + 1
+                or gate.event_key != p.parked_event_key
+                or gate.tool_call_id != current.wire_call_id
+                or gate.parked_at != p.parked_at
+                or gate.deadline != p.parked_until
+                or gate.resolution is not None
+            ):
+                raise _InvalidEntityUpdate(
+                    "it gave a task-gate envelope that does not match the release",
+                )
             patch = {
                 "state": ToolCallTaskState.GATED.value,
                 "gate_event_key": p.parked_event_key,
@@ -199,8 +237,10 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 # here on the task since a bare ToolCallTask has no other
                 # durable home to point at. Cleared on every other branch
                 # below so it never survives past the gate it belongs to.
-                "gate_state": p.parked_state,
+                "gate_state": gate.to_jsonable(),
                 "gate_seq": current.gate_seq + 1,
+                "gate_occurrence_token": gate.occurrence_token,
+                "gate_resolution": None,
                 # Nobody owns a gated row: the token dies with the claim, so the releaser
                 # cannot write it again once the gate flips it back to QUEUED.
                 "claim_token": None,
@@ -229,7 +269,11 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 ).value,
                 "finished_at": now,
                 "last_error": None if outcome.success else outcome.last_error,
+                "gate_event_key": None,
+                "gate_until": None,
                 "gate_state": None,
+                "gate_occurrence_token": None,
+                "gate_resolution": None,
                 **update,
             }
             updated = await self._patch(entity_id, patch, fence, conn, handler_values=update)
@@ -252,7 +296,11 @@ class ToolCallClaimAdapter(ClaimAdapter):
         patch = {
             "state": ToolCallTaskState.QUEUED.value,
             "started_at": None,
+            "gate_event_key": None,
+            "gate_until": None,
             "gate_state": None,
+            "gate_occurrence_token": None,
+            "gate_resolution": None,
             "result_state": None,
             "claim_token": None,
             **update,
@@ -308,7 +356,11 @@ class ToolCallClaimAdapter(ClaimAdapter):
                 "state": ToolCallTaskState.FAILED.value,
                 "finished_at": datetime.now(timezone.utc),
                 "last_error": f"the worker's release was invalid: {exc.reason}",
+                "gate_event_key": None,
+                "gate_until": None,
                 "gate_state": None,
+                "gate_occurrence_token": None,
+                "gate_resolution": None,
             },
             {"state": list(_LIVE_STATES), "claim_token": [token]},
             conn,

@@ -9,7 +9,7 @@ exercised for real here and against SQLite in test_entity_storage_hooks.py.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -17,6 +17,8 @@ from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.int.claim import ClaimKind, ParkRequest, PostReleaseWake, ReleaseOutcome
 from primer.model.chat import ToolResultPart
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from primer.model.yield_ import Yielded
+from primer.worker.task_gate_runtime import TaskGateState, decode_task_gate_state
 from tests.conftest import _InMemoryStorage
 
 
@@ -60,12 +62,39 @@ def _release(task_id: str, **kwargs) -> ReleaseOutcome:
     return ReleaseOutcome(**kwargs)
 
 
-def _gate(event_key: str = "tool_approval:sess-1:t1", until: datetime | None = None) -> ParkRequest:
+def _gate(
+    event_key: str = "tool_approval:sess-1:t1",
+    until: datetime | None = None,
+    *,
+    gate_seq: int = 1,
+) -> ParkRequest:
+    parked_at = _now()
+    state = TaskGateState(
+        occurrence_token=f"{gate_seq:032x}",
+        gate_seq=gate_seq,
+        event_key=event_key,
+        yielded=Yielded(
+            tool_name="_approval",
+            event_key=event_key,
+            resume_metadata={
+                "original_call": {
+                    "id": "t1",
+                    "name": "workspace__write",
+                    "arguments": {},
+                },
+            },
+        ),
+        tool_call_id="t1",
+        tool_arguments={},
+        parked_at=parked_at,
+        deadline=until,
+        binding_epoch=0,
+    )
     return ParkRequest(
-        parked_state={"kind": "approval"},
+        parked_state=state.to_jsonable(),
         parked_event_key=event_key,
         parked_until=until,
-        parked_at=_now(),
+        parked_at=parked_at,
     )
 
 
@@ -134,7 +163,7 @@ async def test_on_release_gate_sets_gated_state_and_event_key() -> None:
     storage = FakeStorage(_make_task("t1"))
     adapter = ToolCallClaimAdapter(task_storage=storage)
 
-    until = _now()
+    until = _now() + timedelta(seconds=1)
     signal = await adapter.on_release(
         conn=None, entity_id="t1",
         outcome=_release("t1", success=False, drop_lease=True, park=_gate(until=until)),
@@ -144,8 +173,12 @@ async def test_on_release_gate_sets_gated_state_and_event_key() -> None:
     assert updated.state == ToolCallTaskState.GATED
     assert updated.gate_event_key == "tool_approval:sess-1:t1"
     assert updated.gate_until == until
-    assert updated.gate_state == {"kind": "approval"}
+    decoded = decode_task_gate_state(updated.gate_state, task=updated)
+    assert isinstance(decoded, TaskGateState)
+    assert decoded.yielded.resume_metadata["original_call"]["id"] == "t1"
     assert updated.gate_seq == 1
+    assert updated.gate_occurrence_token == "0" * 31 + "1"
+    assert updated.gate_resolution is None
     assert updated.claim_token is None, "a gated row has no owner; its token must die with the claim"
 
 
@@ -157,10 +190,14 @@ async def test_each_gate_bumps_gate_seq_so_a_decision_for_an_earlier_gate_cannot
     for expected_seq in (1, 2, 3):
         await adapter.on_release(
             conn=None, entity_id="t1",
-            outcome=_release("t1", success=False, drop_lease=True, park=_gate()),
+            outcome=_release(
+                "t1", success=False, drop_lease=True,
+                park=_gate(gate_seq=expected_seq),
+            ),
         )
         gated = await storage.get("t1")
         assert (gated.state, gated.gate_seq) == (ToolCallTaskState.GATED, expected_seq)
+        assert gated.gate_occurrence_token == f"{expected_seq:032x}"
         # the gate flips back to QUEUED and the next claim stamps a fresh token
         await storage.update(gated.model_copy(update={
             "state": ToolCallTaskState.RUNNING, "claim_token": _token("t1"),
@@ -221,7 +258,14 @@ async def test_on_release_terminal_success_sets_done() -> None:
     # batch_task_ids empty (not part of a tool_wait batch): no sibling
     # check, on_release returns None - a lone claimed call outside the
     # claim-based dispatch seam.
-    task = _make_task("t2", gate_state={"resume_event_payload": {"decision": "approved"}})
+    task = _make_task(
+        "t2",
+        gate_event_key="old-key",
+        gate_until=_now(),
+        gate_state={"resume_event_payload": {"decision": "approved"}},
+        gate_occurrence_token="a" * 32,
+        gate_resolution={"schema_version": 1},
+    )
     storage = FakeStorage(task)
     adapter = ToolCallClaimAdapter(task_storage=storage)
 
@@ -231,6 +275,13 @@ async def test_on_release_terminal_success_sets_done() -> None:
     assert result is None
     updated = await storage.get("t2")
     assert updated.state == ToolCallTaskState.DONE
+    assert (
+        updated.gate_event_key,
+        updated.gate_until,
+        updated.gate_state,
+        updated.gate_occurrence_token,
+        updated.gate_resolution,
+    ) == (None, None, None, None, None)
     assert updated.finished_at is not None
     assert updated.last_error is None
     assert updated.gate_state is None
@@ -305,7 +356,10 @@ async def test_on_release_retryable_failure_resets_to_queued() -> None:
     authoritative retry counter for the lease; this row just stops
     reading RUNNING once nobody is actually running it."""
     task = _make_task(
-        "t4", gate_state={"resume_event_payload": {"decision": "approved"}},
+        "t4", gate_event_key="old-key", gate_until=_now(),
+        gate_state={"resume_event_payload": {"decision": "approved"}},
+        gate_occurrence_token="a" * 32,
+        gate_resolution={"schema_version": 1},
         result_state={"id": "t4", "output": "from a run that never released cleanly"},
         attempts=1,
     )
@@ -319,6 +373,8 @@ async def test_on_release_retryable_failure_resets_to_queued() -> None:
     assert updated.state == ToolCallTaskState.QUEUED
     assert updated.started_at is None
     assert updated.gate_state is None
+    assert updated.gate_event_key is None and updated.gate_until is None
+    assert updated.gate_occurrence_token is None and updated.gate_resolution is None
     assert updated.result_state is None
     assert updated.claim_token is None, "a requeued row has no owner"
     assert updated.attempts == 1, "a bare requeue (drain, reclaim) does not count as an unclean attempt"
@@ -582,10 +638,13 @@ async def test_a_value_no_backend_can_store_fails_the_task_instead_of_escaping_t
 
     failed = await storage.get("t1")
     assert failed.state == ToolCallTaskState.FAILED
-    assert failed.last_error == (
-        "the worker's release was invalid: it gave a value that cannot be stored as JSON "
-        "(a non-finite number, or text that is not valid Unicode)"
-    )
+    if kwargs.get("park") is not None:
+        assert failed.last_error == "the worker's release was invalid: it gave an invalid task-gate envelope"
+    else:
+        assert failed.last_error == (
+            "the worker's release was invalid: it gave a value that cannot be stored as JSON "
+            "(a non-finite number, or text that is not valid Unicode)"
+        )
     assert failed.result_state is None and failed.gate_event_key is None, "the refused value was applied"
 
 
@@ -613,10 +672,13 @@ async def test_a_value_json_cannot_encode_fails_the_task_instead_of_escaping_the
 
     failed = await storage.get("t1")
     assert failed.state == ToolCallTaskState.FAILED
-    assert failed.last_error == (
-        "the worker's release was invalid: it gave a value that cannot be encoded as JSON "
-        "(an object JSON has no form for, or bytes that are not valid UTF-8)"
-    )
+    if kwargs.get("park") is not None:
+        assert failed.last_error == "the worker's release was invalid: it gave an invalid task-gate envelope"
+    else:
+        assert failed.last_error == (
+            "the worker's release was invalid: it gave a value that cannot be encoded as JSON "
+            "(an object JSON has no form for, or bytes that are not valid UTF-8)"
+        )
     assert failed.result_state is None and failed.gate_event_key is None, "the refused value was applied"
 
 

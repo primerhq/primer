@@ -605,7 +605,15 @@ class _GatingToolManager:
             Yielded(
                 tool_name="_approval",
                 event_key=f"tool_approval:{SESSION_ID}:{CALL_ID}",
-                resume_metadata={"approval": "pending", "policy_id": "pol-1"},
+                resume_metadata={
+                    "approval": "pending",
+                    "policy_id": "pol-1",
+                    "original_call": {
+                        "id": CALL_ID,
+                        "name": f"{TOOLSET_ID}__do_thing",
+                        "arguments": {"n": 7},
+                    },
+                },
             ),
             tool_call_id=CALL_ID,
         )
@@ -643,9 +651,21 @@ async def test_a_gated_tool_call_parks_the_task_not_the_session():
             "the gated task never reached GATED",
         )
         task = task_storage._data[TASK_ID]  # noqa: SLF001
+        from primer.worker.task_gate_runtime import TaskGateState, decode_task_gate_state
+
+        gate = decode_task_gate_state(task.gate_state, task=task)
+        assert isinstance(gate, TaskGateState)
         assert tool_manager.executed == 1
         assert toolset.calls == [], "a gated call must not run the real tool"
         assert task.gate_seq == 1, "the gate branch bumps gate_seq"
+        assert len(task.gate_occurrence_token or "") == 32
+        assert gate.occurrence_token == task.gate_occurrence_token
+        assert gate.gate_seq == task.gate_seq
+        assert gate.event_key == task.gate_event_key
+        assert gate.tool_call_id == CALL_ID
+        assert gate.binding_epoch == session_rows[SESSION_ID].binding_epoch
+        assert gate.resolution is None and task.gate_resolution is None
+        assert "llm_messages" not in task.gate_state
         assert task.claim_token is None, "the gate branch clears the claim token"
         assert (ClaimKind.TOOL_CALL, TASK_ID) not in engine._leases, "the gated lease must drop"
         # The session's park is untouched. The post-release wake hook FIRES on
