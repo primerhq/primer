@@ -6,6 +6,7 @@ These tests use a stateful Docker API fake. No Docker daemon is required.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -54,6 +55,7 @@ class _Volume:
             raise _DockerFailure(404, "no such volume")
         self._docker.volume_labels.pop(self._name)
         self._docker.volume_modes.pop(self._name, None)
+        self._docker.volume_entries.pop(self._name, None)
 
 
 class _Volumes:
@@ -67,11 +69,13 @@ class _Volumes:
             if name not in self._docker.volume_labels:
                 self._docker.volume_labels[name] = dict(config.get("Labels") or {})
                 self._docker.volume_modes[name] = 0o755
+                self._docker.volume_entries[name] = set()
             self._docker.volume_create_entered.set()
             await self._docker.volume_create_gate.wait()
         if name not in self._docker.volume_labels:
             self._docker.volume_labels[name] = dict(config.get("Labels") or {})
             self._docker.volume_modes[name] = 0o755
+            self._docker.volume_entries[name] = set()
         return _Volume(self._docker, name)
 
     async def get(self, name: str) -> _Volume:
@@ -104,6 +108,23 @@ class _Container:
             self._docker.volume_modes[mount["Source"]] = 0o777
         return {"StatusCode": code}
 
+    async def show(self) -> dict[str, Any]:
+        self._docker.events.append(f"container.inspect:{self.name}")
+        if self._docker.runtime_inspect_gate is not None:
+            await self._docker.runtime_inspect_gate.wait()
+        return {"State": dict(self._docker.runtime_state)}
+
+    async def log(
+        self,
+        *,
+        stdout: bool,
+        stderr: bool,
+        tail: int,
+        timeout: float,
+    ) -> list[str]:
+        self._docker.events.append(f"container.log:{self.name}:{stdout}:{stderr}:{tail}")
+        return self._docker.runtime_logs[-tail:]
+
     async def delete(self, *, force: bool, v: bool) -> None:
         await self._docker.delete_container(self.name, force=force, v=v)
 
@@ -114,6 +135,7 @@ class _Containers:
 
     async def create_or_replace(self, *, name: str, config: dict[str, Any]) -> _Container:
         self._docker.events.append(f"container.create:{name}")
+        self._docker.copy_up_empty_workdir_volume(config)
         container = _Container(self._docker, name, config)
         self._docker.containers_by_name[name] = container
         self._docker.created.append(container)
@@ -156,14 +178,42 @@ class _Docker:
             {VOLUME: dict(volume_labels or {})} if volume_exists else {}
         )
         self.volume_modes: dict[str, int] = {VOLUME: 0o700} if volume_exists else {}
+        self.volume_entries: dict[str, set[str]] = (
+            {VOLUME: {"existing-user-file"}} if volume_exists else {}
+        )
         self.helper_exit_code = 0
         self.helper_wait_gate: asyncio.Event | None = None
         self.helper_wait_entered = asyncio.Event()
         self.volume_create_gate: asyncio.Event | None = None
         self.volume_create_entered = asyncio.Event()
+        self.runtime_state: dict[str, Any] = {
+            "Status": "running",
+            "ExitCode": 0,
+            "Error": "",
+        }
+        self.runtime_logs: list[str] = []
+        self.runtime_inspect_gate: asyncio.Event | None = None
         self.images = _Images()
         self.volumes = _Volumes(self)
         self.containers = _Containers(self)
+
+    def copy_up_empty_workdir_volume(self, config: dict[str, Any]) -> None:
+        """Model Docker creating WorkingDir before it populates an empty volume."""
+        workdir = config.get("WorkingDir")
+        mounts = config.get("HostConfig", {}).get("Mounts", [])
+        for mount in mounts:
+            if mount.get("Type") != "volume" or mount.get("Target") != workdir:
+                continue
+            source = mount["Source"]
+            if self.volume_entries.get(source) != set():
+                continue
+            if mount.get("VolumeOptions", {}).get("NoCopy") is True:
+                continue
+            # The shipped image already owns /workspace at 0777. A missing custom
+            # WorkingDir is created by Docker as root:root 0755 before copy-up.
+            copied_mode = 0o777 if workdir == DEFAULT_WORKSPACE_ROOT else 0o755
+            self.volume_modes[source] = copied_mode
+            self.events.append(f"volume.copy-up:{source}:{copied_mode:o}")
 
     async def delete_container(self, name: str, *, force: bool, v: bool) -> None:
         self.events.append(f"container.delete:{name}:{force}:{v}")
@@ -210,7 +260,7 @@ async def _create(
         name=NAME,
         image=IMAGE,
         command=[],
-        env={"VISIBLE": "yes"},
+        env={"VISIBLE": "env-private-42"},
         workdir=target,
         volume_name=VOLUME,
         volume_target=target,
@@ -251,6 +301,7 @@ async def test_fresh_custom_volume_is_initialized_by_isolated_root_helper_before
         "HostConfig": {
             "Mounts": [{
                 "Type": "volume", "Source": VOLUME, "Target": TARGET, "ReadOnly": False,
+                "VolumeOptions": {"NoCopy": True},
             }],
             "NetworkMode": "none",
             "ReadonlyRootfs": True,
@@ -262,6 +313,13 @@ async def test_fresh_custom_volume_is_initialized_by_isolated_root_helper_before
     assert final.config["User"] == "1234:5678"
     assert final.config["WorkingDir"] == TARGET
     assert "PRIMER_RUNTIME_TOKEN=runtime-secret" in final.config["Env"]
+    assert final.config["HostConfig"]["Mounts"][0] == {
+        "Type": "volume",
+        "Source": VOLUME,
+        "Target": TARGET,
+        "ReadOnly": False,
+        "VolumeOptions": {"NoCopy": True},
+    }
     assert any(mount.get("Type") == "bind" for mount in final.config["HostConfig"]["Mounts"])
     helper_delete = f"container.delete:{helper.name}:True:False"
     assert docker.events.index(f"container.wait:{helper.name}") < docker.events.index(helper_delete)
@@ -273,7 +331,16 @@ async def test_default_workspace_uses_image_mode_without_an_initializer(monkeypa
     await _create(docker, monkeypatch, target=DEFAULT_WORKSPACE_ROOT)
 
     assert len(docker.created) == 1
-    assert docker.created[0].name == NAME and not docker.created[0].is_helper
+    final = docker.created[0]
+    assert final.name == NAME and not final.is_helper
+    assert final.config["HostConfig"]["Mounts"][0] == {
+        "Type": "volume",
+        "Source": VOLUME,
+        "Target": DEFAULT_WORKSPACE_ROOT,
+        "ReadOnly": False,
+    }
+    assert docker.volume_modes[VOLUME] == 0o777
+    assert f"volume.copy-up:{VOLUME}:777" in docker.events
     assert not any(event.startswith("container.wait:") for event in docker.events)
 
 
@@ -330,6 +397,73 @@ async def test_final_failure_rolls_back_final_then_label_proven_volume_after_hel
     assert events.index(f"container.delete:{helper.name}:True:False") < events.index(f"container.create:{NAME}")
     assert events.index(f"container.delete:{final.name}:True:False") < events.index(f"volume.delete:{VOLUME}")
     assert docker.containers_by_name == {} and docker.volume_labels == {}
+
+
+async def test_readiness_timeout_logs_bounded_redacted_state_before_rollback(monkeypatch, caplog) -> None:
+    docker = _Docker()
+    docker.runtime_state = {
+        "Status": "exited",
+        "ExitCode": 127,
+        "Error": f"failed under {TARGET} with runtime-secret and env-private-42\x00",
+    }
+    docker.runtime_logs = [
+        "discard-prefix-" + "x" * (docker_mod._READINESS_LOG_MAX_CHARS + 50),
+        f"last line: runtime-secret env-private-42 {TARGET}",
+    ]
+
+    with caplog.at_level(logging.WARNING, logger=docker_mod.__name__), pytest.raises(
+        ConfigError, match="did not answer",
+    ):
+        await _create(docker, monkeypatch, ready=TimeoutError("silent runtime"))
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("docker runtime readiness timeout:")
+    )
+    assert "status='exited'" in message
+    assert "exit_code=127" in message
+    assert "owns_volume=True helper_ran=True" in message
+    assert "runtime-secret" not in message
+    assert "env-private-42" not in message
+    assert TARGET not in message
+    assert "discard-prefix" not in message
+    assert "<redacted>" in message
+
+    _, final = _helper_and_final(docker)
+    log_event = f"container.log:{NAME}:True:True:{docker_mod._READINESS_LOG_TAIL_LINES}"
+    assert docker.events.index(log_event) < docker.events.index(
+        f"container.delete:{final.name}:True:False"
+    )
+
+
+async def test_readiness_diagnostics_are_time_bounded_before_rollback(monkeypatch, caplog) -> None:
+    docker = _Docker()
+    docker.runtime_inspect_gate = asyncio.Event()
+    monkeypatch.setattr(docker_mod, "_READINESS_DIAGNOSTIC_TIMEOUT_S", 0.01)
+
+    started = asyncio.get_running_loop().time()
+    with caplog.at_level(logging.WARNING, logger=docker_mod.__name__), pytest.raises(
+        ConfigError, match="did not answer",
+    ):
+        await asyncio.wait_for(
+            _create(docker, monkeypatch, ready=TimeoutError("silent runtime")),
+            timeout=1,
+        )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("docker runtime readiness timeout:")
+    )
+    _, final = _helper_and_final(docker)
+    assert elapsed < 1
+    assert "diagnostic_timed_out=True" in message
+    assert not any(event.startswith("container.log:") for event in docker.events)
+    assert docker.events.index(f"container.inspect:{NAME}") < docker.events.index(
+        f"container.delete:{final.name}:True:False"
+    )
 
 
 async def test_cancel_while_helper_waits_rolls_back_helper_and_owned_volume(monkeypatch) -> None:
