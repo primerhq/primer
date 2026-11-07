@@ -75,6 +75,16 @@ A session has two persisted faces that are reconciled at turn boundaries:
   and responder generations. A failed marker append or refused close therefore
   leaves the old authority intact, while an exact retry cannot rotate twice.
   Compaction, rewind and ordinary terminal writes remain preservation paths.
+- S4.3 wires authenticated decisions for classic session `ask_user` and tool
+  approval gates only. The existing park-to-resumable CAS now also reserves a
+  typed, payload-digest-only responder source and projects its server-derived
+  person. Its scalar responder-version fence makes exact retries idempotent and
+  lets a retry repair a missing lease without restamping acceptance; competing
+  gate leaves merge through a bounded fresh-row CAS retry. Automated timeouts,
+  machine rejects, cancels and ChannelInbox replies create no reservation and
+  preserve their established authority behavior. Task-scoped human gates,
+  aggregate inboxes, queued input attribution and public activation remain
+  disabled for later slices.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.

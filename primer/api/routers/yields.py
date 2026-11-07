@@ -52,11 +52,20 @@ from primer.model.except_ import (
     NotFoundError,
     ValidationError,
 )
-from primer.model.principal import PrincipalRef
+from primer.model.principal import PrincipalRef, person_ref
 from primer.model.workspace_session import WorkspaceSession
-from primer.model.yield_ import GATE_ID_PATTERN, entry_id_of, gate_id_of, with_wake_entry, with_wake_gate, with_wake_park
+from primer.model.yield_ import (
+    GATE_ID_PATTERN,
+    entry_id_of,
+    gate_id_of,
+    wake_gate_id_of,
+    with_wake_entry,
+    with_wake_gate,
+    with_wake_park,
+)
 from primer.session.approvers import ADMIN_ONLY_METADATA
 from primer.session.pending_gates import enumerate_pending_gates, gate_is_decided, resolve_pending_gate
+from primer.session.responder_attribution import classic_gate_responder_decision
 from primer.session.yields import durably_wake_session
 from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -234,6 +243,7 @@ async def _durable_wake(
     event_bus: EventBus,
     storage_provider=None,
     by=None,
+    decision_domain: str | None = None,
     accept_decided: bool = False,
 ) -> bool:
     """Durably flip the parked row to resumable, then wake the bus (``by``: the answer's sender, who the resumed turn runs as).
@@ -258,13 +268,27 @@ async def _durable_wake(
     and the caller answers 202 having changed nothing. Returns True when the
     row holds this reply.
     """
+    decision_person = person_ref(by) if by is not None else None
+    responder_decision = (
+        classic_gate_responder_decision(
+            session,
+            domain=decision_domain,
+            event_key=event_key,
+            gate_id=wake_gate_id_of(payload),
+            payload=payload,
+            person=decision_person,
+        )
+        if decision_domain is not None and decision_person is not None
+        else None
+    )
     did = await durably_wake_session(
         session,
         event_key=event_key,
         payload=payload,
         session_storage=session_storage,
         engine=engine,  # type: ignore[arg-type]
-        by=by,
+        by=by if decision_domain is None else None,
+        responder_decision=responder_decision,
     )
     if not did:
         if accept_decided:
@@ -524,6 +548,7 @@ async def post_ask_user_respond(
                 event_bus=event_bus,
                 storage_provider=storage_provider,
                 by=by,
+                decision_domain="ask_user",
             )
             return {"status": "accepted"}
         # A graph tool_call ask_user node: its prompt + schema live in
@@ -567,6 +592,7 @@ async def post_ask_user_respond(
             event_bus=event_bus,
             storage_provider=storage_provider,
             by=by,
+            decision_domain="ask_user",
         )
         return {"status": "accepted"}
     if not yielded.get("tool_name"):
@@ -605,6 +631,7 @@ async def post_ask_user_respond(
         event_bus=event_bus,
         storage_provider=storage_provider,
         by=by,
+        decision_domain="ask_user",
     )
     return {"status": "accepted"}
 
