@@ -55,6 +55,7 @@ from primer.model.workspace_session import (
 )
 from primer.session.responder_wake_intent import (
     PreparedResponderIntent,
+    rebase_prepared_responder_intent,
     classify_intent_user_input,
     exact_intent_where,
     intent_is_promoted,
@@ -295,6 +296,8 @@ async def wake_session(
     by_a_person: bool | None = None,
     queued_message_id: str | None = None,
     by: PrincipalRef | None = None,
+    prepared_intent: PreparedResponderIntent | None = None,
+    trusted_responder_starter: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -411,6 +414,8 @@ async def wake_session(
     another process since wins, and the session is not woken.
     """
     sent_by_a_person = human_intent if by_a_person is None else by_a_person
+    if prepared_intent is not None and queued_message_id is None:
+        raise ValueError("prepared responder intent is reserved for queued realization")
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     # A plain text instruction from a routed caller can wait in the pending queue, so the open turn is decided for it here (see the docstring).
     # Calls carrying per-turn tools or attachment parts stay on their existing path: PendingSessionMessage cannot represent those payloads. A
@@ -488,6 +493,7 @@ async def wake_session(
                             return await _defer_routed(
                                 deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
                                 receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
+                                trusted_responder_starter=trusted_responder_starter,
                             )
                         continue
                     done = await _reopen_ended_locked(
@@ -508,6 +514,10 @@ async def wake_session(
                     row, _invocation = done
                     reopened = True
                     armed = row
+                    if prepared_intent is not None:
+                        prepared_intent = rebase_prepared_responder_intent(
+                            row, prepared_intent,
+                        )
                     # Surface the invocation divider live before the USER_INPUT tick
                     # below (mirrors reset_session's divider tick). Advisory.
                     if deps.event_bus is not None:
@@ -566,6 +576,7 @@ async def wake_session(
                             # So does the person whose input this is (spec §13 Q1): the realized turn runs as it.
                             attribution=_attribution_to_queue(peer, by_a_person=sent_by_a_person, extra_payload=extra_payload),
                             by=by,
+                            trusted_responder_starter=trusted_responder_starter,
                         )
                         pending_id = pending.id
                     await _record_pause_superseded(
@@ -589,6 +600,7 @@ async def wake_session(
                         return await _defer_routed(
                             deps, row=row, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
                             receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
+                            trusted_responder_starter=trusted_responder_starter,
                         )
 
                 if not instruction:
@@ -599,7 +611,13 @@ async def wake_session(
                 # turn claimable in the same statement. Of two wakes of one idle session, in any two processes, exactly one write lands: the other
                 # is refused, reads the row again above, finds the turn armed and defers its message. A refusal from any other change (a record
                 # that took the next seq, a Cancel, a pause) is decided again the same way. Nothing has been written when it is refused.
-                taken = await _arm_or_reserve(sessions, row, arm=routed, owned=reopened)
+                taken = await _arm_or_reserve(
+                    sessions,
+                    row,
+                    arm=routed,
+                    owned=reopened,
+                    prepared_intent=prepared_intent,
+                )
                 if taken is not None:
                     decided, row = row, taken
                     if routed or reopened:
@@ -622,6 +640,7 @@ async def wake_session(
                 return await _defer_routed(
                     deps, row=fresh, instruction=instruction, peer=peer, by_a_person=sent_by_a_person, open_turn=open_turn,
                     receipt=receipt, queued_message_id=queued_message_id, extra_payload=extra_payload, by=by,
+                    trusted_responder_starter=trusted_responder_starter,
                 )
 
             # 1. Append the user message to the on-disk slot FIFO (the queue) and
@@ -688,11 +707,6 @@ async def wake_session(
                     user_input_record = user_input_record.model_copy(update={"seq": user_input_seq})
                     await writer.flush()
                 message_written = True
-                if queued_message_id is not None:
-                    # The drain's message is in the log now: it leaves the queue BEFORE the turn is promoted, so no turn can run (and drain
-                    # the queue) while it is still queued and deliver it a second time (review N4). Were the promotion to fail from here, the
-                    # message is in the log and the turn this wake holds is promoted or healed with it (see the ``finally``).
-                    await _take_off_the_queue(deps.storage_provider, queued_message_id)
                 await _mark_canvas_read(deps, session_id, digest, extra_payload)
 
             # 2. Re-arm the scheduler-visible row: claimable + clear pause;
@@ -714,6 +728,12 @@ async def wake_session(
                 # resumed or reopened. Or another writer took the turn: its turn reads the message.
                 return await sessions.get(session_id) or row
             row = landed
+            if queued_message_id is not None:
+                # The queue row proves the realization until the responder
+                # close lands. A crash after the log append therefore keeps
+                # it; only the combined close (or a later exact proof of that
+                # close) permits deletion.
+                await _take_off_the_queue(deps.storage_provider, queued_message_id)
 
             # 3. Pulse the scheduler + claim engine so a worker runs the turn. The row is claimable from here on, so the claim is armed
             #    whatever the scheduler's hint does (a row left claimable with no lease is re-armed by the session-messaging sweep).
@@ -804,7 +824,11 @@ async def _arm_or_reserve(
         else:
             where["turn_status"] = ["idle"]
             patch["turn_status"] = "arming"
-            patch["armed_at"] = datetime.now(timezone.utc)
+            patch["armed_at"] = (
+                prepared_intent.arm_token
+                if prepared_intent is not None
+                else datetime.now(timezone.utc)
+            )
     written = await sessions.patch_if(row.id, to_jsonable_python(patch), where=where)
     if written is not None or prepared_intent is None:
         return written
@@ -963,6 +987,7 @@ async def _defer_routed(
     queued_message_id: str | None,
     extra_payload: dict | None = None,
     by: PrincipalRef | None = None,
+    trusted_responder_starter: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """The routed message waits: the turn is open, or older messages are queued. ``skip`` drops it; a message the drain is realizing stays where
     it is in the queue; any other is stored at the back of the queue, carrying its sender (``queued_attribution``) and the canvas click it is
@@ -983,6 +1008,7 @@ async def _defer_routed(
         event_bus=deps.event_bus,
         attribution=_attribution_to_queue(peer, by_a_person=by_a_person, extra_payload=extra_payload),
         by=by,
+        trusted_responder_starter=trusted_responder_starter,
     )
     receipt.outcome = "queued"
     return row
