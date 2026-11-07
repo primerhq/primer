@@ -117,6 +117,16 @@ A session has two persisted faces that are reconciled at turn boundaries:
   responder ledger. Client-supplied attribution remains ineligible. Canvas,
   channel, peer, trigger, MCP and direct-wake inputs do not enter this proof
   path.
+- S4.5A adds receipt policy without activating another producer. Persisted
+  intents default to receipt-required for backward compatibility; a queued
+  intent also names its exact pending-message row. Its combined promotion
+  replaces the hidden completion receipt, and cleanup accepts only that exact
+  row id together with the existing occurrence, person, time, digest, session
+  and epoch evidence. A future receipt-free direct intent leaves any queued
+  cleanup receipt untouched. Because realization is FIFO and a queued row is
+  deleted only after promotion, the next queued close may replace the singleton
+  receipt only after the prior cleanup no longer needs it. REST, canvas, MCP and
+  direct-wake activation remain disabled for later S4.5 slices.
 - `SessionInfo` (`primer/model/workspace_session.py`) is the on-disk projection inside the workspace's git-backed `.state/` repo, written as `.state/sessions/<sid>/session.json`. It plus `agent.json` (an `AgentBinding` snapshot) and, when blocked, `waiting.json` (a `WaitingState` discriminated union) describe the session from inside the workspace.
 
 The two are allowed to diverge for at most one turn (the at-least-once trade-off of the background-execution scheduler). The `AgentSession` (`primer/workspace/session.py`) is the live in-process handle the executor drives; it owns status transitions and the read-before-write tracking.
