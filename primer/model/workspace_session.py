@@ -33,13 +33,14 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from pydantic import (
     BaseModel,
     Field,
+    ValidationInfo,
     computed_field,
     field_validator,
     model_validator,
 )
 
 from primer.model.agent import _validate_response_format_schema
-from primer.model.common import Identifiable
+from primer.model.common import Identifiable, reading_a_stored_row
 from primer.model.principal import PrincipalRef, person_ref
 from primer.model.responder_source import (
     RESPONDER_SOURCE_DOMAIN_MAX_BYTES,
@@ -509,15 +510,29 @@ class PendingResponderIntent(BaseModel):
     accepted_at: datetime
     user_input_seq: int = Field(ge=1)
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)
+    receipt_required: bool = True
+    pending_message_id: str | None = Field(default=None, min_length=1, max_length=1024)
 
     @model_validator(mode="after")
-    def _validate_intent(self) -> "PendingResponderIntent":
+    def _validate_intent(self, info: ValidationInfo) -> "PendingResponderIntent":
         if person_ref(self.starter) != self.starter:
             raise ValueError("pending responder intent starter must name a person")
         _require_aware_utc(self.accepted_at, "accepted_at")
         validate_canonical_responder_identity(self.source_identity)
         if self.source_key != responder_source_key(self.domain, self.source_identity):
             raise ValueError("pending responder intent source key does not match identity")
+        if not self.receipt_required and self.pending_message_id is not None:
+            raise ValueError(
+                "receipt-free responder intent cannot name a pending message"
+            )
+        if (
+            self.receipt_required
+            and self.pending_message_id is None
+            and not reading_a_stored_row(info)
+        ):
+            raise ValueError(
+                "receipt-required responder intent must name its pending message"
+            )
         return self
 
 
@@ -1062,20 +1077,24 @@ class WorkspaceSession(Identifiable):
 
     @field_validator("pending_responder_intent", mode="before")
     @classmethod
-    def _parse_pending_responder_intent(cls, value: Any) -> Any:
+    def _parse_pending_responder_intent(
+        cls, value: Any, info: ValidationInfo,
+    ) -> Any:
         if value is None or isinstance(value, PendingResponderIntent):
             return value
-        return PendingResponderIntent.model_validate(value)
+        return PendingResponderIntent.model_validate(value, context=info.context)
 
     @field_validator("last_responder_intent_receipt", mode="before")
     @classmethod
-    def _parse_last_responder_intent_receipt(cls, value: Any) -> Any:
+    def _parse_last_responder_intent_receipt(
+        cls, value: Any, info: ValidationInfo,
+    ) -> Any:
         if value is None or isinstance(value, PendingResponderIntent):
             return value
-        return PendingResponderIntent.model_validate(value)
+        return PendingResponderIntent.model_validate(value, context=info.context)
 
     @model_validator(mode="after")
-    def _validate_responder_ledger(self) -> "WorkspaceSession":
+    def _validate_responder_ledger(self, info: ValidationInfo) -> "WorkspaceSession":
         base = (
             self.responder_seq,
             self.responder_epoch,
@@ -1093,6 +1112,8 @@ class WorkspaceSession(Identifiable):
                 raise ValueError("responder projection requires an active ledger")
             if self.pending_responder_intent is not None:
                 raise ValueError("pending responder intent requires an active ledger")
+            if self.last_responder_intent_receipt is not None:
+                raise ValueError("completed responder receipt requires an active ledger")
             return self
         if any(value is None for value in base):
             raise ValueError("active responder ledger fields must be all present")
@@ -1101,18 +1122,31 @@ class WorkspaceSession(Identifiable):
         reservations = self.responder_reservations
         assert seq is not None and reservations is not None
         intent = self.pending_responder_intent
-        if intent is not None:
-            if intent.target_epoch == self.responder_epoch:
+        receipt = self.last_responder_intent_receipt
+        for label, evidence in (
+            ("pending responder intent", intent),
+            ("completed responder receipt", receipt),
+        ):
+            if evidence is None:
+                continue
+            if label == "pending responder intent" and evidence.target_epoch == self.responder_epoch:
                 raise ValueError("pending responder intent must target a fresh epoch")
             expected_identity = canonical_responder_identity({
-                "intent_occurrence_id": intent.occurrence_id,
-                "payload_sha256": intent.payload_sha256,
+                "intent_occurrence_id": evidence.occurrence_id,
+                "payload_sha256": evidence.payload_sha256,
                 "session_id": self.id,
-                "user_input_seq": intent.user_input_seq,
+                "user_input_seq": evidence.user_input_seq,
             })
-            if intent.source_identity != expected_identity:
+            if evidence.source_identity != expected_identity:
                 raise ValueError(
-                    "pending responder intent identity must match its session occurrence"
+                    f"{label} identity must match its session occurrence"
+                )
+        if receipt is not None:
+            if not receipt.receipt_required:
+                raise ValueError("completed responder receipt must require a receipt")
+            if receipt.pending_message_id is None and not reading_a_stored_row(info):
+                raise ValueError(
+                    "completed responder receipt must name its pending message"
                 )
         reservation_seqs = [entry.seq for entry in reservations.values()]
         if len(set(reservation_seqs)) != len(reservation_seqs):

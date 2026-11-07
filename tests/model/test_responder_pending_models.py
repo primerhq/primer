@@ -18,6 +18,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.responder_attribution import responder_source
+from primer.session.responder_wake_intent import promotion_patch
 from primer.storage import raw_generation
 from tests.conftest import _InMemoryStorage
 
@@ -55,6 +56,7 @@ def _intent(**updates) -> PendingResponderIntent:
         "accepted_at": NOW,
         "user_input_seq": 7,
         "payload_sha256": DIGEST,
+        "receipt_required": False,
     }
     values.update(updates)
     return PendingResponderIntent(**values)
@@ -119,6 +121,65 @@ def test_legacy_rows_decode_with_no_intent_or_proof() -> None:
     assert pending.responder_proof is None
 
 
+def test_legacy_intent_decodes_with_receipt_policy_defaults() -> None:
+    raw = dump_for_storage(
+        _session(
+            pending_responder_intent=_intent(
+                receipt_required=True,
+                pending_message_id="pending-legacy",
+            ),
+        ),
+    )
+    raw_intent = raw["pending_responder_intent"]
+    raw_intent.pop("receipt_required")
+    raw_intent.pop("pending_message_id")
+
+    restored = WorkspaceSession.model_validate(
+        raw,
+        context=stored_row_context(),
+    )
+
+    assert restored.pending_responder_intent.receipt_required is True
+    assert restored.pending_responder_intent.pending_message_id is None
+    promoted = promotion_patch(restored)
+    assert "last_responder_intent_receipt" not in promoted
+    assert WorkspaceSession.model_validate({
+        **dump_for_storage(restored),
+        **promoted,
+    }).pending_responder_intent is None
+
+    receipt_raw = dump_for_storage(
+        _session(
+            last_responder_intent_receipt=_intent(
+                receipt_required=True,
+                pending_message_id="pending-1",
+            ),
+        ),
+    )
+    raw_receipt = receipt_raw["last_responder_intent_receipt"]
+    raw_receipt.pop("receipt_required")
+    raw_receipt.pop("pending_message_id")
+    restored_receipt = WorkspaceSession.model_validate(
+        receipt_raw,
+        context=stored_row_context(),
+    )
+    assert restored_receipt.last_responder_intent_receipt.receipt_required is True
+    assert restored_receipt.last_responder_intent_receipt.pending_message_id is None
+
+
+def test_receipt_policy_fields_are_strict_and_receipt_is_queue_owned() -> None:
+    with pytest.raises(ValidationError, match="receipt-free"):
+        _intent(receipt_required=False, pending_message_id="pending-1")
+    with pytest.raises(ValidationError, match="must name its pending message"):
+        _intent(receipt_required=True)
+    with pytest.raises(ValidationError, match="must require a receipt"):
+        _session(last_responder_intent_receipt=_intent(receipt_required=False))
+
+    receipt = _intent(receipt_required=True, pending_message_id="pending-1")
+    row = _session(last_responder_intent_receipt=receipt)
+    assert row.last_responder_intent_receipt == receipt
+
+
 def test_intent_is_reservation_compatible_and_contains_no_raw_input() -> None:
     intent = _intent()
     row = _session(pending_responder_intent=intent)
@@ -157,6 +218,7 @@ def test_intent_accepts_safe_canonical_identities_from_the_shared_producer(
         accepted_at=NOW,
         user_input_seq=7,
         payload_sha256=DIGEST,
+        receipt_required=False,
     )
 
     assert intent.source_identity == source.identity
@@ -175,6 +237,7 @@ def test_intent_rejects_huge_exponent_identity_without_numeric_expansion() -> No
             accepted_at=NOW,
             user_input_seq=7,
             payload_sha256=DIGEST,
+            receipt_required=False,
         )
 
 
@@ -286,9 +349,16 @@ async def test_storage_round_trip_and_nested_scalar_patch_are_canonical() -> Non
 
 
 def test_public_dumps_responses_and_openapi_hide_both_contracts() -> None:
-    row = _session(pending_responder_intent=_intent())
+    row = _session(
+        pending_responder_intent=_intent(),
+        last_responder_intent_receipt=_intent(
+            receipt_required=True,
+            pending_message_id="pending-1",
+        ),
+    )
     pending = _pending(responder_proof=_proof())
     assert "pending_responder_intent" not in row.model_dump(mode="json")
+    assert "last_responder_intent_receipt" not in row.model_dump(mode="json")
     assert "responder_proof" not in pending.model_dump(mode="json")
 
     app = FastAPI()
@@ -302,9 +372,11 @@ def test_public_dumps_responses_and_openapi_hide_both_contracts() -> None:
         return pending
 
     assert "pending_responder_intent" not in TestClient(app).get("/session").json()
+    assert "last_responder_intent_receipt" not in TestClient(app).get("/session").json()
     assert "responder_proof" not in TestClient(app).get("/pending").json()
     schemas = app.openapi()["components"]["schemas"]
     assert "pending_responder_intent" not in schemas["WorkspaceSession"]["properties"]
+    assert "last_responder_intent_receipt" not in schemas["WorkspaceSession"]["properties"]
     assert "responder_proof" not in schemas["PendingSessionMessage"]["properties"]
     assert "PendingResponderIntent" not in schemas
     assert "PendingResponderProof" not in schemas

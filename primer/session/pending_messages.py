@@ -31,6 +31,7 @@ from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import PrincipalRef, person_ref
 from primer.model.responder_source import (
     canonical_responder_payload,
+    responder_source_key,
     validate_canonical_responder_identity,
 )
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
@@ -48,8 +49,11 @@ from primer.model.workspace_session import (
 )
 from primer.session.enqueue import CanvasClickDoesNotReopen, OnlyAPersonReopens, SessionWakeReceipt, wake_session
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.responder_attribution import ReservationFences
 from primer.session.responder_wake_intent import (
     PreparedResponderIntent,
+    exact_intent_where,
+    exact_receipt_where,
     prepare_responder_intent,
 )
 from primer.session.seq_reservation import reserve_next_seq
@@ -436,16 +440,42 @@ async def _realize_oldest(
         return False
     prepared_intent = None
     if row.responder_proof is not None:
-        session = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+        sessions = storage_provider.get_storage(WorkspaceSession)
+        session = await sessions.get(session_id)
         if session is None:
             return False
-        try:
-            proof_state, prepared_intent = _prepared_intent_for_pending(session, row, text)
-        except ValueError:
-            logger.error(
-                "realize: queued responder proof is corrupt on pending row %s; leaving it quarantined",
+        for _attempt in range(2):
+            try:
+                proof_state, prepared_intent = _prepared_intent_for_pending(
+                    session, row, text,
+                )
+                if proof_state.startswith("legacy_"):
+                    upgraded = await _upgrade_legacy_pending_evidence(
+                        sessions, session, row, proof_state,
+                    )
+                    if upgraded is None:
+                        session = await sessions.get(session_id)
+                        if session is None:
+                            return False
+                        continue
+                    session = upgraded
+                    proof_state, prepared_intent = _prepared_intent_for_pending(
+                        session, row, text,
+                    )
+                    if proof_state.startswith("legacy_"):
+                        raise ValueError("legacy queue evidence upgrade did not land")
+                break
+            except (NotFoundError, ValueError):
+                logger.error(
+                    "realize: queued responder proof is corrupt on pending row %s; leaving it quarantined",
+                    row.id,
+                    exc_info=True,
+                )
+                return False
+        else:
+            logger.info(
+                "realize: legacy responder evidence moved on pending row %s; leaving it queued",
                 row.id,
-                exc_info=True,
             )
             return False
         if proof_state == "landed":
@@ -518,6 +548,31 @@ def _pending_epoch(row_id: str) -> str:
     return sha256(f"pending-responder-epoch-v1\0{row_id}".encode()).hexdigest()[:32]
 
 
+async def _upgrade_legacy_pending_evidence(
+    sessions: Any,
+    session: WorkspaceSession,
+    row: PendingSessionMessage,
+    state: str,
+) -> WorkspaceSession | None:
+    """Bind exact pre-S4.5A queue evidence to its pending row before use."""
+    where = ReservationFences.from_session(session).where()
+    if state == "legacy_armed":
+        where.update(exact_intent_where(session))
+        path = ("pending_responder_intent", "pending_message_id")
+    elif state == "legacy_landed":
+        where.update(exact_receipt_where(session))
+        path = ("last_responder_intent_receipt", "pending_message_id")
+    else:
+        raise ValueError("legacy queue evidence has an unsupported state")
+    where[path] = [None]
+    return await sessions.patch_if(
+        session.id,
+        {},
+        where=where,
+        set_paths={path: row.id},
+    )
+
+
 def _prepared_intent_for_pending(
     session: WorkspaceSession,
     row: PendingSessionMessage,
@@ -547,7 +602,15 @@ def _prepared_intent_for_pending(
             or pending.target_epoch != target_epoch
             or pending.starter != proof.starter
             or pending.accepted_at != proof.accepted_at
+            or pending.domain != proof.domain
+            or pending.source_key
+            != responder_source_key(proof.domain, pending.source_identity)
+            or not pending.receipt_required
         ):
+            raise ValueError("live responder intent does not match queued proof")
+        if pending.pending_message_id is None:
+            return "legacy_armed", None
+        if pending.pending_message_id != row.id:
             raise ValueError("live responder intent does not match queued proof")
         return "armed", None
     receipt = session.last_responder_intent_receipt
@@ -560,27 +623,16 @@ def _prepared_intent_for_pending(
             or receipt.starter != proof.starter
             or receipt.accepted_at != proof.accepted_at
             or receipt.payload_sha256 != digest
+            or receipt.domain != proof.domain
+            or receipt.source_key
+            != responder_source_key(proof.domain, receipt.source_identity)
+            or not receipt.receipt_required
         ):
             raise ValueError("completed responder receipt conflicts with queued proof")
-        return "landed", None
-    for reservation in (session.responder_reservations or {}).values():
-        decoded = validate_canonical_responder_identity(reservation.source_identity)
-        if not isinstance(decoded, dict) or decoded.get("intent_occurrence_id") != occurrence:
-            continue
-        if not _identity_matches_pending(
-            decoded, session_id=session.id, occurrence=occurrence, digest=digest,
-        ) or (
-            reservation.domain != "user_input"
-            or reservation.person != proof.starter
-            or reservation.accepted_at != proof.accepted_at
-            or session.responder_epoch != target_epoch
-            or session.turn_person != proof.starter
-            or session.turn_person_seq is not None
-            or session.turn_person_at is not None
-            or session.turn_person_epoch is not None
-            or session.turn_person_source_key is not None
-        ):
-            raise ValueError("landed responder reservation conflicts with queued proof")
+        if receipt.pending_message_id is None:
+            return "legacy_landed", None
+        if receipt.pending_message_id != row.id:
+            raise ValueError("completed responder receipt conflicts with queued proof")
         return "landed", None
     return "new", prepare_responder_intent(
         session,
@@ -589,6 +641,8 @@ def _prepared_intent_for_pending(
         accepted_at=proof.accepted_at,
         occurrence_id=occurrence,
         target_epoch=target_epoch,
+        receipt_required=True,
+        pending_message_id=row.id,
     )
 
 

@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Literal
 
+from pydantic import BaseModel
+
 from primer.model.common import dump_for_storage
 from primer.model.principal import PrincipalRef, person_ref
 from primer.model.responder_source import canonical_responder_payload
@@ -58,6 +60,8 @@ def prepare_responder_intent(
     accepted_at: datetime | None = None,
     occurrence_id: str | None = None,
     target_epoch: str | None = None,
+    receipt_required: bool = False,
+    pending_message_id: str | None = None,
 ) -> PreparedResponderIntent:
     """Prepare, but do not persist, one authenticated direct USER_INPUT.
 
@@ -93,6 +97,8 @@ def prepare_responder_intent(
         accepted_at=stamped_at,
         user_input_seq=row.last_seq + 1,
         payload_sha256=payload_digest,
+        receipt_required=receipt_required,
+        pending_message_id=pending_message_id,
     )
     return PreparedResponderIntent(
         session_id=row.id,
@@ -133,6 +139,8 @@ def rebase_prepared_responder_intent(
         accepted_at=prior.accepted_at,
         user_input_seq=row.last_seq + 1,
         payload_sha256=prior.payload_sha256,
+        receipt_required=prior.receipt_required,
+        pending_message_id=prior.pending_message_id,
     )
     return PreparedResponderIntent(
         session_id=row.id,
@@ -192,22 +200,50 @@ def exact_intent_where(row: WorkspaceSession) -> dict[Any, list[Any]]:
     intent = row.pending_responder_intent
     if intent is None:
         raise ValueError("session has no pending responder intent")
-    dumped = dump_for_storage(intent)
+    where: dict[Any, list[Any]] = {
+        field: [raw_generation(row, field)] for field in _RESPONDER_SCALARS
+    }
+    _add_present_model_leaves(intent, ("pending_responder_intent",), where)
+    return where
+
+
+def exact_receipt_where(row: WorkspaceSession) -> dict[Any, list[Any]]:
+    """Every scalar leaf of the stored completion receipt and responder generation."""
+    receipt = row.last_responder_intent_receipt
+    if receipt is None:
+        raise ValueError("session has no responder intent receipt")
     where: dict[Any, list[Any]] = {
         field: [raw_generation(row, field)] for field in _RESPONDER_SCALARS
     }
 
-    def add_leaves(value: Any, path: tuple[str, ...]) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                add_leaves(child, (*path, key))
-            return
-        if isinstance(value, list):
-            raise ValueError("pending responder intent contains an unsupported list leaf")
-        where[("pending_responder_intent", *path)] = [value]
-
-    add_leaves(dumped, ())
+    _add_present_model_leaves(
+        receipt, ("last_responder_intent_receipt",), where,
+    )
     return where
+
+
+def _add_present_model_leaves(
+    model: BaseModel,
+    prefix: tuple[str, ...],
+    where: dict[Any, list[Any]],
+) -> None:
+    """Fence only scalar leaves that were present in the decoded raw object."""
+    dumped = dump_for_storage(model)
+
+    def add_value(value: Any, stored: Any, path: tuple[str, ...]) -> None:
+        if isinstance(value, BaseModel):
+            _add_present_model_leaves(value, path, where)
+            return
+        if isinstance(stored, dict):
+            for key, child in stored.items():
+                add_value(child, child, (*path, key))
+            return
+        if isinstance(stored, list):
+            raise ValueError("responder evidence contains an unsupported list leaf")
+        where[path] = [stored]
+
+    for field in model.model_fields_set:
+        add_value(getattr(model, field), dumped[field], (*prefix, field))
 
 
 def classify_intent_user_input(
@@ -275,7 +311,7 @@ def promotion_patch(row: WorkspaceSession) -> dict[str, Any]:
         seq=seq,
         accepted_at=intent.accepted_at,
     )
-    return {
+    patch = {
         "responder_epoch": intent.target_epoch,
         "responder_seq": seq,
         "responder_reservation_version": version,
@@ -286,14 +322,17 @@ def promotion_patch(row: WorkspaceSession) -> dict[str, Any]:
         "turn_person_epoch": None,
         "turn_person_source_key": None,
         "pending_responder_intent": None,
-        "last_responder_intent_receipt": dump_for_storage(intent),
     }
+    if intent.receipt_required and intent.pending_message_id is not None:
+        patch["last_responder_intent_receipt"] = dump_for_storage(intent)
+    return patch
 
 
 def intent_is_promoted(row: WorkspaceSession, intent: PendingResponderIntent) -> bool:
     """Recognise an exact successful promotion after an ambiguous response."""
     if (
-        row.pending_responder_intent is None
+        intent.receipt_required
+        and row.pending_responder_intent is None
         and row.last_responder_intent_receipt == intent
     ):
         return True
