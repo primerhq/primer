@@ -163,6 +163,9 @@ class _World:
         # How many of the next releases are abandoned: they never reach the real release (= rolled back).
         self.abandon_next_releases = 0
         self.abandoned = 0
+        self.hold_next_release = False
+        self.release_reached = asyncio.Event()
+        self.allow_release = asyncio.Event()
         self.outcomes: list[ReleaseOutcome] = []   # every outcome handed to engine.release, abandoned or not
         self.pools: list[WorkerPool] = []
 
@@ -170,6 +173,10 @@ class _World:
 
         async def release(lease, *, outcome):
             self.outcomes.append(outcome)
+            if self.hold_next_release:
+                self.hold_next_release = False
+                self.release_reached.set()
+                await self.allow_release.wait()
             if self.abandon_next_releases > 0:
                 self.abandon_next_releases -= 1
                 self.abandoned += 1
@@ -613,6 +620,43 @@ async def test_a_queued_steer_the_skipped_checkpoint_left_is_realized_and_answer
     assert world.call_turn_nos == [0, 1]
     assert _noops() == 1
     assert not has_open_turn(world.ws.lines(), cursor=0)
+
+
+@pytest.mark.asyncio
+async def test_a_queued_steer_committed_after_checkpoint_is_realized_after_release(world):
+    """The queue write can commit after the completed turn's checkpoint found no row but before its release.
+
+    The producer's best-effort nudge is deliberately absent here: the worker boundary is the durable recovery for a
+    producer that is cancelled after its queue commit. Once the old lease is gone, wrapper-finally must realize the
+    queued head and arm a fresh claim immediately, without waiting for the periodic pending-message sweep or a TTL.
+    """
+    await world.create_session()
+    await world.steer("first")
+    pool = world.pool("wrk-a")
+    leases = await world.engine.claim_due(pool._worker_id, max_count=10)
+    assert len(leases) == 1
+    world.hold_next_release = True
+    pool._reserve_and_dispatch(leases)
+
+    await asyncio.wait_for(world.release_reached.wait(), 5.0)
+    row = await world.row()
+    assert row.status == SessionStatus.WAITING and row.turn_status == "idle"
+    assert not has_open_turn(world.ws.lines(), cursor=0), "the terminal checkpoint has completed"
+    await _store_pending(world, "second")
+
+    world.allow_release.set()
+    await _until(lambda: not pool._in_flight, "the old execution slot never closed")
+
+    row = await world.row()
+    assert row.turn_status == "claimable", (
+        "post-release recovery did not realize the queued head"
+    )
+    assert await _pending_texts(world) == []
+    assert KEY in world.engine._leases and world.engine._leases[KEY].claimed_by is None
+
+    assert await world.claim_and_run(pool) == 1
+    assert world.llm_calls == ["first", "second"]
+    assert KEY not in world.engine._leases
 
 
 async def _pending_texts(world: _World) -> list[str]:

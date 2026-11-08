@@ -1441,7 +1441,7 @@ class WorkerPool:
             logger.exception("_rearm_carried_reply: re-arming session %s failed", session_id)
 
     async def _maybe_rearm_session(self, session_id: str) -> None:
-        """Re-arm a fresh SESSION claim lease if a turn is still queued.
+        """Realize a late queued steer, then re-arm a fresh SESSION claim lease.
 
         Every session ``ReleaseOutcome`` drops the lease unconditionally
         (see ``primer.session.dispatch``), so instead of keeping the old lease
@@ -1449,6 +1449,14 @@ class WorkerPool:
         dropped the old one -- calling upsert first would just touch the
         (still held-by-us, about to be dropped) lease's priority and be
         wiped out the instant release runs.
+
+        A pending steer can commit after the terminating turn's one drain
+        checkpoint read an empty queue but before that turn releases its
+        lease. Its producer normally nudges the same realization too, but a
+        producer cancelled after the durable queue commit cannot be the only
+        recovery. Once the old lease is gone, an idle RUNNING/WAITING row with
+        a queued head is safe to realize here. The realization owns its own
+        exact-once queue receipt and may itself arm the lease.
 
         ``run_one_session_turn`` flips ``turn_status`` to "running"
         unconditionally when a turn starts (whatever it was) and the turn's
@@ -1479,6 +1487,34 @@ class WorkerPool:
             return
         if fresh.status not in (SessionStatus.RUNNING, SessionStatus.WAITING):
             return
+        if fresh.turn_status == "idle":
+            from primer.session.pending_messages import has_queued_messages
+
+            if await has_queued_messages(self._storage, session_id):
+                from primer.session.dispatch import realize_queued_steer
+
+                await realize_queued_steer(
+                    storage_provider=self._storage,
+                    workspace_id=fresh.workspace_id,
+                    session_id=session_id,
+                    scheduler=self._scheduler,
+                    claim_engine=self._engine,
+                    workspace_registry=self._workspace_registry,
+                    event_bus=self._event_bus,
+                )
+                try:
+                    fresh = await session_storage.get(session_id)
+                except Exception:
+                    logger.exception(
+                        "_maybe_rearm_session: failed to re-read session %s after "
+                        "realizing a queued steer",
+                        session_id,
+                    )
+                    return
+                if fresh is None or fresh.parked_status is not None:
+                    return
+                if fresh.status not in (SessionStatus.RUNNING, SessionStatus.WAITING):
+                    return
         if fresh.turn_status != "claimable":
             return
         try:
