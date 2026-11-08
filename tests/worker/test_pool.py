@@ -1278,6 +1278,98 @@ async def test_steering_a_running_session_rearms_a_fresh_claim(scheduler, monkey
     )
 
 
+async def test_post_release_rearm_waits_until_the_old_slot_is_free(
+    scheduler, monkeypatch,
+):
+    """A fresh session lease cannot be discarded as the old turn's duplicate.
+
+    Force the engine to claim and dispatch the newly upserted lease before the
+    rearm call returns. This is the release-to-wrapper-finally window that the
+    live claim loop can hit under load. The next handler must start immediately,
+    without waiting for that claimed lease's TTL.
+    """
+    from tests.conftest import _FakeStorageProvider
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    sid = "sess-steer-rearm-slot"
+    sp = _FakeStorageProvider()
+    session_storage = sp.get_storage(WorkspaceSession)
+    await session_storage.create(
+        WorkspaceSession(
+            id=sid,
+            workspace_id="ws-1",
+            binding=AgentSessionBinding(agent_id="ag-1"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+            turn_no=0,
+            turn_status="claimable",
+        ),
+    )
+    adapter = SessionClaimAdapter(session_storage=session_storage)
+    real_engine = InMemoryClaimEngine(adapters={ClaimKind.SESSION: adapter})
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=sp,
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=real_engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    await real_engine.upsert(ClaimKind.SESSION, sid)
+    [old_lease] = await real_engine.claim_due("wrk-test", max_count=1)
+
+    next_turn_finished = asyncio.Event()
+
+    async def _run_next_turn(fresh_lease: ClaimLease) -> None:
+        await pool._release_lease(
+            fresh_lease,
+            ReleaseOutcome(
+                success=True,
+                drop_lease=True,
+                entity_noop=True,
+            ),
+        )
+        next_turn_finished.set()
+
+    pool._dispatch[ClaimKind.SESSION] = _run_next_turn
+
+    original_upsert = real_engine.upsert
+    claimed_during_rearm: list[ClaimLease] = []
+
+    async def _claim_fresh_lease_before_upsert_returns(
+        kind: ClaimKind, entity_id: str, **kwargs,
+    ) -> None:
+        await original_upsert(kind, entity_id, **kwargs)
+        leases = await real_engine.claim_due("wrk-test", max_count=1)
+        claimed_during_rearm.extend(leases)
+        pool._reserve_and_dispatch(leases)
+
+    monkeypatch.setattr(
+        real_engine, "upsert", _claim_fresh_lease_before_upsert_returns,
+    )
+
+    key = (ClaimKind.SESSION, sid)
+    pool._in_flight.add(key)
+    with patch(
+        "primer.worker.pool.run_one_session_turn",
+        return_value=ReleaseOutcome(success=True, drop_lease=True),
+    ):
+        await pool._run_engine(old_lease, pool._run_engine_session)
+
+    async with asyncio.timeout(1):
+        await next_turn_finished.wait()
+
+    assert [lease.entity_id for lease in claimed_during_rearm] == [sid]
+    assert pool._duplicate_claims_total == 0
+    assert key not in pool._in_flight
+    assert key not in pool._active_scopes
+    assert (ClaimKind.SESSION, sid) not in real_engine._leases
+
+
 async def test_steering_a_running_session_no_rearm_when_nothing_queued(
     scheduler, monkeypatch,
 ):
