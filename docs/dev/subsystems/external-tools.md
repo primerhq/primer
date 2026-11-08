@@ -221,6 +221,30 @@ endpoint, which resolves the owning workspace itself.
 
 ## 9. Internal contracts
 
+### Built-in generated API providers are not invoker-supplied tools
+
+At app construction, reviewed REST operations are compiled into one built-in
+tool provider per resource (`primer/api/route_tools.py`). Those providers join
+the reserved provider-id union and the ordinary `ProviderRegistry` and
+`ToolCatalog`; they are therefore subject to the same agent allowlist, approval
+and MCP-exposure rules as the other built-ins. They do not use the `external`
+provider described above, do not bypass `Agent.tools`, and are not supplied by
+an invocation body. A curated tool suppresses its generated twin. Provider and
+tool ids come from route declarations, and an id collision refuses the app
+build rather than overwriting a stored or fixed provider.
+
+Calling one of these generated tools re-enters the FastAPI app through a
+trusted in-process ASGI scope as the exact tool caller. Authentication re-reads
+the real user and refuses a missing, disabled, or role-changed account; the
+route's dependencies, role and access checks, RFC 7807 handlers and audit path
+then run. The trust marker is an object identity held only inside the process;
+request headers, cookies and loopback HTTP cannot forge it. Dispatch is
+non-recursive, bounded to 30 seconds and a 1 MiB response, and task cancellation
+propagates. Generated writes use the same shipped approval-policy defaults as
+curated writes; generated reads do not acquire a default gate.
+This is separate from the invoker-mediated external-tool yield and resume
+contract in this document.
+
 - **The result arrives on the invocation endpoint, never a separate
   respond route.** A separate route would let a caller answer an
   invocation it did not make.

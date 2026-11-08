@@ -256,6 +256,7 @@ def _make_lifespan(config: AppConfig):
         )
         provider_registry = ProviderRegistry(
             storage_provider,
+            generated_api_toolset_providers=app.state.generated_route_toolsets.providers,
             toolset_factory=_build_default_toolset_factory(
                 allowed_stdio_commands=allowlist,
                 oauth=mcp_oauth,

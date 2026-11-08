@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from primer.api.route_tools import CrudToolDeclaration, route_tool
+
 import logging
 from datetime import timedelta
 from typing import Annotated, Any, Literal
@@ -532,6 +534,7 @@ def make_tool_approval_router() -> APIRouter:
         model_cls=ToolApprovalPolicy,
         storage_dep=_get_tool_approval_policy_storage,
         plural=_PLURAL,
+        tool_declaration=CrudToolDeclaration(resource_id="tool_approval_policies", generated_operations=frozenset({"find"})),
         tag=_TAG,
         on_pre_create=on_pre_create,
         on_pre_update=on_pre_update,
@@ -542,6 +545,7 @@ def make_tool_approval_router() -> APIRouter:
     router.include_router(crud)
 
     @router.post(f"/{_PLURAL}/invalidate", status_code=202)
+    @route_tool(scoped_id="tool_approval_policies__invalidate")
     async def invalidate(
         approval_resolver=Depends(get_approval_resolver),
     ) -> dict[str, str]:
@@ -574,6 +578,7 @@ def make_tool_approval_ops_router() -> APIRouter:
         response_model=ToolApprovalPendingResponse,
         responses=common_responses(404, 500),
     )
+    @route_tool(scoped_id="tool_approval_policies__get_session_tool_approval_pending")
     async def get_session_tool_approval_pending(
         session_id: Annotated[str, Path()],
         request: Request,
@@ -602,6 +607,7 @@ def make_tool_approval_ops_router() -> APIRouter:
         status_code=202,
         responses=common_responses(403, 404, 409, 422, 500),
     )
+    @route_tool(scoped_id="tool_approval_policies__post_session_tool_approval_respond")
     async def post_session_tool_approval_respond(
         session_id: Annotated[str, Path()],
         body: Annotated[ToolApprovalRespondBody, Body()],
@@ -800,6 +806,7 @@ def make_tool_approval_ops_router() -> APIRouter:
         response_model=OffsetPageResponse[ToolApprovalRecord],
         responses=common_responses(422, 500),
     )
+    @route_tool(scoped_id="tool_approval_policies__list_tool_approval_records")
     async def list_tool_approval_records(
         request: Request,
         status: Annotated[

@@ -32,7 +32,7 @@ policies gate them too (audit G6-1).
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Set
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -108,11 +108,39 @@ CRUD_TWINS: Mapping[tuple[str, str], str | None] = MappingProxyType({
 #: Every ``(toolset_id, tool_name)`` a fresh install gates with an approval policy: the crud writes (not the read ``list_python_tools``), their twins, then the admin-tier writes
 #: (``primer.toolset.admin_gates``: the policy writes, the toolset writes that run code on the host, the harness lifecycle). :func:`shipped_gate`
 #: says which gate each gets.
-DEFAULT_GATED_TOOLS: tuple[tuple[str, str], ...] = (
+_BASE_DEFAULT_GATED_TOOLS: frozenset[tuple[str, str]] = frozenset((
     *((CRUD_TOOLSET_ID, name) for name in CRUD_GATED_TOOL_NAMES),
     *CRUD_TWINS,
     *ADMIN_GATES,
-)
+))
+_GENERATED_DEFAULT_GATED_TOOLS: frozenset[tuple[str, str]] = frozenset()
+
+
+class _DefaultGatedTools(Set[tuple[str, str]]):
+    """Live immutable view of the single shipped-gate source."""
+
+    @classmethod
+    def _from_iterable(cls, values):
+        return frozenset(values)
+
+    def __contains__(self, value: object) -> bool:
+        return value in _BASE_DEFAULT_GATED_TOOLS or value in _GENERATED_DEFAULT_GATED_TOOLS
+
+    def __iter__(self) -> Iterator[tuple[str, str]]:
+        return iter(sorted(_BASE_DEFAULT_GATED_TOOLS | _GENERATED_DEFAULT_GATED_TOOLS))
+
+    def __len__(self) -> int:
+        return len(_BASE_DEFAULT_GATED_TOOLS | _GENERATED_DEFAULT_GATED_TOOLS)
+
+
+DEFAULT_GATED_TOOLS: Set[tuple[str, str]] = _DefaultGatedTools()
+
+
+def register_generated_default_gates(tool_ids: Set[tuple[str, str]]) -> None:
+    """Add generated mutators to the same seed/default source as curated writes."""
+
+    global _GENERATED_DEFAULT_GATED_TOOLS
+    _GENERATED_DEFAULT_GATED_TOOLS |= frozenset(tool_ids)
 
 
 def shipped_approvers(toolset_id: str, tool_name: str) -> ApproverSpec | None:
@@ -297,6 +325,7 @@ __all__ = [
     "PREVIEW_ARGS",
     "apply_twin_previews",
     "build_crud_toolset",
+    "register_generated_default_gates",
     "shipped_approvers",
     "shipped_gate",
     "twin_preview_args",

@@ -40,6 +40,8 @@ Payload delivery:
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import hashlib
 import hmac
 import asyncio
@@ -304,6 +306,7 @@ webhooks_router = APIRouter(tags=["webhooks"])
     summary="Receive an inbound webhook",
     include_in_schema=True,
 )
+@route_tool(scoped_id="webhooks__receive_webhook")
 async def receive_webhook(
     token: str,
     request: Request,
@@ -510,6 +513,7 @@ async def receive_webhook(
     summary="Poll one webhook delivery for its result",
     include_in_schema=True,
 )
+@route_tool(scoped_id="webhooks__get_webhook_delivery")
 async def get_webhook_delivery(
     token: str,
     delivery_id: str,

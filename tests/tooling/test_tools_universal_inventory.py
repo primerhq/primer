@@ -34,17 +34,19 @@ def test_baseline_pins_the_complete_reviewed_operation_universe(
     assert len(operations) == len(rows) == inventory.EXPECTED_OPERATION_COUNT == 404
     assert len({row["operation_id"] for row in rows}) == 404
     assert len({inventory._identity(row) for row in rows}) == 404
-    assert len(tools) == len({tool.scoped_id for tool in tools}) == 226
-    assert {row["state"] for row in rows} == {"curated", "gap", "skip"}
+    assert len(tools) == len({tool.scoped_id for tool in tools}) == 487
+    assert {row["state"] for row in rows} == {"curated", "generated", "skip"}
     assert manifest["base_commit"] == inventory.BASE_COMMIT
 
 
-def test_gap_and_skip_sets_are_exactly_reviewed(current_inventory) -> None:
+def test_generated_and_skip_sets_are_exactly_reviewed(current_inventory) -> None:
     manifest, _operations, _path_count, _tools, rows = current_inventory
     gaps = [row for row in rows if row["state"] == "gap"]
+    generated = [row for row in rows if row["state"] == "generated"]
     skips = [row for row in rows if row["state"] == "skip"]
 
-    assert len(gaps) == 261
+    assert gaps == []
+    assert len(generated) == 261
     assert len(skips) == 8
     assert inventory._digest_identities(gaps) == manifest["reviewed_gap_sha256"]
     assert inventory._digest_identities(skips) == manifest["reviewed_skip_sha256"]
@@ -53,30 +55,52 @@ def test_gap_and_skip_sets_are_exactly_reviewed(current_inventory) -> None:
     } == inventory.HUMAN_SIGN_IN_PATHS
     assert {row["skip_code"] for row in skips} == {"human_sign_in"}
     assert all(row["source"] == "DESIGN.md#approved-decisions-2" for row in skips)
+    assert all(row["tool_ids"] == [row["declared_generated_tool_id"]] for row in generated)
+    assert {row["tool_ids"][0] for row in generated} <= {
+        tool.scoped_id for tool in _tools
+    }
 
-    internal_collection_gaps = {
-        row["operation_id"]
-        for row in gaps
+    fixed_provider_ids = {
+        "system",
+        "workspaces",
+        "misc",
+        "web",
+        "harness",
+        "trigger",
+        "workspace_ext",
+        "collections",
+        "crud",
+        "canvas",
+    }
+    generated_provider_ids = {row["tool_ids"][0].split("__", 1)[0] for row in generated}
+    assert generated_provider_ids.isdisjoint(fixed_provider_ids)
+    from primer.api.registries.provider_registry import (
+        RESERVED_TOOLSET_IDS,
+        RESERVED_TOOLSET_ROW_IDS,
+    )
+
+    assert generated_provider_ids <= set(RESERVED_TOOLSET_IDS)
+    assert generated_provider_ids <= set(RESERVED_TOOLSET_ROW_IDS)
+    catalogue = {tool.scoped_id: tool for tool in _tools}
+    assert all(catalogue[row["tool_ids"][0]].exposable for row in generated)
+
+    internal_collection_tools = {
+        row["tool_ids"][0]
+        for row in generated
         if row["path"].startswith("/v1/internal_collections")
     }
-    assert internal_collection_gaps == {
-        "bootstrap_status_v1_internal_collections_bootstrap_status_get",
-        "bootstrap_v1_internal_collections_bootstrap_post",
-        "delete_config_v1_internal_collections_config_delete",
-        "get_config_v1_internal_collections_config_get",
-        "put_config_v1_internal_collections_config_put",
+    assert internal_collection_tools == {
+        "internal_collections__bootstrap_status",
+        "internal_collections__bootstrap",
+        "internal_collections__delete_config",
+        "internal_collections__get_config",
+        "internal_collections__put_config",
     }
 
 
-def test_strict_mode_is_deliberately_red_and_bounded(current_inventory) -> None:
+def test_strict_mode_is_green_at_zero_gaps(current_inventory) -> None:
     _manifest, _operations, _path_count, _tools, rows = current_inventory
-    failure = inventory.strict_gap_error(rows)
-
-    assert failure is not None
-    assert failure.startswith("strict zero-gap check failed: 261 GAP operations")
-    assert "internal-collections=5" in failure
-    assert "bootstrap_v1_internal_collections_bootstrap_post" in failure
-    assert len(failure) < 2_000
+    assert inventory.strict_gap_error(rows) is None
 
 
 def test_evidence_rendering_is_deterministic(current_inventory, tmp_path: Path) -> None:
@@ -90,6 +114,33 @@ def test_evidence_rendering_is_deterministic(current_inventory, tmp_path: Path) 
     for name in ("inventory.json", "inventory.csv", "inventory.md"):
         assert (first / name).read_bytes() == (second / name).read_bytes()
         assert (first / name).stat().st_size > 100
+
+
+def test_full_app_generated_build_is_stable_across_runtime_modes(current_inventory) -> None:
+    del current_inventory  # its module fixture built the default app first
+    from primer.api.app import create_app
+    from primer.api.config import AppConfig
+    from primer.api.route_tools import generated_route_toolset_providers
+    from primer.model.scheduler import RuntimeMode
+
+    first_ids = set(generated_route_toolset_providers())
+    api_app = create_app(AppConfig(runtime_mode=RuntimeMode.API))
+    second_ids = set(api_app.state.generated_route_toolsets.providers)
+    assert first_ids == second_ids
+    assert len(api_app.state.generated_route_toolsets.operations) == 261
+    assert all(
+        operation.metadata.scoped_id is not None
+        or (
+            operation.metadata.resource_id is not None
+            and operation.metadata.tool_id is not None
+        )
+        for operation in api_app.state.generated_route_toolsets.operations
+    ), "every published id comes from explicit route or factory metadata"
+    assert all(
+        not operation.tool.interruptible
+        for operation in api_app.state.generated_route_toolsets.operations
+        if not operation.tool.read_only
+    ), "generated mutators are not cancellable halfway through a REST write"
 
 
 @pytest.mark.parametrize(
@@ -205,6 +256,7 @@ def test_refresh_preserves_reviewed_rows_and_never_infers_by_name(
         "operation_id": "create_document_similar_but_unreviewed",
         "method": "POST",
         "path": "/v1/review-probe/documents",
+        "declared_generated_tool_id": None,
     }
     unseen = inventory.bootstrap_manifest([similar_unseen], 1, tools)
     assert unseen["rows"][0]["state"] == "gap"
@@ -219,22 +271,22 @@ def test_semantic_corrections_and_remaining_multi_tool_rows_are_pinned(
     expected_tools = {
         "_create_v1_documents_post": ["system__create_document"],
         "_delete_v1_documents__entity_id__delete": ["system__delete_document"],
-        "_update_v1_documents__entity_id__put": [],
-        "_list_v1_documents_get": [],
+        "_update_v1_documents__entity_id__put": ["documents__update"],
+        "_list_v1_documents_get": ["documents__list"],
         "create_doc_v1_collections__collection_id__docs_post": [
             "collections__create_document"
         ],
         "delete_doc_v1_collections__collection_id__docs_delete": [
             "collections__delete_document"
         ],
-        "find_sessions_v1_sessions_find_post": [],
-        "find_workspaces_v1_workspaces_find_post": [],
-        "file_tree_v1_workspaces__workspace_id__files_tree_get": [],
-        "get_session_by_id_v1_sessions__session_id__get": [],
+        "find_sessions_v1_sessions_find_post": ["sessions__find_sessions"],
+        "find_workspaces_v1_workspaces_find_post": ["workspaces_api__find_workspaces"],
+        "file_tree_v1_workspaces__workspace_id__files_tree_get": ["workspace_files__file_tree"],
+        "get_session_by_id_v1_sessions__session_id__get": ["sessions__get_session_by_id"],
         "list_files_v1_workspaces__workspace_id__files_get": [
             "workspaces__list_workspace_files"
         ],
-        "list_sessions_v1_sessions_get": [],
+        "list_sessions_v1_sessions_get": ["sessions__list_sessions"],
         "patch_doc_v1_collections__collection_id__docs_patch": [
             "collections__update_document"
         ],

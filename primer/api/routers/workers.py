@@ -16,6 +16,8 @@ surface backed by ``Scheduler.list_workers`` / ``drain_worker`` /
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from fastapi import APIRouter, Depends, Path
 
 from primer.api.deps import get_scheduler, require_admin
@@ -31,6 +33,7 @@ router = APIRouter(tags=["workers"])
     summary="List registered workers",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="workers__list_workers")
 async def list_workers(scheduler=Depends(get_scheduler)) -> dict:
     workers = await scheduler.list_workers()
     return {"items": [w.model_dump(mode="json") for w in workers]}
@@ -41,6 +44,7 @@ async def list_workers(scheduler=Depends(get_scheduler)) -> dict:
     summary="Per-lane task counters read from the in-process instruments",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="workers__worker_lane_stats")
 async def worker_lane_stats() -> dict:
     """Aggregate ``worker_tasks_total`` + ``worker_task_duration_seconds``.
 
@@ -93,6 +97,7 @@ async def worker_lane_stats() -> dict:
     # middleware injects under auth-disabled, so dogfood is unaffected.
     dependencies=[Depends(require_admin)],
 )
+@route_tool(scoped_id="workers__drain_worker")
 async def drain_worker(
     worker_id: str = Path(...),
     scheduler=Depends(get_scheduler),
@@ -106,6 +111,7 @@ async def drain_worker(
     responses=common_responses(401, 500),
     dependencies=[Depends(require_admin)],
 )
+@route_tool(scoped_id="workers__purge_dead_workers")
 async def purge_dead_workers(scheduler=Depends(get_scheduler)) -> dict:
     """Bulk-remove all workers currently in the ``dead`` state.
 
@@ -126,6 +132,7 @@ async def purge_dead_workers(scheduler=Depends(get_scheduler)) -> dict:
     # Mutating endpoint: admin only (see drain_worker note).
     dependencies=[Depends(require_admin)],
 )
+@route_tool(scoped_id="workers__delete_worker")
 async def delete_worker(
     worker_id: str = Path(...),
     scheduler=Depends(get_scheduler),

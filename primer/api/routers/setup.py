@@ -8,6 +8,8 @@ so completion re-runs the pass rather than waiting for the next boot.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import asyncio
 import logging
 
@@ -57,6 +59,7 @@ setup_router = APIRouter(prefix="/setup", tags=["setup"])
     summary="Run the S5 ensure pass now",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="setup__seed_now")
 async def seed_now(request: Request) -> dict:
     """Idempotently ensure the seeded world, then report setup state."""
     storage_provider = get_storage_provider(request)
@@ -94,6 +97,7 @@ async def seed_now(request: Request) -> dict:
     # response map has to name the code the handler can actually produce.
     responses=common_responses(500, 503),
 )
+@route_tool(scoped_id="setup__reset_agents")
 async def reset_agents(request: Request) -> dict:
     """Re-apply the DEFAULT prompt, grants and description of every seeded agent.
 
@@ -344,6 +348,7 @@ async def _live_default_workspace_check(request: Request) -> tuple[bool, str | N
     summary="Live-evaluate all six setup predicates",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="setup__get_setup_state")
 async def get_setup_state(request: Request) -> SetupStateResponse:
     """The Setup page's six-predicate table and the first-boot wizard's
     gate both read this - not GET /auth/status, which stays presence-only

@@ -25,6 +25,8 @@ code changes.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -382,6 +384,7 @@ def _build_task_ask_pending_response(
     summary="Get the pending ask_user prompt (404 if none)",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="yields__get_ask_user_pending")
 async def get_ask_user_pending(
     request: Request,
     session_id: str = Path(...),
@@ -540,6 +543,7 @@ def _task_ask_refusal(outcome: TaskAskResumeOutcome) -> Exception:
     summary="Submit a response to a pending ask_user prompt",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="yields__post_ask_user_respond")
 async def post_ask_user_respond(
     request: Request,
     session_id: str = Path(...),
@@ -845,6 +849,7 @@ class CancelYieldedToolBody(BaseModel):
     summary="Cancel one in-flight yield (tool-agnostic)",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="yields__post_cancel_yielded_tool")
 async def post_cancel_yielded_tool(
     request: Request,
     session_id: str = Path(...),

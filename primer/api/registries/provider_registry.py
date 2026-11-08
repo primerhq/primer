@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Set
 from typing import TYPE_CHECKING, Any
 
 from primer.common.toolset_ids import canonical_toolset_id
@@ -193,7 +193,7 @@ _CANVAS_TOOLSET_ID = "canvas"
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
 # Toolset storage lookup for them.
-RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
+_FIXED_RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _SYSTEM_TOOLSET_ID,
     _WORKSPACES_TOOLSET_ID,
     _MISC_TOOLSET_ID,
@@ -205,6 +205,41 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _CRUD_TOOLSET_ID,
     _CANVAS_TOOLSET_ID,
 })
+
+_GENERATED_API_TOOLSET_IDS: frozenset[str] = frozenset()
+
+
+class _ReservedToolsetIds(Set[str]):
+    """Stable public view of fixed plus generated in-process providers."""
+
+    @classmethod
+    def _from_iterable(cls, values):
+        return frozenset(values)
+
+    def __contains__(self, value: object) -> bool:
+        return value in _FIXED_RESERVED_TOOLSET_IDS or value in _GENERATED_API_TOOLSET_IDS
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(_FIXED_RESERVED_TOOLSET_IDS | _GENERATED_API_TOOLSET_IDS)
+
+    def __len__(self) -> int:
+        return len(_FIXED_RESERVED_TOOLSET_IDS | _GENERATED_API_TOOLSET_IDS)
+
+
+RESERVED_TOOLSET_IDS: Set[str] = _ReservedToolsetIds()
+
+
+def register_generated_api_toolset_ids(provider_ids: Set[str]) -> None:
+    """Publish the generated-provider half of the one reserved-ID union."""
+
+    global _GENERATED_API_TOOLSET_IDS
+    generated = frozenset(provider_ids)
+    collision = generated & _FIXED_RESERVED_TOOLSET_IDS
+    if collision:
+        raise ConfigError(
+            f"generated API provider ids collide with fixed built-ins: {sorted(collision)}"
+        )
+    _GENERATED_API_TOOLSET_IDS = _GENERATED_API_TOOLSET_IDS | generated
 
 
 
@@ -233,7 +268,22 @@ RESERVED_TOOLSET_SCOPE_IDS: frozenset[str] = frozenset({"external", "workspace",
 # row under one is a ghost that GET /v1/toolsets lists and nothing ever runs) plus the tool-manager scopes. The toolset REST router
 # and the system toolset's ``create_toolset`` both refuse exactly this set (one definition, so they cannot drift). The REST hook
 # used to refuse only the scope ids, because a module-local alias rebound the name RESERVED_TOOLSET_IDS to them.
-RESERVED_TOOLSET_ROW_IDS: frozenset[str] = RESERVED_TOOLSET_IDS | RESERVED_TOOLSET_SCOPE_IDS
+class _ReservedToolsetRowIds(Set[str]):
+    @classmethod
+    def _from_iterable(cls, values):
+        return frozenset(values)
+
+    def __contains__(self, value: object) -> bool:
+        return value in RESERVED_TOOLSET_IDS or value in RESERVED_TOOLSET_SCOPE_IDS
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(set(RESERVED_TOOLSET_IDS) | RESERVED_TOOLSET_SCOPE_IDS)
+
+    def __len__(self) -> int:
+        return len(set(RESERVED_TOOLSET_IDS) | RESERVED_TOOLSET_SCOPE_IDS)
+
+
+RESERVED_TOOLSET_ROW_IDS: Set[str] = _ReservedToolsetRowIds()
 
 # ---------------------------------------------------------------------------
 # Reserved ids for auto-bootstrap provider kinds
@@ -364,6 +414,7 @@ class ProviderRegistry:
         workspace_ext_toolset_provider: ToolsetProvider | None = None,
         crud_toolset_provider: ToolsetProvider | None = None,
         canvas_toolset_provider: ToolsetProvider | None = None,
+        generated_api_toolset_providers: Mapping[str, ToolsetProvider] | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
         retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
@@ -384,52 +435,40 @@ class ProviderRegistry:
             )
         )
         self._toolset_factory = toolset_factory or _default_toolset_factory
-        # Reserved id ``system`` resolves to this immutable provider
-        # without consulting storage. Set via app lifespan; tests
-        # may leave it None and use the row-based path.
-        self._system_toolset_provider = system_toolset_provider
-        # Reserved id ``search`` resolves to this provider when the
-        # internal collections subsystem is active. Set lazily by the
-        # subsystem bootstrap (or the lifespan handler if a config row
-        # already exists at startup); ``None`` means the subsystem is
-        # inactive and ``get_toolset('search')`` raises NotFoundError.
-        # Reserved id ``workspaces`` resolves to this immutable
-        # provider — always built at app startup. Mirrors ``system``:
-        # its tools dogfood the workspace REST API to agents.
-        self._workspaces_toolset_provider = workspaces_toolset_provider
-        # Reserved id ``misc`` resolves to this immutable provider —
-        # always built at app startup. Stateless utilities
-        # (get_datetime, sleep, uuid_v4, hash, calculate).
-        self._misc_toolset_provider = misc_toolset_provider
-        # Reserved id ``collections`` resolves to the always-on
-        # document-tree toolset: list / tree / read / grep and the
-        # write side, with semantic_search pointing at grep when a
-        # collection has no search block.
-        self._collections_toolset_provider = collections_toolset_provider
-        # Reserved id ``web`` (no underscore prefix) resolves to the
-        # immutable web toolset built at app startup.
-        # DuckDuckGo search + http-request primitives.
-        self._web_toolset_provider = web_toolset_provider
-        # Reserved id ``harness`` resolves to the harness management
-        # toolset built at app startup. Agents can manage harnesses
-        # (register, fetch, install, sync, uninstall) via this toolset.
-        self._harness_toolset_provider = harness_toolset_provider
-        # Reserved id ``trigger`` resolves to the trigger management
-        # toolset built at app startup. Agents can manage triggers /
-        # subscriptions through it. (The ``subscribe_to_trigger``
-        # yielding tool moved to the ``workspace_ext`` toolset.)
-        self._trigger_toolset_provider = trigger_toolset_provider
-        # Reserved id ``workspace_ext`` resolves to the workspace-only
-        # yielding toolset built at app startup (sleep, watch_files,
-        # invoke_graph, subscribe_to_trigger). Special: an agent can bind
-        # it, but its tools are registered into the agent's tool context
-        # ONLY in a workspace session (filtered out on chats by the
-        # ToolExecutionManager resolution choke point).
-        self._workspace_ext_toolset_provider = workspace_ext_toolset_provider
-        self._crud_toolset_provider = crud_toolset_provider
-        # Reserved id ``canvas`` resolves to the always-on session-canvas toolset built at app startup (pivot P5): its tools act
-        # on the calling workspace session's canvas, so they are dropped from chat contexts like ``workspace_ext``'s.
-        self._canvas_toolset_provider = canvas_toolset_provider
+        # One canonical table owns every immutable provider. Tests may leave
+        # a fixed provider absent to exercise the historical storage fallback.
+        fixed_toolsets = {
+            _SYSTEM_TOOLSET_ID: system_toolset_provider,
+            _WORKSPACES_TOOLSET_ID: workspaces_toolset_provider,
+            _MISC_TOOLSET_ID: misc_toolset_provider,
+            _COLLECTIONS_TOOLSET_ID: collections_toolset_provider,
+            _WEB_TOOLSET_ID: web_toolset_provider,
+            _HARNESS_TOOLSET_ID: harness_toolset_provider,
+            _TRIGGER_TOOLSET_ID: trigger_toolset_provider,
+            _WORKSPACE_EXT_TOOLSET_ID: workspace_ext_toolset_provider,
+            _CRUD_TOOLSET_ID: crud_toolset_provider,
+            _CANVAS_TOOLSET_ID: canvas_toolset_provider,
+        }
+        generated_toolsets = dict(generated_api_toolset_providers or {})
+        collisions = set(fixed_toolsets) & set(generated_toolsets)
+        if collisions:
+            raise ConfigError(
+                f"generated API providers collide with fixed built-ins: {sorted(collisions)}"
+            )
+        # One canonical mapping owns every immutable provider. Aliases are
+        # canonicalised before this lookup; unavailable fixed providers remain
+        # absent and preserve the existing storage-fallback test seam.
+        self._builtin_toolset_providers: dict[str, ToolsetProvider] = {
+            provider_id: provider
+            for provider_id, provider in fixed_toolsets.items()
+            if provider is not None
+        }
+        self._builtin_toolset_providers.update(generated_toolsets)
+        # Provenance for the generated subset of the canonical mapping. A
+        # test process may compile more than one app against one registry;
+        # only entries installed through the generated-provider seam may be
+        # replaced by the next app build.
+        self._generated_api_toolset_ids = set(generated_toolsets)
 
         self._retirement = AdapterRetirement(retire_idle_seconds)
         self._llm_cache: dict[str, LLM] = {}
@@ -457,6 +496,131 @@ class ProviderRegistry:
         self._build_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = weakref.WeakValueDictionary()
         self._invalidation_bus: InvalidationBus | None = None
         self._invalidation_subs: list[InvalidationSubscription] = []
+
+    def install_generated_api_toolsets(
+        self, providers: Mapping[str, ToolsetProvider]
+    ) -> None:
+        """Replace one app's generated subset in the canonical mapping.
+
+        Rebuilding a test app against the same registry replaces only the
+        providers whose generated provenance this registry recorded. Fixed
+        built-ins and unrelated occupants remain collision errors.
+        """
+
+        incoming = dict(providers)
+        incoming_ids = set(incoming)
+        fixed_collisions = incoming_ids & _FIXED_RESERVED_TOOLSET_IDS
+        if fixed_collisions:
+            raise ConfigError(
+                "generated API providers collide with fixed built-ins: "
+                f"{sorted(fixed_collisions)}"
+            )
+        foreign_collisions = (
+            incoming_ids
+            & set(self._builtin_toolset_providers)
+            - self._generated_api_toolset_ids
+        )
+        if foreign_collisions:
+            raise ConfigError(
+                "generated API providers collide with unrelated installed "
+                f"providers: {sorted(foreign_collisions)}"
+            )
+
+        for provider_id in self._generated_api_toolset_ids - incoming_ids:
+            self._builtin_toolset_providers.pop(provider_id, None)
+        self._builtin_toolset_providers.update(incoming)
+        self._generated_api_toolset_ids = incoming_ids
+
+    def _set_fixed_toolset(self, provider_id: str, provider: ToolsetProvider | None) -> None:
+        """Wire a late-built fixed provider into the canonical table."""
+
+        self._generated_api_toolset_ids.discard(provider_id)
+        if provider is None:
+            self._builtin_toolset_providers.pop(provider_id, None)
+        else:
+            self._builtin_toolset_providers[provider_id] = provider
+
+    # These private properties preserve the existing lifespan/test wiring
+    # seams while keeping lookup ownership in one canonical mapping.
+    @property
+    def _system_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_SYSTEM_TOOLSET_ID)
+
+    @_system_toolset_provider.setter
+    def _system_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_SYSTEM_TOOLSET_ID, provider)
+
+    @property
+    def _workspaces_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_WORKSPACES_TOOLSET_ID)
+
+    @_workspaces_toolset_provider.setter
+    def _workspaces_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_WORKSPACES_TOOLSET_ID, provider)
+
+    @property
+    def _misc_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_MISC_TOOLSET_ID)
+
+    @_misc_toolset_provider.setter
+    def _misc_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_MISC_TOOLSET_ID, provider)
+
+    @property
+    def _collections_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_COLLECTIONS_TOOLSET_ID)
+
+    @_collections_toolset_provider.setter
+    def _collections_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_COLLECTIONS_TOOLSET_ID, provider)
+
+    @property
+    def _web_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_WEB_TOOLSET_ID)
+
+    @_web_toolset_provider.setter
+    def _web_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_WEB_TOOLSET_ID, provider)
+
+    @property
+    def _harness_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_HARNESS_TOOLSET_ID)
+
+    @_harness_toolset_provider.setter
+    def _harness_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_HARNESS_TOOLSET_ID, provider)
+
+    @property
+    def _trigger_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_TRIGGER_TOOLSET_ID)
+
+    @_trigger_toolset_provider.setter
+    def _trigger_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_TRIGGER_TOOLSET_ID, provider)
+
+    @property
+    def _workspace_ext_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_WORKSPACE_EXT_TOOLSET_ID)
+
+    @_workspace_ext_toolset_provider.setter
+    def _workspace_ext_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_WORKSPACE_EXT_TOOLSET_ID, provider)
+
+    @property
+    def _crud_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_CRUD_TOOLSET_ID)
+
+    @_crud_toolset_provider.setter
+    def _crud_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_CRUD_TOOLSET_ID, provider)
+
+    @property
+    def _canvas_toolset_provider(self) -> ToolsetProvider | None:
+        return self._builtin_toolset_providers.get(_CANVAS_TOOLSET_ID)
+
+    @_canvas_toolset_provider.setter
+    def _canvas_toolset_provider(self, provider: ToolsetProvider | None) -> None:
+        self._set_fixed_toolset(_CANVAS_TOOLSET_ID, provider)
 
     # ---- Lookups ----------------------------------------------------------
 
@@ -581,80 +745,19 @@ class ProviderRegistry:
         # Transparently resolve old `_*` ids to new prefix-less ids so
         # agent rows persisted before the rename continue to work.
         toolset_id = canonical_toolset_id(toolset_id)
-        # Reserved id `system` short-circuits storage. Returns the
-        # singleton built at app startup; immutable, never re-created.
-        if (
-            self._system_toolset_provider is not None
-            and toolset_id == _SYSTEM_TOOLSET_ID
-        ):
-            return self._system_toolset_provider
-        # Reserved id `workspaces` resolves to the always-on
-        # workspace dogfood toolset built at app startup.
-        if (
-            self._workspaces_toolset_provider is not None
-            and toolset_id == _WORKSPACES_TOOLSET_ID
-        ):
-            return self._workspaces_toolset_provider
-        # Reserved id `misc` resolves to the always-on misc utility
-        # toolset built at app startup.
-        if (
-            self._misc_toolset_provider is not None
-            and toolset_id == _MISC_TOOLSET_ID
-        ):
-            return self._misc_toolset_provider
-        # Reserved id `collections` resolves to the always-on document
-        # tree toolset built at app startup.
-        if (
-            self._collections_toolset_provider is not None
-            and toolset_id == _COLLECTIONS_TOOLSET_ID
-        ):
-            return self._collections_toolset_provider
-        # Reserved id `web` resolves to the always-on web toolset
-        # built at app startup.
-        if (
-            self._web_toolset_provider is not None
-            and toolset_id == _WEB_TOOLSET_ID
-        ):
-            return self._web_toolset_provider
-        # Reserved id `harness` resolves to the harness management
-        # toolset built at app startup.
-        if (
-            self._harness_toolset_provider is not None
-            and toolset_id == _HARNESS_TOOLSET_ID
-        ):
-            return self._harness_toolset_provider
-        # Reserved id `trigger` resolves to the trigger management +
-        # yielding toolset built at app startup.
-        if (
-            self._trigger_toolset_provider is not None
-            and toolset_id == _TRIGGER_TOOLSET_ID
-        ):
-            return self._trigger_toolset_provider
-        # Reserved id `workspace_ext` resolves to the always-on
-        # workspace-only yielding toolset built at app startup.
-        if (
-            self._workspace_ext_toolset_provider is not None
-            and toolset_id == _WORKSPACE_EXT_TOOLSET_ID
-        ):
-            return self._workspace_ext_toolset_provider
-        # Reserved id `crud` resolves to the always-on platform-construction
-        # toolset built at app startup (S5). Approval policies keyed on
-        # toolset_id="crud" gate every tool in it.
-        if (
-            self._crud_toolset_provider is not None
-            and toolset_id == _CRUD_TOOLSET_ID
-        ):
-            return self._crud_toolset_provider
-        # Reserved id `canvas` resolves to the session-canvas toolset built at app startup (pivot P5) when canvas.agent_tools_enabled is on.
-        if (
-            self._canvas_toolset_provider is not None
-            and toolset_id == _CANVAS_TOOLSET_ID
-        ):
-            if toolset_id in await self.toolsets_off_by_design():
+        builtin = self._builtin_toolset_providers.get(toolset_id)
+        if builtin is not None:
+            # Canvas is the one immutable provider an operator may disable.
+            # Do not make every fixed/generated lookup read CanvasSettings:
+            # a broken optional setting must not take the whole catalogue out.
+            if (
+                toolset_id == _CANVAS_TOOLSET_ID
+                and toolset_id in await self.toolsets_off_by_design()
+            ):
                 raise NotFoundError(
                     f"Toolset {toolset_id!r} does not exist"
                 )
-            return self._canvas_toolset_provider
+            return builtin
         async def build() -> ToolsetProvider:
             row = await self._sp.get_storage(Toolset).get(toolset_id)
             if row is None:
@@ -701,16 +804,7 @@ class ProviderRegistry:
         # The reserved internal toolsets are immutable; invalidation
         # is a no-op so the singletons survive any cascade triggered
         # by an accidental write to the reserved ids.
-        if toolset_id in (
-            _SYSTEM_TOOLSET_ID,
-            _WORKSPACES_TOOLSET_ID,
-            _MISC_TOOLSET_ID,
-            _WEB_TOOLSET_ID,
-            _HARNESS_TOOLSET_ID,
-            _TRIGGER_TOOLSET_ID,
-            _WORKSPACE_EXT_TOOLSET_ID,
-            _CRUD_TOOLSET_ID,
-        ):
+        if toolset_id in RESERVED_TOOLSET_IDS:
             return
         async with self._lock:
             self._cache_generation += 1           # a build in flight for it must not cache what it read before
@@ -925,5 +1019,6 @@ __all__ = [
     "RESERVED_TOOLSET_SCOPE_IDS",
     "RESERVED_WORKSPACE_PROVIDER_IDS",
     "canonical_toolset_id",
+    "register_generated_api_toolset_ids",
     "toolsets_off_by_design",
 ]

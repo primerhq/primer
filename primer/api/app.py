@@ -35,6 +35,8 @@ from primer.api.registries import (
     WorkspaceRegistry,
 )
 from primer.api.version import API_VERSION, APP_VERSION
+from primer.api.route_tools import build_generated_route_toolsets
+from primer.api.registries.provider_registry import register_generated_api_toolset_ids
 
 # Importing these modules registers each channel adapter factory with
 # primer.channel.factory. Each platform SDK ships in the optional
@@ -156,6 +158,9 @@ def create_app(config: AppConfig) -> FastAPI:
     _mount_metrics(app, config)
     _install_root_redirect(app)
     register_error_handlers(app)
+    generated = build_generated_route_toolsets(app, publish_default_gates=True)
+    register_generated_api_toolset_ids(set(generated.providers))
+    app.state.generated_route_toolsets = generated
     return app
 
 
@@ -481,6 +486,10 @@ def create_test_app(
     app.state.channel_dispatcher = _test_channel_dispatcher
     _mount_routers(app)
     register_error_handlers(app)
+    generated = build_generated_route_toolsets(app, publish_default_gates=True)
+    register_generated_api_toolset_ids(set(generated.providers))
+    app.state.generated_route_toolsets = generated
+    provider_registry.install_generated_api_toolsets(generated.providers)
 
     # MCP mount helpers. ASGITransport doesn't drive the lifespan, so
     # we expose explicit start/stop coroutines and let the test

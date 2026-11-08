@@ -27,6 +27,8 @@ that to decide whether ``status.authenticated`` is True.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import ipaddress
 import logging
 import re
@@ -366,6 +368,7 @@ async def _sign_in_of(request: Request) -> tuple[str | None, str | None]:
 
 
 @auth_router.get("/status", response_model=AuthStatus)
+@route_tool(scoped_id="auth__auth_status")
 async def auth_status(request: Request) -> AuthStatus:
     """Probe used by the UI to pick register / login / main flow."""
     from primer.bootstrap.setup_state import evaluate_setup_state
@@ -403,6 +406,7 @@ async def auth_status(request: Request) -> AuthStatus:
 @auth_router.post(
     "/register", response_model=AuthOk, responses=common_responses(400, 409),
 )
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def register(
     body: RegisterBody, request: Request, response: Response,
 ) -> AuthOk:
@@ -444,6 +448,7 @@ async def register(
     response_model=AuthOk,
     responses=common_responses(400, 401, 429, 503),
 )
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def login(
     body: LoginBody, request: Request, response: Response,
 ) -> AuthOk:
@@ -574,6 +579,7 @@ async def login(
 
 
 @auth_router.post("/logout", status_code=204)
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def logout(request: Request, response: Response) -> None:
     """Clear this browser's session cookie. Idempotent.
 
@@ -588,6 +594,7 @@ async def logout(request: Request, response: Response) -> None:
 @auth_router.post(
     "/logout-all", status_code=204, responses=common_responses(401),
 )
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def logout_all(
     request: Request,
     response: Response,
@@ -616,6 +623,7 @@ class ChangePasswordArgs(BaseModel):
 
 
 @auth_router.post("/change-password", response_model=AuthOk)
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def change_password(
     body: ChangePasswordArgs,
     request: Request,

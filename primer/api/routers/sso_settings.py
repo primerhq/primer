@@ -25,6 +25,8 @@ admin account.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends
@@ -61,6 +63,7 @@ class SsoSettingsPutBody(BaseModel):
     response_model=SsoSettingsOut,
     summary="Read the SSO JIT-provisioning settings",
 )
+@route_tool(scoped_id="sso_settings__get_sso_settings")
 async def get_sso_settings(
     storage_provider=Depends(get_storage_provider),
 ) -> SsoSettingsOut:
@@ -76,6 +79,7 @@ async def get_sso_settings(
     response_model=SsoSettingsOut,
     summary="Update the SSO JIT-provisioning settings",
 )
+@route_tool(scoped_id="sso_settings__put_sso_settings")
 async def put_sso_settings(
     body: SsoSettingsPutBody,
     storage_provider=Depends(get_storage_provider),

@@ -31,6 +31,8 @@ Validation:
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -146,6 +148,7 @@ async def _find_by_user_and_name(storage, user_id: str, name: str) -> ApiToken |
     response_model=ApiTokenCreatedResponse,
     summary="Create an API token. Plaintext returned ONCE.",
 )
+@route_tool(scoped_id="auth__create_api_token")
 async def create_api_token(
     body: ApiTokenCreateBody,
     request: Request,
@@ -249,6 +252,7 @@ async def create_api_token(
     response_model=ApiTokenListResponse,
     summary="List the caller's API tokens (plaintext omitted).",
 )
+@route_tool(scoped_id="auth__list_api_tokens")
 async def list_api_tokens(
     request: Request,
     sp=Depends(get_storage_provider),
@@ -279,6 +283,7 @@ async def list_api_tokens(
     status_code=204,
     summary="Revoke an API token. Idempotent.",
 )
+@route_tool(scoped_id="auth__revoke_api_token")
 async def revoke_api_token(
     request: Request,
     token_id: str = Path(...),
@@ -331,6 +336,7 @@ async def rename_token_row(storage, row: ApiToken, new_name: str) -> ApiToken | 
     response_model=ApiTokenSummary,
     summary="Rename an API token.",
 )
+@route_tool(scoped_id="auth__rename_api_token")
 async def rename_api_token(
     body: ApiTokenRenameBody,
     request: Request,

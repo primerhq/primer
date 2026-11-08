@@ -17,6 +17,8 @@ Endpoints:
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from datetime import datetime, timezone
 from typing import Annotated, Any
 from uuid import uuid4
@@ -83,7 +85,7 @@ def _harness_storage_dep(sp=Depends(get_storage_provider)):
 # ``GET`` / ``PUT /v1/harnesses/{id}/access``; mounted BEFORE the CRUD routes (the include order in ``_app_routes``).
 harness_access_router = make_access_router(
     model_cls=Harness, plural="harnesses", storage_dep=_harness_storage_dep,
-    tag="harnesses", after_write=_fan_out,
+    tag="harnesses", after_write=_fan_out, tool_resource_id="harnesses",
 )
 
 
@@ -236,6 +238,7 @@ async def _write_changed(
     responses=common_responses(409, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(scoped_id="harnesses__create_harness")
 async def create_harness(
     request: Request,
     body: HarnessCreateBody,
@@ -374,6 +377,7 @@ async def list_harnesses(
     summary="Get a harness by id",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="harnesses__get_harness")
 async def get_harness(
     request: Request,
     harness_id: str = Path(...),
@@ -475,6 +479,7 @@ async def update_harness(
     responses=common_responses(404, 409, 500),
     dependencies=_admin_write,
 )
+@route_tool(scoped_id="harnesses__delete_harness")
 async def delete_harness(
     harness_id: str = Path(...),
     cascade: bool | None = Query(
@@ -533,6 +538,7 @@ async def delete_harness(
     responses=common_responses(404, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(scoped_id="harnesses__put_harness_overrides")
 async def put_harness_overrides(
     request: Request,
     harness_id: str = Path(...),
@@ -764,6 +770,7 @@ async def sync_harness(
     responses=common_responses(404, 409, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(scoped_id="harnesses__put_tracked_entities")
 async def put_tracked_entities(
     body: TrackedEntitiesBody,
     harness_id: str = Path(...),
@@ -811,6 +818,7 @@ async def put_tracked_entities(
     responses=common_responses(404, 409, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(scoped_id="harnesses__build_harness")
 async def build_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
@@ -854,6 +862,7 @@ async def build_harness(
     summary="Download an outbound harness bundle as a gzipped tarball",
     responses=common_responses(404, 409, 422, 500),
 )
+@route_tool(scoped_id="harnesses__download_harness_bundle")
 async def download_harness_bundle(
     request: Request,
     harness_id: str = Path(...),
@@ -895,6 +904,7 @@ async def download_harness_bundle(
     responses=common_responses(404, 409, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(scoped_id="harnesses__push_harness")
 async def push_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
