@@ -473,12 +473,13 @@ Four rules make that safe:
   USER_INPUT nobody answered, `has_open_turn` from the drain cursor, makes it
   `claimable` and claimed; none gives it back to `idle`; an unreadable log counts
   as one). A live wake that finds its turn given back after writing its message
-  takes it again and arms the claim (N3). A row `claimable` with no SESSION lease
-  row (a promotion whose claim upsert failed), seen in the same state at the same
-  `last_seq` on two ticks at least the grace apart, gets its claim; a PAUSED row is
-  left to `/resume`. Each heal is one `patch_if` fenced on what it was judged on,
-  and the candidates are read before any is healed (N12). Without a claim engine
-  the sweep does nothing.
+  takes it again and arms the claim (N3). A row already `claimable` with no
+  SESSION lease gets its claim on the first sweep: its message and closing
+  transition are durable, so the message-write grace applies only to `arming`.
+  This bounds recovery when both a queue realization's claim upsert and the
+  worker's post-release re-arm fail. A PAUSED row is left to `/resume`. Each heal
+  is one `patch_if` fenced on what it was judged on, and the candidates are read
+  before any is healed (N12). Without a claim engine the sweep does nothing.
   Known and ticketed: the sweep skips ENDED sessions (an autonomous or failed
   one keeps its queue until its next message reopens it, and that message runs
   first), and it decides "at rest" on a read a Cancel can overtake before the

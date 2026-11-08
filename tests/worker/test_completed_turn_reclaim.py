@@ -659,6 +659,60 @@ async def test_a_queued_steer_committed_after_checkpoint_is_realized_after_relea
     assert KEY not in world.engine._leases
 
 
+@pytest.mark.asyncio
+async def test_the_sweep_immediately_repairs_a_post_release_wake_whose_claim_upsert_failed(world):
+    """The late-queue recovery can durably promote its USER_INPUT and then lose the claim-engine upsert.
+
+    Drive that boundary through the real pool, session adapter and in-memory claim engine. The message is no longer
+    queued, so only the persisted ``claimable`` row remains as recovery evidence; the periodic sweep must not apply
+    the much longer in-progress message-write grace to it.
+    """
+    from primer.bus.scheduler_tasks import SessionMessagingSweeper
+
+    await world.create_session()
+    await world.steer("first")
+    pool = world.pool("wrk-a")
+    leases = await world.engine.claim_due(pool._worker_id, max_count=10)
+    assert len(leases) == 1
+    world.hold_next_release = True
+    pool._reserve_and_dispatch(leases)
+
+    await asyncio.wait_for(world.release_reached.wait(), 5.0)
+    await _store_pending(world, "second")
+    real_upsert = world.engine.upsert
+    failures = 0
+
+    async def fail_twice(*args, **kwargs):
+        nonlocal failures
+        if failures < 2:
+            failures += 1
+            raise ConnectionError("the lease upsert lost its connection")
+        await real_upsert(*args, **kwargs)
+
+    world.engine.upsert = fail_twice  # type: ignore[method-assign]
+    world.allow_release.set()
+    await _until(lambda: not pool._in_flight, "the old execution slot never closed")
+
+    row = await world.row()
+    assert failures == 2 and row.turn_status == "claimable"
+    assert await _pending_texts(world) == []
+    assert KEY not in world.engine._leases
+
+    sweeper = SessionMessagingSweeper(
+        storage_provider=world.storage,
+        scheduler=world.scheduler,
+        claim_engine=world.engine,
+        workspace_registry=world.registry,
+        event_bus=world.bus,
+        stale_arm_grace_seconds=300.0,
+    )
+    assert await sweeper._tick() == 0
+    assert KEY in world.engine._leases and world.engine._leases[KEY].claimed_by is None
+
+    assert await world.claim_and_run(pool) == 1
+    assert world.llm_calls == ["first", "second"]
+
+
 async def _pending_texts(world: _World) -> list[str]:
     from primer.model.storage import OffsetPage
     from primer.model.workspace_session import PendingSessionMessage

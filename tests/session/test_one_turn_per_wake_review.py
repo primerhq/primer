@@ -380,24 +380,20 @@ async def test_the_sweep_arms_the_claim_of_a_turn_left_claimable_with_none(new_w
             await _steer(world)
         assert (await _row(world)).turn_status == "claimable" and world.engine.upserts == []
 
-        await _sweeper(world)._tick()
+        await _sweeper(world, grace=300.0)._tick()
 
         assert world.engine.upserts == [(ClaimKind.SESSION, "ses-b")]
         assert world.scheduler.enqueued[-1] == "ses-b"
 
 
-async def test_the_sweep_heals_an_unclaimed_turn_only_after_it_stayed_so_for_the_grace(new_world, monkeypatch):
-    """A row claimable with no lease for a moment is the normal instant between a promotion and its upsert: the first sighting only notes it."""
+async def test_the_sweep_does_not_apply_the_message_write_grace_to_a_claimable_turn(new_world):
+    """The message-write grace protects ``arming`` only; a claimable row is already durable and safe to upsert idempotently."""
     async with asyncio.timeout(BOUND_S):
         world = await new_world()
         await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="claimable", turn_no=1, created_at=T0)
-        sweeper = _sweeper(world, grace=0.2)
+        sweeper = _sweeper(world, grace=300.0)
 
         await sweeper._tick()
-        assert world.engine.upserts == []
-        await asyncio.sleep(0.25)
-        await sweeper._tick()
-
         assert world.engine.upserts == [(ClaimKind.SESSION, "ses-b")]
 
 
