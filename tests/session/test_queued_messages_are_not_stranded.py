@@ -187,7 +187,11 @@ async def test_the_sweep_leaves_a_session_that_is_not_at_rest(fields):
 
         assert await _sweeper(world)._tick() == 0
         assert records(world, "ses-b") == [] and await _pending(world) == ["waits"]
-        assert world.scheduler.enqueued == []
+        # A claimable row is already durable work. The sweeper repairs its
+        # missing SESSION lease immediately, but still leaves the queued
+        # follow-up for that turn's own terminal checkpoint.
+        expected = ["ses-b"] if fields.get("turn_status") == "claimable" else []
+        assert world.scheduler.enqueued == expected
 
 
 async def test_the_sweep_drops_the_queue_of_a_session_that_no_longer_exists():

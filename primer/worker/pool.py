@@ -1264,15 +1264,23 @@ class WorkerPool:
                 # engine to ever re-claim. Re-arm AFTER the release (once
                 # the old lease is actually gone) so a genuinely queued
                 # turn always gets a fresh claim.
-                key = (ClaimKind.SESSION, sid)
-                if key in self._in_flight:
-                    self._session_rearms_after_release[sid] = outcome.park is not None
-                else:
-                    # Direct test/helper invocations do not pass through
-                    # ``_run_engine`` and therefore have no slot to release.
-                    await self._rearm_session_after_release(
-                        sid, carried_reply=outcome.park is not None,
-                    )
+                # A resumed park returns ``drop_lease=False`` deliberately:
+                # its existing lease is the continuation LLM turn. Do not run
+                # the generic late-queue recovery before that continuation,
+                # or a message queued while the tool was parked becomes the
+                # continuation's last user input and hides the resumed tool
+                # result. The continuation's own terminal checkpoint realizes
+                # that queued head in the normal order.
+                if outcome.drop_lease:
+                    key = (ClaimKind.SESSION, sid)
+                    if key in self._in_flight:
+                        self._session_rearms_after_release[sid] = outcome.park is not None
+                    else:
+                        # Direct test/helper invocations do not pass through
+                        # ``_run_engine`` and therefore have no slot to release.
+                        await self._rearm_session_after_release(
+                            sid, carried_reply=outcome.park is not None,
+                        )
 
     def _select_resume_handler(
         self, session_row: WorkspaceSession,

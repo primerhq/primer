@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +55,33 @@ def test_redacts_nested_credentials_and_url_userinfo() -> None:
             "safe": "kept",
         },
     }
+
+
+def test_failed_psql_capture_names_stage_and_bounds_redacted_stderr(monkeypatch) -> None:
+    diagnostics = _diagnostics_module()
+    noisy = (
+        "x" * (diagnostics.MAX_CAPTURE_STDERR_CHARS + 50)
+        + "\ncompose failed PGPASSWORD=do-not-keep "
+        "postgresql://primer:secret@db/primer_e2e\n"
+    )
+    monkeypatch.setattr(
+        diagnostics.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=noisy,
+        ),
+    )
+
+    captured = diagnostics._capture_one("docker", "sess-deadbeef")
+
+    assert captured["capture_stage"] == "compose_psql"
+    assert captured["capture_error"] == "psql exited 1"
+    assert captured["capture_stderr"].startswith("[truncated]\n")
+    assert len(captured["capture_stderr"]) <= diagnostics.MAX_CAPTURE_STDERR_CHARS + len("[truncated]\n")
+    assert "do-not-keep" not in captured["capture_stderr"]
+    assert "secret@" not in captured["capture_stderr"]
 
 
 def test_state_query_is_session_scoped_and_bounded() -> None:

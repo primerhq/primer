@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_SESSION_IDS = 20
+MAX_CAPTURE_STDERR_CHARS = 2000
 SESSION_ID_RE = re.compile(r"\bsess-[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\b")
 _SENSITIVE_KEY_PARTS = (
     "api_key",
@@ -34,6 +35,9 @@ _SENSITIVE_KEY_PARTS = (
     "token",
 )
 _CREDENTIAL_URL_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
+_DIAGNOSTIC_SECRET_RE = re.compile(
+    r"(?i)\b(password|passwd|pgpassword|token|secret|authorization)\s*([=:])\s*([^\s,;]+)"
+)
 
 _SESSION_STATE_SQL = r"""
 WITH relevant_subscriptions AS (
@@ -115,6 +119,18 @@ def redact(value: Any) -> Any:
     return value
 
 
+def bounded_redacted_stderr(stderr: str) -> str:
+    """Return a bounded diagnostic tail with obvious credentials removed."""
+    clean = _CREDENTIAL_URL_RE.sub(r"\1[REDACTED]@", stderr)
+    clean = _DIAGNOSTIC_SECRET_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        clean,
+    )
+    if len(clean) <= MAX_CAPTURE_STDERR_CHARS:
+        return clean
+    return "[truncated]\n" + clean[-MAX_CAPTURE_STDERR_CHARS:]
+
+
 def _runtime() -> str | None:
     requested = os.environ.get("PRIMER_E2E_CONTAINER_RUNTIME")
     if requested:
@@ -162,14 +178,18 @@ def _capture_one(runtime: str, session_id: str) -> dict[str, Any]:
     if completed.returncode != 0:
         return {
             "session_id": session_id,
+            "capture_stage": "compose_psql",
             "capture_error": f"psql exited {completed.returncode}",
+            "capture_stderr": bounded_redacted_stderr(completed.stderr),
         }
     try:
         return redact(json.loads(completed.stdout))
     except json.JSONDecodeError:
         return {
             "session_id": session_id,
+            "capture_stage": "decode_psql_json",
             "capture_error": "psql returned non-JSON output",
+            "capture_stderr": bounded_redacted_stderr(completed.stderr),
         }
 
 

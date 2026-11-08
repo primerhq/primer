@@ -407,7 +407,13 @@ Four rules make that safe:
   where the terminating turn read an empty queue at its checkpoint just before
   the pending row became visible. If the turn is still live the nudge leaves the
   row for its checkpoint; if the checkpoint already passed the nudge arms the
-  next turn. Concurrent nudges still converge on the queued row id.
+  next turn. The worker's matching post-release recovery runs only when that
+  release dropped its SESSION lease. A resumed tool deliberately keeps the
+  lease for its continuation LLM turn, so a follow-up queued while it was
+  parked stays queued until that continuation's terminal checkpoint; realizing
+  it before the continuation would make the follow-up the last user input and
+  hide the resumed tool result. Concurrent nudges still converge on the queued
+  row id.
 
   Reopening an ENDED session is fenced the same way (`_reopen_ended_locked`):
   ONE `patch_if` decides it and reserves the divider's seq (fenced on the row
