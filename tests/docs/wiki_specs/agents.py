@@ -45,4 +45,13 @@ SPECS = (
              "How a session compacts its own history before the prompt overflows the window, what the records say, and the 413 errors.",
              "feature", 7,
              related=("agents/what-an-agent-is", "agents/switch-and-binding")),
+    PageSpec("agents/wiki-driven-agent", "Build a wiki-driven agent",
+             "Create an agent whose prompt teaches the wiki loop, grant it the core kit, and verify it is wiki-first with the characterization probe.",
+             "recipe", 8,
+             tools=scoped("system", "create_agent")
+             + scoped("workspaces", "create_workspace_session read_workspace_session_messages"),
+             related=("knowledge/the-platform-wiki", "start-here/the-core-kit",
+                      "start-here/reading-this-wiki", "agents/create-and-edit"),
+             must=("purpose-map", "characterization probe", "core-kit"),
+             max_chars=9000),
 )

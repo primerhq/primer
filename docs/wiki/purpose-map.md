@@ -21,6 +21,8 @@ The platform is configured through the operator (an admin tells the operator to 
 | register an MCP server as a toolset and grant its tools | [runbooks/new-functionality](runbooks/new-functionality) (branch A) + [toolsets/mcp-toolsets](toolsets/mcp-toolsets) |
 | write python code as a toolset and register it | [runbooks/new-functionality](runbooks/new-functionality) (branch B) + [toolsets/python-toolsets](toolsets/python-toolsets) |
 | work with workspaces, sessions and agents (create, files, start a session, manage) | [workspaces/](workspaces) + [sessions/](sessions) + [agents/](agents) |
+| coordinate multiple agents in one workspace (the coordinator and sub-agents file pattern, the other coordination surfaces) | [collaboration/coordinator-pattern](collaboration/coordinator-pattern) + [collaboration/other-patterns](collaboration/other-patterns) |
+| build a wiki-driven agent (the prompt that teaches the wiki loop, the smallest grant, the characterization probe) | [agents/wiki-driven-agent](agents/wiki-driven-agent) |
 | understand what the access model allows (the roles, the grants, what "admin" means) | [start-here/roles-and-approvals](start-here/roles-and-approvals) |
 | find what an entity does before configuring it | [this-install/](this-install) (the live map of this install) + `system__describe_tool` |
 
