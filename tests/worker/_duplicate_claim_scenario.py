@@ -3,10 +3,11 @@
 ``claim_due`` re-claims any lease whose ``expires_at`` has passed, including this worker's own
 claim, so a heartbeat that stalls past the lease TTL while a turn is still running makes the
 pool's claim loop claim the same ``(kind, id)`` again. The pool must leave that duplicate
-alone. The scenario forces the expiry by hand (what a stalled heartbeat looks like to the
-engine), lets the pool's REAL claim loop re-claim, lets a REAL heartbeat run afterwards, and
-then checks the in-flight execution was neither preempted nor duplicated and that its release
-reached ``on_release``. Two keys: ``dup`` is duplicate-claimed, ``other`` is untouched.
+alone while the original slot is live. The scenario forces the expiry by hand (what a stalled
+heartbeat looks like to the engine), lets the pool's REAL claim loop re-claim, lets a REAL
+heartbeat run afterwards, and then checks the in-flight execution was neither preempted nor
+duplicated and that its release reached ``on_release``. Two keys: ``dup`` is duplicate-claimed,
+``other`` is untouched.
 """
 
 from __future__ import annotations

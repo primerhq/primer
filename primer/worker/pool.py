@@ -158,6 +158,15 @@ class WorkerPool:
         # ``_run_engine`` after it releases the slot. The bool records whether
         # the release also needs the carried-reply re-arm.
         self._session_rearms_after_release: dict[str, bool] = {}
+        # A direct wake can arm and the claim loop can claim the NEXT session
+        # lease after the current handler has released its lease, but before
+        # this wrapper has removed the old process-local in-flight key.  The
+        # duplicate guard must not abandon that claimed lease until its TTL.
+        # Hold it until the old slot closes, then give it back unstarted so it
+        # is immediately claimable.  An expired re-claim of the old lease can
+        # land here too; the old handler's release deletes that row and the
+        # eventual give-back is then an idempotent no-op.
+        self._deferred_session_duplicate_claims: dict[str, ClaimLease] = {}
 
         # Strong references to in-flight per-turn tasks so the GC does not
         # silently collect them between create_task and the first await.
@@ -638,8 +647,8 @@ class WorkerPool:
         only WHICH leases get claimed differs.
 
         A lease whose ``(kind, id)`` is ALREADY in ``_in_flight`` is a duplicate
-        claim and is skipped, and nothing else is done with it: no dispatch, no
-        scope, no release, no requeue. ``claim_due`` re-claims any lease whose
+        claim and is skipped: no second executor and no replacement cancel
+        scope. ``claim_due`` re-claims any lease whose
         ``expires_at`` has passed, including this worker's own claim, so when a
         heartbeat stalls past the lease TTL while a turn is still running, this
         pool's claim loop claims the same row again. ``worker_id`` is minted per
@@ -649,7 +658,13 @@ class WorkerPool:
         be worse: a requeue clears ``claimed_by``, the next heartbeat (fenced on
         ``claimed_by``) reports the in-flight key lost and cancels the only
         executor. The re-claim already re-stamped the very row the in-flight
-        execution's heartbeat keeps alive, so leaving it alone is the whole fix.
+        execution's heartbeat keeps alive, so it is left alone WHILE that
+        execution runs. A SESSION duplicate is remembered and handed back
+        unstarted only after the old wrapper has removed its in-flight key. If
+        it was the expired old lease, the handler's release has already deleted
+        it and the hand-back is a no-op. If it was a fresh lease armed after
+        that release, the hand-back makes the queued next turn claimable now
+        instead of one lease TTL later.
 
         Pool invariant this relies on, and what keeps the engine's release fence
         at ``claimed_by`` only (no ``claimed_at`` term): a handler's
@@ -665,10 +680,10 @@ class WorkerPool:
         worker but no longer heartbeated, expires after one lease TTL and is claimed
         again.
 
-        Session work exposed by a release is re-armed only after
-        :meth:`_run_engine` has discarded this key. A fresh session lease
-        therefore cannot be claimed in the release-to-discard window and
-        mistaken for this older execution.
+        The session handler's own re-arm waits until :meth:`_run_engine` has
+        discarded this key. An independent wake can still arm a lease inside
+        the release-to-discard window; remembering that duplicate here closes
+        the corresponding external-wake race.
 
         Residual 2, NOT bounded by a TTL and it CAN lose work (tracked as task
         01a1084f): a preempted execution that is still unwinding keeps its key in
@@ -688,10 +703,13 @@ class WorkerPool:
             key = (lease.kind, lease.entity_id)
             if key in self._in_flight:
                 self._duplicate_claims_total += 1
+                if lease.kind == ClaimKind.SESSION:
+                    self._deferred_session_duplicate_claims[lease.entity_id] = lease
                 logger.warning(
                     "duplicate claim of %s/%s skipped: this worker already has it "
                     "in flight (typically its heartbeat stalled past the lease "
-                    "TTL); the lease is left untouched",
+                    "TTL, or a fresh wake landed after release); the lease is "
+                    "left untouched until the active slot closes",
                     lease.kind, lease.entity_id,
                 )
                 continue
@@ -898,6 +916,30 @@ class WorkerPool:
             self._active_scopes.pop(key, None)
             self._in_flight.discard(key)
             if lease.kind == ClaimKind.SESSION:
+                duplicate = self._deferred_session_duplicate_claims.pop(
+                    lease.entity_id, None,
+                )
+                if duplicate is not None:
+                    try:
+                        # Safe only now: while the old execution was live, a
+                        # give-back would make its next heartbeat report the
+                        # lease lost and cancel it. If this duplicate was the
+                        # expired old lease, the handler's release has already
+                        # deleted it; engines treat this as a no-op. If it is a
+                        # fresh post-release lease, it becomes claimable at
+                        # once, with no entity adapter side effect.
+                        await self._release_lease(
+                            duplicate,
+                            ReleaseOutcome(success=True, entity_noop=True),
+                        )
+                    except Exception:
+                        # The duplicate stays claimed but is no longer
+                        # heartbeated, so its ordinary TTL recovery remains.
+                        logger.exception(
+                            "returning deferred duplicate session lease %s "
+                            "failed; it will expire and be re-claimed",
+                            lease.entity_id,
+                        )
                 carried_reply = self._session_rearms_after_release.pop(
                     lease.entity_id, None,
                 )
