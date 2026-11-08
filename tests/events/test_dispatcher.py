@@ -176,6 +176,64 @@ async def test_one_shot_wake_publishes_and_completes(sp):
     assert await d.drain_once() == 0
 
 
+async def test_one_shot_wake_is_durably_flipped_before_its_subscription_is_collected(sp):
+    """A successful bus publish is not an acknowledgement from its listener.
+
+    This bus deliberately has no listener. The durable dispatcher must apply
+    the guarded park flip and arm the real claim engine before it advances the
+    cursor and removes the one-shot subscription.
+    """
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+    from primer.int.claim import ClaimKind
+
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    await _park_session(sp, "s1", "evwait:s1:c1")
+    sessions = sp.get_storage(WorkspaceSession)
+    engine = InMemoryClaimEngine(
+        adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=sessions)},
+    )
+    real_mark_resumable = engine.mark_resumable
+    attempts = 0
+
+    async def fail_first_arm(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConnectionError("claim storage was briefly unavailable")
+        await real_mark_resumable(*args, **kwargs)
+
+    engine.mark_resumable = fail_first_arm  # type: ignore[method-assign]
+    d = _dispatcher(sp, bus=bus, claim_engine=engine)
+    await d.drain_once()
+
+    await store.append(
+        event_type="collection.document_pushed",
+        entity_kind="document",
+        entity_id="d1",
+    )
+    assert await d.drain_once() == 0
+
+    half_applied = await sessions.get("s1")
+    assert half_applied is not None and half_applied.parked_status == "resumable"
+    assert not await engine.has_lease(ClaimKind.SESSION, "s1")
+    assert await sp.get_storage(EventSubscription).get("sub-1") is not None
+
+    assert await d.drain_once() == 1
+
+    row = await sessions.get("s1")
+    assert row is not None and row.parked_status == "resumable"
+    assert attempts == 2
+    assert await engine.has_lease(ClaimKind.SESSION, "s1")
+    assert await sp.get_storage(EventSubscription).get("sub-1") is None
+
+
 async def test_a_session_wake_names_the_park_the_sink_read(sp):
     """The sink read the row to learn it is parked on the key; its delivery is by key alone and at least once, so the envelope names that park and a copy
     delivered after the session re-parked under the same key is refused by the flip (ticket 01a1208d, #702 review B2)."""

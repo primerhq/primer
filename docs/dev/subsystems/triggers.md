@@ -148,8 +148,9 @@ sequenceDiagram
     Engine->>Worker: claim TRIGGER lease
     Worker->>Disp: fire_trigger -> dispatch(parked_session)
     Disp->>Store: verify session still parked on tool_call_id
-    Disp->>Bus: respond_to_yield publishes {ok, fire_context, payload}
-    Bus->>Worker: listener flips parked_status -> 'resumable'
+    Disp->>Store: atomically flip parked_status -> 'resumable'
+    Disp->>Engine: arm the SESSION claim
+    Disp->>Bus: publish compatibility wake
     Worker->>Agent: resume turn with tool result
     Disp->>Store: delete consumed Subscription (one-shot)
 ```
@@ -157,6 +158,14 @@ sequenceDiagram
 **The resume (ticket 01a16ddb, ruling 2).** `subscribe_resume` (`primer/toolset/trigger.py`) is the resume hook of both `subscribe_to_trigger` and `subscribe_to_channel_event` (the provider stamps a park with the tool's bare name, so it is registered under both); before it, every wake of such a park (the fire, the cap, a cancel) answered `resume failed: ConfigError: no resume hook registered`, and a graph `tool_call` node took the park for an approval gate. It answers as `wait_for_event_resume` does: a fire resumes the call with what the dispatcher published, `{ok, fire_context, payload}` (a channel trigger's `fire_context` carries the `event`), the yield cap with `{timed_out: true, elapsed_seconds, trigger_id}`, a cancel with `{cancelled: true, cancel_reason}`. It is storage-free, as that hook is: the fire deletes the one-shot row, and a row a timeout or a cancel left is an orphan that the next fire to REACH it skips and deletes: the trigger's next fire, or for a `subscribe_to_channel_event` row the next event its `event_matcher` matches (a fire whose event it does not match skips it before the dispatcher runs, so the row stays). A disabled trigger does not fire, so it keeps the row until the trigger's delete cascade removes it. An event envelope that reaches the park's key from the event log is masked as `wait_for_event_resume` masks one (stored secrets masked, a `canvas.event`'s `value` and `data` removed). Pinned end to end on SQLite by `tests/trigger/test_subscribe_tools_resume.py`.
 
 The subscription row is written before the `Yielded` sentinel is returned so a fire racing the park still finds the row; the dispatcher's park-state check (session exists, not ENDED, `parked_status == 'parked'`, matching `tool_call_id`) guards against a stale fire and skips with `skipped_session_unparked` if any check fails. A provider repeats its `tool_call_id` across rounds, so the raw id alone cannot say which park a subscription was created for (ticket 01a11f52-9d98): the park's own pending entry for that id must also carry THIS subscription's id (`subscribe_to_trigger` stamps it), otherwise the subscription is an orphan, skipped and deleted, and a fire never lands on a later park that reuses the id (an approval gate included). The fire is published onto the park's PRIMARY entry (`yielded`, the first pending entry of a graph park), so a subscription whose entry is pending but is a sibling of the primary is skipped with `skipped_not_primary_gate` and KEPT: it fires once its node is the one that is answered.
+
+The event dispatcher performs the guarded storage flip and claim arm itself
+before it advances the durable event cursor or deletes a one-shot subscription.
+The bus notification remains a compatibility duplicate path,
+but a successful publish alone is not treated as delivery: an asynchronous
+listener can fail after the publisher returns. A flip or arm failure therefore
+keeps the durable event pending for retry, while a repeated flip safely re-arms
+the already resumable occurrence.
 
 ## 7. Persistence
 

@@ -446,17 +446,23 @@ class EventDispatcher(_BackgroundTask):
         # included): the flip stamps this envelope on the waiting row, which any user may read, and the resume makes it the run's tool result. The
         # input never leaves the session it belongs to; canvas_wait restores it from that session's own canvas (audit G8-08, rulings on #872).
         envelope = with_wake_entry(with_wake_park(without_input(redact_event(event)).model_dump(mode="json"), parked_at), sub.id)
-        if _too_big_for_notify(sink.event_key, envelope):
-            # A Postgres NOTIFY body is capped (about 8 KB) and a CRUD event carries the whole row, so a big envelope could never ride the bus: it
-            # failed until the event was skipped and the park never woke (core review finding 3). Wake through storage instead, with the guarded
-            # flip the bus listener runs on receipt, so the park and entry fences apply unchanged and a repeat is a no-op.
-            from primer.model.workspace_session import WorkspaceSession
-            from primer.session.yields import flip_sessions_parked_on
+        # The durable dispatcher owns acknowledgement of this event.  Do the
+        # guarded storage flip before advancing its cursor or collecting a
+        # one-shot subscription; a successful NOTIFY only proves that
+        # Postgres accepted a volatile message, not that the listener applied
+        # the park flip or armed its claim.  If either storage or claim arming
+        # fails, _deliver returns False and this durable event is retried.  The
+        # bus publish below remains the compatibility path; the listener's
+        # duplicate flip is idempotent.
+        from primer.model.workspace_session import WorkspaceSession
+        from primer.session.yields import durably_mark_session_resumable
 
-            await flip_sessions_parked_on(
-                sink.event_key, envelope, session_storage=self._sp.get_storage(WorkspaceSession), engine=self._claim_engine,
-            )
-        else:
+        await durably_mark_session_resumable(
+            row, event_key=sink.event_key, payload=envelope,
+            session_storage=self._sp.get_storage(WorkspaceSession),
+            engine=self._claim_engine,
+        )
+        if not _too_big_for_notify(sink.event_key, envelope):
             await self._bus.publish(sink.event_key, envelope)
         if sink.one_shot:
             await self._complete_one_shot(sub)

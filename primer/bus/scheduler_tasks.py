@@ -709,8 +709,6 @@ class SessionMessagingSweeper(_BackgroundTask):
         self._poll = poll_seconds
         # None: derived from the configured message write timeout when the sweep runs (``persistence.stale_arm_grace_seconds``).
         self._stale_arm_grace = stale_arm_grace_seconds
-        # Rows seen claimable with no claim: id -> (turn_status, last_seq, first seen on the loop clock).
-        self._unclaimed: dict[str, tuple[str, int, float]] = {}
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -774,8 +772,9 @@ class SessionMessagingSweeper(_BackgroundTask):
           nobody answered (``has_open_turn`` from the drain cursor) makes it ``claimable`` and claimed, none gives it back to ``idle``, and a
           log that cannot be read counts as holding one (a turn that runs with nothing new costs one model call; a message nobody answers
           costs the person). A wake still alive that finds its turn given back takes it again once its message is written.
-        * ``claimable`` with no SESSION lease row (a promotion whose claim upsert failed): seen in the same state, at the same ``last_seq``, on
-          two ticks at least the grace apart, the claim is armed. A PAUSED row is left to ``/resume``; a row a lease holds is left to its turn.
+        * ``claimable`` with no SESSION lease row (a promotion whose claim upsert failed): arm it immediately. Unlike ``arming``, claimable means
+          the USER_INPUT and closing row mutation are already durable; racing the producer's own idempotent upsert is safe, while waiting the
+          message-write grace can strand an accepted turn for minutes. A PAUSED row is left to ``/resume``; a row a lease holds is left to its turn.
 
         Each heal is one ``patch_if`` fenced on what it was judged on. The candidates are read first and healed after, so healing a row never
         shifts the pages being read (review N12).
@@ -795,9 +794,7 @@ class SessionMessagingSweeper(_BackgroundTask):
             offset += _MAX_PAGE
 
         grace = self._grace()
-        now = asyncio.get_running_loop().time()
         wall_now = datetime.now(timezone.utc)
-        seen: dict[str, tuple[str, int, float]] = {}
         healed = 0
         for row in candidates:
             if row.turn_status == "arming":
@@ -814,16 +811,9 @@ class SessionMessagingSweeper(_BackgroundTask):
                 continue
             if await self._has_lease(row.id):
                 continue
-            key = (row.turn_status, row.last_seq)
-            earlier = self._unclaimed.get(row.id)
-            first_seen = earlier[2] if earlier is not None and earlier[:2] == key else now
-            if now - first_seen < grace:
-                seen[row.id] = (*key, first_seen)
-                continue
             await self._arm_the_claim(row.id)
             logger.warning("session-messaging-sweeper: session %s was left claimable with no claim; it is claimed now", row.id)
             healed += 1
-        self._unclaimed = seen
         return healed
 
     async def _heal_an_arm(self, storage, row) -> bool:
