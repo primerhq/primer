@@ -36,7 +36,8 @@ _SENSITIVE_KEY_PARTS = (
 )
 _CREDENTIAL_URL_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
 _DIAGNOSTIC_SECRET_RE = re.compile(
-    r"(?i)\b(password|passwd|pgpassword|token|secret|authorization)\s*([=:])\s*([^\s,;]+)"
+    r"(?i)\b(password|passwd|pgpassword|token|secret|authorization)(\s*[=:]\s*)"
+    r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\r\n,;]+)"
 )
 
 _SESSION_STATE_SQL = r"""
@@ -122,8 +123,18 @@ def redact(value: Any) -> Any:
 def bounded_redacted_stderr(stderr: str) -> str:
     """Return a bounded diagnostic tail with obvious credentials removed."""
     clean = _CREDENTIAL_URL_RE.sub(r"\1[REDACTED]@", stderr)
+
+    def replace_secret(match: re.Match[str]) -> str:
+        value = match.group(3).rstrip()
+        trailing = match.group(3)[len(value):]
+        if value[:1] in {'"', "'"} and value[-1:] == value[:1]:
+            masked = f"{value[0]}[REDACTED]{value[0]}"
+        else:
+            masked = "[REDACTED]"
+        return f"{match.group(1)}{match.group(2)}{masked}{trailing}"
+
     clean = _DIAGNOSTIC_SECRET_RE.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        replace_secret,
         clean,
     )
     if len(clean) <= MAX_CAPTURE_STDERR_CHARS:

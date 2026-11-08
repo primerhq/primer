@@ -84,6 +84,28 @@ def test_failed_psql_capture_names_stage_and_bounds_redacted_stderr(monkeypatch)
     assert "secret@" not in captured["capture_stderr"]
 
 
+def test_diagnostic_stderr_redacts_quoted_and_multiword_assignments_only() -> None:
+    diagnostics = _diagnostics_module()
+    stderr = "\n".join([
+        'password="correct horse battery staple"',
+        "PGPASSWORD='space separated value'",
+        "token: Bearer many words on this line",
+        "authorization was refused by the server",
+        "unrelated prose remains readable",
+    ])
+
+    clean = diagnostics.bounded_redacted_stderr(stderr)
+
+    assert "correct horse" not in clean
+    assert "space separated" not in clean
+    assert "Bearer many words" not in clean
+    assert 'password="[REDACTED]"' in clean
+    assert "PGPASSWORD='[REDACTED]'" in clean
+    assert "token: [REDACTED]" in clean
+    assert "authorization was refused by the server" in clean
+    assert "unrelated prose remains readable" in clean
+
+
 def test_state_query_is_session_scoped_and_bounded() -> None:
     diagnostics = _diagnostics_module()
     sql = diagnostics._SESSION_STATE_SQL

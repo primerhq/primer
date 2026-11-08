@@ -1255,15 +1255,16 @@ class WorkerPool:
                     "_run_engine_session: engine.release for %s failed", sid,
                 )
             else:
-                # C1 fix: a wake_session() steer that lands while this
+                # C1 fix: a wake_session() steer that lands while a normal
                 # worker holds the lease sets turn_status="claimable" but
                 # (unable to touch an already-claimed lease) can't create a
-                # new claim itself. Every ReleaseOutcome dispatch.py returns
-                # for a session drops the lease unconditionally, so without
-                # this the queued turn is stranded: no lease exists for the
-                # engine to ever re-claim. Re-arm AFTER the release (once
-                # the old lease is actually gone) so a genuinely queued
-                # turn always gets a fresh claim.
+                # new claim itself. Normal-turn ReleaseOutcomes from
+                # dispatch.py drop the lease, so without this the queued turn
+                # is stranded: no lease exists for the engine to re-claim.
+                # Resume coordinators are the exception: they retain the
+                # existing lease for their continuation turn. Re-arm AFTER a
+                # dropping release (once the old lease is actually gone) so a
+                # genuinely queued turn gets a fresh claim.
                 # A resumed park returns ``drop_lease=False`` deliberately:
                 # its existing lease is the continuation LLM turn. Do not run
                 # the generic late-queue recovery before that continuation,
@@ -1451,12 +1452,14 @@ class WorkerPool:
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Realize a late queued steer, then re-arm a fresh SESSION claim lease.
 
-        Every session ``ReleaseOutcome`` drops the lease unconditionally
-        (see ``primer.session.dispatch``), so instead of keeping the old lease
-        alive this re-upserts a brand-new one, once release has actually
-        dropped the old one -- calling upsert first would just touch the
-        (still held-by-us, about to be dropped) lease's priority and be
-        wiped out the instant release runs.
+        Normal session-turn ``ReleaseOutcome`` values drop the lease
+        unconditionally (see ``primer.session.dispatch``), so instead of
+        keeping the old lease alive this re-upserts a brand-new one, once
+        release has actually dropped the old one -- calling upsert first would
+        just touch the (still held-by-us, about to be dropped) lease's priority
+        and be wiped out the instant release runs. Resume coordinators retain
+        the old lease for their continuation and therefore never call this
+        generic recovery for that release.
 
         A pending steer can commit after the terminating turn's one drain
         checkpoint read an empty queue but before that turn releases its
