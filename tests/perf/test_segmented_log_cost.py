@@ -47,7 +47,16 @@ def _turn(n: int) -> bytes:
 
 
 def _objects_bytes(repo: Path) -> int:
-    return sum(f.stat().st_size for f in (repo / ".git" / "objects").rglob("*") if f.is_file())
+    total = 0
+    for f in (repo / ".git" / "objects").rglob("*"):
+        if not f.is_file():
+            continue
+        try:
+            total += f.stat().st_size
+        except FileNotFoundError:
+            # git's background maintenance removed it between the is_file and the stat (a loose object being packed, its per-run maintenance.lock); its bytes are in the pack now or were never log bytes
+            pass
+    return total
 
 
 def _marker() -> bytes:
@@ -64,6 +73,28 @@ class _CountingSource(WorkspaceSource):
         data = await super().read(rel)
         self.bytes_read += len(data or b"")
         return data
+
+
+def test_objects_bytes_tolerates_a_file_removed_between_the_is_file_and_the_stat(tmp_path, monkeypatch):
+    """The CI race (PR #1020, job 128860946502) in its deterministic form: git's background maintenance holds .git/objects/maintenance.lock during each auto-maintenance run and removes it on exit. The victim below survives the walker's is_file probe and is removed on the walker's own stat - exactly the interleaving that crashed the pre-fix walker with a FileNotFoundError."""
+    objects = tmp_path / ".git" / "objects"
+    (objects / "ab").mkdir(parents=True)
+    keep = objects / "ab" / "cd01"
+    keep.write_bytes(b"x" * 4096)
+    victim = objects / "maintenance.lock"
+    victim.write_bytes(b"held")
+    real_stat = os.stat
+    counts = {"victim": 0}
+
+    def racing_stat(path, *a, **kw):
+        if Path(path) == victim:
+            counts["victim"] += 1
+            if counts["victim"] == 2:      # 1 = the is_file probe (wins the race), 2 = the walker's stat (loses it)
+                victim.unlink()
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", racing_stat)
+    assert _objects_bytes(tmp_path) == keep.stat().st_size
 
 
 async def test_cost_per_commit_stays_flat_as_the_log_grows(tmp_path):
