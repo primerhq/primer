@@ -32,7 +32,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Literal
@@ -1158,7 +1158,26 @@ async def _write_the_wake(
         if intent is not None:
             if intent_is_promoted(fresh, intent):
                 return fresh, "promoted"
-            return None, "taken"
+            if fresh.pending_responder_intent != intent:
+                return None, "taken"
+            # A direct wake can take the idle row immediately before the
+            # preceding turn's release commits its turn_no bump. That release
+            # owns no arm/intent field, but the bump invalidates the responder
+            # occurrence fence above. Retry from the fresh generation only
+            # when this is exactly that one release mutation: every other
+            # lifecycle, binding, log, park, or request fence must still match
+            # the row this wake armed. Treating every refusal as "taken" left
+            # the accepted USER_INPUT arming until the stale-arm sweep.
+            armed_fences = ReservationFences.from_session(armed)
+            fresh_fences = ReservationFences.from_session(fresh)
+            release_advanced = (
+                fresh_fences.turn_no == armed_fences.turn_no + 1
+                and replace(
+                    fresh_fences, turn_no=armed_fences.turn_no,
+                ) == armed_fences
+            )
+            if not release_advanced:
+                return None, "taken"
         paused_since = (fresh.status == SessionStatus.PAUSED and decided.status != SessionStatus.PAUSED) or (
             not human_intent and fresh.pause_requested
         )

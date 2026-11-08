@@ -98,7 +98,10 @@ A session has two persisted faces that are reconciled at turn boundaries:
   intent can be stamped with the wake's arming state and reserved USER_INPUT
   sequence in one CAS. The exact matching log record is then promoted with a
   fresh responder epoch, baseline reservation and turn state in one second CAS;
-  a dead-arm sweep completes that same promotion or clears an arm whose record
+  if the preceding turn's release advances only `turn_no` between those writes,
+  the close retries on that fresh generation while every other occurrence fence
+  remains exact, so the accepted input is not left armed for the stale sweep.
+  A dead-arm sweep completes that same promotion or clears an arm whose record
   was never appended. Corrupt or mismatched proof remains quarantined and no
   claimable row retains an intent. Direct input attribution, UI, tools,
   channels, MCP and human task-gate activation remain disabled for later

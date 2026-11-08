@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from primer.bus.scheduler_tasks import SessionMessagingSweeper
+from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.int.claim import ReleaseOutcome
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -155,6 +157,115 @@ async def test_arm_and_promote_are_one_cas_each_and_retry_does_not_double_bump()
     )
     assert outcome == "promoted"
     assert (retried.responder_seq, retried.responder_reservation_version) == (3, 5)
+
+
+async def test_release_turn_no_bump_between_intent_arm_and_promotion_is_retried() -> None:
+    """A finishing turn's release must not strand an already accepted next wake."""
+    original = _row(status=SessionStatus.RUNNING)
+    _provider, sessions = await _storage(original)
+    prepared = prepare_responder_intent(
+        original,
+        starter=PERSON,
+        user_input_payload=PAYLOAD,
+        accepted_at=NOW,
+        occurrence_id="1" * 32,
+        target_epoch="b" * 32,
+    )
+    armed = await _arm_or_reserve(
+        sessions, original, arm=True, prepared_intent=prepared,
+    )
+    assert armed is not None
+
+    # The preceding turn can finish after the wake has taken the idle row but
+    # before its USER_INPUT close. Its release owns only turn_no/last_turn_at
+    # here; the responder intent and arming token remain exactly this wake's.
+    adapter = SessionClaimAdapter(session_storage=sessions)
+    await adapter.on_release(
+        None,
+        original.id,
+        outcome=ReleaseOutcome(success=True, drop_lease=True),
+    )
+    released = await sessions.get(original.id)
+    assert released is not None
+    assert released.turn_no == original.turn_no + 1
+    assert released.pending_responder_intent == prepared.intent
+    assert released.turn_status == "arming"
+
+    landed, outcome = await _write_the_wake(
+        sessions,
+        armed,
+        decided=original,
+        instruction="private direct input",
+        human_intent=True,
+        peer=None,
+        external_tools=None,
+        armed=armed,
+        by=PERSON,
+        user_input_record=_record(),
+    )
+
+    assert outcome == "promoted"
+    assert landed is not None
+    assert landed.turn_no == original.turn_no + 1
+    assert landed.turn_status == "claimable"
+    assert landed.pending_responder_intent is None
+    assert landed.responder_epoch == "b" * 32
+    assert (landed.responder_seq, landed.responder_reservation_version) == (3, 5)
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        {"binding_epoch": 1},
+        {"pause_requested": True, "pause_requested_at": NOW},
+        {"last_seq": 8},
+    ],
+    ids=["binding", "lifecycle", "log"],
+)
+async def test_release_retry_does_not_admit_other_moved_intent_fences(moved) -> None:
+    original = _row(status=SessionStatus.RUNNING)
+    _provider, sessions = await _storage(original)
+    prepared = prepare_responder_intent(
+        original,
+        starter=PERSON,
+        user_input_payload=PAYLOAD,
+        accepted_at=NOW,
+        occurrence_id="1" * 32,
+        target_epoch="b" * 32,
+    )
+    armed = await _arm_or_reserve(
+        sessions, original, arm=True, prepared_intent=prepared,
+    )
+    assert armed is not None
+    adapter = SessionClaimAdapter(session_storage=sessions)
+    await adapter.on_release(
+        None,
+        original.id,
+        outcome=ReleaseOutcome(success=True, drop_lease=True),
+    )
+    current = await sessions.get(original.id)
+    assert current is not None
+    await sessions.update(current.model_copy(update=moved))
+
+    landed, outcome = await _write_the_wake(
+        sessions,
+        armed,
+        decided=original,
+        instruction="private direct input",
+        human_intent=True,
+        peer=None,
+        external_tools=None,
+        armed=armed,
+        by=PERSON,
+        user_input_record=_record(),
+    )
+
+    assert landed is None
+    assert outcome == "taken"
+    after = await sessions.get(original.id)
+    assert after.pending_responder_intent == prepared.intent
+    assert after.responder_epoch == "a" * 32
+    assert (after.responder_seq, after.responder_reservation_version) == (2, 4)
 
 
 @pytest.mark.parametrize(
