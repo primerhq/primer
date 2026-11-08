@@ -16,6 +16,8 @@ existing UI consumers.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import asyncio
 import logging
 
@@ -30,7 +32,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry
-from primer.api.routers.providers import _BUILTIN_TOOLSETS, _CATALOGUE_CONCURRENCY
+from primer.api.routers.providers import _CATALOGUE_CONCURRENCY, _all_builtin_toolsets
 from primer.model.chat import tool_catalogue_flags
 from primer.model.storage import OffsetPage
 
@@ -43,9 +45,6 @@ logger = logging.getLogger(__name__)
 # hand-copied tuple "in step" with it, and the copy lacked ``trigger``: the flat
 # catalogue (and the Tools page built on it) omitted that toolset's tools while
 # every picker listed them.
-_BUILTIN_TOOLSET_IDS: tuple[str, ...] = tuple(spec["id"] for spec in _BUILTIN_TOOLSETS)
-
-
 tools_router = APIRouter(tags=["tools"])
 
 # Per-toolset ceiling for catalogue enumeration. A toolset backed by an
@@ -59,6 +58,7 @@ _ENUMERATE_TIMEOUT_S = 10.0
     summary="Flat catalogue of every tool exposed by every reachable toolset",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="tools__list_tools")
 async def list_tools(
     request: Request,
     principal: str | None = Depends(get_principal),
@@ -137,7 +137,7 @@ async def list_tools(
 
     canvas_on = await _canvas_tools_on(storage_provider)
     builtin_ids = [
-        tid for tid in _BUILTIN_TOOLSET_IDS
+        tid for tid in (spec["id"] for spec in _all_builtin_toolsets())
         if not (tid == "canvas" and not canvas_on)
     ]
     for tools in await asyncio.gather(*(_tools_for(tid) for tid in builtin_ids)):

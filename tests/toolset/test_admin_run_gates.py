@@ -41,7 +41,6 @@ from primer.model.harness import Harness, HarnessStatus
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
 from primer.model.providers.toolset import Toolset
-from primer.model.storage import OffsetPage
 from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import YieldToWorker
 from primer.session.approvers import ADMIN_ONLY_SPEC
@@ -53,6 +52,7 @@ from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.system import build_system_toolset
 from primer.toolset.toolset_checks import launches_a_command, runs_python
 from primer.toolset.trigger import build_trigger_toolset_provider
+from tests._support.storage_rows import all_storage_rows
 
 ADMIN = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
 
@@ -108,10 +108,6 @@ _GATED_NAME = re.compile(r"^((create|update|delete)_tool_approval_polic(y|ies)|(
 
 # What #851 seeded, the whole gate set of an install at schema version 15, the last before these gates.
 _GATES_OF_851 = (*(("crud", name) for name in CRUD_TOOL_NAMES), *CRUD_TWINS)
-
-
-def _page(length: int = 200) -> OffsetPage:
-    return OffsetPage(offset=0, length=length)
 
 
 class _Session:
@@ -184,7 +180,7 @@ async def _state(sp) -> dict[str, list[dict[str, Any]]]:
     """Every row a table call could write: the policies, the toolsets and the harnesses, as stored."""
     out = {}
     for model in (ToolApprovalPolicy, Toolset, Harness):
-        rows = (await sp.get_storage(model).list(_page())).items
+        rows = await all_storage_rows(sp.get_storage(model))
         out[model.__name__] = sorted((row.model_dump(mode="json") for row in rows), key=lambda r: r["id"])
     return out
 
@@ -367,7 +363,7 @@ async def test_both_worlds_end_with_the_same_admin_run_gates(tmp_path):
     for kind in ("fresh", "upgraded"):
         sp, *_ = await _world(tmp_path, kind)
         try:
-            rows = (await sp.get_storage(ToolApprovalPolicy).list(_page())).items
+            rows = await all_storage_rows(sp.get_storage(ToolApprovalPolicy))
             shapes[kind] = sorted(
                 (p.toolset_id, p.tool_name, p.enabled, repr(p.approval.model_dump(mode="json")), repr(p.approvers and p.approvers.model_dump()))
                 for p in rows

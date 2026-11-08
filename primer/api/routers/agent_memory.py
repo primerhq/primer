@@ -7,6 +7,8 @@ edits, pins or purges entries, or reads the activity feed. The settings row is c
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
@@ -68,6 +70,7 @@ async def _require_owner(request: Request, agent_id: str, what: str) -> tuple[Ag
     summary="The agent's memory settings",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="agent_memory__get_memory_settings")
 async def get_memory_settings(request: Request, agent_id: str = Path(..., description="Agent id")) -> MemorySettingsView:
     agent = await _load(request, agent_id)
     require(person_from_request(request), agent.access, AccessLevel.READ, what=f"Agent {agent_id!r}")
@@ -81,6 +84,7 @@ async def get_memory_settings(request: Request, agent_id: str = Path(..., descri
     summary="Change the agent's memory settings (owners only)",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="agent_memory__put_memory_settings")
 async def put_memory_settings(
     request: Request,
     agent_id: str = Path(..., description="Agent id"),
@@ -202,6 +206,7 @@ async def list_memory_entries(
     summary="One memory entry",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="agent_memory__get_memory_entry")
 async def get_memory_entry(request: Request, agent_id: str = Path(..., description="Agent id"), name: str = Path(..., description="Entry name")) -> EntryView:
     agent = await _load(request, agent_id)
     require(person_from_request(request), agent.access, AccessLevel.READ, what=f"Agent {agent_id!r}")
@@ -214,6 +219,7 @@ async def get_memory_entry(request: Request, agent_id: str = Path(..., descripti
     summary="Edit an entry's description or body, or pin it (owners only)",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="agent_memory__patch_memory_entry")
 async def patch_memory_entry(
     request: Request,
     agent_id: str = Path(..., description="Agent id"),
@@ -268,6 +274,7 @@ async def archive_memory_entry(request: Request, agent_id: str = Path(..., descr
     summary="Remove every memory entry; the collection and the settings stay (owners only)",
     responses=common_responses(403, 404, 500),
 )
+@route_tool(scoped_id="agent_memory__purge_memory")
 async def purge_memory(request: Request, agent_id: str = Path(..., description="Agent id")) -> PurgeResult:
     from primer.events.recorder import recorder_for
     from primer.memory.collection import purge_memory_entries
@@ -290,6 +297,7 @@ _PAGE = 500
     summary="The agent's memory events, newest first (owners only)",
     responses=common_responses(403, 404, 500),
 )
+@route_tool(scoped_id="agent_memory__memory_activity")
 async def memory_activity(
     request: Request,
     agent_id: str = Path(..., description="Agent id"),

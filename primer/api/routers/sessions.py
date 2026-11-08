@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import json
 import logging
 import time
@@ -408,6 +410,7 @@ async def cancel_session(
     summary="Permanently delete a session (auto-cancels non-RUNNING)",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(scoped_id="workspace_sessions__delete_session")
 async def delete_session(
     request: Request,
     workspace_id: str = Path(...),
@@ -574,6 +577,7 @@ def _and(predicates: list[Predicate]) -> Predicate:
     summary="List sessions across workspaces (optionally filtered)",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(scoped_id="sessions__list_sessions")
 async def list_sessions(
     request: Request,
     page: PageRequest = Depends(parse_page),
@@ -721,6 +725,7 @@ async def list_sessions(
     summary="Find sessions with predicate",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(scoped_id="sessions__find_sessions")
 async def find_sessions(
     request: Request,
     body: FindRequest,
@@ -785,6 +790,7 @@ _RECENT_MAX_LIMIT = 100
     summary="Recently-active sessions across every live workspace",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(scoped_id="sessions__recent_sessions")
 async def recent_sessions(
     request: Request,
     limit: int = Query(default=_RECENT_DEFAULT_LIMIT, ge=1, le=_RECENT_MAX_LIMIT),
@@ -1040,6 +1046,7 @@ async def _session_context_length(
     summary="Get session by id (no workspace context required)",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="sessions__get_session_by_id")
 async def get_session_by_id(
     request: Request,
     session_id: str = Path(...),
@@ -1099,6 +1106,7 @@ async def get_session_by_id(
     summary="Read the session's per-turn structured log",
     responses=common_responses(404, 500, 503),
 )
+@route_tool(scoped_id="sessions__get_session_turn_log")
 async def get_session_turn_log(
     request: Request,
     session_id: str = Path(..., description="Session id"),
@@ -1528,6 +1536,7 @@ async def get_session_messages(
     summary="Derive one turn's execution timeline",
     responses=common_responses(404, 500, 503),
 )
+@route_tool(scoped_id="sessions__get_session_turn_timeline")
 async def get_session_turn_timeline(
     request: Request,
     session_id: str = Path(..., description="Session id"),

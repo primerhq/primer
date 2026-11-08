@@ -170,6 +170,10 @@ def build_openapi_inventory() -> tuple[list[dict[str, Any]], int]:
 
     app = create_app(AppConfig())
     schema = app.openapi()
+    generated_by_operation = {
+        item.operation_id: f"{item.tool.toolset_id}__{item.tool.id}"
+        for item in app.state.generated_route_toolsets.operations
+    }
     route_meta: dict[tuple[str, str], tuple[str, frozenset[str]]] = {}
     for path, method, endpoint, dependencies in _walk_routes(app.routes):
         route_meta[(method.upper(), _openapi_path(path))] = (
@@ -195,6 +199,7 @@ def build_openapi_inventory() -> tuple[list[dict[str, Any]], int]:
             rows.append(
                 {
                     "method": method.upper(),
+                    "declared_generated_tool_id": generated_by_operation.get(operation_id),
                     "mount_auth": mount_auth,
                     "operation_id": operation_id,
                     "path": path,
@@ -212,6 +217,7 @@ async def _enumerate_builtin_catalogue(storage: Any) -> list[ToolRecord]:
     """Enumerate reserved built-ins through the production ProviderRegistry seam."""
     from primer.api.registries import ProviderRegistry, WorkspaceRegistry
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+    from primer.api.route_tools import generated_route_toolset_providers
     from primer.mcp.safety import is_exposable, tool_scoped_id
     from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
     from primer.toolset.canvas import build_canvas_toolset
@@ -231,6 +237,7 @@ async def _enumerate_builtin_catalogue(storage: Any) -> list[ToolRecord]:
         embedder_factory=lambda provider: object(),
         cross_encoder_factory=lambda provider: object(),
         toolset_factory=lambda provider: object(),
+        generated_api_toolset_providers=generated_route_toolset_providers(),
     )
     workspace_registry = WorkspaceRegistry(storage)
     registry._system_toolset_provider = build_system_toolset(  # noqa: SLF001
@@ -351,6 +358,21 @@ def bootstrap_manifest(
             if reviewed is not None
             else _new_coverage(operation)
         )
+        generated_tool_id = operation.get("declared_generated_tool_id")
+        if generated_tool_id is not None:
+            if reviewed is not None and reviewed["state"] not in {"gap", "generated"}:
+                raise InventoryError(
+                    f"generated route declaration conflicts with reviewed {reviewed['state']} row: "
+                    f"{_identity(operation)}"
+                )
+            coverage = {
+                "aggregation_id": None,
+                "reason": "generated from immutable route metadata and dispatched through the REST operation",
+                "skip_code": None,
+                "source": "PLAN.md#M1-route-metadata-generator-catalogue-join-and-trusted-ASGI-dispatch",
+                "state": "generated",
+                "tool_ids": [generated_tool_id],
+            }
         rows.append({**operation, **coverage})
     return {
         "base_commit": BASE_COMMIT,
@@ -429,6 +451,7 @@ def validate_manifest(
     reverse: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     metadata_fields = (
         "mount_auth",
+        "declared_generated_tool_id",
         "rbac_class",
         "resource",
         "route_source",
@@ -457,6 +480,14 @@ def validate_manifest(
             errors.append(f"{state} row has no tool ids: {identity}")
         if state in {"gap", "skip"} and tool_ids:
             errors.append(f"{state} row unexpectedly maps tools: {identity}")
+        declared = operation.get("declared_generated_tool_id")
+        if state == "generated" and tool_ids != [declared]:
+            errors.append(
+                f"generated mapping differs from route declaration for {identity}: "
+                f"declared={declared!r}, manifest={tool_ids!r}"
+            )
+        if state != "generated" and declared is not None:
+            errors.append(f"declared generated route is classified {state}: {identity}")
         if state == "skip":
             if (
                 row.get("skip_code") != "human_sign_in"
@@ -539,6 +570,7 @@ def write_evidence(
         "operation_id",
         "method",
         "path",
+        "declared_generated_tool_id",
         "tags",
         "resource",
         "mount_auth",

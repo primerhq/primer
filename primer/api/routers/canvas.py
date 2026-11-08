@@ -28,6 +28,8 @@ session that does not exist or is on another workspace than the path names.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import asyncio
 import hashlib
 import logging
@@ -485,6 +487,7 @@ async def apply_canvas_ops(
     summary="Clear a session's canvas",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(scoped_id="canvas_api__clear_canvas")
 async def clear_canvas(
     request: Request,
     workspace_id: str = Path(...),
@@ -526,6 +529,7 @@ def _redelivery_grace_expired(at: datetime) -> bool:
     summary="Record a person's click or choice on a session's canvas",
     responses=common_responses(403, 404, 409, 413, 422, 429, 500),
 )
+@route_tool(scoped_id="canvas_api__post_canvas_event")
 async def post_canvas_event(
     request: Request,
     body: CanvasEventBody,
@@ -645,6 +649,7 @@ class CanvasSettingsBody(CanvasSettings):
     summary="Replace the canvas settings",
     responses=common_responses(409, 422, 500),
 )
+@route_tool(scoped_id="canvas_api__put_canvas_settings")
 async def put_canvas_settings(body: CanvasSettingsBody, storage_provider: Any = Depends(get_storage_provider)) -> CanvasSettings:
     """Replace the canvas settings with ``body`` (a field left out takes its default; the id is always the settings row's)."""
     settings = CanvasSettings.model_validate({**body.model_dump(exclude={"id"}), "id": CANVAS_SETTINGS_ID})

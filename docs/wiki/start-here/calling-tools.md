@@ -13,7 +13,7 @@ related: [start-here/roles-and-approvals, start-here/errors, toolsets/list-and-d
 - Scoped ids: a direct tool is named `<toolset>__<tool>` (`system__call_tool`, `workspace__read`); a call through the door names the toolset and the tool separately.
 - The result passes through unchanged: the dispatched tool's own output and error flag come back as the `call_tool` result, wrapped in nothing.
 - A pausing tool (one that parks the turn, like `system__ask_user`) parks the turn under the `call_tool` call's id, and the answer arrives as the `call_tool` result when the turn resumes: the outer turn does not continue until it does.
-- Reachable through the door: the ten built-in toolsets, and the stored MCP and Python toolsets. Name a stored toolset by its id. The `workspace` and `client` scopes are direct-only.
+- Reachable through the door: the built-in toolsets (the ten curated toolsets and the per-resource toolsets the app compiles at startup), and the stored MCP and Python toolsets. Name a stored toolset by its id. The `workspace` and `client` scopes are direct-only.
 - The decision order when you face a tool you have not called: `system__wiki_search` for the page, the tool's reference page for the exact call, `system__describe_tool` ([reference](reference/tools/system/describe_tool)) for the live answer (schema, role, gate), then `system__call_tool`.
 
 ## How to

@@ -22,6 +22,8 @@ Sub-resources on ``/v1/workspaces/{id}``:
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import base64
 import email.utils
 import hashlib
@@ -62,6 +64,7 @@ from primer.api.deps import (
     get_workspace_template_storage,
     require_user,
 )
+from primer.api.route_tools import CrudToolDeclaration
 import primer.observability.metrics as _metrics
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, common_responses
 from primer.model.problem_details import ProblemDetails
@@ -561,6 +564,10 @@ provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_workspace_provider_storage,
     plural="workspace_providers",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="workspace_providers",
+        generated_operations=frozenset({"update", "find"}),
+    ),
     tag="workspace-providers",
     on_delete=_invalidate_workspace_backend,
     on_pre_create=_reject_reserved_workspace_provider_create,
@@ -773,6 +780,7 @@ workspace_template_access_router = make_access_router(
     plural="workspace_templates",
     storage_dep=get_workspace_template_storage,
     tag="workspace-templates",
+    tool_resource_id="workspace_templates",
 )
 
 
@@ -780,6 +788,7 @@ template_router = make_crud_router(
     model_cls=WorkspaceTemplate,
     storage_dep=get_workspace_template_storage,
     plural="workspace_templates",
+    tool_declaration=CrudToolDeclaration(resource_id="workspace_templates", generated_operations=frozenset({"find"})),
     tag="workspace-templates",
     on_pre_create=_workspace_template_pre_create,
     on_pre_update=_workspace_template_pre_update,
@@ -807,6 +816,7 @@ workspace_access_router = make_access_router(
     plural="workspaces",
     storage_dep=get_workspace_storage,
     tag="workspace-access",
+    tool_resource_id="workspace_access",
 )
 
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
@@ -952,6 +962,7 @@ async def list_workspaces(
     summary="Find Workspaces with predicate",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(scoped_id="workspaces_api__find_workspaces")
 async def find_workspaces(
     body: FindRequest,
     request: Request,
@@ -989,6 +1000,7 @@ async def get_workspace(
     summary="Set the workspace's lifecycle-event streaming config",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspaces_api__set_workspace_events")
 async def set_workspace_events(
     request: Request,
     body: "WorkspaceEventsBody",
@@ -1023,6 +1035,7 @@ class WorkspaceEventsBody(BaseModel):
     # workspace may flip it (INJ-01): the router is on the user tier, and
     # without a gate a role=user caller granted themselves a shell.
 )
+@route_tool(scoped_id="workspaces_api__set_workspace_terminal_access")
 async def set_workspace_terminal_access(
     request: Request,
     body: "WorkspaceTerminalAccessBody",
@@ -1206,6 +1219,7 @@ class WorkspaceRenameBody(BaseModel):
     summary="Rename a Workspace (set its human-readable label)",
     responses=common_responses(404, 422, 500),
 )
+@route_tool(scoped_id="workspaces_api__rename_workspace")
 async def rename_workspace(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -1411,6 +1425,7 @@ async def resume_workspace(workspace_id: str) -> dict:
     summary="Run a short read-only diagnostic command on a workspace",
     responses=common_responses(400, 404, 422, 500),
 )
+@route_tool(scoped_id="workspaces_api__diagnostic_workspace")
 async def diagnostic_workspace(
     request: Request,
     body: DiagnosticExecBody,
@@ -1516,6 +1531,7 @@ class MainSessionOut(WorkspaceSession):
     summary="Ensure the caller's main operator session on a workspace",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_sessions__ensure_main_session")
 async def ensure_main_session(
     request: Request,
     response: Response,
@@ -1595,6 +1611,7 @@ async def get_session(
     summary="Rename a session (set its friendly display name)",
     responses=common_responses(404, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__rename_session")
 async def rename_session(
     request: Request,
     body: SessionRenameBody = Body(...),
@@ -1692,6 +1709,7 @@ class CompactSessionResponse(BaseModel):
     response_model=CompactSessionResponse,
     responses=common_responses(404, 409, 413, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__compact_session")
 async def compact_session_endpoint(
     request: Request,
     workspace_id: str = Path(...),
@@ -1918,6 +1936,7 @@ class BindingSwitchBody(BaseModel):
     summary="Switch which agent or graph runs this session's next turn",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__switch_session_binding")
 async def switch_session_binding(
     body: BindingSwitchBody,
     request: Request,
@@ -2107,6 +2126,7 @@ class ResponseFormatBody(BaseModel):
     summary="Set or clear a session's persistent structured-output schema",
     responses=common_responses(404, 409, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__set_session_response_format")
 async def set_session_response_format(
     request: Request,
     body: ResponseFormatBody,
@@ -2175,6 +2195,7 @@ class RewindBody(BaseModel):
     summary="Rewind a session's visible history to a kept user_input",
     responses=common_responses(404, 409, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__rewind_session")
 async def rewind_session(
     request: Request,
     body: RewindBody,
@@ -2589,6 +2610,7 @@ class RestartBody(BaseModel):
     summary="Reset an ended session and re-invoke (reset-same-session + wake)",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__restart_session")
 async def restart_session_route(
     request: Request,
     body: RestartBody,
@@ -2707,6 +2729,7 @@ class SessionAttachBody(BaseModel):
     summary="Attach a client to a session (also the heartbeat)",
     responses=common_responses(404, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__attach_session")
 async def attach_session(
     request: Request,
     body: SessionAttachBody = Body(...),
@@ -2751,6 +2774,7 @@ async def attach_session(
     summary="Detach a client from a session",
     responses=common_responses(404, 422, 500),
 )
+@route_tool(scoped_id="workspace_sessions__detach_session")
 async def detach_session(
     request: Request,
     workspace_id: str = Path(...),
@@ -2785,6 +2809,7 @@ async def detach_session(
     summary="Dismiss one queued follow-up steer",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_sessions__dismiss_pending_message")
 async def dismiss_pending_message(
     request: Request,
     workspace_id: str = Path(...),
@@ -2875,6 +2900,7 @@ def _visible_entries(ws: Any, entries: list, user: Any) -> list:
     summary="Return a one-level directory tree",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(scoped_id="workspace_files__file_tree")
 async def file_tree(
     request: Request,
     workspace_id: str = Path(...),
@@ -3069,6 +3095,7 @@ async def read_file(
     summary="Download a file's raw bytes",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(scoped_id="workspace_files__download_file")
 async def download_file(
     request: Request,
     workspace_id: str = Path(...),
@@ -3101,6 +3128,7 @@ async def download_file(
     summary="Create a directory (and any missing parents)",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(scoped_id="workspace_files__make_dir")
 async def make_dir(
     request: Request,
     workspace_id: str = Path(...),
@@ -3145,6 +3173,7 @@ async def delete_file(
     summary="Move or rename a file or directory within the workspace",
     responses=common_responses(400, 404, 409, 500),
 )
+@route_tool(scoped_id="workspace_files__move_file")
 async def move_file(
     request: Request,
     workspace_id: str = Path(...),
@@ -3290,6 +3319,7 @@ log_router = APIRouter(tags=["workspace-log"])
     summary="Workspace state-repo git log",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_log__workspace_log")
 async def workspace_log(
     request: Request,
     workspace_id: str = Path(...),
@@ -3317,6 +3347,7 @@ async def workspace_log(
     summary="Show one commit: header + per-file unified diff",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_log__workspace_show_commit")
 async def workspace_show_commit(
     request: Request,
     workspace_id: str = Path(...),
@@ -3426,6 +3457,7 @@ def _tool_call_id_from_blob(blob: dict) -> str | None:
     summary="Aggregated pending yields across all sessions (Studio Action Required)",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_yields__list_pending_yields")
 async def list_pending_yields(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -4085,6 +4117,7 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
     summary="Aggregated pending attention across all workspaces (Inbox / System dashboard)",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="workspace_yields__list_pending_attention")
 async def list_pending_attention(
     request: Request,
     workspace_id: str | None = Query(
@@ -4230,6 +4263,7 @@ async def list_pending_attention(
     summary="Pending yields for one session (inline session-stream affordances)",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_yields__list_session_pending_yields")
 async def list_session_pending_yields(
     request: Request,
     workspace_id: str = Path(...),
@@ -4305,6 +4339,7 @@ events_router = APIRouter(tags=["workspace-events"])
     summary="Recent workspace-scoped tap events across all sessions (Studio activity backfill)",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="workspace_events__list_workspace_events")
 async def list_workspace_events(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),

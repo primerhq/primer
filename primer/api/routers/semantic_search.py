@@ -26,6 +26,8 @@ Platform wave P3 adds two more routes:
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import os
 from typing import Any
 from uuid import uuid4
@@ -39,6 +41,7 @@ from primer.api.registries.provider_registry import RESERVED_SSP_IDS
 from primer.model.providers.vector import ssp_save_violation
 from primer.api.routers._probe_text import draft_error, probe_error
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.routers.providers import _form_field
 from primer.model.except_ import NotFoundError
 from primer.model.provider import (
@@ -157,6 +160,7 @@ semantic_search_provider_helpers_router = APIRouter(tags=["semantic-search-provi
     "/ssp/_types",
     summary="Provider-type metadata for the SSP register form",
 )
+@route_tool(scoped_id="semantic_search_providers__list_semantic_search_provider_types")
 async def list_semantic_search_provider_types() -> dict[str, dict[str, Any]]:
     return {
         SemanticSearchProviderType.PGVECTOR.value: {
@@ -271,6 +275,7 @@ def _probe_lance_path(config: LanceConfig) -> None:
         "mutation. Returns {ok: true} or {ok: false, error}."
     ),
 )
+@route_tool(scoped_id="semantic_search_providers__test_semantic_search_provider_draft")
 async def test_semantic_search_provider_draft(
     body: _SspTestDraft = Body(...),
 ) -> dict[str, Any]:
@@ -292,6 +297,10 @@ semantic_search_router = make_crud_router(
     grantable=True,
     storage_dep=get_semantic_search_storage,
     plural="ssp",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="semantic_search_providers",
+        generated_operations=frozenset({"list", "find"}),
+    ),
     tag="semantic-search-providers",
     on_create=_on_create,
     on_update=_on_update,
@@ -324,6 +333,7 @@ async def invalidate_semantic_search_provider(
         "{ok: false, error}."
     ),
 )
+@route_tool(scoped_id="semantic_search_providers__test_semantic_search_provider_saved")
 async def test_semantic_search_provider_saved(
     entity_id: str = Path(..., description="SemanticSearchProvider id"),
     storage=Depends(get_semantic_search_storage),

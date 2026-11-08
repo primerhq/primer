@@ -18,6 +18,8 @@ the "find collection by description" use case. The per-collection
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 import tempfile
 from typing import Any, Literal
@@ -46,6 +48,7 @@ from primer.api.deps import (
     get_provider_registry,
     get_semantic_search_registry,
 )
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry, SemanticSearchRegistry
 from primer.api.routers._cdc_hooks import register_cdc_kind
@@ -237,6 +240,7 @@ collection_access_router = make_access_router(
     plural="collections",
     storage_dep=get_collection_storage,
     tag="collections",
+    tool_resource_id="collections_api",
 )
 
 
@@ -244,6 +248,7 @@ collection_router = make_crud_router(
     model_cls=Collection,
     storage_dep=get_collection_storage,
     plural="collections",
+    tool_declaration=CrudToolDeclaration(resource_id="collections_api", generated_operations=frozenset({"find"})),
     tag="collections",
     cdc_kind="collection",
     owned=True,
@@ -448,6 +453,7 @@ async def delete_doc(
     summary="Regex line search across the collection's document bodies",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(scoped_id="collections_api__grep_docs")
 async def grep_docs(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -553,6 +559,7 @@ async def put_collection_document(
     status_code=204,
     responses=common_responses(403, 404, 500),
 )
+@route_tool(scoped_id="collections_api__delete_collection_document")
 async def delete_collection_document(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -605,6 +612,7 @@ class _SearchEnableBody(BaseModel):
     summary="Enable semantic search and backfill the collection",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(scoped_id="collections_api__enable_collection_search")
 async def enable_collection_search(
     collection_id: str = Path(..., description="Collection id"),
     body: _SearchEnableBody = Body(...),
@@ -635,6 +643,7 @@ async def enable_collection_search(
     summary="Disable semantic search and drop the collection's vectors",
     responses=common_responses(403, 404, 500),
 )
+@route_tool(scoped_id="collections_api__disable_collection_search")
 async def disable_collection_search(
     collection_id: str = Path(..., description="Collection id"),
     collections=Depends(get_collection_storage),
@@ -653,6 +662,7 @@ async def disable_collection_search(
     summary="Report search state and indexing progress",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="collections_api__get_collection_search_status")
 async def get_collection_search_status(
     collection_id: str = Path(..., description="Collection id"),
     collections=Depends(get_collection_storage),
@@ -671,6 +681,7 @@ async def get_collection_search_status(
     summary="Import a zip archive's directory structure into the tree",
     responses=common_responses(400, 403, 404, 409, 413, 500),
 )
+@route_tool(scoped_id="collections_api__import_collection_zip")
 async def import_collection_zip(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -818,6 +829,7 @@ async def search_collection(
     summary="List entries indexed in a collection's vector store",
     responses=common_responses(404, 500, 502, 503),
 )
+@route_tool(scoped_id="collections_api__list_indexed_documents")
 async def list_indexed_documents(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -1185,6 +1197,10 @@ document_router = make_crud_router(
     model_cls=Document,
     storage_dep=get_document_storage,
     plural="documents",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="documents",
+        generated_operations=frozenset({"list", "update", "find"}),
+    ),
     tag="documents",
     managed_by_field="harness_id",
     row_guard=_document_row_guard,

@@ -21,6 +21,8 @@ empty row instead.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 from enum import Enum
 from types import SimpleNamespace
@@ -35,6 +37,7 @@ from primer.api.routers._crud import (
     preserve_masked_secrets_on_update,
     read_write_routers,
 )
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.routers._probe_text import draft_error
 from primer.model.provider import (
     SpeechToTextConfig,
@@ -205,6 +208,7 @@ tts_providers_helpers_router = APIRouter(tags=["speech"])
         "`{ok: false, error: \"invalid draft: ...\"}`."
     ),
 )
+@route_tool(scoped_id="speech__test_stt_provider")
 async def test_stt_provider(body: _SttDraft) -> dict[str, Any]:
     try:
         config = _draft_connection(
@@ -233,6 +237,7 @@ async def test_stt_provider(body: _SttDraft) -> dict[str, Any]:
     "/stt_providers/_types",
     summary="Provider-type metadata for the catalog's speech-to-text form.",
 )
+@route_tool(scoped_id="speech__list_stt_types")
 async def list_stt_types() -> dict[str, dict[str, Any]]:
     return {
         "openai": {
@@ -280,6 +285,7 @@ async def list_stt_types() -> dict[str, dict[str, Any]]:
         "answers `{ok: false, error: \"invalid draft: ...\"}`."
     ),
 )
+@route_tool(scoped_id="speech__test_tts_provider")
 async def test_tts_provider(body: _TtsDraft) -> dict[str, Any]:
     try:
         config = _draft_connection(
@@ -308,6 +314,7 @@ async def test_tts_provider(body: _TtsDraft) -> dict[str, Any]:
     "/tts_providers/_types",
     summary="Provider-type metadata for the catalog's text-to-speech form.",
 )
+@route_tool(scoped_id="speech__list_tts_types")
 async def list_tts_types() -> dict[str, dict[str, Any]]:
     return {
         "openai": {
@@ -342,6 +349,10 @@ stt_providers_router = make_crud_router(
     model_cls=SpeechToTextProvider,
     storage_dep=_stt_storage,
     plural="stt_providers",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="stt_providers",
+        generated_operations=frozenset({"create", "get", "update", "delete", "list", "find"}),
+    ),
     tag="speech",
     on_pre_delete_id=_cascade_blocker("stt_provider_id"),
     on_pre_update=preserve_masked_secrets_on_update,
@@ -353,6 +364,10 @@ tts_providers_router = make_crud_router(
     model_cls=TextToSpeechProvider,
     storage_dep=_tts_storage,
     plural="tts_providers",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="tts_providers",
+        generated_operations=frozenset({"create", "get", "update", "delete", "list", "find"}),
+    ),
     tag="speech",
     on_pre_delete_id=_cascade_blocker("tts_provider_id"),
     on_pre_update=preserve_masked_secrets_on_update,
@@ -404,6 +419,7 @@ async def _validate_referenced_providers(
     responses=common_responses(500),
     summary="Read the singleton active speech config",
 )
+@route_tool(scoped_id="speech__get_active_speech_config")
 async def get_active_speech_config(request: Request) -> ActiveSpeechConfig:
     return await read_active_speech_config(request)
 
@@ -414,6 +430,7 @@ async def get_active_speech_config(request: Request) -> ActiveSpeechConfig:
     responses=common_responses(422, 500),
     summary="Replace the singleton active speech config",
 )
+@route_tool(scoped_id="speech__put_active_speech_config")
 async def put_active_speech_config(
     request: Request,
     body: _ActiveSpeechPutBody,

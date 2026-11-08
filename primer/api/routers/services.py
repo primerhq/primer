@@ -17,6 +17,8 @@ task 5 of the implementation plan (they need the bundle pipeline).
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import asyncio
 
 from typing import TYPE_CHECKING
@@ -29,6 +31,7 @@ from primer.api.deps import (
     get_service_storage,
 )
 from primer.api.routers._crud import make_crud_router
+from primer.api.route_tools import CrudToolDeclaration
 from primer.model.providers.toolset import Toolset
 from primer.model.service import Service, ServiceVersion
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
@@ -114,6 +117,10 @@ service_router = make_crud_router(
     model_cls=Service,
     storage_dep=get_service_storage,
     plural="services",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="services",
+        generated_operations=frozenset({"create", "get", "update", "delete", "list", "find"}),
+    ),
     tag="services",
     managed_by_field="harness_id",
     search_fields=["id", "name", "description"],
@@ -153,6 +160,7 @@ async def _get_service_or_404(
     status_code=201,
     summary="Publish a bundle as a new service version",
 )
+@route_tool(scoped_id="services__publish_service_version")
 async def publish_service_version(
     service_id: str,
     request: Request,
@@ -224,6 +232,7 @@ async def publish_service_version(
     "/services/{service_id}/versions",
     summary="List a service's published versions, newest first",
 )
+@route_tool(scoped_id="services__list_service_versions")
 async def list_service_versions(
     service_id: str,
     request: Request,
@@ -252,6 +261,7 @@ async def list_service_versions(
     response_model=Service,
     summary="Activate (or roll back to) a published version",
 )
+@route_tool(scoped_id="services__activate_service_version")
 async def activate_service_version(
     service_id: str,
     body: _ActivateBody,

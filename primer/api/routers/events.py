@@ -11,6 +11,8 @@ Spec: ``docs/superpowers/specs/2026-08-22-event-bus-design.md``.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from datetime import datetime
 from fnmatch import fnmatchcase
 
@@ -26,6 +28,7 @@ from primer.api.deps import (
     require_user,
 )
 from primer.api.routers._crud import make_crud_router
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.errors import common_responses
 from primer.events.filters import validate_filter
 from primer.events.redaction import redact_event
@@ -67,6 +70,7 @@ class EventListResponse(BaseModel):
     summary="Read the platform event log",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="events__list_events")
 async def list_events(
     request: Request,
     after_id: int = Query(0, ge=0, description="Return events with id above this."),
@@ -156,6 +160,7 @@ class _PausedBody(BaseModel):
     # Event subscriptions are admin-only (access-control spec decision 3): pausing system-cdc or another user's wait is not a user act.
     dependencies=[Depends(require_admin)],
 )
+@route_tool(scoped_id="events__set_subscription_paused")
 async def set_subscription_paused(
     request: Request,
     subscription_id: str = Path(...),
@@ -202,6 +207,10 @@ event_subscription_router = make_crud_router(
     model_cls=EventSubscription,
     storage_dep=get_event_subscription_storage,
     plural="event_subscriptions",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="event_subscriptions",
+        generated_operations=frozenset({"create", "get", "update", "delete", "list", "find"}),
+    ),
     tag="event-subscriptions",
     managed_by_field="managed_by",
     on_pre_create=_reject_converge_sink,

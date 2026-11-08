@@ -16,6 +16,8 @@ scrape ``/v1/health`` without a separate Prometheus exporter.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import asyncio
 import logging
 import time
@@ -214,6 +216,7 @@ def _workspaces_health(request: Request) -> WorkspacesHealth | None:
     response_model=HealthStatus,
     summary="Process health",
 )
+@route_tool(scoped_id="health__health")
 async def health(request: Request) -> HealthStatus:
     """Answer 200 whenever this process is serving HTTP.
 
@@ -337,6 +340,7 @@ class ReadyStatus(BaseModel):
     },
     summary="Database reachability",
 )
+@route_tool(scoped_id="health__ready")
 async def ready(request: Request) -> JSONResponse:
     """Report whether the database answers a real round-trip.
 

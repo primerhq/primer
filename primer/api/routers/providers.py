@@ -27,6 +27,8 @@ Models" button. They build a transient adapter, call its
 
 from __future__ import annotations
 
+from primer.api.route_tools import CrudToolDeclaration, route_tool
+
 import asyncio
 import logging
 from datetime import UTC, datetime
@@ -384,6 +386,7 @@ cross_encoder_provider_types_router = APIRouter(tags=["providers"])
         "operator fills in per LLM provider type."
     ),
 )
+@route_tool(scoped_id="providers__list_llm_provider_types")
 async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
     return _with_limits({
         LLMProviderType.OPENRESPONSES.value: {
@@ -487,6 +490,7 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
     "/embedding_providers/_types",
     summary="Provider-type metadata for the embedding provider form.",
 )
+@route_tool(scoped_id="providers__list_embedding_provider_types")
 async def list_embedding_provider_types() -> dict[str, dict[str, Any]]:
     return _with_limits({
         EmbeddingProviderType.OPENAI.value: {
@@ -534,6 +538,7 @@ async def list_embedding_provider_types() -> dict[str, dict[str, Any]]:
     "/cross_encoder_providers/_types",
     summary="Provider-type metadata for the cross-encoder provider form.",
 )
+@route_tool(scoped_id="providers__list_cross_encoder_provider_types")
 async def list_cross_encoder_provider_types() -> dict[str, dict[str, Any]]:
     return _with_limits({
         CrossEncoderProviderType.HUGGINGFACE.value: {
@@ -683,6 +688,7 @@ async def cross_encoder_draft_test(draft: dict[str, Any]) -> dict[str, Any]:
         "Returns {ok, models} or {ok=false, error}."
     ),
 )
+@route_tool(scoped_id="providers__draft_test_embedding_provider")
 async def draft_test_embedding_provider(body: _ModelProviderDraft) -> dict[str, Any]:
     return await embedding_draft_test(body.model_dump())
 
@@ -695,6 +701,7 @@ async def draft_test_embedding_provider(body: _ModelProviderDraft) -> dict[str, 
         "Returns {ok, models, checks} or {ok=false, error}."
     ),
 )
+@route_tool(scoped_id="providers__draft_test_cross_encoder_provider")
 async def draft_test_cross_encoder_provider(body: _ModelProviderDraft) -> dict[str, Any]:
     return await cross_encoder_draft_test(body.model_dump())
 
@@ -704,6 +711,7 @@ llm_provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_llm_provider_storage,
     plural="llm_providers",
+    tool_declaration=CrudToolDeclaration(resource_id="llm_providers", generated_operations=frozenset({"find"})),
     tag="llm-providers",
     on_update=_invalidate_llm,
     on_delete=_invalidate_llm,
@@ -719,6 +727,7 @@ llm_provider_router = make_crud_router(
     summary="Invalidate cached LLM adapter",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="llm_providers__invalidate_llm_provider")
 async def invalidate_llm_provider(
     provider_id: str = Path(..., description="LLMProvider id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
@@ -731,6 +740,7 @@ async def invalidate_llm_provider(
     summary="List the model names registered on this provider",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="llm_providers__get_llm_provider_models")
 async def get_llm_provider_models(
     provider_id: str = Path(..., description="LLMProvider id"),
     profiles=Depends(get_model_profile_storage),
@@ -778,6 +788,7 @@ async def get_llm_provider_models(
     summary="Probe a draft LLM provider for its model list",
     responses=common_responses(400, 422, 502),
 )
+@route_tool(scoped_id="llm_providers__discover_llm_models")
 async def discover_llm_models(
     body: _DiscoverModelsBody = Body(...),
 ) -> dict:
@@ -804,6 +815,7 @@ async def discover_llm_models(
     summary="Live-probe a saved LLM provider for its upstream model list",
     responses=common_responses(400, 404, 502),
 )
+@route_tool(scoped_id="llm_providers__discover_saved_llm_models")
 async def discover_saved_llm_models(
     provider_id: str = Path(..., description="LLMProvider id"),
     providers=Depends(get_llm_provider_storage),
@@ -1030,6 +1042,7 @@ embedding_provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_embedding_provider_storage,
     plural="embedding_providers",
+    tool_declaration=CrudToolDeclaration(resource_id="embedding_providers", generated_operations=frozenset({"find"})),
     tag="embedding-providers",
     on_update=_invalidate_embedder,
     on_delete=_invalidate_embedder,
@@ -1045,6 +1058,7 @@ embedding_provider_router = make_crud_router(
     summary="Invalidate cached embedder adapter",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="embedding_providers__invalidate_embedding_provider")
 async def invalidate_embedding_provider(
     provider_id: str = Path(..., description="EmbeddingProvider id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
@@ -1057,6 +1071,7 @@ async def invalidate_embedding_provider(
     summary="Fetch live model list from the embedding provider",
     responses=common_responses(404, 500, 502, 504),
 )
+@route_tool(scoped_id="embedding_providers__get_embedding_provider_models")
 async def get_embedding_provider_models(
     provider_id: str = Path(..., description="EmbeddingProvider id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
@@ -1071,6 +1086,7 @@ async def get_embedding_provider_models(
     summary="Probe a draft embedding provider for its model list",
     responses=common_responses(400, 422, 502),
 )
+@route_tool(scoped_id="embedding_providers__discover_embedding_models")
 async def discover_embedding_models(
     body: _DiscoverModelsBody = Body(...),
 ) -> dict:
@@ -1289,6 +1305,7 @@ cross_encoder_provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_cross_encoder_provider_storage,
     plural="cross_encoder_providers",
+    tool_declaration=CrudToolDeclaration(resource_id="cross_encoder_providers", generated_operations=frozenset({"find"})),
     tag="cross-encoder-providers",
     on_update=_invalidate_cross_encoder,
     on_delete=_invalidate_cross_encoder,
@@ -1304,6 +1321,7 @@ cross_encoder_provider_router = make_crud_router(
     summary="Invalidate cached cross-encoder adapter",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="cross_encoder_providers__invalidate_cross_encoder_provider")
 async def invalidate_cross_encoder_provider(
     provider_id: str = Path(..., description="CrossEncoderProvider id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
@@ -1316,6 +1334,7 @@ async def invalidate_cross_encoder_provider(
     summary="Fetch live model list from the cross-encoder provider",
     responses=common_responses(404, 500, 502, 504),
 )
+@route_tool(scoped_id="cross_encoder_providers__get_cross_encoder_provider_models")
 async def get_cross_encoder_provider_models(
     provider_id: str = Path(..., description="CrossEncoderProvider id"),
     registry: ProviderRegistry = Depends(get_provider_registry),
@@ -1790,6 +1809,7 @@ toolset_access_router = make_access_router(
     storage_dep=get_toolset_storage,
     tag="toolsets",
     allow_public_tools=True,
+    tool_resource_id="toolsets",
 )
 
 
@@ -1797,6 +1817,7 @@ toolset_router = make_crud_router(
     model_cls=Toolset,
     storage_dep=get_toolset_storage,
     plural="toolsets",
+    tool_declaration=CrudToolDeclaration(resource_id="toolsets", generated_operations=frozenset({"find"})),
     tag="toolsets",
     on_update=_invalidate_toolset,
     on_delete=_toolset_on_delete,
@@ -1820,6 +1841,7 @@ toolset_router = make_crud_router(
     summary="Invalidate cached toolset provider",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="toolsets__invalidate_toolset_provider")
 async def invalidate_toolset_provider(
     request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
@@ -1930,6 +1952,24 @@ _BUILTIN_TOOLSETS: list[dict] = [
     {"id": "canvas", "tagline": "Show controls, media and HTML above the chat, and read the user's clicks", "icon": "layout", "always_on": True},
 ]
 
+
+def _all_builtin_toolsets() -> list[dict]:
+    """Catalogue specs for the one live reserved-provider union."""
+
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+
+    fixed = {spec["id"] for spec in _BUILTIN_TOOLSETS}
+    generated = [
+        {
+            "id": provider_id,
+            "tagline": "Generated tools backed by the matching Primer REST resource",
+            "icon": "api",
+            "always_on": True,
+        }
+        for provider_id in sorted(set(RESERVED_TOOLSET_IDS) - fixed)
+    ]
+    return [*_BUILTIN_TOOLSETS, *generated]
+
 async def _internal_search_on(storage_provider) -> bool | None:
     """Whether the internal collections subsystem has a config row.
 
@@ -1970,6 +2010,7 @@ builtin_toolsets_router = APIRouter()
     "/toolsets/builtin",
     summary="List the built-in toolsets an agent can bind",
 )
+@route_tool(scoped_id="toolsets__list_builtin_toolsets")
 async def list_builtin_toolsets(
     storage_provider=Depends(get_storage_provider),
 ) -> dict:
@@ -1980,7 +2021,7 @@ async def list_builtin_toolsets(
     ic = await _internal_search_on(storage_provider)
     canvas_on = await _canvas_tools_on(storage_provider)
     items = []
-    for spec in _BUILTIN_TOOLSETS:
+    for spec in _all_builtin_toolsets():
         if spec["id"] == "canvas" and not canvas_on:
             continue
         entry = {**spec, "available": True}
@@ -1995,6 +2036,7 @@ async def list_builtin_toolsets(
     summary="Get a toolset (built-in synthesised, user-defined from storage)",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="toolsets__get_toolset_with_builtin_shim")
 async def get_toolset_with_builtin_shim(
     request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
@@ -2026,7 +2068,7 @@ async def get_toolset_with_builtin_shim(
 
     if toolset_id in RESERVED_TOOLSET_IDS:
         spec = next(
-            (s for s in _BUILTIN_TOOLSETS if s["id"] == toolset_id),
+            (s for s in _all_builtin_toolsets() if s["id"] == toolset_id),
             None,
         )
         tagline = spec["tagline"] if spec else f"Built-in {toolset_id!r} toolset."
@@ -2063,6 +2105,7 @@ async def get_toolset_with_builtin_shim(
         "toolset (built-in + user-defined)."
     ),
 )
+@route_tool(scoped_id="tools__list_all_tools")
 async def list_all_tools(
     request: Request,
     principal: str | None = Depends(get_principal),
@@ -2116,7 +2159,7 @@ async def list_all_tools(
         return entry
 
     specs = [
-        spec for spec in _BUILTIN_TOOLSETS
+        spec for spec in _all_builtin_toolsets()
         if not (spec["id"] == "canvas" and not canvas_on)
     ]
     out.extend(await asyncio.gather(*(_builtin_entry(spec) for spec in specs)))
@@ -2216,6 +2259,7 @@ class ValidatePythonSourceBody(BaseModel):
     summary="Dry-run: what would this source register, and what is wrong with it",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="toolsets__validate_python_source")
 async def validate_python_source(
     request: Request,
     toolset_id: str = Path(..., description="Toolset id"),
@@ -2326,6 +2370,7 @@ async def validate_python_source(
     summary="Runtime facts about a toolset: isolation level and derived tools",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="toolsets__toolset_runtime")
 async def toolset_runtime(
     request: Request,
     toolset_id: str = Path(..., description="Toolset id"),

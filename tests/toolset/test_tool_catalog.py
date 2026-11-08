@@ -1,7 +1,7 @@
 """The tool catalog: every tool an agent can call, in one list (pivot P1, task 5).
 
-``primer.toolset.tool_catalog`` is what the generated wiki reference pages (a later P1 task) and ``system__describe_tool`` read. It covers the nine
-built-in toolsets, the seven session file tools (``workspace__*``, one per session and not a registry's) and the client tool (``client__*``, a
+``primer.toolset.tool_catalog`` is what the generated wiki reference pages (a later P1 task) and ``system__describe_tool`` read. It covers every
+fixed and generated built-in toolset, the seven session file tools (``workspace__*``, one per session and not a registry's) and the client tool (``client__*``, a
 per-turn grant), and says for each tool who may run it, whether it pauses the turn, whether it needs a workspace, which approval gate ships on it and
 whether ``call_tool`` can reach it. The two direct scopes are the ones ``call_tool`` cannot reach: the ``ProviderRegistry`` has no provider for them.
 
@@ -24,8 +24,7 @@ from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.bootstrap.seed import ensure_crud_approval_policies
 from primer.model.chat import Tool
-from primer.model.except_ import AuthRequiredError, NotFoundError, ProviderError
-from primer.model.storage import OffsetPage
+from primer.model.except_ import AuthRequiredError, ConfigError, NotFoundError, ProviderError
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.toolset import tool_catalog
 from primer.toolset.crud import CRUD_GATED_TOOL_NAMES, CRUD_TOOL_NAMES, CRUD_TWINS, build_crud_toolset
@@ -42,6 +41,7 @@ from primer.toolset.tool_catalog import (
 )
 from primer.workspace.local import tools as local_tools
 from tests.docs._live_toolsets import built_in_providers
+from tests._support.storage_rows import all_storage_rows
 from tests.toolset._scripted_toolset import Registry, Scripted, scripted_tool
 
 @pytest.fixture
@@ -109,10 +109,18 @@ def test_the_crud_tools_and_their_twins_are_gated_by_default_and_nothing_else_is
 async def test_the_default_gate_is_what_the_seed_gates(fake_storage_provider):
     """``default_gate`` is a statement about ``ensure_crud_approval_policies``; this fails when either moves without the other."""
     await ensure_crud_approval_policies(fake_storage_provider)
-    seeded = (await fake_storage_provider.get_storage(ToolApprovalPolicy).list(OffsetPage(offset=0, length=200))).items
+    seeded = await all_storage_rows(fake_storage_provider.get_storage(ToolApprovalPolicy))
     assert {p.approval.type.value for p in seeded} == {"required", "policy"}
 
-    entries = await collect_tool_entries(built_in_providers())
+    providers = dict(built_in_providers())
+    try:
+        from primer.api.route_tools import generated_route_toolset_providers
+
+        providers.update(generated_route_toolset_providers())
+    except ConfigError:  # no generated app was built in this focused process
+        pass
+
+    entries = await collect_tool_entries(providers)
 
     assert {(e.toolset_id, e.tool.id, e.default_gate) for e in entries if e.default_gate} == {
         (p.toolset_id, p.tool_name, p.approval.type.value) for p in seeded
@@ -126,9 +134,9 @@ async def test_the_default_gate_is_what_the_seed_gates(fake_storage_provider):
 
 
 async def test_the_catalog_covers_every_builtin_toolset_and_both_direct_scopes():
-    assert set(built_in_providers()) == set(RESERVED_TOOLSET_IDS), "the helper must build all nine, collections included"
+    assert set(built_in_providers()) <= set(RESERVED_TOOLSET_IDS), "the helper builds every fixed provider"
     entries = await collect_tool_entries(built_in_providers())
-    assert {e.toolset_id for e in entries} == set(RESERVED_TOOLSET_IDS) | {"workspace", "client"}
+    assert {e.toolset_id for e in entries} == set(built_in_providers()) | {"workspace", "client"}
     assert [e.scoped_id for e in entries] == sorted({e.scoped_id for e in entries})   # sorted, unique
     assert {e.toolset_id for e in entries if not e.via_call_tool} == {"workspace", "client"} == set(DIRECT_CALL_TOOLSETS)
     assert next(e for e in entries if e.scoped_id == "system__call_tool").pauses_turn is True

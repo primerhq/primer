@@ -50,6 +50,20 @@ example `system__wiki_search`, `system__list_agents`,
 docs also write a tool as `<toolset_id>::<tool_id>`
 (`system::list_agents`); over MCP it is the double-underscore form.
 
+Primer also publishes reviewed REST operations as generated built-in tools.
+They use the same scoped-id grammar, one provider per API resource, and appear
+in the same catalogue and exposure allowlist as curated built-ins. For example,
+the internal-collections provider includes
+`internal_collections__get_config`, `internal_collections__put_config`,
+`internal_collections__delete_config`, `internal_collections__bootstrap` and
+`internal_collections__bootstrap_status`. A REST operation that already has a
+curated tool keeps that curated id and has no generated twin. Generated calls
+run the real REST validation, access checks and problem responses as the MCP
+caller's person after revalidating the real user row; they are not a second or
+weaker authorization surface. Generated writes carry the same default approval
+gating as curated writes. Calls are bounded to 30 seconds and a 1 MiB response;
+client cancellation cancels the in-process dispatch.
+
 Three filters run at every `tools/call`:
 
 - **Allowlist.** The scoped id must appear in `allowed_tools`. Not in

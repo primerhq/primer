@@ -134,10 +134,10 @@ async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(c
 
 
 def test_the_flat_catalogue_takes_its_built_in_ids_from_the_one_list() -> None:
-    """One list of built-in toolset ids (providers._BUILTIN_TOOLSETS); the catalogue route must not carry a copy."""
+    """The flat catalogue calls the shared fixed-plus-generated provider view."""
     from primer.api.routers import providers, tools
 
-    assert tools._BUILTIN_TOOLSET_IDS == tuple(spec["id"] for spec in providers._BUILTIN_TOOLSETS)
+    assert tools._all_builtin_toolsets is providers._all_builtin_toolsets
 
 
 @pytest.mark.asyncio

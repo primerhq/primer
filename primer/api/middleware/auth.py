@@ -44,6 +44,10 @@ from primer.auth.api_tokens import PLAINTEXT_PREFIX, hash_token
 from primer.auth.tokens import verify_session
 from primer.model.principal import Principal
 from primer.model.user import User
+from primer.api.route_tools import (
+    is_trusted_route_tool_scope,
+    trusted_route_tool_person,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -81,7 +85,8 @@ class AuthMiddleware:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
-            await self.app(scope, receive, send)
+            with acting_as(None):
+                await self.app(scope, receive, send)
             return
 
         # Initialise scope state so downstream callers can rely on the
@@ -98,6 +103,84 @@ class AuthMiddleware:
         state.actor = None
 
         app_state = scope.get("app").state if scope.get("app") is not None else None
+
+        # Generated route tools enter through the root FastAPI application,
+        # with an exact Person carried beside a private object-identity marker.
+        # Re-read a real user before any route dependency runs: the tool's
+        # persisted initiator cannot retain a deleted, disabled or old role.
+        if scope["type"] == "http" and is_trusted_route_tool_scope(scope):
+            person = trusted_route_tool_person(scope)
+            config = getattr(app_state, "config", None) if app_state is not None else None
+            if person is not None and person.user_id is not None and app_state is not None:
+                storage_provider = getattr(app_state, "storage_provider", None)
+                user = None
+                if storage_provider is not None:
+                    try:
+                        user = await storage_provider.get_storage(User).get(person.user_id)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("auth middleware: trusted route-tool user lookup failed")
+                # The durable tool occurrence names both the user and the role
+                # it was authorised under. A role change invalidates that
+                # occurrence rather than silently expanding or changing its
+                # authority mid-call.
+                if user is not None and not user.disabled and user.role == person.role:
+                    state.user = user
+                    state.principal = user.username
+                    state.actor = Principal(
+                        type="user",
+                        id=user.id,
+                        display=user.username,
+                        role=user.role,
+                        source="internal",
+                        user_id=user.id,
+                    )
+                    with acting_as(person):
+                        interval_s = float(
+                            getattr(getattr(config, "auth", None), "revalidate_interval_s", 0)
+                            or 0
+                        )
+                        if interval_s > 0:
+                            from primer.api.middleware.revalidate import (
+                                AuthSnapshot,
+                                run_with_revalidation,
+                            )
+
+                            await run_with_revalidation(
+                                self.app,
+                                scope,
+                                receive,
+                                send,
+                                storage_provider=storage_provider,
+                                snapshot=AuthSnapshot.of(user, None, None),
+                                interval_s=interval_s,
+                            )
+                        else:
+                            await self.app(scope, receive, send)
+                    return
+            elif (
+                person is not None
+                and person.user_id is None
+                and person.role == "system"
+            ):
+                state.user = _AUTH_DISABLED_USER
+                state.actor = Principal(
+                    type="system",
+                    id="system",
+                    display="system",
+                    role=None,
+                    source="internal",
+                    user_id=None,
+                )
+                with acting_as(person):
+                    await self.app(scope, receive, send)
+                return
+            # A malformed marker, unattributed caller, missing user, disabled
+            # user or unavailable storage stays unauthenticated. The route's
+            # real dependencies produce the same 401/403 ProblemDetails as
+            # external REST; there is no synthetic fallback identity.
+            await self.app(scope, receive, send)
+            return
+
         if app_state is None:
             await self.app(scope, receive, send)
             return

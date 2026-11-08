@@ -41,6 +41,7 @@ from primer.toolset.system import build_system_toolset
 from primer.toolset.tool_catalog import default_gate
 from primer.toolset.trigger import build_trigger_toolset_provider
 from tests._support.agent_check_rows import agent_body
+from tests._support.storage_rows import all_storage_rows
 
 USER = PrincipalRef(type="user", id="u-1", display="user", role="user", source="local")
 
@@ -174,9 +175,9 @@ async def test_both_worlds_end_with_the_same_gates(tmp_path):
     for kind in ("fresh", "upgraded"):
         sp, *_ = await _world(tmp_path, kind)
         try:
-            page = await sp.get_storage(ToolApprovalPolicy).list(_page(100))
-            shapes[kind] = sorted((p.toolset_id, p.tool_name, p.enabled, p.approval.type.value) for p in page.items)
-            ids[kind] = {p.id for p in page.items}
+            rows = await all_storage_rows(sp.get_storage(ToolApprovalPolicy))
+            shapes[kind] = sorted((p.toolset_id, p.tool_name, p.enabled, p.approval.type.value) for p in rows)
+            ids[kind] = {p.id for p in rows}
         finally:
             await sp.aclose()
     assert shapes["fresh"] == shapes["upgraded"]

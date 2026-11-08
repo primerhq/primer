@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException, Request
 
 from primer.api.routers._crud import make_crud_router
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.deps import get_oidc_provider_storage
 from primer.auth import oidc
 from primer.common.origin import origin_of
@@ -122,6 +123,10 @@ oidc_providers_router = make_crud_router(
     model_cls=OidcProvider,
     storage_dep=get_oidc_provider_storage,
     plural="admin/oidc-providers",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="oidc_providers",
+        generated_operations=frozenset({"create", "get", "update", "delete", "list", "find"}),
+    ),
     tag="oidc-providers",
     on_pre_create=_on_pre_create,
     on_pre_update=_on_pre_update,

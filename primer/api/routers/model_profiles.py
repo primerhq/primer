@@ -47,6 +47,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.api.routers._crud import make_crud_router
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.routers._references import ReferenceCheck
 from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.api.routers.providers import _make_invalidator
@@ -240,6 +241,7 @@ model_profile_router = make_crud_router(
     grantable=True,
     storage_dep=get_model_profile_storage,
     plural="model_profiles",
+    tool_declaration=CrudToolDeclaration(resource_id="model_profiles", generated_operations=frozenset({"find"})),
     tag="model-profiles",
     managed_by_field="harness_id",
     search_fields=["id", "description", "model_name"],

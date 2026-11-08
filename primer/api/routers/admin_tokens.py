@@ -8,6 +8,8 @@ returned; plaintext exists once, at creation, for the owning user.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
@@ -45,6 +47,7 @@ async def _user_or_404(sp, user_id: str) -> User:
     response_model=ApiTokenListResponse,
     summary="List a user's API tokens (admin; plaintext omitted).",
 )
+@route_tool(scoped_id="admin__admin_list_user_tokens")
 async def admin_list_user_tokens(
     request: Request,
     user_id: str = Path(...),
@@ -62,6 +65,7 @@ async def admin_list_user_tokens(
     status_code=204,
     summary="Revoke a user's API token (admin). Idempotent.",
 )
+@route_tool(scoped_id="admin__admin_revoke_user_token")
 async def admin_revoke_user_token(
     request: Request,
     user_id: str = Path(...),

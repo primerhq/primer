@@ -10,6 +10,8 @@ by plan task 8.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import html
 import logging
 import mimetypes
@@ -104,6 +106,7 @@ async def svc_root_redirect(name: str) -> RedirectResponse:
     "/svc/{name}/_gateway/functions/{fn}",
     summary="Call a bundle function in the python-runner sandbox",
 )
+@route_tool(scoped_id="svc__svc_gateway_function")
 async def svc_gateway_function(
     name: str, fn: str, request: Request
 ) -> Response:
@@ -223,6 +226,7 @@ async def svc_gateway_function(
 
 
 @svc_serve_router.get("/svc/{name}/{path:path}", summary="Serve a service asset")
+@route_tool(scoped_id="svc__svc_serve")
 async def svc_serve(name: str, path: str, request: Request) -> Response:
     resolved = await get_resolver(request).resolve(name)
     if resolved is None:

@@ -32,6 +32,7 @@ from primer.access.person import person_from_request
 from primer.access.policy import require, visible_predicate
 from primer.access.service import update_keeping_access
 from primer.api.errors import common_responses
+from primer.api.route_tools import CrudToolDeclaration, attach_route_tool_metadata
 from primer.api.routers import _managed as _managed_mod
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
@@ -231,6 +232,7 @@ def make_crud_router(
     list_filter: _ListFilterHook = None,
     base_predicate: Predicate | None = None,
     access_of: Callable[[Any, Request, AccessLevel], Awaitable["Access"]] | None = None,
+    tool_declaration: CrudToolDeclaration | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -875,6 +877,23 @@ def make_crud_router(
                 else (access_pred or body.predicate)
             )
             return await storage.find(predicate, body.page, order_by=body.order_by)
+
+    operation_by_endpoint = {
+        "_create": "create",
+        "_get": "get",
+        "_update": "update",
+        "_delete": "delete",
+        "_list": "list",
+        "_find": "find",
+    }
+    if tool_declaration is not None:
+        for route in router.routes:
+            operation = operation_by_endpoint.get(getattr(route.endpoint, "__name__", ""))
+            if operation is not None:
+                attach_route_tool_metadata(
+                    route.endpoint,
+                    tool_declaration.metadata_for(operation),
+                )
 
     return router
 

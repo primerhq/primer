@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.routers._references import ReferenceCheck
 from primer.api.routers.access import make_access_router
 from primer.access.person import person_from_request
@@ -155,6 +156,7 @@ def make_channel_provider_router() -> APIRouter:
         grantable=True,
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
+        tool_declaration=CrudToolDeclaration(resource_id="channel_providers", generated_operations=frozenset({"find"})),
         tag="channel_providers",
         on_pre_create=_channel_provider_on_pre_create,
         on_pre_update=_channel_provider_on_pre_update,
@@ -229,6 +231,7 @@ def make_channel_router() -> APIRouter:
         model_cls=Channel,
         storage_dep=_get_channel_storage,
         plural="channels",
+        tool_declaration=CrudToolDeclaration(resource_id="channels", generated_operations=frozenset({"find"})),
         tag="channels",
         on_pre_create=_channel_on_pre_create,
         on_pre_update=_channel_on_pre_update,
@@ -245,6 +248,7 @@ def make_channel_access_router() -> APIRouter:
         plural="channels",
         storage_dep=_get_channel_storage,
         tag="channels",
+        tool_resource_id="channels",
     )
 
 

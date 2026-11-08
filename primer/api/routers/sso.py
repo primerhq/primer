@@ -72,6 +72,8 @@ just created, and re-resolves to the winner's row instead of erroring.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import contextlib
 import logging
 import re
@@ -425,6 +427,7 @@ async def _link_identity(
 
 
 @sso_router.get("/providers", response_model=list[SsoProviderOut])
+@route_tool(scoped_id="auth__list_sso_providers")
 async def list_sso_providers(
     storage=Depends(get_oidc_provider_storage),
 ) -> list[SsoProviderOut]:
@@ -524,6 +527,7 @@ async def _begin_oidc_flow(
 
 
 @sso_router.get("/{provider_id}/login", responses=common_responses(400))
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def sso_login(
     provider_id: str,
     request: Request,
@@ -543,6 +547,7 @@ async def sso_login(
 
 
 @sso_authed_router.post("/{provider_id}/link", responses=common_responses(400))
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def sso_link(
     provider_id: str,
     request: Request,
@@ -576,6 +581,7 @@ async def sso_link(
     name="sso_callback",
     responses=common_responses(400),
 )
+@route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def sso_callback(
     provider_id: str,
     request: Request,
@@ -740,6 +746,7 @@ async def _complete_oidc_flow(
 
 
 @sso_authed_router.get("/identities", response_model=list[SsoIdentityOut])
+@route_tool(scoped_id="auth__list_my_sso_identities")
 async def list_my_sso_identities(
     request: Request,
     identity_storage=Depends(get_user_identity_storage),
@@ -792,6 +799,7 @@ async def list_my_sso_identities(
     status_code=204,
     responses=common_responses(400),
 )
+@route_tool(scoped_id="auth__unlink_sso_identity")
 async def unlink_sso_identity(
     identity_id: str,
     request: Request,

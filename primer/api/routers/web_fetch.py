@@ -23,6 +23,8 @@ fit that shape.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 from typing import Any
 
@@ -36,6 +38,7 @@ from primer.api.routers._crud import (
     preserve_masked_secrets_on_update,
     read_write_routers,
 )
+from primer.api.route_tools import CrudToolDeclaration
 from primer.api.routers._probe_text import draft_error
 from primer.model.web_fetch import (
     ACTIVE_WEB_FETCH_CONFIG_ID,
@@ -181,6 +184,7 @@ web_fetch_providers_helpers_router = APIRouter(tags=["web-fetch"])
         "then discards. Returns {ok, title, chars} or {ok=false, error}."
     ),
 )
+@route_tool(scoped_id="web_fetch__test_provider")
 async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
     from primer.api.registries.web_fetch_registry import (
         default_web_fetch_factory,
@@ -221,6 +225,7 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
         "the operator needs to fill in per provider type."
     ),
 )
+@route_tool(scoped_id="web_fetch__list_provider_types")
 async def list_provider_types() -> dict[str, dict[str, Any]]:
     return {
         "local": {"config_fields": []},
@@ -234,6 +239,10 @@ web_fetch_providers_router = make_crud_router(
     model_cls=WebFetchProvider,
     storage_dep=_web_fetch_provider_storage,
     plural="web_fetch_providers",
+    tool_declaration=CrudToolDeclaration(
+        resource_id="web_fetch_providers",
+        generated_operations=frozenset({"create", "get", "update", "delete", "list", "find"}),
+    ),
     tag="web-fetch",
     on_pre_create=_reject_reserved_create,
     on_pre_update=preserve_masked_secrets_on_update,
@@ -274,6 +283,7 @@ async def _validate_referenced_providers(
     responses=common_responses(503, 500),
     summary="Read the singleton active web fetch config",
 )
+@route_tool(scoped_id="web_fetch__get_active_config")
 async def get_active_config(request: Request) -> ActiveWebFetchConfig:
     storage = _active_config_storage(request)
     row = await storage.get(ACTIVE_WEB_FETCH_CONFIG_ID)
@@ -305,6 +315,7 @@ class _ActiveConfigPutBody(BaseModel):
     responses=common_responses(422, 500),
     summary="Replace the singleton active web fetch config",
 )
+@route_tool(scoped_id="web_fetch__put_active_config")
 async def put_active_config(
     request: Request,
     body: _ActiveConfigPutBody,
