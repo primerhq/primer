@@ -119,7 +119,7 @@ def test_the_recipe_template_parses_as_a_page():
 
 def test_planned_paths_are_slugs_and_cover_every_spec():
     assert all(re.fullmatch(r"[a-z0-9-]+(/[a-z0-9-]+)*", p) for p in PLANNED_PATHS)
-    assert set(all_specs()) <= PLANNED_PATHS and len(PLANNED_PATHS) == 100
+    assert set(all_specs()) <= PLANNED_PATHS and len(PLANNED_PATHS) == 104
 
 
 # ---- every page against its spec ----------------------------------------------------------------------------------
