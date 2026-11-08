@@ -48,6 +48,7 @@ async def _park_session(sp, session_id: str, event_key: str) -> None:
         initiated_by=ADMIN_REF,
         parked_status="parked",
         parked_event_key=event_key,
+        parked_at=datetime.now(timezone.utc),
     )
     await seed_account_of(sp, ADMIN_REF)
     await sp.get_storage(WorkspaceSession).create(row)
@@ -232,6 +233,149 @@ async def test_one_shot_wake_is_durably_flipped_before_its_subscription_is_colle
     assert attempts == 2
     assert await engine.has_lease(ClaimKind.SESSION, "s1")
     assert await sp.get_storage(EventSubscription).get("sub-1") is None
+
+
+async def test_the_session_sweep_repairs_a_resumable_wake_retired_after_every_arm_failed(sp):
+    """The dispatcher can exhaust its retry budget after the row flip but before the lease arm.
+
+    Exercise the real durable dispatcher, SQLite storage, session adapter and
+    claim engine. Once the one-shot has been collected, the session sweep must
+    recover the exact accepted wake, but leave ended, re-parked and already
+    leased rows alone.
+    """
+    from primer.bus.scheduler_tasks import SessionMessagingSweeper
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+    from primer.int.claim import ClaimKind
+
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    await _park_session(sp, "s1", "evwait:s1:c1")
+    sessions = sp.get_storage(WorkspaceSession)
+    engine = InMemoryClaimEngine(
+        adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=sessions)},
+    )
+    real_mark_resumable = engine.mark_resumable
+    attempts = 0
+
+    async def fail_every_arm(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionError("claim storage stayed unavailable")
+
+    engine.mark_resumable = fail_every_arm  # type: ignore[method-assign]
+    dispatcher = _dispatcher(
+        sp,
+        bus=bus,
+        claim_engine=engine,
+        max_failures=3,
+    )
+    await dispatcher.drain_once()
+    await store.append(
+        event_type="collection.document_pushed",
+        entity_kind="document",
+        entity_id="d1",
+    )
+    assert [await dispatcher.drain_once() for _ in range(3)] == [0, 0, 0]
+
+    stranded = await sessions.get("s1")
+    assert attempts == 3
+    assert stranded is not None and stranded.parked_status == "resumable"
+    assert not await engine.has_lease(ClaimKind.SESSION, "s1")
+    assert await sp.get_storage(EventSubscription).get("sub-1") is None
+
+    assert stranded.parked_at is not None
+    await sessions.create(stranded.model_copy(update={
+        "id": "s-ended",
+        "status": SessionStatus.ENDED,
+    }))
+    await sessions.create(stranded.model_copy(update={
+        "id": "s-reparked",
+        "parked_status": "parked",
+    }))
+    await sessions.create(stranded.model_copy(update={
+        "id": "s-paused",
+        "status": SessionStatus.PAUSED,
+    }))
+    await sessions.create(stranded.model_copy(update={"id": "s-leased"}))
+    engine.mark_resumable = real_mark_resumable  # type: ignore[method-assign]
+    await engine.upsert(ClaimKind.SESSION, "s-leased")
+
+    sweeper = SessionMessagingSweeper(
+        storage_provider=sp,
+        scheduler=None,
+        claim_engine=engine,
+        workspace_registry=None,
+        event_bus=bus,
+    )
+    assert await sweeper._tick() == 0
+
+    assert await engine.has_lease(ClaimKind.SESSION, "s1")
+    assert await engine.has_lease(ClaimKind.SESSION, "s-leased")
+    assert not await engine.has_lease(ClaimKind.SESSION, "s-ended")
+    assert not await engine.has_lease(ClaimKind.SESSION, "s-paused")
+    assert not await engine.has_lease(ClaimKind.SESSION, "s-reparked")
+
+
+async def test_the_resumable_sweep_refuses_a_park_that_moves_after_its_candidate_read(sp):
+    """The scan is only a candidate read; the shared redelivery fence owns authorization."""
+    from datetime import timedelta
+
+    from primer.bus.scheduler_tasks import SessionMessagingSweeper
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+    from primer.int.claim import ClaimKind
+    from primer.session.yields import durably_mark_session_resumable
+
+    key = "evwait:s1:c1"
+    await _park_session(sp, "s1", key)
+    sessions = sp.get_storage(WorkspaceSession)
+    parked = await sessions.get("s1")
+    assert parked is not None and parked.parked_at is not None
+    assert await durably_mark_session_resumable(
+        parked,
+        event_key=key,
+        payload={"answer": "the old park"},
+        session_storage=sessions,
+        engine=None,
+    )
+    engine = InMemoryClaimEngine(
+        adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=sessions)},
+    )
+    real_get = sessions.get
+    moved = False
+
+    async def repark_before_the_fresh_fence(session_id, *args, **kwargs):
+        nonlocal moved
+        if session_id == "s1" and not moved:
+            moved = True
+            current = await real_get(session_id, *args, **kwargs)
+            assert current is not None and current.parked_at is not None
+            await sessions.update(current.model_copy(update={
+                "parked_status": "parked",
+                "parked_at": current.parked_at + timedelta(seconds=1),
+                "parked_state": {"yielded": {"tool_name": "wait_for_event"}},
+            }))
+        return await real_get(session_id, *args, **kwargs)
+
+    sessions.get = repark_before_the_fresh_fence  # type: ignore[method-assign]
+    sweeper = SessionMessagingSweeper(
+        storage_provider=sp,
+        scheduler=None,
+        claim_engine=engine,
+        workspace_registry=None,
+        event_bus=_RecordingBus(),
+    )
+
+    assert await sweeper._repair_resumable_parks() == 0
+    assert moved
+    assert not await engine.has_lease(ClaimKind.SESSION, "s1")
+    assert (await real_get("s1")).parked_status == "parked"
 
 
 async def test_a_session_wake_names_the_park_the_sink_read(sp):

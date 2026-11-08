@@ -477,9 +477,17 @@ Four rules make that safe:
   SESSION lease gets its claim on the first sweep: its message and closing
   transition are durable, so the message-write grace applies only to `arming`.
   This bounds recovery when both a queue realization's claim upsert and the
-  worker's post-release re-arm fail. A PAUSED row is left to `/resume`. Each heal
-  is one `patch_if` fenced on what it was judged on, and the candidates are read
-  before any is healed (N12). Without a claim engine the sweep does nothing.
+  worker's post-release re-arm fail. The same sweep repairs a live
+  `parked_status="resumable"` row whose durable event wake landed but whose
+  claim arm failed until the dispatcher retired its one-shot: only a row with
+  no lease, a current park timestamp and event key, and the exact stored resume
+  payload is re-armed through the shared redelivery fence. An ended, PAUSED or
+  re-parked occurrence is refused, and a row with a lease is left alone. A
+  PAUSED resumable park deliberately has no lease until `/resume`; excluding it
+  prevents a claim-and-preserve-park loop on every sweep. Each heal is one
+  conditional or exact-redelivery operation fenced on what it was judged on,
+  and the candidates are read before any is healed (N12). Without a claim
+  engine the sweep does nothing.
   Known and ticketed: the sweep skips ENDED sessions (an autonomous or failed
   one keeps its queue until its next message reopens it, and that message runs
   first), and it decides "at rest" on a read a Cancel can overtake before the

@@ -722,11 +722,17 @@ class SessionMessagingSweeper(_BackgroundTask):
                 break
 
     async def _tick(self) -> int:
-        """Trim the peer-message ledger, heal a turn a wake left armed with no claim, then realize the queue head of every session at rest that
-        has one. Returns how many sessions were woken from their queue."""
+        """Trim the peer-message ledger, repair accepted wakes and armed turns with no claim, then realize queued heads at rest.
+
+        Returns how many sessions were woken from their queue.
+        """
         await self._trim_peer_ledger()
         if self._claim_engine is None:
             return 0
+        try:
+            await self._repair_resumable_parks()
+        except Exception:  # noqa: BLE001 - the remaining repairs and queue sweep still run; candidates are retried next tick
+            logger.exception("session-messaging-sweeper: repairing resumable parks failed")
         try:
             await self._heal_unclaimed_turns()
         except Exception:  # noqa: BLE001 - the queue sweep runs anyway; the rows are looked at again next tick
@@ -739,6 +745,85 @@ class SessionMessagingSweeper(_BackgroundTask):
             except Exception:  # noqa: BLE001 - one session must not stop the sweep; its message stays queued for the next tick
                 logger.exception("session-messaging-sweeper: realizing the queue of session %s failed", session_id)
         return woken
+
+    async def _repair_resumable_parks(self) -> int:
+        """Re-arm accepted park wakes whose lease write never landed.
+
+        A durable wake writes ``parked_status='resumable'`` before it arms the
+        SESSION lease. If every arm attempt fails, the event dispatcher can
+        eventually retire its one-shot subscription while that half-applied
+        row remains. Re-drive the shared redelivery helper for CREATED,
+        RUNNING and WAITING sessions only; PAUSED parks deliberately have no
+        lease until ``/resume``. The helper fresh-reads the row and requires
+        the same live park occurrence, event key and exact stored payload
+        before its idempotent re-arm. An end or re-park that overtakes this
+        scan is therefore refused; the helper's accepted post-check race is
+        still harmless because the claim path re-checks the stored lifecycle
+        and park before any executor or resume hook runs.
+        """
+        from primer.model.workspace_session import WorkspaceSession
+        from primer.session.yields import durably_mark_session_resumable
+
+        storage = self._sp.get_storage(WorkspaceSession)
+        predicate = Predicate(
+            left=Predicate(
+                left=FieldRef(name="parked_status"),
+                op=Op.EQ,
+                right=Value(value="resumable"),
+            ),
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="status"),
+                op=Op.IN,
+                right=Value(value=[
+                    SessionStatus.CREATED.value,
+                    SessionStatus.RUNNING.value,
+                    SessionStatus.WAITING.value,
+                ]),
+            ),
+        )
+        offset = 0
+        repaired = 0
+        while True:
+            page = await storage.find(
+                predicate,
+                OffsetPage(offset=offset, length=_MAX_PAGE),
+                order_by=[OrderBy(field="id", direction="asc")],
+            )
+            items = list(page.items)
+            for row in items:
+                state = row.parked_state or {}
+                event_key = state.get("resume_event_key")
+                payload = state.get("resume_event_payload")
+                current_keys = set(row.parked_event_keys or [])
+                if row.parked_event_key:
+                    current_keys.add(row.parked_event_key)
+                if (
+                    row.parked_at is None
+                    or not isinstance(event_key, str)
+                    or not event_key
+                    or event_key not in current_keys
+                    or not isinstance(payload, dict)
+                    or await self._has_lease(row.id)
+                ):
+                    continue
+                if await durably_mark_session_resumable(
+                    row,
+                    event_key=event_key,
+                    payload=payload,
+                    session_storage=storage,
+                    engine=self._claim_engine,
+                ):
+                    logger.warning(
+                        "session-messaging-sweeper: session %s held an accepted resumable park with no claim; it is claimed now",
+                        row.id,
+                    )
+                    repaired += 1
+            if len(items) < _MAX_PAGE:
+                return repaired
+            # Repair changes only the claim table, never the session fields in
+            # this predicate, so offset pagination cannot skip its own rows.
+            offset += _MAX_PAGE
 
     async def _trim_peer_ledger(self) -> int:
         """Delete the peer-message ledger rows older than ``PEER_LEDGER_TTL`` (audit G7-15): they count for no rate check, and the per-sender
