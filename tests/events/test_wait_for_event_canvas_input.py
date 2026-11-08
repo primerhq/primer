@@ -17,7 +17,7 @@ its transcript. So the dispatcher removes the two keys from EVERY wake before it
 tell the run what was entered. An admin's matchers are not limited.
 
 Everything runs on the real SQLite storage: the real tool handlers, the park the worker writes, ``CanvasService.record_event`` appending
-the real ``canvas.event``, the real dispatcher, the real flip (``flip_sessions_parked_on``, what the bus listener runs), the registered
+the real ``canvas.event``, the real dispatcher and its durable flip, the registered
 resume hooks and the real router read by another non-admin user.
 """
 
@@ -54,7 +54,6 @@ from primer.model.user import User
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
-from primer.session.yields import flip_sessions_parked_on
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.canvas import build_canvas_toolset
 from primer.toolset.events_wait import make_wait_for_event_handler, wait_for_event_resume
@@ -163,10 +162,19 @@ async def _park(sp, yielded: Yielded, *, session_id: str = WAITER, who: Principa
     ))
 
 
-async def _wake(sp, yielded: Yielded, *, session_id: str, interaction: dict[str, Any], flip: bool = False) -> dict[str, Any]:
+async def _wake(
+    sp,
+    yielded: Yielded,
+    *,
+    session_id: str,
+    interaction: dict[str, Any],
+    flip: bool = False,
+    parked_session_id: str | None = None,
+) -> dict[str, Any]:
     """Record ``interaction`` on ``session_id``'s canvas, drain the dispatcher once and return the envelope it published for the park.
 
-    With ``flip`` the envelope is also delivered as the bus listener delivers it: the real flip stamps it on the waiting row."""
+    With ``flip`` the durable dispatcher itself must already have stamped the
+    envelope on the waiting row before it acknowledges the event."""
     bus = _Bus()
     dispatcher = EventDispatcher(storage_provider=sp, event_bus=bus)
     await dispatcher.drain_once()                                     # the subscription's cursor is pinned at the head already
@@ -175,7 +183,9 @@ async def _wake(sp, yielded: Yielded, *, session_id: str, interaction: dict[str,
     [(key, envelope)] = bus.published
     assert key == yielded.event_key
     if flip:
-        assert await flip_sessions_parked_on(key, envelope, session_storage=sp.get_storage(WorkspaceSession), engine=None) == 1
+        row = await sp.get_storage(WorkspaceSession).get(parked_session_id or session_id)
+        assert row is not None and row.parked_status == "resumable"
+        assert (row.parked_state or {}).get("resume_event_payload") == envelope
     return envelope
 
 
@@ -297,7 +307,14 @@ async def test_the_row_of_a_canvas_wait_holds_no_input_after_the_wake(sp, other_
         _provider, yielded = await _canvas_wait(sp, INTERACTIONS[interaction])
         await _park(sp, yielded, session_id=OTHER, tool_name="canvas_wait")
 
-        await _wake(sp, yielded, session_id=OTHER, interaction=INTERACTIONS[interaction], flip=True)
+        await _wake(
+            sp,
+            yielded,
+            session_id=OTHER,
+            interaction=INTERACTIONS[interaction],
+            flip=True,
+            parked_session_id=OTHER,
+        )
 
         row, text = await _served_row(other_user, OTHER)
         held = row["parked_state"]["resume_event_payload"]["payload"]
@@ -313,7 +330,14 @@ async def test_the_row_of_an_admin_wait_holds_no_input_after_the_wake(sp, other_
         yielded = await _wait(sp, ADMIN, OWNER_SCOPE)
         await _park(sp, yielded, who=ADMIN)
 
-        await _wake(sp, yielded, session_id=OTHER, interaction=INTERACTIONS[interaction], flip=True)
+        await _wake(
+            sp,
+            yielded,
+            session_id=OTHER,
+            interaction=INTERACTIONS[interaction],
+            flip=True,
+            parked_session_id=WAITER,
+        )
 
         row, text = await _served_row(other_user, WAITER)
         held = row["parked_state"]["resume_event_payload"]["payload"]

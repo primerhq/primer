@@ -46,15 +46,16 @@ from primer.events.dispatcher import EventDispatcher
 from primer.model.access import Access
 from primer.model.principal import PrincipalRef
 from primer.model.provider import SqliteConfig
+from primer.model.storage import OffsetPage
 from primer.model.user import User
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
-from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.session.enqueue import SessionWakeDeps, wake_session
 from primer.session.pending_messages import realize_next_pending
-from primer.session.yields import flip_sessions_parked_on
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.toolset.canvas import build_canvas_toolset
+from primer.toolset.canvas import build_canvas_toolset, canvas_wait_resume
+from primer.worker.yield_resume_registry import ResumeContext
 from tests.canvas._fakes import FakeBus, FakeRegistry
 
 BODY_TIMEOUT_S = 60
@@ -279,10 +280,41 @@ async def test_wait(sp, reader) -> None:
         dispatcher = EventDispatcher(storage_provider=sp, event_bus=bus)
         await dispatcher.drain_once()
 
+        # An unmatched waking event queues behind the parked wait. The
+        # matching event must still become the wait's result, and consuming it
+        # must not consume the earlier event that belongs to a later turn.
+        assert await w.interact({"element": "play", "kind": "click"}) == DELIVERY_QUEUED
         assert await w.interact(EMIT) == DELIVERY_WAIT
         assert await dispatcher.drain_once() == 1
         [(key, envelope)] = bus.published
-        assert await flip_sessions_parked_on(key, envelope, session_storage=w.sessions, engine=None) == 1
+        row = await w.sessions.get(SESSION)
+        assert key == yielded.event_key
+        assert row is not None and row.parked_status == "resumable"
+        assert (row.parked_state or {}).get("resume_event_payload") == envelope
+
+        async def resolve(toolset_id: str):
+            assert toolset_id == "canvas"
+            return provider
+
+        resumed = await canvas_wait_resume(
+            yielded.resume_metadata,
+            envelope,
+            ResumeContext(
+                tool_name="canvas_wait",
+                tool_call_id="call-1",
+                session_id=SESSION,
+                resolve_provider=resolve,
+            ),
+        )
+        [matched] = json.loads(resumed.output)["events"]
+        assert matched["element"] == "viz" and matched["name"] == "submit"
+
+        pending = await sp.get_storage(PendingSessionMessage).find(
+            None, OffsetPage(offset=0, length=20),
+        )
+        queued = [item for item in pending.items if item.session_id == SESSION]
+        assert len(queued) == 1
+        assert queued[0].attribution[CANVAS_EVENT_PAYLOAD_KEY]["element"] == "play"
 
         row = await _assert_the_shared_reads_hold_no_input(reader, w)
         assert row["parked_state"]["resume_event_payload"]["payload"]["name"] == "submit", "the flip stamped the wake on the row"

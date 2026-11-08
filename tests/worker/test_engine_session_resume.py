@@ -36,6 +36,7 @@ from primer.model.chat import Message, ToolCallPart, ToolResultPart
 from primer.model.scheduler import WorkerConfig
 from primer.model.workspace_session import (
     AgentSessionBinding,
+    PendingSessionMessage,
     SessionStatus,
     WorkspaceSession,
 )
@@ -248,6 +249,67 @@ async def test_resume_agent_clears_park_injects_and_keeps_lease(monkeypatch):
     assert any(
         l.kind == ClaimKind.SESSION and l.entity_id == sid for l in leases
     ), "continuation lease must survive (drop_lease=False)"
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_a_queued_follow_up_behind_its_continuation(monkeypatch):
+    """A message queued while a tool is parked belongs after its resumed turn.
+
+    The resume release keeps the SESSION lease so the continuation LLM turn is
+    the next claim. The generic post-release recovery must not realize the
+    queued message before that claim, or the queued user input becomes the
+    continuation's last user message and hides the tool result that woke it.
+    """
+    sid = "sess-engine-resume-queued-follow-up"
+    tool_call_id = "tc-ask-follow-up"
+    now = datetime.now(timezone.utc)
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+
+    sess = _make_resumable_session(
+        sid,
+        tool_name="ask_user",
+        tool_call_id=tool_call_id,
+        resume_event_payload={"response": "the answer"},
+    )
+    await session_storage.create(sess)
+    pending_storage = storage_provider.get_storage(PendingSessionMessage)
+    queued = PendingSessionMessage(
+        id=f"{sid}:pending:{now.isoformat()}:00000000",
+        session_id=sid,
+        parts=[{"type": "text", "text": "the later follow-up"}],
+        enqueued_at=now,
+        created_at=now,
+    )
+    await pending_storage.create(queued)
+
+    fake_executor = _RecordingExecutor()
+    monkeypatch.setattr(
+        pool, "_load_workspace_for_persist",
+        lambda _ws_id: _async_return(_NoopPersist()),
+    )
+    monkeypatch.setattr(
+        pool, "_build_agent_executor",
+        lambda _s, _w: _async_return(fake_executor),
+    )
+    realized: list[str] = []
+
+    async def record_realization(**kwargs):
+        realized.append(kwargs["session_id"])
+
+    monkeypatch.setattr(
+        "primer.session.dispatch.realize_queued_steer", record_realization,
+    )
+
+    lease = await _claim_session(engine, sid)
+    await pool._run_engine_session(lease)
+
+    assert realized == [], "the continuation claim must run before its queued follow-up"
+    assert await pending_storage.get(queued.id) == queued
+    leases = await engine.claim_due("wrk-engine-resume", max_count=10)
+    assert any(lease.entity_id == sid for lease in leases)
 
 
 @pytest.mark.asyncio
