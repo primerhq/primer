@@ -164,8 +164,11 @@ before it advances the durable event cursor or deletes a one-shot subscription.
 The bus notification remains a compatibility duplicate path,
 but a successful publish alone is not treated as delivery: an asynchronous
 listener can fail after the publisher returns. A flip or arm failure therefore
-keeps the durable event pending for retry, while a repeated flip safely re-arms
-the already resumable occurrence.
+keeps the durable event pending for bounded retry, while a repeated flip safely
+re-arms the already resumable occurrence. If every attempt fails and the
+dispatcher retires the one-shot, the leader-elected session-messaging sweep
+recognises only that exact live resumable occurrence and re-arms its missing
+lease; ended, paused, re-parked and already-leased rows are not touched.
 
 ## 7. Persistence
 
