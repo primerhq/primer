@@ -122,10 +122,23 @@ jobs:
         # the addopts' `not distributed` AND deselects the markers needing real
         # external systems (a live LLM, a Kubernetes cluster, live channels) —
         # a CLI `-m` replaces the addopts `-m`, so `not distributed` is repeated.
+        run: |
+          set -o pipefail
+          mkdir -p tests/.e2e
+          set +e
+          PYTHONUNBUFFERED=1 PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/e2e \
+            -q --tb=short -n0 --timeout=180 --timeout-method=thread \
+            -m "not distributed and not requires_llm and not requires_cluster and not requires_channel" \
+            2>&1 | tee tests/.e2e/pytest-output.txt
+          pytest_status=${PIPESTATUS[0]}
+          set -e
+          exit "$pytest_status"
+      - name: Capture failed-session durable state
+        if: failure()
         run: >-
-          PYTHONUNBUFFERED=1 PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/e2e
-          -q --tb=short -n0 --timeout=180 --timeout-method=thread
-          -m "not distributed and not requires_llm and not requires_cluster and not requires_channel"
+          python3 scripts/e2e/capture_failure_state.py
+          --pytest-output tests/.e2e/pytest-output.txt
+          --output tests/.e2e/failure-state.json
       - name: Tear down
         if: always()
         run: bash scripts/e2e/teardown.sh
@@ -138,6 +151,18 @@ jobs:
           echo "::group::primer.log"
           tail -n 200 tests/.e2e/logs/primer.log 2>/dev/null || true
           echo "::endgroup::"
+      - name: Upload live-server failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-live-server-failure-${{ github.run_attempt }}
+          path: |
+            tests/.e2e/server.stdout
+            tests/.e2e/logs/primer.log
+            tests/.e2e/pytest-output.txt
+            tests/.e2e/failure-state.json
+          if-no-files-found: warn
+          retention-days: 7
 
   ui-e2e:
     name: ui-e2e (Playwright)
