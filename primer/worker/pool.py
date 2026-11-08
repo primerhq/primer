@@ -150,6 +150,14 @@ class WorkerPool:
         # Unified in-flight tracking — one set for all claim kinds.
         # (ClaimKind, entity_id) tuples for all kinds.
         self._in_flight: set[tuple[ClaimKind, str]] = set()
+        # Session turns drop their lease before they leave ``_in_flight``.
+        # When that release exposes a queued next turn, re-arming it inside
+        # the handler lets the claim loop claim the fresh lease while the old
+        # execution still owns this process-local slot; duplicate suppression
+        # then strands the claimed lease until its TTL. Defer those re-arms to
+        # ``_run_engine`` after it releases the slot. The bool records whether
+        # the release also needs the carried-reply re-arm.
+        self._session_rearms_after_release: dict[str, bool] = {}
 
         # Strong references to in-flight per-turn tasks so the GC does not
         # silently collect them between create_task and the first await.
@@ -657,10 +665,10 @@ class WorkerPool:
         worker but no longer heartbeated, expires after one lease TTL and is claimed
         again.
 
-        Residual 1, accepted and bounded by one lease TTL of latency, no work lost:
-        a duplicate that lands between the release commit and the discard (the
-        window spans the session handler's re-arm) is skipped and leaves a claimed
-        lease with no executor; it expires and is claimed again.
+        Session work exposed by a release is re-armed only after
+        :meth:`_run_engine` has discarded this key. A fresh session lease
+        therefore cannot be claimed in the release-to-discard window and
+        mistaken for this older execution.
 
         Residual 2, NOT bounded by a TTL and it CAN lose work (tracked as task
         01a1084f): a preempted execution that is still unwinding keeps its key in
@@ -889,6 +897,14 @@ class WorkerPool:
             ).observe(time.monotonic() - task_t0)
             self._active_scopes.pop(key, None)
             self._in_flight.discard(key)
+            if lease.kind == ClaimKind.SESSION:
+                carried_reply = self._session_rearms_after_release.pop(
+                    lease.entity_id, None,
+                )
+                if carried_reply is not None:
+                    await self._rearm_session_after_release(
+                        lease.entity_id, carried_reply=carried_reply,
+                    )
             self._wake.set()
 
     async def _engine_bus_loop(self) -> None:
@@ -1206,9 +1222,15 @@ class WorkerPool:
                 # engine to ever re-claim. Re-arm AFTER the release (once
                 # the old lease is actually gone) so a genuinely queued
                 # turn always gets a fresh claim.
-                if outcome.park is not None:
-                    await self._rearm_carried_reply(sid)
-                await self._maybe_rearm_session(sid)
+                key = (ClaimKind.SESSION, sid)
+                if key in self._in_flight:
+                    self._session_rearms_after_release[sid] = outcome.park is not None
+                else:
+                    # Direct test/helper invocations do not pass through
+                    # ``_run_engine`` and therefore have no slot to release.
+                    await self._rearm_session_after_release(
+                        sid, carried_reply=outcome.park is not None,
+                    )
 
     def _select_resume_handler(
         self, session_row: WorkspaceSession,
@@ -1424,6 +1446,14 @@ class WorkerPool:
                 "_maybe_rearm_session: claim_engine.upsert failed for %s",
                 session_id,
             )
+
+    async def _rearm_session_after_release(
+        self, session_id: str, *, carried_reply: bool,
+    ) -> None:
+        """Re-arm session work after its released execution slot is free."""
+        if carried_reply:
+            await self._rearm_carried_reply(session_id)
+        await self._maybe_rearm_session(session_id)
 
     async def _end_resume_failed(self, session_row: WorkspaceSession):
         """End the session of a resume whose handler raised an unclassified error, keeping its park.
