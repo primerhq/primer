@@ -1370,6 +1370,119 @@ async def test_post_release_rearm_waits_until_the_old_slot_is_free(
     assert (ClaimKind.SESSION, sid) not in real_engine._leases
 
 
+async def test_direct_wake_claimed_after_release_waits_for_the_old_slot(
+    scheduler,
+):
+    """A direct wake in the release-to-wrapper gap runs without a TTL wait.
+
+    Unlike the handler-owned rearm regression above, this is the REST wake
+    shape: the old handler has already dropped its lease, an independent wake
+    arms and upserts the next one, and the claim loop sees it while the old
+    process-local slot still exists. The duplicate must stay untouched until
+    that slot closes, then be handed back for immediate dispatch.
+    """
+    from tests.conftest import _FakeStorageProvider
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+
+    sid = "sess-direct-wake-release-gap"
+    sp = _FakeStorageProvider()
+    session_storage = sp.get_storage(WorkspaceSession)
+    await session_storage.create(
+        WorkspaceSession(
+            id=sid,
+            workspace_id="ws-1",
+            binding=AgentSessionBinding(agent_id="ag-1"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+            turn_no=0,
+            turn_status="running",
+        ),
+    )
+    real_engine = InMemoryClaimEngine(
+        adapters={
+            ClaimKind.SESSION: SessionClaimAdapter(
+                session_storage=session_storage,
+            ),
+        },
+    )
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=sp,
+        workspace_registry=None,  # type: ignore[arg-type]
+        provider_registry=None,  # type: ignore[arg-type]
+        engine=real_engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    await real_engine.upsert(ClaimKind.SESSION, sid)
+    [old_lease] = await real_engine.claim_due("wrk-test", max_count=1)
+    old_released = asyncio.Event()
+    let_old_wrapper_close = asyncio.Event()
+    next_turn_finished = asyncio.Event()
+    calls = 0
+
+    async def _handler(lease: ClaimLease) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await pool._release_lease(
+                lease,
+                ReleaseOutcome(success=True, drop_lease=True),
+            )
+            old_released.set()
+            await let_old_wrapper_close.wait()
+            return
+        await pool._release_lease(
+            lease,
+            ReleaseOutcome(
+                success=True,
+                drop_lease=True,
+                entity_noop=True,
+            ),
+        )
+        next_turn_finished.set()
+
+    pool._dispatch[ClaimKind.SESSION] = _handler
+    key = (ClaimKind.SESSION, sid)
+    pool._in_flight.add(key)
+    old_task = asyncio.create_task(pool._run_engine(old_lease, _handler))
+    await asyncio.wait_for(old_released.wait(), timeout=1)
+
+    # Exact direct-wake state/engine effects after the old release: arm the
+    # row and create a fresh lease. Claim it before the old wrapper's finally
+    # has discarded the process-local key.
+    armed = await session_storage.patch_if(
+        sid,
+        {"turn_status": "claimable"},
+        where={"turn_status": ["running"]},
+    )
+    assert armed is not None
+    await real_engine.upsert(ClaimKind.SESSION, sid)
+    [fresh_lease] = await real_engine.claim_due("wrk-test", max_count=1)
+    pool._reserve_and_dispatch([fresh_lease])
+    assert calls == 1, "the fresh lease must not overlap the old execution"
+    assert pool._duplicate_claims_total == 1
+
+    let_old_wrapper_close.set()
+    await asyncio.wait_for(old_task, timeout=1)
+
+    # Closing the old slot gives the claimed fresh lease back immediately;
+    # without the fix claim_due is empty here until the lease TTL expires.
+    [retry] = await real_engine.claim_due("wrk-test", max_count=1)
+    pool._reserve_and_dispatch([retry])
+    async with asyncio.timeout(1):
+        await next_turn_finished.wait()
+    for task in list(pool._turn_tasks):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert calls == 2
+    assert key not in pool._in_flight
+    assert key not in pool._active_scopes
+    assert key not in real_engine._leases
+
+
 async def test_steering_a_running_session_no_rearm_when_nothing_queued(
     scheduler, monkeypatch,
 ):

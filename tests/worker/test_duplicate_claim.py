@@ -6,10 +6,12 @@ its own claim loop therefore claims the SAME ``(kind, id)`` again. ``worker_id``
 pool start, so the duplicate can only ever land inside the pool that is still running the
 first execution (the handler releases before ``_run_engine``'s ``finally`` discards the key).
 
-The pool must leave that duplicate completely alone: no second executor, no replaced cancel
-scope, no release, no requeue. The re-claim already re-stamped the very row the in-flight
-execution's heartbeat keeps alive, so the first execution carries on, is confirmed by its next
-heartbeat, and its own release (which carries the OLD ``claimed_at``) reaches ``on_release``.
+The pool must leave that duplicate alone while the executor owns the slot: no second executor,
+no replaced cancel scope, no release, no requeue. The re-claim already re-stamped the very row
+the in-flight execution's heartbeat keeps alive, so the first execution carries on, is confirmed
+by its next heartbeat, and its own release (which carries the OLD ``claimed_at``) reaches
+``on_release``. A SESSION duplicate is handed back only after that slot closes; for the expired
+old lease exercised here, the handler has already deleted the row and the hand-back is a no-op.
 
 Every test uses two keys: one duplicate-claimed, one untouched and asserted unaffected.
 """
