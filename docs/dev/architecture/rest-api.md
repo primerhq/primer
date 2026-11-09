@@ -104,16 +104,18 @@ and graph declarations also hold the same `CrudGuards` objects as those curated
 twins, so the manifest and tests can prove the guard contract is shared rather
 than inferred from endpoint names.
 
-The process compiles OpenAPI paths and components once for a stable route
-contract, after all routers and error handlers are installed, and keeps that
-immutable serialized schema in a bounded cache. Prefixes, dependencies, schema
-inputs and the unique-id function are part of the cache key. Every app decodes
-its own schema copy, derives new tool descriptors, and receives new app-bound
-handlers and providers, so a test app or catalogue consumer cannot change
-another app's dispatch or descriptor state. The process-wide latest-snapshot
-pointer used by catalogue and inventory readers keeps only a weak link from
-each handler to its owning app, so a stopped app remains collectable. The
-resulting snapshot supplies
+The process compiles OpenAPI paths, components and immutable tool blueprints
+once for a stable route contract, after all routers and error handlers are
+installed, and keeps them in a bounded cache. Prefixes, dependencies, schema
+inputs and the unique-id function are part of the cache key. The two house app
+factories also reuse structural route-key parts only for the exact same source
+route and endpoint objects; a fresh closure endpoint always derives its own
+part. Every app decodes fresh mutable tool schemas and receives new Tool
+models, app-bound handlers and providers, so a test app or catalogue consumer
+cannot change another app's dispatch or descriptor state. The process-wide
+latest-snapshot pointer used by catalogue and inventory readers keeps only a
+weak link from each handler to its owning app, so a stopped app remains
+collectable. The resulting snapshot supplies
 per-resource `InternalToolsetProvider`s to the normal `ProviderRegistry`, `ToolCatalog`,
 approval and MCP-exposure paths. It is not rebuilt per call. Generated dispatch
 sends an in-process ASGI request through the complete FastAPI application, so
