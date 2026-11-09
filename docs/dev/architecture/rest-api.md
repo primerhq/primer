@@ -110,7 +110,10 @@ immutable serialized schema in a bounded cache. Prefixes, dependencies, schema
 inputs and the unique-id function are part of the cache key. Every app decodes
 its own schema copy, derives new tool descriptors, and receives new app-bound
 handlers and providers, so a test app or catalogue consumer cannot change
-another app's dispatch or descriptor state. The resulting snapshot supplies
+another app's dispatch or descriptor state. The process-wide latest-snapshot
+pointer used by catalogue and inventory readers keeps only a weak link from
+each handler to its owning app, so a stopped app remains collectable. The
+resulting snapshot supplies
 per-resource `InternalToolsetProvider`s to the normal `ProviderRegistry`, `ToolCatalog`,
 approval and MCP-exposure paths. It is not rebuilt per call. Generated dispatch
 sends an in-process ASGI request through the complete FastAPI application, so

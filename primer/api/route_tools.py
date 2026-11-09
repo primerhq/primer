@@ -17,6 +17,7 @@ import logging
 import re
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
@@ -819,6 +820,9 @@ class GeneratedRouteToolSnapshot:
     providers: Mapping[str, InternalToolsetProvider]
 
 
+# Inventory and catalogue readers use the latest deterministic build without
+# owning its application. Provider handlers below resolve the app through a
+# weak reference so this convenience pointer cannot extend an app's lifetime.
 _LATEST_SNAPSHOT: GeneratedRouteToolSnapshot | None = None
 
 
@@ -1135,6 +1139,7 @@ def build_generated_route_toolsets(
     generated: list[GeneratedRouteTool] = []
     provider_registries: dict[str, dict[str, tuple[Tool, Callable[..., Any]]]] = {}
     seen_operations: set[str] = set()
+    owning_app_ref = weakref.ref(app)
 
     for full_path, route, inherited_dependencies in walked_routes:
         if not route.include_in_schema:
@@ -1186,6 +1191,17 @@ def build_generated_route_toolsets(
                 )
 
             async def handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None, _descriptor=descriptor) -> ToolCallResult:
+                owning_app = owning_app_ref()
+                if owning_app is None:
+                    return ToolCallResult(
+                        output=json.dumps(
+                            {
+                                "type": "route-tool-app-unavailable",
+                                "message": "the generated REST tool's application is no longer running",
+                            }
+                        ),
+                        is_error=True,
+                    )
                 if _DISPATCH_DEPTH.get() >= 1:
                     return ToolCallResult(
                         output=json.dumps({"type": "route-tool-recursion", "message": "generated route tools cannot recursively dispatch"}),
@@ -1214,7 +1230,7 @@ def build_generated_route_toolsets(
                     # large HTTPX-decoded allocation after the counter.
                     merged_headers["accept-encoding"] = "identity"
                     transport = _BoundedAsgiTransport(
-                        app=_TrustedAsgiApp(app, person),
+                        app=_TrustedAsgiApp(owning_app, person),
                         max_response_bytes=_MAX_RESPONSE_BYTES,
                     )
                     async with httpx.AsyncClient(transport=transport, base_url="http://primer.internal") as client:

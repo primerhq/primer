@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 import httpx
-from fastapi import FastAPI
 from httpx import ASGITransport
 
-from primer.api.app import _make_lifespan, create_app
+from primer.api.app import create_app
 from primer.api.config import AppConfig, ObservabilityConfig
 from primer.model.scheduler import RuntimeMode
 
@@ -135,7 +134,7 @@ class TestLifespanTracingWiring:
         # Reset module state before the test.
         tracing_module._provider = None
 
-        app = FastAPI(lifespan=_make_lifespan(sqlite_config))
+        app = create_app(sqlite_config)
         async with app.router.lifespan_context(app):
             # After lifespan startup, setup() should have been called.
             from opentelemetry.sdk.trace import TracerProvider
@@ -156,7 +155,7 @@ class TestLifespanTracingWiring:
             auto_bootstrap=False,
             observability=ObservabilityConfig(traces_enabled=False),
         )
-        app = FastAPI(lifespan=_make_lifespan(cfg))
+        app = create_app(cfg)
         async with app.router.lifespan_context(app):
             assert tracing_module._provider is None
 

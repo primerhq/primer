@@ -7,9 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 
-from primer.api.app import _build_storage_provider, _make_lifespan, create_app
+from primer.api.app import _build_storage_provider, create_app
 from primer.api.config import AppConfig
 from primer.model.provider import (
     SqliteConfig,
@@ -52,7 +51,7 @@ async def test_lifespan_zero_config_starts_and_stops(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = AppConfig(runtime_mode=RuntimeMode.API)
-    app = FastAPI(lifespan=_make_lifespan(cfg))
+    app = create_app(cfg)
     async with app.router.lifespan_context(app):
         assert isinstance(
             app.state.storage_provider, SqliteStorageProvider,
@@ -79,7 +78,7 @@ async def test_lifespan_with_in_memory_scheduler_sets_claim_engine(
             config=InMemorySchedulerConfig(),
         ),
     )
-    app = FastAPI(lifespan=_make_lifespan(cfg))
+    app = create_app(cfg)
     async with app.router.lifespan_context(app):
         from primer.claim.in_memory import InMemoryClaimEngine
         assert isinstance(app.state.claim_engine, InMemoryClaimEngine), (

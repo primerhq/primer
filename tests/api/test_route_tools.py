@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import json
 import logging
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
@@ -775,6 +777,36 @@ async def test_cached_descriptors_still_dispatch_through_the_owning_app() -> Non
     )
     assert json.loads(first.output) == {"marker": "first"}
     assert json.loads(second.output) == {"marker": "second"}
+
+
+@pytest.mark.asyncio
+async def test_latest_catalogue_snapshot_does_not_pin_its_owning_app() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    app = FastAPI()
+
+    @app.get("/lifetime")
+    @route_tool(scoped_id="cache_lifetime__read")
+    async def lifetime() -> dict[str, bool]:
+        return {"alive": True}
+
+    snapshot = build_generated_route_toolsets(app)
+    provider = snapshot.providers["cache_lifetime"]
+    app_ref = weakref.ref(app)
+
+    del snapshot, app
+    gc.collect()
+    gc.collect()
+
+    assert app_ref() is None
+    assert set(route_tools_module.generated_route_toolset_providers()) == {
+        "cache_lifetime"
+    }
+    result = await _call(provider, "read", {}, Person("alice", "user"))
+    assert result.is_error is True
+    assert json.loads(result.output) == {
+        "type": "route-tool-app-unavailable",
+        "message": "the generated REST tool's application is no longer running",
+    }
 
 
 def test_route_dependency_and_unique_id_changes_invalidate_compilation(
