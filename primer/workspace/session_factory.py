@@ -112,6 +112,7 @@ async def start_workspace_session(
     workspace_id: str,
     binding: SessionBinding,
     initial_instructions: str | None,
+    base_prompt: str | None = None,
     graph_input: Any | None,
     auto_start: bool,
     metadata: dict | None,
@@ -385,6 +386,7 @@ async def start_workspace_session(
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=initial_instructions,
+        base_prompt=base_prompt,
         graph_input=graph_input,
         auto_start=auto_start,
         metadata={**(metadata or {}), **(system_metadata or {})},
@@ -487,6 +489,7 @@ async def create_session(
     workspace_id: str,
     binding: SessionBinding,
     initial_instructions: str | None,
+    base_prompt: str | None = None,
     graph_input: Any | None,
     auto_start: bool,
     metadata: dict | None,
@@ -536,6 +539,11 @@ async def create_session(
     behaviour) for every other caller of this shared factory function
     (trigger subscribers, the workspaces MCP tool) that doesn't
     pre-write anything.
+
+    ``base_prompt`` (Wiki First W4): the launch-time base prompt, written
+    to the row exactly once, here, and never again - every other session
+    writer is field-scoped or a read, so the create is the only write and
+    the field is immutable by construction.
     """
     # Config guard: an auto_start session that has no ClaimEngine to register
     # with flips to RUNNING but is NEVER claimed by any worker -- it hangs in
@@ -575,6 +583,7 @@ async def create_session(
         name=(name.strip() or None) if isinstance(name, str) else name,
         parent_session_id=parent_session_id,
         initial_instructions=initial_instructions,
+        base_prompt=base_prompt,
         metadata=md,
         autonomous=autonomous,
         initiated_by=initiated_by,

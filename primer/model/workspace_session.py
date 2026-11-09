@@ -609,6 +609,22 @@ class WorkspaceSession(Identifiable):
     )
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
+    base_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Optional launch-time base prompt (Wiki First W4): standing "
+            "instructions this session's own agent(s) follow on EVERY turn. "
+            "Set once at create and never written again (no route, patch "
+            "site, steer or restart writes it), so it is immutable by "
+            "construction. Assembled at the head of the session's system "
+            "prompt (agent, graph node and manual-compaction sites), which "
+            "is why the compactor never sees it and a resume needs no "
+            "plumbing: every turn and resume re-reads this row and rebuilds "
+            "the executor from it. Deliberately NOT a storage-only field: "
+            "like initial_instructions it rides every session read to "
+            "persons with READ. None on rows older than the field."
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
     autonomous: bool | None = Field(
         default=None,

@@ -787,6 +787,9 @@ function NV_MobileCreateSessionSheet(props) {
   var instrState = React.useState("");
   var instr = instrState[0];
   var setInstr = instrState[1];
+  var baseState = React.useState("");
+  var basePrompt = baseState[0];
+  var setBasePrompt = baseState[1];
   var busyState = React.useState(false);
   var busy = busyState[0];
   var setBusy = busyState[1];
@@ -809,7 +812,7 @@ function NV_MobileCreateSessionSheet(props) {
 
   function reset() {
     setStage("workspace"); setWid(null); setBind(null); setQ("");
-    setName(""); setInstr(""); setBusy(false); setErr(null);
+    setName(""); setInstr(""); setBasePrompt(""); setBusy(false); setErr(null);
   }
   function close() { reset(); if (props.onClose) props.onClose(); }
 
@@ -826,6 +829,9 @@ function NV_MobileCreateSessionSheet(props) {
     var body = { auto_start: instr.trim().length > 0 };
     if (binding) body.binding = binding;
     if (trimmedName) body.name = trimmedName;
+    // Byte-preservation (Wiki First W4): trim decides omission only; the row
+    // stores the value exactly as typed, so launch->row->prompt is byte-identical.
+    if (basePrompt.trim()) body.base_prompt = basePrompt;
     if (instr.trim()) body.initial_instructions = instr.trim();
     SH_api.createSession(wid, body).then(function (row) {
       setBusy(false);
@@ -963,6 +969,12 @@ function NV_MobileCreateSessionSheet(props) {
             placeholder="What should it do first? (optional)"
             value={instr}
             onChange={function (ev) { setInstr(ev.target.value); }} />
+          <textarea className="nv-textarea" data-testid="nv-mob-ns-base-prompt"
+            aria-label="Base prompt"
+            style={{ minHeight: 64, marginTop: 10 }}
+            placeholder="Base prompt: standing instructions it always follows (optional)"
+            value={basePrompt}
+            onChange={function (ev) { setBasePrompt(ev.target.value); }} />
         </React.Fragment>
       ) : null}
     </window.BottomSheet>

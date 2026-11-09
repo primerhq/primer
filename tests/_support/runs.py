@@ -169,6 +169,7 @@ async def start_agent_session(
     agent_id: str,
     instructions: str = "go",
     auto_start: bool = True,
+    base_prompt: str | None = None,
 ) -> str:
     r = await client.post(
         f"/v1/workspaces/{workspace_id}/sessions",
@@ -176,6 +177,7 @@ async def start_agent_session(
             "binding": {"kind": "agent", "agent_id": agent_id},
             "initial_instructions": instructions,
             "auto_start": auto_start,
+            **({"base_prompt": base_prompt} if base_prompt is not None else {}),
         },
     )
     assert r.status_code in (200, 201), r.text

@@ -292,9 +292,10 @@ async def test_nothing_to_summarise_is_a_422_that_names_the_reason(client, app, 
 
 
 @pytest.mark.asyncio
-def _expected_fixed(system_prompt: str | None, agents_md: str | None = None) -> int:
-    """What the executor renders as the system prompt (the agent's own, the workspace fragment, and the workspace's
-    agents.md part when the file exists), sized by the strategy's own estimate. The tool schemas are not part of it:
+def _expected_fixed(system_prompt: str | None, agents_md: str | None = None, base_prompt: str | None = None) -> int:
+    """What the executor renders as the system prompt (the launch-time base prompt when the row has one, Wiki First
+    W4, then the agent's own, the workspace fragment, and the workspace's agents.md part when the file exists),
+    sized by the strategy's own estimate. The tool schemas are not part of it:
     the route has no executor to ask."""
     from primer.agent.compaction import CompactionStrategy
     from primer.agent.prompt_render import render_system_prompt_or_raw
@@ -304,6 +305,7 @@ def _expected_fixed(system_prompt: str | None, agents_md: str | None = None) -> 
     from primer.workspace.session import workspace_system_prompt_fragment
 
     parts = [
+        *([base_prompt] if base_prompt else []),
         *([system_prompt] if system_prompt else []),
         workspace_system_prompt_fragment("j-1"),
         *([workspace_instructions_part(agents_md)] if agents_md else []),
@@ -328,6 +330,33 @@ async def test_the_markers_figures_count_what_the_route_can_see_of_the_fixed_par
     assert payload["fixed_overhead_tokens"] == _expected_fixed(SYSTEM_PROMPT), "the agent's prompt and the fragment"
     assert payload["fixed_overhead_tokens"] > 1_000 + 250, "the 4,000 characters of the agent and the fragment"
     assert payload["tokens_before"] > payload["fixed_overhead_tokens"], "history and the fixed part"
+
+
+@pytest.mark.asyncio
+async def test_the_markers_figures_count_the_launch_base_prompt_as_fixed(
+    client, app, fake_storage_provider, monkeypatch,
+):
+    """Wiki First W4 (risk R1): the route re-renders the session's system message on its own; it must prepend the
+    row's launch-time base prompt too, or its ``fixed_overhead_tokens`` undercounts the prompt the next turn's
+    executor actually sends. The compactor's own request correctly never carries the base prompt (system slot),
+    so only the marker's figure can pin the undercount."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    base = "ALWAYS: answer the token question with the token TOKEN-42."
+    ws, _ = await _journey(app, fake_storage_provider, monkeypatch, system_prompt=SYSTEM_PROMPT)
+    rows = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await rows.get("j-1")
+    assert row is not None
+    await rows.update(row.model_copy(update={"base_prompt": base}))
+
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    (marker,) = _marker(ws)
+    payload = marker["payload"]
+    assert payload["fixed_overhead_tokens"] == _expected_fixed(SYSTEM_PROMPT, base_prompt=base), (
+        "the base prompt leads the fixed part the route counts")
+    assert payload["fixed_overhead_tokens"] > _expected_fixed(SYSTEM_PROMPT), (
+        "an undercount: the base prompt is missing from the fixed overhead")
     assert payload["tokens_after"] >= payload["fixed_overhead_tokens"]
     body = r.json()
     assert (body["tokens_before"], body["tokens_after"]) == (payload["tokens_before"], payload["tokens_after"])
