@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from primer.agent.approval import ApprovalResolver
+from primer.api.app import create_app
+from primer.api.config import AppConfig
 from primer.bootstrap.seed import crud_policy_id, default_policy_id, ensure_crud_approval_policies
 from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
 from primer.session.approvers import ADMIN_ONLY_SPEC
@@ -10,16 +12,32 @@ from primer.toolset.crud import CRUD_GATED_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED
 
 
 async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
-    """The crud tools and their twins (the system and trigger tools that make the same writes, and the deletes), then the admin-tier writes (the
-    policy writes, the toolset writes that run code on the host, the harness lifecycle; ticket 01a16a29): this pinned the crud nine only, then 18; the
-    crud read ``list_python_tools`` is not gated (ticket 01a16f1d), so 25."""
+    """Pin the complete production gate universe, including generated REST mutators."""
+    app = create_app(AppConfig())
+    generated_mutators = {
+        (operation.tool.toolset_id, operation.tool.id)
+        for operation in app.state.generated_route_toolsets.operations
+        if not operation.tool.read_only
+    }
+    curated_gates = {
+        *(("crud", name) for name in CRUD_GATED_TOOL_NAMES),
+        *CRUD_TWINS,
+        *ADMIN_GATES,
+    }
+
     created = await ensure_crud_approval_policies(fake_storage_provider)
     assert set(created) == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
+    assert len(generated_mutators) == 126
+    assert len(curated_gates) == 25
+    assert set(DEFAULT_GATED_TOOLS) == generated_mutators | curated_gates
     assert {crud_policy_id(n) for n in CRUD_GATED_TOOL_NAMES} <= set(created), "the crud rows keep their ids"
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)
     twin = await store.get(default_policy_id("system", "update_agent"))
     assert (twin.toolset_id, twin.tool_name, twin.enabled, twin.approval.type.value) == ("system", "update_agent", True, "required")
-    assert len(CRUD_GATED_TOOL_NAMES) == 8 and len(CRUD_TWINS) == 9 and len(ADMIN_GATES) == 8 and len(set(created)) == 25
+    assert len(CRUD_GATED_TOOL_NAMES) == 8
+    assert len(CRUD_TWINS) == 9
+    assert len(ADMIN_GATES) == 8
+    assert len(DEFAULT_GATED_TOOLS) == len(set(created)) == 151
     for (toolset_id, tool_name), shipped in ADMIN_GATES.items():
         row = await store.get(default_policy_id(toolset_id, tool_name))
         assert (row.toolset_id, row.tool_name, row.enabled, row.approval) == (toolset_id, tool_name, True, shipped)
