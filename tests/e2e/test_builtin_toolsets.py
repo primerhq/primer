@@ -9,10 +9,40 @@ any provider row existing in storage.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 
 from tests.e2e.conftest import pgvector_ssp_body
+
+
+_FIXED_BUILTIN_IDS = [
+    "system",
+    "workspaces",
+    "collections",
+    "misc",
+    "web",
+    "harness",
+    "trigger",
+    "workspace_ext",
+    "crud",
+    "canvas",
+]
+_TOOLS_UNIVERSAL_MANIFEST = Path("scripts/data/tools_universal_m0_manifest.json")
+
+
+def _reviewed_generated_tools() -> dict[str, set[str]]:
+    manifest = json.loads(_TOOLS_UNIVERSAL_MANIFEST.read_text())
+    reviewed: dict[str, set[str]] = {}
+    for row in manifest["rows"]:
+        if row["state"] != "generated":
+            continue
+        scoped_id = row["tool_ids"][0]
+        toolset_id = scoped_id.split("__", 1)[0]
+        reviewed.setdefault(toolset_id, set()).add(scoped_id)
+    return reviewed
 
 
 @pytest.mark.asyncio
@@ -559,16 +589,28 @@ async def test_t0711_mcp_http_transport_tools_unreachable_url_clean(
 
 @pytest.mark.asyncio
 async def test_the_builtin_catalogue_lists_every_wired_toolset_with_its_tools(client: httpx.AsyncClient) -> None:
-    """The live server wires ten built-in toolsets (the unit test app wires six): each catalogue id lists tools and opens its detail.
+    """The live server wires every fixed and generated built-in toolset: each catalogue id lists tools and opens its detail.
 
-    The tenth, ``canvas``, is on by default now that the canvas panel ships (an operator can switch it off via
+    The ten fixed providers retain their catalogue order, with the generated
+    REST providers following in stable sorted order. ``canvas`` is on by
+    default now that the canvas panel ships (an operator can switch it off via
     ``canvas.agent_tools_enabled``).
     """
     ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
-    assert ids == ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "canvas"]
+    reviewed_generated = _reviewed_generated_tools()
+    generated_ids = sorted(reviewed_generated)
+    assert len(generated_ids) == 59
+    assert sum(map(len, reviewed_generated.values())) == 261
+    assert ids == [*_FIXED_BUILTIN_IDS, *generated_ids]
+    assert len(ids) == len(set(ids)) == 69
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
     for tid in ids:
+        assert grouped[tid]["builtin"] is True, grouped[tid]
         assert grouped[tid]["available"] is True, grouped[tid]
         assert grouped[tid]["tools"], f"{tid} listed no tools"
+        if tid in reviewed_generated:
+            assert {
+                tool["scoped_id"] for tool in grouped[tid]["tools"]
+            } == reviewed_generated[tid]
         assert (await client.get(f"/v1/toolsets/{tid}")).status_code == 200, tid
     assert isinstance(grouped["collections"]["internal_search"], bool), grouped["collections"]
