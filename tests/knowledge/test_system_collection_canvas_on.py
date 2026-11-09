@@ -15,6 +15,7 @@ import logging
 
 import pytest_asyncio
 
+from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
 from primer.bootstrap.seed import builtin_toolset_providers
 from primer.canvas.settings import write_canvas_settings
@@ -43,19 +44,33 @@ async def sp(tmp_path):
 
 def _registry(sp) -> ProviderRegistry:
     """A registry over ``sp`` (where the canvas setting is read) that holds every built-in provider, as the lifespan's does."""
-    return ProviderRegistry(
+    fixed = built_in_providers()
+    registry = ProviderRegistry(
         sp,
         llm_factory=lambda p: object(),
         embedder_factory=lambda p: object(),
         cross_encoder_factory=lambda p: object(),
         toolset_factory=lambda t: object(),
-        **{f"{toolset_id}_toolset_provider": provider for toolset_id, provider in built_in_providers().items()},
+        **{f"{toolset_id}_toolset_provider": provider for toolset_id, provider in fixed.items()},
     )
+    create_test_app(
+        storage_provider=sp,
+        provider_registry=registry,
+        system_toolset=fixed["system"],
+        workspaces_toolset=fixed["workspaces"],
+        misc_toolset=fixed["misc"],
+        web_toolset=fixed["web"],
+    )
+    return registry
 
 
 async def _paths(sp) -> set[str]:
     nodes = await DocumentTreeService(sp).tree(collection_id=SYSTEM_COLLECTION_ID, parent="", depth=10)
     return {node.path for node in nodes}
+
+
+def _is_canvas_tool_page(path: str) -> bool:
+    return path == _CANVAS_PAGES or path.startswith(f"{_CANVAS_PAGES}/")
 
 
 async def test_the_wiki_is_written_with_the_canvas_toolset_on(sp, caplog):
@@ -84,6 +99,6 @@ async def test_a_switched_off_canvas_prunes_its_pages_on_the_next_build(sp):
     await write_canvas_settings(sp, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=False))
     await regenerate_system_collection(sp, toolset_providers=await builtin_toolset_providers(registry), app_version=_VERSION)
     paths = await _paths(sp)
-    assert not [path for path in paths if path.startswith(_CANVAS_PAGES)], "the stale canvas pages were pruned"
+    assert not [path for path in paths if _is_canvas_tool_page(path)], "the stale canvas pages were pruned"
     assert "reference/tools/misc/get_datetime" in paths
     assert (await read_stamp(sp)).content_hash != with_canvas

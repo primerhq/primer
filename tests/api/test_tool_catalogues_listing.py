@@ -128,9 +128,11 @@ async def test_the_grouped_catalogue_keeps_its_content_and_reports_broken_rows(c
 async def test_the_grouped_catalogue_keeps_the_builtins_in_the_one_lists_order(client) -> None:
     body = (await client.get("/v1/tools", headers=_as("root", "admin"))).json()
     builtin_ids = [e["id"] for e in body["items"] if e.get("builtin")]
-    expected = [s["id"] for s in providers._BUILTIN_TOOLSETS if s["id"] != "canvas"]
-    # canvas may be off in a bare app; its position in the one list is fixed either way.
-    assert builtin_ids == expected or builtin_ids == expected + ["canvas"]
+    expected = [s["id"] for s in providers._all_builtin_toolsets()]
+    without_canvas = [toolset_id for toolset_id in expected if toolset_id != "canvas"]
+    # Canvas may be off in a bare app. Either way, the curated prefix and the
+    # generated-provider suffix retain the canonical one-list order.
+    assert builtin_ids in (expected, without_canvas)
 
 
 async def test_the_grouped_catalogue_shows_only_public_tools_of_a_row_the_caller_cannot_read(client) -> None:
