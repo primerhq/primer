@@ -110,6 +110,10 @@ by the client, so a cancel loses no events).
 
 The registry fixture is the one ``tests/mcp/test_required_role_completeness.py`` builds (every reserved built-in toolset,
 wired as ``primer/api/_app_lifespan.py`` does), so a new reserved toolset cannot fall outside this test.
+
+Generated REST mutators follow their own conservative contract: every write is non-interruptible unless a route explicitly
+proves otherwise. The exact-set assertion derives that generated half from the built snapshot, while the hand-reviewed set
+below remains exact for the curated toolsets.
 """
 
 from __future__ import annotations
@@ -118,6 +122,7 @@ import pytest
 
 from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+from primer.api.route_tools import generated_route_toolset_providers
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
 from primer.toolset.canvas import CANVAS_TOOLSET_ID
 from primer.toolset.collections import COLLECTIONS_TOOLSET_ID
@@ -235,6 +240,15 @@ async def _declared(registry: ProviderRegistry) -> dict[tuple[str, str], bool]:
     return out
 
 
+async def _generated_mutators() -> set[tuple[str, str]]:
+    out: set[tuple[str, str]] = set()
+    for toolset_id, provider in generated_route_toolset_providers().items():
+        async for tool in provider.list_tools():
+            if not tool.read_only:
+                out.add((toolset_id, tool.id))
+    return out
+
+
 @pytest.mark.asyncio
 async def test_the_non_interruptible_system_tools_are_exactly_the_confirmed_ones(
     reserved_provider_registry: ProviderRegistry,  # noqa: F811
@@ -242,12 +256,13 @@ async def test_the_non_interruptible_system_tools_are_exactly_the_confirmed_ones
     declared = await _declared(reserved_provider_registry)
 
     not_interruptible = {key for key, interruptible in declared.items() if not interruptible}
+    expected = CONFIRMED_NOT_INTERRUPTIBLE | await _generated_mutators()
 
-    assert not_interruptible == CONFIRMED_NOT_INTERRUPTIBLE, (
+    assert not_interruptible == expected, (
         "the set of tools a Stop must not cancel changed. Declare interruptible=False only after reading the handler "
-        "(two or more durable writes with no single transaction, or a write in a lock that outlives the await), and "
-        f"add the tool to this test with the reason. Unexpected: {sorted(not_interruptible - CONFIRMED_NOT_INTERRUPTIBLE)}; "
-        f"missing: {sorted(CONFIRMED_NOT_INTERRUPTIBLE - not_interruptible)}"
+        "(two or more durable writes with no single transaction, a write in a lock that outlives the await, or a generated "
+        "REST mutator), and add curated tools to this test with the reason. "
+        f"Unexpected: {sorted(not_interruptible - expected)}; missing: {sorted(expected - not_interruptible)}"
     )
 
 

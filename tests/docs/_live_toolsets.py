@@ -3,8 +3,9 @@
 Built with every optional collaborator wired (the real app wires them): a tool that exists only then, such as ``web::download``, which needs a
 workspace registry, is a real tool. A name is stale only if no wiring has it.
 
-``built_in_providers()`` maps ``toolset id -> provider`` for ALL ten reserved toolsets (``RESERVED_TOOLSET_IDS``, ``collections`` included: a
-check that left one out would pass for every document that names its tools; ``canvas`` joined with pivot P5, design 8.3). ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
+``built_in_providers()`` maps ``toolset id -> provider`` for all ten curated toolsets (``collections`` included: a
+check that left one out would pass for every document that names its tools; ``canvas`` joined with pivot P5, design 8.3). Generated REST-backed
+providers are covered by the route-tool inventory instead. ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
 derives from it. A tool is reachable under every spelling the docs use: its registered (bare) id and the catalog's scoped id (a call's
 ``tool_name`` is the bare id, ``list``; the docs name the tool by its scoped id, ``harness__list``).
 """
@@ -21,7 +22,7 @@ from primer.model.chat import Tool
 
 @lru_cache(maxsize=1)
 def built_in_providers() -> dict[str, ToolsetProvider]:
-    """The ten reserved toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
+    """The ten curated toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
     from primer.api.registries import ProviderRegistry
     from primer.toolset.canvas import build_canvas_toolset
     from primer.toolset.collections import build_collections_toolset

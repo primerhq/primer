@@ -52,20 +52,31 @@ def test_the_rolling_deploy_rules_still_refuse():
 
 
 async def test_canvas_tools_off_then_on_again_brings_the_canvas_pages_back(sp) -> None:  # noqa: F811
+    from primer.api.app import create_test_app
     from primer.api.registries import ProviderRegistry
     from primer.bootstrap.seed import builtin_toolset_providers
     from primer.canvas.settings import write_canvas_settings
     from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
     from tests.docs._live_toolsets import built_in_providers
 
+    fixed = built_in_providers()
     reg = ProviderRegistry(
         sp, llm_factory=lambda p: object(), embedder_factory=lambda p: object(), cross_encoder_factory=lambda p: object(),
-        toolset_factory=lambda t: object(), **{f"{tid}_toolset_provider": p for tid, p in built_in_providers().items()},
+        toolset_factory=lambda t: object(), **{f"{tid}_toolset_provider": p for tid, p in fixed.items()},
+    )
+    create_test_app(
+        storage_provider=sp,
+        provider_registry=reg,
+        system_toolset=fixed["system"],
+        workspaces_toolset=fixed["workspaces"],
+        misc_toolset=fixed["misc"],
+        web_toolset=fixed["web"],
     )
 
     async def canvas_pages() -> list[str]:
         nodes = await DocumentTreeService(sp).tree(collection_id=SYSTEM_COLLECTION_ID, parent="", depth=10)
-        return sorted(n.path for n in nodes if n.path.startswith("reference/tools/canvas"))
+        root = "reference/tools/canvas"
+        return sorted(n.path for n in nodes if n.path == root or n.path.startswith(f"{root}/"))
 
     async def build() -> None:
         await regenerate_system_collection(sp, toolset_providers=await builtin_toolset_providers(reg), app_version="9.0.0")
