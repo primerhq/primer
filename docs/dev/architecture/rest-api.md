@@ -104,9 +104,14 @@ and graph declarations also hold the same `CrudGuards` objects as those curated
 twins, so the manifest and tests can prove the guard contract is shared rather
 than inferred from endpoint names.
 
-The app compiles route metadata and OpenAPI once, after all routers and error
-handlers are installed. The immutable snapshot supplies per-resource
-`InternalToolsetProvider`s to the normal `ProviderRegistry`, `ToolCatalog`,
+The process compiles OpenAPI paths and components once for a stable route
+contract, after all routers and error handlers are installed, and keeps that
+immutable serialized schema in a bounded cache. Prefixes, dependencies, schema
+inputs and the unique-id function are part of the cache key. Every app decodes
+its own schema copy, derives new tool descriptors, and receives new app-bound
+handlers and providers, so a test app or catalogue consumer cannot change
+another app's dispatch or descriptor state. The resulting snapshot supplies
+per-resource `InternalToolsetProvider`s to the normal `ProviderRegistry`, `ToolCatalog`,
 approval and MCP-exposure paths. It is not rebuilt per call. Generated dispatch
 sends an in-process ASGI request through the complete FastAPI application, so
 body and parameter validation, dependencies, access checks and RFC 7807 error
