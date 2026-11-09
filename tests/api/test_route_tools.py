@@ -1013,9 +1013,24 @@ async def test_recursion_and_timeout_are_bounded(monkeypatch) -> None:
         route_tools._DISPATCH_DEPTH.reset(depth)  # noqa: SLF001
     assert recursive.is_error and json.loads(recursive.output)["type"] == "route-tool-recursion"
 
-    monkeypatch.setattr(route_tools, "_DISPATCH_TIMEOUT_S", 0.001)
-    timed_out = await _call(snapshot.providers["slow_probe"], "slow", {}, Person("alice", "user"))
-    assert timed_out.is_error and json.loads(timed_out.output)["type"] == "route-tool-timeout"
+    with monkeypatch.context() as timeout_patch:
+        timeout_patch.setattr(route_tools, "_DISPATCH_TIMEOUT_S", 0.001)
+        timed_out = await _call(
+            snapshot.providers["slow_probe"],
+            "slow",
+            {},
+            Person("alice", "user"),
+        )
+        assert (
+            timed_out.is_error
+            and json.loads(timed_out.output)["type"] == "route-tool-timeout"
+        )
+
+    # The 1 ms deadline proves only the timeout path. Restore the production
+    # deadline before independently proving that an oversized response trips
+    # the byte bound; otherwise scheduler load can legitimately make the
+    # timeout win this race first.
+    assert route_tools._DISPATCH_TIMEOUT_S == 30.0  # noqa: SLF001
 
     too_large = await _call(snapshot.providers["slow_probe"], "large", {}, Person("alice", "user"))
     assert too_large.is_error
