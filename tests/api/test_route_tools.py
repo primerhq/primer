@@ -14,8 +14,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Request, Security, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
@@ -655,6 +656,88 @@ def test_independent_app_factories_compile_one_route_contract_without_sharing(
     assert "cache_mutation_probe" not in fourth_operation.tool.args_schema
     assert openapi_calls == 1
     assert openapi_calls * 4 <= factory_count + 1
+
+
+def test_custom_bound_openapi_methods_are_isolated_by_app_owner() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    router = APIRouter()
+
+    @router.get("/stateful")
+    @route_tool(scoped_id="stateful_openapi__read")
+    async def stateful(value: str) -> dict[str, str]:
+        return {"value": value}
+
+    openapi_calls = 0
+
+    class StatefulOpenapiApp(FastAPI):
+        def openapi(self):
+            nonlocal openapi_calls
+            openapi_calls += 1
+            schema = super().openapi()
+            value_schema = schema["paths"]["/stateful"]["get"]["parameters"][0][
+                "schema"
+            ]
+            value_schema["enum"] = [self.state.schema_marker]
+            return schema
+
+    def app_for(marker: str) -> FastAPI:
+        app = StatefulOpenapiApp()
+        app.state.schema_marker = marker
+        app.include_router(router)
+        return app
+
+    first = build_generated_route_toolsets(app_for("FIRST"))
+    second = build_generated_route_toolsets(app_for("SECOND"))
+
+    assert first.operations[0].tool.args_schema["properties"]["value"]["enum"] == [
+        "FIRST"
+    ]
+    assert second.operations[0].tool.args_schema["properties"]["value"]["enum"] == [
+        "SECOND"
+    ]
+    assert openapi_calls == 2
+
+
+def test_nested_security_scopes_invalidate_the_route_schema_cache() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    oauth = OAuth2PasswordBearer(
+        tokenUrl="/token",
+        scopes={"read": "Read access", "write": "Write access"},
+    )
+
+    def app_for(scope: str) -> FastAPI:
+        app = FastAPI()
+        router = APIRouter()
+
+        async def authorised(
+            _token: str = Security(oauth, scopes=[scope]),
+        ) -> None:
+            return None
+
+        @router.get("/secure", dependencies=[Depends(authorised)])
+        @route_tool(scoped_id="security_scope__read")
+        async def secure() -> dict[str, bool]:
+            return {"ok": True}
+
+        app.include_router(router)
+        return app
+
+    def compiled_schema(app: FastAPI) -> dict:
+        walked = tuple(
+            route_tools_module._walk_api_routes(app.routes)  # noqa: SLF001
+        )
+        return route_tools_module._compiled_route_schema(app, walked)  # noqa: SLF001
+
+    read_schema = compiled_schema(app_for("read"))
+    write_schema = compiled_schema(app_for("write"))
+
+    assert read_schema["paths"]["/secure"]["get"]["security"] == [
+        {"OAuth2PasswordBearer": ["read"]}
+    ]
+    assert write_schema["paths"]["/secure"]["get"]["security"] == [
+        {"OAuth2PasswordBearer": ["write"]}
+    ]
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
 
 
 @pytest.mark.asyncio

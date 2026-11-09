@@ -871,7 +871,7 @@ class _RouteCompilationKey:
 
     routes: tuple[tuple[Any, ...], ...]
     webhook_routes: tuple[_IdentityKey, ...]
-    openapi_function: _IdentityKey
+    openapi_function: tuple[_IdentityKey, ...]
     openapi_schema: _IdentityKey | None
     openapi_version: str
     separate_input_output_schemas: bool
@@ -891,10 +891,16 @@ _COMPILED_ROUTE_CONTRACTS: OrderedDict[
 _COMPILED_ROUTE_CONTRACTS_LOCK = threading.Lock()
 
 
-def _callable_identity(value: Callable[..., Any]) -> _IdentityKey:
+def _openapi_callable_contract(app: FastAPI) -> tuple[_IdentityKey, ...]:
+    value = app.openapi
     owner = getattr(value, "__self__", None)
     function = getattr(value, "__func__", None)
-    return _IdentityKey(function if owner is not None and function is not None else value)
+    if owner is app and function is FastAPI.openapi:
+        return (_IdentityKey(function),)
+    return (
+        _IdentityKey(app),
+        _IdentityKey(function if function is not None else value),
+    )
 
 
 def _callable_contract(value: Callable[..., Any] | None) -> _IdentityKey:
@@ -973,6 +979,13 @@ def _dependant_contract(dependant: Any) -> tuple[Any, ...]:
     return (
         _callable_contract(getattr(dependant, "call", None)),
         fields,
+        _value_contract(getattr(dependant, "own_oauth_scopes", None)),
+        _value_contract(getattr(dependant, "parent_oauth_scopes", None)),
+        _value_contract(getattr(dependant, "security_scopes", None)),
+        _value_contract(getattr(dependant, "security_requirements", None)),
+        getattr(dependant, "security_scopes_param_name", None),
+        bool(getattr(dependant, "use_cache", True)),
+        getattr(dependant, "scope", None),
         tuple(
             _dependant_contract(child)
             for child in getattr(dependant, "dependencies", ())
@@ -1033,7 +1046,7 @@ def _route_compilation_key(
             for route in getattr(app.webhooks, "routes", ())
             if getattr(route, "include_in_schema", True)
         ),
-        openapi_function=_callable_identity(app.openapi),
+        openapi_function=_openapi_callable_contract(app),
         openapi_schema=(
             _IdentityKey(openapi_schema) if openapi_schema is not None else None
         ),
