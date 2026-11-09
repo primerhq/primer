@@ -646,6 +646,10 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         memory_parts=memory_parts,
         memory_index=memory_index,
         memory_lookup=memory_lookup,
+        # The row's launch-time base prompt (Wiki First W4): read on every
+        # build, so the claim re-read, every turn and every resume carry it
+        # without any resume plumbing.
+        session_base_prompt=session.base_prompt,
     )
     return _TurnDriver(executor)
 
@@ -873,6 +877,9 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         artifact_storage=await _resolve_default_artifact_storage(pool),
         turn_no=session.turn_no,
         tool_calls_as_claims_enabled=pool.config.tool_calls_as_claims_enabled,
+        # The row's launch-time base prompt (Wiki First W4), for every node
+        # agent of this run; read on every build, so resume carries it too.
+        session_base_prompt=session.base_prompt,
     )
     return _GraphTurnDriver(executor)
 

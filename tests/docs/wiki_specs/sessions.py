@@ -20,7 +20,7 @@ SPECS = (
              "feature", 2,
              tools=scoped("workspaces", "create_workspace_session"),
              related=("sessions/observe-a-session", "graphs/run-a-graph", "workspaces/create-and-delete"),
-             must=("autonomous", "auto_start")),
+             must=("autonomous", "auto_start", "base_prompt")),
     PageSpec("sessions/observe-a-session", "Observe a session",
              "List sessions, read one session's state and transcript, and tap live events.",
              "feature", 3,

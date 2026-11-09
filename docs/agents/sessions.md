@@ -224,7 +224,11 @@ can run an agent or graph headlessly end to end.
 - `workspaces::create_workspace_session` - start a session bound to
   an agent or graph. Args: `workspace_id`, `binding`
   (`{kind:"agent", agent_id}` or `{kind:"graph", graph_id}`),
-  optional `initial_instructions`, `auto_start` (default true),
+  optional `initial_instructions`, optional `base_prompt` (a
+  launch-time base prompt: standing instructions this session's own
+  agent(s) follow on every turn, assembled at the head of the session's
+  system prompt; set once at create and never written again, so it
+  survives compaction and resume), `auto_start` (default true),
   optional `graph_input`, `parent_session_id`, `metadata`. Returns
   the session row with its `id` and `status`.
 - `workspaces::get_workspace_session` - answers `{info, status}`:

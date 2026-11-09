@@ -100,7 +100,13 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         memory_parts: Sequence[str] = (),
         memory_index: str = "",
         memory_lookup: "Callable[[str], Awaitable[Message | None]] | None" = None,
+        session_base_prompt: str | None = None,
     ) -> None:
+        # The session's launch-time base prompt (Wiki First W4) comes FIRST
+        # in the composite: it is standing material for this session's own
+        # agent, ahead of the agent's own prompt and the workspace fragment.
+        # A blank or absent one leaves the composite exactly as before.
+        base_parts = [session_base_prompt] if session_base_prompt else []
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
         # context, then with the workspace's agents.md (the text the
@@ -114,6 +120,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # became False in every workspace session, silently. ``deep=True`` keeps the
         # copy from sharing its lists with the registry entity it came from.
         composite_system_prompt = [
+            *base_parts,
             *agent.system_prompt,
             session.system_prompt_fragment,
             *workspace_instructions_parts(agent, workspace_instructions),

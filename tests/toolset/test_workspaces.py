@@ -1188,6 +1188,46 @@ class TestCreateWorkspaceSession:
         assert body["workspace_id"] == seeded
 
     @pytest.mark.asyncio
+    async def test_create_agent_session_with_base_prompt_persists_it(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        """Wiki First W4: the launch-time base prompt arg lands on the row, and the
+        tool answer (the row) serves it back."""
+        from primer.model.workspace_session import WorkspaceSession
+
+        _seed_agent(sp)
+        base = "ALWAYS: answer the token question with the token TOKEN-42"
+        result = await session_toolset.call(
+            tool_name="create_workspace_session",
+            arguments={
+                "workspace_id": seeded,
+                "binding": {"kind": "agent", "agent_id": "code-reviewer"},
+                "initial_instructions": "go",
+                "base_prompt": base,
+                "auto_start": True,
+            },
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["base_prompt"] == base
+        row = await sp.get_storage(WorkspaceSession).get(body["id"])
+        assert row.base_prompt == base
+
+    @pytest.mark.asyncio
+    async def test_create_session_args_schema_advertises_the_base_prompt(
+        self, session_toolset
+    ) -> None:
+        """The args schema served by list_tools includes the field (so an agent
+        that lists its tools sees it)."""
+        tool = None
+        async for t in session_toolset.list_tools():
+            if t.id == "create_workspace_session":
+                tool = t
+                break
+        assert tool is not None
+        assert "base_prompt" in tool.args_schema["properties"]
+
+    @pytest.mark.asyncio
     async def test_create_missing_agent_is_validation_error(
         self, session_toolset, seeded
     ) -> None:

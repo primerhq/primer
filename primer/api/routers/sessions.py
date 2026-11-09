@@ -103,6 +103,15 @@ class SessionCreateBody(BaseModel):
         ),
     )
     initial_instructions: str | None = None
+    base_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Optional launch-time base prompt: standing instructions this "
+            "session's own agent(s) follow on every turn, assembled at the "
+            "head of the session's system prompt. Set once here and never "
+            "written again (there is no update or patch session route)."
+        ),
+    )
     parent_session_id: str | None = None
     auto_start: bool = False
     autonomous: bool | None = Field(
@@ -215,6 +224,7 @@ async def create_session(
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=body.initial_instructions,
+        base_prompt=body.base_prompt,
         graph_input=body.graph_input,
         auto_start=body.auto_start,
         metadata=body.metadata,
