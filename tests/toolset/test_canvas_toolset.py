@@ -685,13 +685,18 @@ async def test_the_mcp_catalogue_lists_the_canvas_and_skips_an_off_one_without_a
 
 
 @pytest.mark.asyncio
-async def test_the_catalogue_lists_canvas_last_and_opens_it_when_enabled(client, fake_storage_provider):
+async def test_the_catalogue_keeps_canvas_last_in_the_curated_prefix_and_opens_it_when_enabled(
+    client, fake_storage_provider,
+):
     from primer.agent.agent_checks import missing_toolset_ids
+    from primer.api.routers import providers
     from primer.model.provider import Toolset
 
     await _enable_canvas_tools(fake_storage_provider)
     ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
-    assert ids[-1] == "canvas" and len(ids) == 10
+    expected = [spec["id"] for spec in providers._all_builtin_toolsets()]
+    assert ids == expected
+    assert ids[len(providers._BUILTIN_TOOLSETS) - 1] == "canvas"
     detail = (await client.get("/v1/toolsets/canvas")).json()
     assert detail["builtin"] is True and detail["description"] == "Show controls, media and HTML above the chat, and read the user's clicks"
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
@@ -728,7 +733,10 @@ def test_the_catalogue_reserved_ids_and_the_docs_registry_agree():      # pivot 
     from primer.api.routers import providers
 
     assert "canvas" in RESERVED_TOOLSET_IDS
-    assert {spec["id"] for spec in providers._BUILTIN_TOOLSETS} == RESERVED_TOOLSET_IDS == set(built_in_providers())
+    curated_ids = {spec["id"] for spec in providers._BUILTIN_TOOLSETS}
+    catalogue_ids = {spec["id"] for spec in providers._all_builtin_toolsets()}
+    assert curated_ids == set(built_in_providers())
+    assert curated_ids < catalogue_ids == set(RESERVED_TOOLSET_IDS)
     # The docs registry keys a toolset's tools by their bare ids (docs write ``canvas::canvas_get`` or ``canvas__canvas_get``: the scan splits
     # the toolset off); the scoped id is the catalog entry's (the next test).
     assert {"canvas_get", "canvas_apply", "canvas_wait"} <= set(built_in_tools()["canvas"])
