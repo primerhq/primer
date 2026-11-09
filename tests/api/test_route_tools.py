@@ -600,20 +600,53 @@ def test_independent_app_factories_compile_one_route_contract_without_sharing(
 ) -> None:
     route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
     original_openapi = FastAPI.openapi
+    original_blueprint_compile = route_tools_module._compile_route_tool_blueprints  # noqa: SLF001
+    original_route_part = route_tools_module._route_contract_part  # noqa: SLF001
     openapi_calls = 0
+    blueprint_compiles = 0
+    route_part_compiles = 0
 
     def counted_openapi(app: FastAPI):
         nonlocal openapi_calls
         openapi_calls += 1
         return original_openapi(app)
 
+    def counted_blueprint_compile(schema, walked_routes):
+        nonlocal blueprint_compiles
+        blueprint_compiles += 1
+        return original_blueprint_compile(schema, walked_routes)
+
+    def counted_route_part(full_path, route, inherited_dependency_contracts):
+        nonlocal route_part_compiles
+        route_part_compiles += 1
+        return original_route_part(
+            full_path,
+            route,
+            inherited_dependency_contracts,
+        )
+
     monkeypatch.setattr(FastAPI, "openapi", counted_openapi)
+    monkeypatch.setattr(
+        route_tools_module,
+        "_compile_route_tool_blueprints",
+        counted_blueprint_compile,
+    )
+    monkeypatch.setattr(
+        route_tools_module,
+        "_route_contract_part",
+        counted_route_part,
+    )
     production = create_app(AppConfig())
+    cold_route_parts = route_part_compiles
     test_app = create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
     )
+    test_factory_route_parts = route_part_compiles - cold_route_parts
     second_production = create_app(AppConfig())
+    second_factory_route_parts = (
+        route_part_compiles - cold_route_parts - test_factory_route_parts
+    )
 
     first_snapshot = production.state.generated_route_toolsets
     second_snapshot = test_app.state.generated_route_toolsets
@@ -633,9 +666,23 @@ def test_independent_app_factories_compile_one_route_contract_without_sharing(
     tool_id = first_operation.tool.id
 
     assert openapi_calls == 1
+    assert blueprint_compiles == 1
     assert openapi_calls * 3 <= factory_count
+    assert cold_route_parts == 404
+    # The 380 module-level declarations hit the identity cache. Only the 24
+    # fresh CRUD/access closure routes derive their structural parts again.
+    assert test_factory_route_parts == second_factory_route_parts == 24
+    assert first_snapshot.operations == second_snapshot.operations
+    assert first_snapshot.operations == third_snapshot.operations
     assert first_snapshot.providers[provider_id] is not second_snapshot.providers[provider_id]
     assert first_snapshot.providers[provider_id] is not third_snapshot.providers[provider_id]
+    assert list(first_snapshot.providers["admin_users"]._registry) == [  # noqa: SLF001
+        "create_admin_user",
+        "list_admin_users",
+        "get_admin_user",
+        "update_admin_user",
+        "delete_admin_user",
+    ]
     assert first_operation.tool is not second_operation.tool
     assert first_operation.tool.args_schema is not second_operation.tool.args_schema
     assert (
@@ -657,7 +704,66 @@ def test_independent_app_factories_compile_one_route_contract_without_sharing(
     assert "cache_mutation_probe" not in second_operation.tool.args_schema
     assert "cache_mutation_probe" not in fourth_operation.tool.args_schema
     assert openapi_calls == 1
+    assert blueprint_compiles == 1
+    assert route_part_compiles == cold_route_parts + 3 * 24
     assert openapi_calls * 4 <= factory_count + 1
+
+
+def test_stable_route_fast_path_never_equates_distinct_closure_endpoints(
+    monkeypatch,
+) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    original_route_part = route_tools_module._route_contract_part  # noqa: SLF001
+    route_part_compiles = 0
+
+    def counted_route_part(full_path, route, inherited_dependency_contracts):
+        nonlocal route_part_compiles
+        route_part_compiles += 1
+        return original_route_part(
+            full_path,
+            route,
+            inherited_dependency_contracts,
+        )
+
+    monkeypatch.setattr(
+        route_tools_module,
+        "_route_contract_part",
+        counted_route_part,
+    )
+
+    def app_for(marker: str) -> FastAPI:
+        app = FastAPI()
+
+        @app.get("/closure")
+        @route_tool(scoped_id="closure_identity__read")
+        async def closure() -> dict[str, str]:
+            return {"marker": marker}
+
+        return app
+
+    app_refs = []
+    route_refs = []
+    for marker in ("first", "second"):
+        app = app_for(marker)
+        route = next(
+            route
+            for route in app.routes
+            if isinstance(route, route_tools_module.APIRoute)
+        )
+        app_refs.append(weakref.ref(app))
+        route_refs.append(weakref.ref(route))
+        build_generated_route_toolsets(
+            app,
+            _stable_route_graph=True,
+        )
+    del app, route
+    gc.collect()
+    gc.collect()
+
+    assert route_part_compiles == 2
+    assert all(ref() is None for ref in app_refs)
+    assert all(ref() is None for ref in route_refs)
+    assert len(route_tools_module._STABLE_ROUTE_CONTRACT_PARTS) == 0  # noqa: SLF001
 
 
 def test_custom_bound_openapi_methods_are_isolated_by_app_owner() -> None:
@@ -739,6 +845,76 @@ def test_nested_security_scopes_invalidate_the_route_schema_cache() -> None:
     assert write_schema["paths"]["/secure"]["get"]["security"] == [
         {"OAuth2PasswordBearer": ["write"]}
     ]
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
+
+
+def test_source_route_path_invalidates_descriptor_blueprints() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+
+    @route_tool(scoped_id="path_contract__read")
+    async def endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    def app_for(source_path: str, prefix: str) -> FastAPI:
+        router = APIRouter()
+        router.add_api_route(
+            source_path,
+            endpoint,
+            methods=["GET"],
+            operation_id="path_contract_read",
+        )
+        app = FastAPI()
+        app.include_router(router, prefix=prefix)
+        return app
+
+    short_source = build_generated_route_toolsets(app_for("/x", "/p"))
+    full_source = build_generated_route_toolsets(app_for("/p/x", ""))
+
+    assert short_source.operations[0].path == full_source.operations[0].path == "/p/x"
+    assert "matching /x REST operation" in short_source.operations[0].tool.description
+    assert "matching /p/x REST operation" in full_source.operations[0].tool.description
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
+
+
+@pytest.mark.parametrize("dependency_location", ["route", "inherited"])
+def test_dependency_names_invalidate_required_role_blueprints(
+    dependency_location: str,
+) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+
+    @route_tool(scoped_id="role_contract__read")
+    async def endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    def dependency_for(name: str):
+        async def same_code() -> None:
+            return None
+
+        same_code.__name__ = name
+        return same_code
+
+    def app_for(dependency_name: str) -> FastAPI:
+        dependency = Depends(dependency_for(dependency_name))
+        router = APIRouter()
+        router.add_api_route(
+            "/role",
+            endpoint,
+            methods=["GET"],
+            operation_id="role_contract_read",
+            dependencies=[dependency] if dependency_location == "route" else None,
+        )
+        app = FastAPI()
+        app.include_router(
+            router,
+            dependencies=[dependency] if dependency_location == "inherited" else None,
+        )
+        return app
+
+    ordinary = build_generated_route_toolsets(app_for("ordinary"))
+    admin = build_generated_route_toolsets(app_for("require_admin"))
+
+    assert ordinary.operations[0].tool.required_role == "user"
+    assert admin.operations[0].tool.required_role == "admin"
     assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
 
 
@@ -913,6 +1089,73 @@ def test_concurrent_compilation_misses_publish_one_template(monkeypatch) -> None
         iter(route_tools_module._COMPILED_ROUTE_CONTRACTS.values())
     )
     assert sum(published_template is candidate for candidate in candidates) == 1
+
+
+def test_concurrent_blueprint_misses_publish_one_immutable_tuple(monkeypatch) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    router = APIRouter()
+
+    @router.get("/value")
+    @route_tool(scoped_id="concurrent_blueprint__value")
+    async def value() -> dict[str, int]:
+        return {"value": 1}
+
+    apps = [FastAPI(), FastAPI()]
+    for app in apps:
+        app.include_router(router)
+    walked = [
+        tuple(route_tools_module._walk_api_routes(app.routes))  # noqa: SLF001
+        for app in apps
+    ]
+    key = route_tools_module._route_compilation_key(  # noqa: SLF001
+        apps[0],
+        walked[0],
+    )
+    assert key == route_tools_module._route_compilation_key(  # noqa: SLF001
+        apps[1],
+        walked[1],
+    )
+    compiled = route_tools_module._compiled_route_schema_entry(  # noqa: SLF001
+        apps[0],
+        walked[0],
+        key,
+    )
+    assert compiled.blueprints is None
+
+    original_compile = route_tools_module._compile_route_tool_blueprints  # noqa: SLF001
+    barrier = threading.Barrier(2)
+    candidates = []
+    candidates_lock = threading.Lock()
+
+    def racing_compile(schema, routes):
+        candidate = original_compile(schema, routes)
+        with candidates_lock:
+            candidates.append(candidate)
+        barrier.wait(timeout=10)
+        return candidate
+
+    monkeypatch.setattr(
+        route_tools_module,
+        "_compile_route_tool_blueprints",
+        racing_compile,
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                route_tools_module._compiled_route_tool_blueprints,  # noqa: SLF001
+                key,
+                compiled,
+                routes,
+            )
+            for routes in walked
+        ]
+        published = [future.result(timeout=15) for future in futures]
+
+    assert len(candidates) == 2
+    assert published[0] is published[1]
+    published_entry = route_tools_module._COMPILED_ROUTE_CONTRACTS[key]  # noqa: SLF001
+    assert published_entry.blueprints is published[0]
+    assert sum(published[0] is candidate for candidate in candidates) == 1
 
 
 def test_generated_provider_reinstall_keeps_fixed_and_foreign_collisions_hard() -> None:
