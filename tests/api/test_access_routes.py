@@ -82,10 +82,26 @@ async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
             return get_storage_provider(request).get_storage(Plain)
 
         app.include_router(
-            make_access_router(model_cls=Gadget, plural="gadgets", storage_dep=_gadgets, tag="t", allow_public_tools=True),
+            make_access_router(
+                model_cls=Gadget,
+                plural="gadgets",
+                storage_dep=_gadgets,
+                tag="t",
+                allow_public_tools=True,
+                tool_resource_id="gadgets",
+            ),
             prefix="/v1",
         )
-        app.include_router(make_access_router(model_cls=Plain, plural="plains", storage_dep=_plains, tag="t"), prefix="/v1")
+        app.include_router(
+            make_access_router(
+                model_cls=Plain,
+                plural="plains",
+                storage_dep=_plains,
+                tag="t",
+                tool_resource_id="plains",
+            ),
+            prefix="/v1",
+        )
         app.include_router(users_lookup_router, prefix="/v1")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
             yield c
