@@ -14,6 +14,7 @@ related: [sessions/observe-a-session, graphs/run-a-graph, workspaces/create-and-
 - **The brief.** An agent gets `initial_instructions`, its first user message. A graph gets `graph_input`, any JSON; when the graph's begin node has an input schema, `graph_input` is required and is checked against it before the session is created.
 - **`auto_start`** (default `true`) arms the first turn at once, and the answer reads `status` `running`. With `false` the session is created `created` and stays inert: nothing runs it until a message reaches it (`workspaces__steer_workspace_session`) or a person starts it from the console.
 - **`autonomous`** decides how the session ends. Leave it out for an agent session you will keep talking to: after each clean turn it rests (`session_state` `parked`) and waits for the next message. Set `autonomous: true` when the session should end when its agent finishes, so `session.ended` fires and a poll for `ended` works. A graph session ends after its run without it.
+- **`base_prompt`** (optional) is a launch-time base prompt: standing instructions this session's own agent(s) follow on EVERY turn, assembled at the head of the session's system prompt. It is set once here and never written again - no steer, restart or update touches it - so it survives compaction (the compactor never sees system material) and survives a park-and-resume (every resumed turn rebuilds from the stored row). A graph session hands it to every node agent; a sub-agent you invoke from the session does NOT inherit it.
 - **`parent_session_id`** records lineage only. Nothing propagates between parent and child: a cancel of the parent does not reach the child.
 - **`metadata`** is a free-form object stored on the row.
 - **Rank.** A session started from your session runs at your run's rank (the principal that started your run). A session started over MCP with no calling session is recorded as unattributed and runs as an ordinary user.
@@ -61,6 +62,7 @@ From inside your own session, park your turn until the child ends. Use the `id` 
 
 ## Gotchas
 - An interactive agent session never ends by itself. A wait for `session.ended` on it waits until the timeout; start it with `autonomous: true` or watch its transcript.
+- A restart (reopen) of an ended session keeps its `base_prompt`: the restart's input is recorded as a new message (it does not rewrite the row's first message), and the base prompt stays as set at launch.
 - A missing agent or graph is refused with `validation-error`, and nothing is created.
 - A graph that cannot run is refused with every problem listed in one message: no nodes, not exactly one begin node, no end node, an end node the begin node cannot reach, or a loop without `max_iterations`.
 - A `graph_input` that does not match the begin node's schema is refused with the path of the first mismatch.

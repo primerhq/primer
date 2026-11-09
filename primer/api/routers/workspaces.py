@@ -1804,11 +1804,12 @@ async def compact_session_endpoint(
         return reconstruct_compacted_history((await _history_text()).splitlines())
 
     # The fixed part of the prompt, as far as this route can count it: the system prompt as the executor
-    # renders it (the agent's own, the workspace fragment it appends, and the workspace's agents.md, read now
-    # as the next turn will read it). The tool schemas live behind the session's executor, which this route does
-    # not build, so they are NOT counted here (the figures are a floor; the marker's ``fixed_overhead_tokens``
-    # says what they include).
+    # renders it (the session's launch-time base prompt when it has one, Wiki First W4, then the agent's own,
+    # the workspace fragment it appends, and the workspace's agents.md, read now as the next turn will read
+    # it). The tool schemas live behind the session's executor, which this route does not build, so they are
+    # NOT counted here (the figures are a floor; the marker's ``fixed_overhead_tokens`` says what they include).
     system_prompt = [
+        *([row.base_prompt] if row.base_prompt else []),
         *agent.system_prompt,
         workspace_system_prompt_fragment(session_id),
         *workspace_instructions_parts(agent, await load_workspace_instructions(workspace)),

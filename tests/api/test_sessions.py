@@ -425,6 +425,44 @@ async def test_create_session_persists_autonomous_flag(
     assert resp.json()["autonomous"] is True
 
 
+async def test_create_session_persists_the_base_prompt(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """Wiki First W4: the launch-time base prompt lands on the row, and the
+    create answer (response_model is the row) serves it back."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    base = "ALWAYS: answer the token question with TOKEN-42"
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "base_prompt": base,
+            "auto_start": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["base_prompt"] == base
+    row = await app.state.storage_provider.get_storage(WorkspaceSession).get(
+        resp.json()["id"],
+    )
+    assert row.base_prompt == base
+
+
+async def test_create_session_without_a_base_prompt_leaves_it_none(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "auto_start": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["base_prompt"] is None
+
+
 async def test_create_session_unknown_workspace_404(
     sessions_client, seeded_agent,
 ):

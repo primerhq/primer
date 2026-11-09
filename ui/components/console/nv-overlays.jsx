@@ -154,6 +154,9 @@ function NV_CreateSessionOverlay() {
   var graphDraftState = React.useState({});
   var graphDraft = graphDraftState[0];
   var setGraphDraft = graphDraftState[1];
+  var baseState = React.useState("");
+  var basePrompt = baseState[0];
+  var setBasePrompt = baseState[1];
 
   // Typing instructions implies intent to run (the create-session rule
   // since the first form): the toggle follows along until the operator touches it.
@@ -224,6 +227,9 @@ function NV_CreateSessionOverlay() {
     if (binding) body.binding = binding;
     var trimmedName = name.trim() || null;
     if (trimmedName) body.name = trimmedName;
+    // Byte-preservation (Wiki First W4): trim decides omission only; the row
+    // stores the value exactly as typed, so launch->row->prompt is byte-identical.
+    if (basePrompt.trim()) body.base_prompt = basePrompt;
     if (usesGraphInput) body.graph_input = graphDraft;
     else if (instr.trim()) body.initial_instructions = instr.trim();
     apiFetch(
@@ -420,6 +426,13 @@ function NV_CreateSessionOverlay() {
                   setAutoStart(false);
                 }}>Create parked</button>
             </div>
+          </NV_Field>
+          <NV_Field label="Base prompt"
+            hint="optional; set at launch, never compacted, survives resume">
+            <textarea className="nv-textarea" data-testid="nv-ns-base-prompt"
+              rows={3} value={basePrompt}
+              placeholder="Standing instructions this session's agent always follows"
+              onChange={function (ev) { setBasePrompt(ev.target.value); }} />
           </NV_Field>
         </div>
       ) : null}

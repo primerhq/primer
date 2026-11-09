@@ -97,6 +97,8 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
     ``system_prompt_fragment`` + workspace tools, and
     ``workspace_instructions`` (the text of the workspace's ``agents.md``,
     read by the caller for this run) to have each of them follow it.
+    ``session_base_prompt`` (Wiki First W4) is the session's launch-time
+    base prompt, prepended ahead of every node agent's own prompt.
     """
 
     def __init__(
@@ -129,9 +131,11 @@ provider_registry: Any | None = None,
         turn_no: int | None = None,
         tool_calls_as_claims_enabled: bool = False,
         workspace_instructions: str | None = None,
+        session_base_prompt: str | None = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
-            agent_resolver, workspace_session, workspace_instructions
+            agent_resolver, workspace_session, workspace_instructions,
+            session_base_prompt,
         )
         wrapped_tool_manager_resolver = self._wrap_tool_manager_resolver(
             tool_manager_resolver, workspace_session, identity
@@ -155,6 +159,9 @@ provider_registry: Any | None = None,
         # The workspace's agents.md as read for this run; subgraph children are
         # built from it again (see ``_build_sub_executor``).
         self._workspace_instructions = workspace_instructions
+        # The session's launch-time base prompt (Wiki First W4); subgraph children
+        # re-wrap the RAW resolver, so it is handed to them again the same way.
+        self._session_base_prompt = session_base_prompt
         self._identity = identity
         # Override the base's in-memory context with real workspace ids so node
         # templates can reference {{ ctx.artifact_dir }} etc. Subgraph children
@@ -331,24 +338,32 @@ provider_registry: Any | None = None,
         base: Callable[[str], Awaitable["Agent"]],
         workspace_session: "AgentSession | None",
         workspace_instructions: str | None = None,
+        session_base_prompt: str | None = None,
     ) -> Callable[[str], Awaitable["Agent"]]:
         """Append the workspace's ``system_prompt_fragment``, then its agents.md, to every agent.
 
         The fragment needs the holder session; the instructions are the workspace's and do not, so a legacy
-        graph session without a holder still has its agents follow them.
+        graph session without a holder still has its agents follow them. ``session_base_prompt`` (Wiki First
+        W4) is the session's launch-time base prompt: it comes FIRST, ahead of the agent's own prompt, for
+        every node agent.
         """
-        if workspace_session is None and workspace_instructions is None:
+        if (
+            workspace_session is None
+            and workspace_instructions is None
+            and not session_base_prompt
+        ):
             return base
 
         async def _resolve(agent_id: str) -> "Agent":
             agent = await base(agent_id)
+            prepended = [session_base_prompt] if session_base_prompt else []
             appended = [
                 *([workspace_session.system_prompt_fragment] if workspace_session is not None else []),
                 *workspace_instructions_parts(agent, workspace_instructions),
             ]
-            if not appended:
+            if not prepended and not appended:
                 return agent
-            composite_system_prompt = [*agent.system_prompt, *appended]
+            composite_system_prompt = [*prepended, *agent.system_prompt, *appended]
             # Copy the agent and replace ONLY the system prompt. This used to rebuild it
             # from seven named fields, so every other one (max_tool_turns,
             # max_output_tokens, ...) silently reset to its default for every node of a
@@ -792,8 +807,12 @@ provider_registry: Any | None = None,
             graph_session_id=sub_gsid,
             workspace_session=self._workspace_session,
             # The child re-wraps the RAW resolver, so it has to be handed the file
-            # too, or every agent below the first level would run without it.
+            # too, or every agent below the first level would run without it. The
+            # session's launch-time base prompt (Wiki First W4) rides along the
+            # same way: it governs EVERY node agent of the session's graph run,
+            # including subgraph levels.
             workspace_instructions=self._workspace_instructions,
+            session_base_prompt=self._session_base_prompt,
             tool_manager_resolver=self._raw_tool_manager_resolver,
             graph_resolver=self._graph_resolver,
             router_registry=self._router_registry,

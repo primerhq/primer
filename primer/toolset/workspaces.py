@@ -414,6 +414,15 @@ class _CreateSessionArgs(BaseModel):
     workspace_id: str = Field(..., min_length=1)
     binding: SessionBinding
     initial_instructions: str | None = None
+    base_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Optional launch-time base prompt: standing instructions this "
+            "session's own agent(s) follow on every turn, assembled at the "
+            "head of the session's system prompt. Set once here and never "
+            "written again (no steer, restart or update touches it)."
+        ),
+    )
     auto_start: bool = True
     autonomous: bool | None = None
     graph_input: Any | None = None
@@ -1969,6 +1978,7 @@ def build_workspaces_toolset(
                 workspace_id=args.workspace_id,
                 binding=args.binding,
                 initial_instructions=args.initial_instructions,
+                base_prompt=args.base_prompt,
                 graph_input=args.graph_input,
                 auto_start=args.auto_start,
                 metadata=args.metadata,
