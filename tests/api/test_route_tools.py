@@ -676,6 +676,13 @@ def test_independent_app_factories_compile_one_route_contract_without_sharing(
     assert first_snapshot.operations == third_snapshot.operations
     assert first_snapshot.providers[provider_id] is not second_snapshot.providers[provider_id]
     assert first_snapshot.providers[provider_id] is not third_snapshot.providers[provider_id]
+    assert list(first_snapshot.providers["admin_users"]._registry) == [  # noqa: SLF001
+        "create_admin_user",
+        "list_admin_users",
+        "get_admin_user",
+        "update_admin_user",
+        "delete_admin_user",
+    ]
     assert first_operation.tool is not second_operation.tool
     assert first_operation.tool.args_schema is not second_operation.tool.args_schema
     assert (
@@ -838,6 +845,76 @@ def test_nested_security_scopes_invalidate_the_route_schema_cache() -> None:
     assert write_schema["paths"]["/secure"]["get"]["security"] == [
         {"OAuth2PasswordBearer": ["write"]}
     ]
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
+
+
+def test_source_route_path_invalidates_descriptor_blueprints() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+
+    @route_tool(scoped_id="path_contract__read")
+    async def endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    def app_for(source_path: str, prefix: str) -> FastAPI:
+        router = APIRouter()
+        router.add_api_route(
+            source_path,
+            endpoint,
+            methods=["GET"],
+            operation_id="path_contract_read",
+        )
+        app = FastAPI()
+        app.include_router(router, prefix=prefix)
+        return app
+
+    short_source = build_generated_route_toolsets(app_for("/x", "/p"))
+    full_source = build_generated_route_toolsets(app_for("/p/x", ""))
+
+    assert short_source.operations[0].path == full_source.operations[0].path == "/p/x"
+    assert "matching /x REST operation" in short_source.operations[0].tool.description
+    assert "matching /p/x REST operation" in full_source.operations[0].tool.description
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
+
+
+@pytest.mark.parametrize("dependency_location", ["route", "inherited"])
+def test_dependency_names_invalidate_required_role_blueprints(
+    dependency_location: str,
+) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+
+    @route_tool(scoped_id="role_contract__read")
+    async def endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    def dependency_for(name: str):
+        async def same_code() -> None:
+            return None
+
+        same_code.__name__ = name
+        return same_code
+
+    def app_for(dependency_name: str) -> FastAPI:
+        dependency = Depends(dependency_for(dependency_name))
+        router = APIRouter()
+        router.add_api_route(
+            "/role",
+            endpoint,
+            methods=["GET"],
+            operation_id="role_contract_read",
+            dependencies=[dependency] if dependency_location == "route" else None,
+        )
+        app = FastAPI()
+        app.include_router(
+            router,
+            dependencies=[dependency] if dependency_location == "inherited" else None,
+        )
+        return app
+
+    ordinary = build_generated_route_toolsets(app_for("ordinary"))
+    admin = build_generated_route_toolsets(app_for("require_admin"))
+
+    assert ordinary.operations[0].tool.required_role == "user"
+    assert admin.operations[0].tool.required_role == "admin"
     assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
 
 

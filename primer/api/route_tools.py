@@ -955,11 +955,23 @@ def _callable_contract(value: Callable[..., Any] | None) -> _IdentityKey:
     return _IdentityKey(code if code is not None else function)
 
 
+def _callable_name_contract(value: Callable[..., Any] | None) -> tuple[Any, ...]:
+    """Capture callable names consumed by dependency-derived tool policy."""
+
+    function = getattr(value, "__func__", value)
+    return (
+        getattr(function, "__module__", None),
+        getattr(function, "__name__", None),
+        getattr(function, "__qualname__", None),
+    )
+
+
 def _dependency_contract(dependency: Any) -> tuple[Any, ...]:
     call = getattr(dependency, "dependency", None)
     scopes = getattr(dependency, "scopes", ()) or ()
     return (
         _callable_contract(call),
+        _callable_name_contract(call),
         bool(getattr(dependency, "use_cache", True)),
         getattr(dependency, "scope", None),
         tuple(scopes),
@@ -1024,6 +1036,7 @@ def _dependant_contract(dependant: Any) -> tuple[Any, ...]:
     )
     return (
         _callable_contract(getattr(dependant, "call", None)),
+        _callable_name_contract(getattr(dependant, "call", None)),
         fields,
         _value_contract(getattr(dependant, "own_oauth_scopes", None)),
         _value_contract(getattr(dependant, "parent_oauth_scopes", None)),
@@ -1046,6 +1059,7 @@ def _route_contract_part(
 ) -> tuple[Any, ...]:
     return (
         full_path,
+        route.path,
         route.include_in_schema,
         tuple(sorted((route.methods or set()) & _HTTP_METHODS)),
         route.unique_id,
@@ -1374,7 +1388,7 @@ def _compile_route_tool_blueprints(
                 )
             generated.append(blueprint)
 
-    return tuple(sorted(generated, key=lambda item: item.operation_id))
+    return tuple(generated)
 
 
 def _compiled_route_tool_blueprints(
