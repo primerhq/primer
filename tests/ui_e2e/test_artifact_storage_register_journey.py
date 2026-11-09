@@ -26,9 +26,14 @@ def test_an_artifact_storage_provider_can_be_registered_and_deleted_from_the_pro
 
         type_select = overlay.locator('[data-testid="pc-field:type"]')
         expect(type_select).to_be_visible(timeout=15_000)
+        required_types = ("db", "filesystem", "s3")
+        for provider_type in required_types:
+            expect(
+                type_select.locator(f'option[value="{provider_type}"]')
+            ).to_have_count(1, timeout=15_000)
         options = type_select.locator("option")
-        values = [options.nth(i).get_attribute("value") for i in range(options.count())]
-        assert "db" in values and "filesystem" in values and "s3" in values
+        values = options.evaluate_all("nodes => nodes.map((node) => node.value)")
+        assert set(required_types) <= set(values)
         expect(type_select).not_to_contain_text("not implemented")
 
         type_select.select_option("s3")
