@@ -6,22 +6,26 @@ import asyncio
 import base64
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Request, Security, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
+import primer.api.route_tools as route_tools_module
 from primer.access.acting import acting_as, acting_person
 from primer.access.person import Person
 from primer.auth.tokens import sign_session
 from primer.api.config import AppConfig
-from primer.api.app import create_test_app
+from primer.api.app import create_app, create_test_app
 from primer.api.deps import require_admin, require_user
 from primer.api.errors import register_error_handlers
 from primer.api.middleware.auth import AuthMiddleware
@@ -585,6 +589,298 @@ async def test_create_test_app_replaces_its_generated_providers_on_reused_regist
     assert fake_provider_registry._generated_api_toolset_ids == set(  # noqa: SLF001
         second_app.state.generated_route_toolsets.providers
     )
+
+
+def test_independent_app_factories_compile_one_route_contract_without_sharing(
+    monkeypatch,
+    fake_storage_provider,
+    fake_provider_registry,
+) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    original_openapi = FastAPI.openapi
+    openapi_calls = 0
+
+    def counted_openapi(app: FastAPI):
+        nonlocal openapi_calls
+        openapi_calls += 1
+        return original_openapi(app)
+
+    monkeypatch.setattr(FastAPI, "openapi", counted_openapi)
+    production = create_app(AppConfig())
+    test_app = create_test_app(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+    )
+    second_production = create_app(AppConfig())
+
+    first_snapshot = production.state.generated_route_toolsets
+    second_snapshot = test_app.state.generated_route_toolsets
+    third_snapshot = second_production.state.generated_route_toolsets
+    factory_count = 3
+    operation_id = first_snapshot.operations[0].operation_id
+    first_operation = next(
+        item for item in first_snapshot.operations if item.operation_id == operation_id
+    )
+    second_operation = next(
+        item for item in second_snapshot.operations if item.operation_id == operation_id
+    )
+    third_operation = next(
+        item for item in third_snapshot.operations if item.operation_id == operation_id
+    )
+    provider_id = first_operation.tool.toolset_id
+    tool_id = first_operation.tool.id
+
+    assert openapi_calls == 1
+    assert openapi_calls * 3 <= factory_count
+    assert first_snapshot.providers[provider_id] is not second_snapshot.providers[provider_id]
+    assert first_snapshot.providers[provider_id] is not third_snapshot.providers[provider_id]
+    assert first_operation.tool is not second_operation.tool
+    assert first_operation.tool.args_schema is not second_operation.tool.args_schema
+    assert (
+        first_operation.tool.args_schema["properties"]
+        is not second_operation.tool.args_schema["properties"]
+    )
+    assert (
+        first_snapshot.providers[provider_id]._registry[tool_id][1]  # noqa: SLF001
+        is not second_snapshot.providers[provider_id]._registry[tool_id][1]  # noqa: SLF001
+    )
+
+    first_operation.tool.args_schema["cache_mutation_probe"] = True
+    fourth_app = create_app(AppConfig())
+    fourth_operation = next(
+        item
+        for item in fourth_app.state.generated_route_toolsets.operations
+        if item.operation_id == operation_id
+    )
+    assert "cache_mutation_probe" not in second_operation.tool.args_schema
+    assert "cache_mutation_probe" not in fourth_operation.tool.args_schema
+    assert openapi_calls == 1
+    assert openapi_calls * 4 <= factory_count + 1
+
+
+def test_custom_bound_openapi_methods_are_isolated_by_app_owner() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    router = APIRouter()
+
+    @router.get("/stateful")
+    @route_tool(scoped_id="stateful_openapi__read")
+    async def stateful(value: str) -> dict[str, str]:
+        return {"value": value}
+
+    openapi_calls = 0
+
+    class StatefulOpenapiApp(FastAPI):
+        def openapi(self):
+            nonlocal openapi_calls
+            openapi_calls += 1
+            schema = super().openapi()
+            value_schema = schema["paths"]["/stateful"]["get"]["parameters"][0][
+                "schema"
+            ]
+            value_schema["enum"] = [self.state.schema_marker]
+            return schema
+
+    def app_for(marker: str) -> FastAPI:
+        app = StatefulOpenapiApp()
+        app.state.schema_marker = marker
+        app.include_router(router)
+        return app
+
+    first = build_generated_route_toolsets(app_for("FIRST"))
+    second = build_generated_route_toolsets(app_for("SECOND"))
+
+    assert first.operations[0].tool.args_schema["properties"]["value"]["enum"] == [
+        "FIRST"
+    ]
+    assert second.operations[0].tool.args_schema["properties"]["value"]["enum"] == [
+        "SECOND"
+    ]
+    assert openapi_calls == 2
+
+
+def test_nested_security_scopes_invalidate_the_route_schema_cache() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    oauth = OAuth2PasswordBearer(
+        tokenUrl="/token",
+        scopes={"read": "Read access", "write": "Write access"},
+    )
+
+    def app_for(scope: str) -> FastAPI:
+        app = FastAPI()
+        router = APIRouter()
+
+        async def authorised(
+            _token: str = Security(oauth, scopes=[scope]),
+        ) -> None:
+            return None
+
+        @router.get("/secure", dependencies=[Depends(authorised)])
+        @route_tool(scoped_id="security_scope__read")
+        async def secure() -> dict[str, bool]:
+            return {"ok": True}
+
+        app.include_router(router)
+        return app
+
+    def compiled_schema(app: FastAPI) -> dict:
+        walked = tuple(
+            route_tools_module._walk_api_routes(app.routes)  # noqa: SLF001
+        )
+        return route_tools_module._compiled_route_schema(app, walked)  # noqa: SLF001
+
+    read_schema = compiled_schema(app_for("read"))
+    write_schema = compiled_schema(app_for("write"))
+
+    assert read_schema["paths"]["/secure"]["get"]["security"] == [
+        {"OAuth2PasswordBearer": ["read"]}
+    ]
+    assert write_schema["paths"]["/secure"]["get"]["security"] == [
+        {"OAuth2PasswordBearer": ["write"]}
+    ]
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 2  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_cached_descriptors_still_dispatch_through_the_owning_app() -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    router = APIRouter()
+
+    @router.get("/marker")
+    @route_tool(scoped_id="cache_probe__marker")
+    async def marker(request: Request) -> dict[str, str]:
+        return {"marker": request.app.state.marker}
+
+    def app_for(value: str) -> tuple[FastAPI, object]:
+        app = FastAPI()
+        app.state.marker = value
+        app.include_router(router)
+        return app, build_generated_route_toolsets(app)
+
+    first_app, first_snapshot = app_for("first")
+    second_app, second_snapshot = app_for("second")
+    assert first_app is not second_app
+    assert first_snapshot.providers["cache_probe"] is not second_snapshot.providers["cache_probe"]
+
+    first = await _call(
+        first_snapshot.providers["cache_probe"],
+        "marker",
+        {},
+        Person("alice", "user"),
+    )
+    second = await _call(
+        second_snapshot.providers["cache_probe"],
+        "marker",
+        {},
+        Person("alice", "user"),
+    )
+    assert json.loads(first.output) == {"marker": "first"}
+    assert json.loads(second.output) == {"marker": "second"}
+
+
+def test_route_dependency_and_unique_id_changes_invalidate_compilation(
+    monkeypatch,
+) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    original_openapi = FastAPI.openapi
+    openapi_calls = 0
+
+    def counted_openapi(app: FastAPI):
+        nonlocal openapi_calls
+        openapi_calls += 1
+        return original_openapi(app)
+
+    monkeypatch.setattr(FastAPI, "openapi", counted_openapi)
+    router = APIRouter()
+
+    @router.get("/value")
+    @route_tool(scoped_id="cache_contract__value")
+    async def value(limit: int = 1) -> dict[str, int]:
+        return {"value": limit}
+
+    async def dependency_one() -> None:
+        return None
+
+    async def dependency_two() -> None:
+        return None
+
+    def unique_id_one(_route) -> str:
+        return "cache_contract_v1"
+
+    def unique_id_two(_route) -> str:
+        return "cache_contract_v2"
+
+    def compile_app(
+        *,
+        prefix: str = "/first",
+        dependency=None,
+        unique_id_function=unique_id_one,
+    ):
+        app = FastAPI(generate_unique_id_function=unique_id_function)
+        dependencies = [Depends(dependency)] if dependency is not None else []
+        app.include_router(router, prefix=prefix, dependencies=dependencies)
+        return build_generated_route_toolsets(app)
+
+    first = compile_app()
+    compile_app()
+    compile_app(prefix="/changed")
+    compile_app(dependency=dependency_one)
+    compile_app(dependency=dependency_two)
+    assert openapi_calls == 4
+
+    changed_id = compile_app(unique_id_function=unique_id_two)
+    assert first.operations[0].operation_id == "cache_contract_v1"
+    assert changed_id.operations[0].operation_id == "cache_contract_v2"
+    assert openapi_calls == 5
+
+
+def test_concurrent_compilation_misses_publish_one_template(monkeypatch) -> None:
+    route_tools_module._clear_compiled_route_tool_cache()  # noqa: SLF001
+    router = APIRouter()
+
+    @router.get("/value")
+    @route_tool(scoped_id="concurrent_cache__value")
+    async def value() -> dict[str, int]:
+        return {"value": 1}
+
+    apps = [FastAPI(), FastAPI()]
+    for app in apps:
+        app.include_router(router)
+    walked = [
+        tuple(route_tools_module._walk_api_routes(app.routes))  # noqa: SLF001
+        for app in apps
+    ]
+    original_compile = route_tools_module._compile_route_schema  # noqa: SLF001
+    barrier = threading.Barrier(2)
+    candidates = []
+    candidates_lock = threading.Lock()
+
+    def racing_compile(app, routes):
+        candidate = original_compile(app, routes)
+        with candidates_lock:
+            candidates.append(candidate)
+        barrier.wait(timeout=10)
+        return candidate
+
+    monkeypatch.setattr(
+        route_tools_module,
+        "_compile_route_schema",
+        racing_compile,
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(route_tools_module._compiled_route_schema, app, routes)  # noqa: SLF001
+            for app, routes in zip(apps, walked, strict=True)
+        ]
+        published = [future.result(timeout=15) for future in futures]
+
+    assert len(candidates) == 2
+    assert published[0] == published[1]
+    assert published[0] is not published[1]
+    assert len(route_tools_module._COMPILED_ROUTE_CONTRACTS) == 1  # noqa: SLF001
+    published_template = next(  # noqa: SLF001
+        iter(route_tools_module._COMPILED_ROUTE_CONTRACTS.values())
+    )
+    assert sum(published_template is candidate for candidate in candidates) == 1
 
 
 def test_generated_provider_reinstall_keeps_fixed_and_foreign_collisions_hard() -> None:

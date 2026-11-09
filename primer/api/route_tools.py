@@ -15,12 +15,14 @@ import binascii
 import json
 import logging
 import re
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, get_args, get_origin
 from urllib.parse import quote
 
 import httpx
@@ -50,6 +52,7 @@ _DISPATCH_DEPTH: ContextVar[int] = ContextVar("primer_route_tool_dispatch_depth"
 _DISPATCH_TIMEOUT_S = 30.0
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_LOCAL_REF_DEPTH = 64
+_COMPILED_ROUTE_CONTRACT_CACHE_SIZE = 8
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -841,6 +844,271 @@ def _walk_api_routes(
     return walked
 
 
+class _IdentityKey:
+    """Hash an otherwise mutable contract object strictly by identity."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __hash__(self) -> int:
+        return id(self.value)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _IdentityKey) and self.value is other.value
+
+
+@dataclass(frozen=True)
+class _RouteCompilationKey:
+    """The stable source-route contract that controls generated descriptors.
+
+    Prefixes, parameter/dependency shapes and unique-id generation remain per
+    inclusion, so they are part of the key. Code objects and schema callables
+    use identity wrappers: this avoids hashing mutable internals and prevents
+    an object id from being reused while its bounded cache entry is live.
+    """
+
+    routes: tuple[tuple[Any, ...], ...]
+    webhook_routes: tuple[_IdentityKey, ...]
+    openapi_function: tuple[_IdentityKey, ...]
+    openapi_schema: _IdentityKey | None
+    openapi_version: str
+    separate_input_output_schemas: bool
+    unique_id_function: _IdentityKey
+
+
+@dataclass(frozen=True)
+class _CompiledRouteSchema:
+    """Serialized OpenAPI paths/components detached from every application."""
+
+    encoded: bytes
+
+
+_COMPILED_ROUTE_CONTRACTS: OrderedDict[
+    _RouteCompilationKey, _CompiledRouteSchema
+] = OrderedDict()
+_COMPILED_ROUTE_CONTRACTS_LOCK = threading.Lock()
+
+
+def _openapi_callable_contract(app: FastAPI) -> tuple[_IdentityKey, ...]:
+    value = app.openapi
+    owner = getattr(value, "__self__", None)
+    function = getattr(value, "__func__", None)
+    if owner is app and function is FastAPI.openapi:
+        return (_IdentityKey(function),)
+    return (
+        _IdentityKey(app),
+        _IdentityKey(function if function is not None else value),
+    )
+
+
+def _callable_contract(value: Callable[..., Any] | None) -> _IdentityKey:
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    return _IdentityKey(code if code is not None else function)
+
+
+def _dependency_contract(dependency: Any) -> tuple[Any, ...]:
+    call = getattr(dependency, "dependency", None)
+    scopes = getattr(dependency, "scopes", ()) or ()
+    return (
+        _callable_contract(call),
+        bool(getattr(dependency, "use_cache", True)),
+        getattr(dependency, "scope", None),
+        tuple(scopes),
+    )
+
+
+def _type_contract(value: Any) -> Any:
+    origin = get_origin(value)
+    if origin is not None:
+        return (
+            _IdentityKey(origin),
+            tuple(_type_contract(argument) for argument in get_args(value)),
+        )
+    if isinstance(value, type):
+        return _IdentityKey(value)
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    return repr(value)
+
+
+def _value_contract(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return tuple(
+            (str(key), _value_contract(item))
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_value_contract(item) for item in value)
+    if get_origin(value) is not None or isinstance(value, type):
+        return _type_contract(value)
+    if callable(value):
+        return _callable_contract(value)
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    return repr(value)
+
+
+def _field_contract(field: Any) -> tuple[str, str | None, Any, str]:
+    adapter = getattr(field, "_type_adapter", None)
+    return (
+        str(getattr(field, "name", "")),
+        getattr(field, "mode", None),
+        _type_contract(getattr(adapter, "_type", None)),
+        repr(adapter),
+    )
+
+
+def _dependant_contract(dependant: Any) -> tuple[Any, ...]:
+    fields = tuple(
+        (
+            location,
+            *(_field_contract(field)),
+        )
+        for location in (
+            "path_params",
+            "query_params",
+            "header_params",
+            "cookie_params",
+            "body_params",
+        )
+        for field in getattr(dependant, location, ())
+    )
+    return (
+        _callable_contract(getattr(dependant, "call", None)),
+        fields,
+        _value_contract(getattr(dependant, "own_oauth_scopes", None)),
+        _value_contract(getattr(dependant, "parent_oauth_scopes", None)),
+        _value_contract(getattr(dependant, "security_scopes", None)),
+        _value_contract(getattr(dependant, "security_requirements", None)),
+        getattr(dependant, "security_scopes_param_name", None),
+        bool(getattr(dependant, "use_cache", True)),
+        getattr(dependant, "scope", None),
+        tuple(
+            _dependant_contract(child)
+            for child in getattr(dependant, "dependencies", ())
+        ),
+    )
+
+
+def _route_compilation_key(
+    app: FastAPI,
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+) -> _RouteCompilationKey:
+    route_contracts = tuple(
+        (
+            full_path,
+            route.include_in_schema,
+            tuple(sorted((route.methods or set()) & _HTTP_METHODS)),
+            route.unique_id,
+            _callable_contract(route.endpoint),
+            route.operation_id,
+            route.name,
+            route.summary,
+            route.description,
+            route.response_description,
+            route.status_code,
+            _type_contract(route.response_model),
+            route.response_model_by_alias,
+            _value_contract(route.response_model_include),
+            _value_contract(route.response_model_exclude),
+            route.response_model_exclude_unset,
+            route.response_model_exclude_defaults,
+            route.response_model_exclude_none,
+            _value_contract(route.response_class),
+            tuple(route.tags or ()),
+            _value_contract(route.responses),
+            tuple(_IdentityKey(callback) for callback in route.callbacks),
+            route.deprecated,
+            _value_contract(route.openapi_extra),
+            _dependant_contract(route.dependant),
+            route_tool_metadata(route.endpoint),
+            tuple(
+                _dependency_contract(dependency)
+                for dependency in inherited_dependencies
+            ),
+        )
+        for full_path, route, inherited_dependencies in walked_routes
+        if route.include_in_schema
+    )
+    openapi_schema = getattr(app, "openapi_schema", None)
+    unique_id_function = getattr(
+        app.router,
+        "generate_unique_id_function",
+        None,
+    )
+    return _RouteCompilationKey(
+        routes=route_contracts,
+        webhook_routes=tuple(
+            _IdentityKey(route)
+            for route in getattr(app.webhooks, "routes", ())
+            if getattr(route, "include_in_schema", True)
+        ),
+        openapi_function=_openapi_callable_contract(app),
+        openapi_schema=(
+            _IdentityKey(openapi_schema) if openapi_schema is not None else None
+        ),
+        openapi_version=str(app.openapi_version),
+        separate_input_output_schemas=bool(app.separate_input_output_schemas),
+        unique_id_function=_IdentityKey(unique_id_function),
+    )
+
+
+def _compile_route_schema(
+    app: FastAPI,
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+) -> _CompiledRouteSchema:
+    del walked_routes  # The already-derived key owns the route contract.
+    schema = app.openapi()
+    return _CompiledRouteSchema(
+        encoded=json.dumps(
+            {
+                "components": schema.get("components") or {},
+                "paths": schema.get("paths") or {},
+            },
+            separators=(",", ":"),
+        ).encode(),
+    )
+
+
+def _compiled_route_schema(
+    app: FastAPI,
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+) -> dict[str, Any]:
+    key = _route_compilation_key(app, walked_routes)
+    with _COMPILED_ROUTE_CONTRACTS_LOCK:
+        cached = _COMPILED_ROUTE_CONTRACTS.get(key)
+        if cached is not None:
+            _COMPILED_ROUTE_CONTRACTS.move_to_end(key)
+            encoded = cached.encoded
+        else:
+            encoded = None
+    if encoded is not None:
+        return json.loads(encoded)
+
+    compiled = _compile_route_schema(app, walked_routes)
+    with _COMPILED_ROUTE_CONTRACTS_LOCK:
+        existing = _COMPILED_ROUTE_CONTRACTS.get(key)
+        if existing is not None:
+            _COMPILED_ROUTE_CONTRACTS.move_to_end(key)
+            published = existing
+        else:
+            _COMPILED_ROUTE_CONTRACTS[key] = compiled
+            while len(_COMPILED_ROUTE_CONTRACTS) > _COMPILED_ROUTE_CONTRACT_CACHE_SIZE:
+                _COMPILED_ROUTE_CONTRACTS.popitem(last=False)
+            published = compiled
+    return json.loads(published.encoded)
+
+
+def _clear_compiled_route_tool_cache() -> None:
+    """Reset the bounded process cache for focused cache-contract tests."""
+
+    with _COMPILED_ROUTE_CONTRACTS_LOCK:
+        _COMPILED_ROUTE_CONTRACTS.clear()
+
+
 def build_generated_route_toolsets(
     app: FastAPI,
     *,
@@ -855,7 +1123,8 @@ def build_generated_route_toolsets(
         return cached
 
     _install_generated_stream_cleanup(app.routes)
-    schema = app.openapi()
+    walked_routes = tuple(_walk_api_routes(app.routes))
+    schema = _compiled_route_schema(app, walked_routes)
     components = schema.get("components") or {}
     by_path_method = {
         (path, method.upper()): operation
@@ -867,7 +1136,7 @@ def build_generated_route_toolsets(
     provider_registries: dict[str, dict[str, tuple[Tool, Callable[..., Any]]]] = {}
     seen_operations: set[str] = set()
 
-    for full_path, route, inherited_dependencies in _walk_api_routes(app.routes):
+    for full_path, route, inherited_dependencies in walked_routes:
         if not route.include_in_schema:
             continue
         for method in sorted((route.methods or set()) & _HTTP_METHODS):
