@@ -39,7 +39,15 @@ _KINDS = (
 )
 
 infra_access_routers: list[APIRouter] = [
-    make_access_router(model_cls=model, plural=plural, storage_dep=dep, tag=plural, use_only=True) for model, plural, dep in _KINDS
+    make_access_router(
+        model_cls=model,
+        plural=plural,
+        storage_dep=dep,
+        tag=plural,
+        use_only=True,
+        tool_resource_id=plural,
+    )
+    for model, plural, dep in _KINDS
 ]
 
 __all__ = ["infra_access_routers"]

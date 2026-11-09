@@ -11,6 +11,8 @@ tries to share one helper between them gets one of the two wrong.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 from typing import Any
 
@@ -88,6 +90,7 @@ async def _stt_context(request: Request):
         "speech-to-text provider. Multipart in, JSON out."
     ),
 )
+@route_tool(scoped_id="audio__transcribe_audio")
 async def transcribe_audio(
     request: Request,
     file: UploadFile = File(..., description="Audio segment to transcribe."),
@@ -195,6 +198,7 @@ async def _resolve_voice(request: Request, body: _SpeechBody, row) -> str | None
         "JSON in, chunked audio out as it is synthesised."
     ),
 )
+@route_tool(scoped_id="audio__synthesize_speech")
 async def synthesize_speech(
     request: Request, body: _SpeechBody,
 ) -> StreamingResponse:
@@ -296,6 +300,7 @@ async def _probe(coro_factory, row) -> list[str]:
         "family. Feeds the catalog's model pickers."
     ),
 )
+@route_tool(scoped_id="audio__list_audio_models")
 async def list_audio_models(request: Request) -> dict[str, list[str]]:
     active = await read_active_speech_config(request)
     out: dict[str, list[str]] = {"stt": [], "tts": []}
@@ -318,6 +323,7 @@ async def list_audio_models(request: Request) -> dict[str, list[str]]:
         "active provider; pass provider_id to inspect another row."
     ),
 )
+@route_tool(scoped_id="audio__list_audio_voices")
 async def list_audio_voices(
     request: Request,
     provider_id: str | None = Query(default=None),

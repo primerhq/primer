@@ -17,6 +17,8 @@ it never overwrites a row that a result or a cancel already resolved.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from datetime import UTC, datetime
 from typing import Any
 
@@ -128,6 +130,7 @@ async def _pending_for(storage, *, field: str, value: str, sessions, engine) -> 
     summary="Pending external tool calls for one session",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="external_tools__session_pending")
 async def session_pending(
     request: Request,
     session_id: str = Path(...),
@@ -150,6 +153,7 @@ async def session_pending(
     summary="Global external tool call list (audit + orchestrator poll)",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="external_tools__list_external_tool_calls")
 async def list_external_tool_calls(
     request: Request,
     status: str | None = Query(default=None),

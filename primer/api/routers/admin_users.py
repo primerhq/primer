@@ -48,6 +48,8 @@ effect that this rewrite needs to preserve.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 import re
 import secrets
@@ -301,6 +303,7 @@ def _generate_password() -> str:
     status_code=status.HTTP_201_CREATED,
     summary="Provision a user account",
 )
+@route_tool(scoped_id="admin_users__create_admin_user")
 async def create_admin_user(
     body: AdminUserCreateBody,
     storage=Depends(get_user_storage),
@@ -349,6 +352,7 @@ async def create_admin_user(
     response_model=AdminUserListResponse,
     summary="List user accounts",
 )
+@route_tool(scoped_id="admin_users__list_admin_users")
 async def list_admin_users(
     storage=Depends(get_user_storage),
 ) -> AdminUserListResponse:
@@ -368,6 +372,7 @@ async def list_admin_users(
     response_model=AdminUserOut,
     summary="Get a user account by id",
 )
+@route_tool(scoped_id="admin_users__get_admin_user")
 async def get_admin_user(
     user_id: str = Path(..., description="User id."),
     storage=Depends(get_user_storage),
@@ -381,6 +386,7 @@ async def get_admin_user(
     response_model=AdminUserOut,
     summary="Update a user account (partial)",
 )
+@route_tool(scoped_id="admin_users__update_admin_user")
 async def update_admin_user(
     body: AdminUserUpdateBody,
     request: Request,
@@ -443,6 +449,7 @@ async def update_admin_user(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a user account",
 )
+@route_tool(scoped_id="admin_users__delete_admin_user")
 async def delete_admin_user(
     request: Request,
     user_id: str = Path(..., description="User id."),

@@ -32,6 +32,8 @@ routes and the subsystem behind them were removed (D18).
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 from datetime import datetime, timezone
 from typing import Literal
@@ -119,6 +121,7 @@ class InternalCollectionsConfigBody(BaseModel):
     response_model=InternalCollectionsConfig,
     responses=common_responses(404, 422, 500),
 )
+@route_tool(scoped_id="internal_collections__put_config")
 async def put_config(
     request: Request,
     body: InternalCollectionsConfigBody,
@@ -201,6 +204,7 @@ class InternalCollectionsNotConfigured(BaseModel):
     response_model=InternalCollectionsConfig | InternalCollectionsNotConfigured,
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="internal_collections__get_config")
 async def get_config(
     allow_missing: bool = Query(
         default=False,
@@ -229,6 +233,7 @@ async def get_config(
     status_code=status.HTTP_204_NO_CONTENT,
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="internal_collections__delete_config")
 async def delete_config(
     request: Request,
     storage=Depends(get_internal_collections_config_storage),
@@ -331,6 +336,7 @@ async def _upsert_status(
     summary="Start (or restart) the bootstrap pipeline",
     responses=common_responses(404, 409, 500),
 )
+@route_tool(scoped_id="internal_collections__bootstrap")
 async def bootstrap(
     request: Request,
     config_storage=Depends(get_internal_collections_config_storage),
@@ -393,6 +399,7 @@ async def bootstrap(
     summary="Current bootstrap progress / lifecycle state",
     responses=common_responses(500),
 )
+@route_tool(scoped_id="internal_collections__bootstrap_status")
 async def bootstrap_status(
     request: Request,
     status_storage=Depends(get_internal_collections_bootstrap_status_storage),

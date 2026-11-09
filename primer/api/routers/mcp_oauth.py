@@ -15,6 +15,8 @@ the popup the Connect button opened), which carries a ``Lax`` cookie even across
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import secrets
 from urllib.parse import quote, urlsplit
 
@@ -105,6 +107,7 @@ def console_return_url(toolset_id: str, outcome: str, code: str | None = None) -
     response_model=SignInStart,
     responses=common_responses(400, 403, 404, 409, 500, 502, 504),
 )
+@route_tool(scoped_id="toolset_oauth__start_toolset_sign_in")
 async def start_toolset_sign_in(
     request: Request,
     response: Response,
@@ -144,6 +147,7 @@ async def start_toolset_sign_in(
     "/toolsets/{toolset_id}/oauth/callback",
     responses=common_responses(400, 500, 502, 504),
 )
+@route_tool(scoped_id="toolset_oauth__complete_toolset_sign_in")
 async def complete_toolset_sign_in(
     request: Request,
     toolset_id: str = Path(...),
@@ -204,6 +208,7 @@ async def complete_toolset_sign_in(
     response_model=ToolsetAuthStatus,
     responses=common_responses(403, 404, 500),
 )
+@route_tool(scoped_id="toolset_oauth__toolset_sign_in_status")
 async def toolset_sign_in_status(
     request: Request,
     toolset_id: str = Path(...),
@@ -230,6 +235,7 @@ async def toolset_sign_in_status(
     response_model=ToolsetAuthStatus,
     responses=common_responses(403, 404, 500, 502, 504),
 )
+@route_tool(scoped_id="toolset_oauth__disconnect_toolset_sign_in")
 async def disconnect_toolset_sign_in(
     request: Request,
     toolset_id: str = Path(...),

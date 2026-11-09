@@ -7,6 +7,8 @@ workspace shell (capability-aware states).
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -58,6 +60,7 @@ async def _any_row(storage) -> bool:
 
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
+@route_tool(scoped_id="capabilities__get_capabilities")
 async def get_capabilities(request: Request) -> CapabilitiesResponse:
     extras: dict[str, ExtraStatus] = {}
     for extra in sorted(EXTRA_MODULES):

@@ -28,6 +28,8 @@ router so the rejection codes stay symmetric.
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -85,6 +87,7 @@ class UpdateExposureBody(BaseModel):
 
 
 @mcp_exposure_router.get("")
+@route_tool(scoped_id="mcp__get_exposure")
 async def get_exposure_endpoint(
     request: Request,
     storage_provider=Depends(get_storage_provider),
@@ -101,6 +104,7 @@ async def get_exposure_endpoint(
 
 
 @mcp_exposure_router.put("", dependencies=[Depends(require_admin)])
+@route_tool(scoped_id="mcp__update_exposure")
 async def update_exposure_endpoint(
     request: Request,
     body: UpdateExposureBody,
@@ -149,6 +153,7 @@ async def update_exposure_endpoint(
 
 
 @mcp_exposure_router.get("/available")
+@route_tool(scoped_id="mcp__available_tools")
 async def available_tools_endpoint(
     request: Request,
     storage_provider=Depends(get_storage_provider),

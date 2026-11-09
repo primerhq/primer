@@ -8,6 +8,8 @@ default provider, and the ``GET /_types`` helper every provider class serves
 
 from __future__ import annotations
 
+from primer.api.route_tools import CrudToolDeclaration, route_tool
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -141,6 +143,7 @@ def _provider_storage(request: Request):
     responses=common_responses(500),
     summary="Test a draft artifact-storage provider with a live round trip.",
 )
+@route_tool(scoped_id="artifact_storage_providers__test_artifact_storage_draft")
 async def test_artifact_storage_draft(
     body: _ArtifactStorageDraft,
     request: Request,
@@ -173,6 +176,7 @@ async def test_artifact_storage_draft(
     responses=common_responses(404, 500),
     summary="Test a saved artifact-storage provider with a live round trip.",
 )
+@route_tool(scoped_id="artifact_storage_providers__test_saved_artifact_storage_provider")
 async def test_saved_artifact_storage_provider(
     provider_id: str,
     request: Request,
@@ -194,6 +198,7 @@ async def test_saved_artifact_storage_provider(
     "/artifact_storage_providers/_types",
     summary="Provider-type metadata for the catalog's artifact-storage form.",
 )
+@route_tool(scoped_id="artifact_storage_providers__list_artifact_storage_types")
 async def list_artifact_storage_types() -> dict[str, dict[str, Any]]:
     return {
         "db": {
@@ -238,6 +243,7 @@ artifact_storage_router = make_crud_router(
     model_cls=ArtifactStorageProvider,
     storage_dep=get_artifact_storage_provider_storage,
     plural="artifact_storage_providers",
+    tool_declaration=CrudToolDeclaration(resource_id="artifact_storage_providers", generated_operations=frozenset({"find"})),
     tag="artifact-storage-providers",
     on_update=_on_update,
     on_delete=_on_update,
@@ -273,6 +279,7 @@ async def get_active_artifact_storage_config(request: Request) -> ActiveArtifact
     responses=common_responses(409, 422, 500),
     summary="Select the artifact store used for new writes.",
 )
+@route_tool(scoped_id="artifact_storage_providers__put_active_artifact_storage_config")
 async def put_active_artifact_storage_config(
     body: _ActiveArtifactStoragePutBody,
     request: Request,

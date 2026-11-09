@@ -5,6 +5,8 @@ Thin routes over :mod:`primer.access.service`; the system tools call the same se
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -49,6 +51,7 @@ def make_access_router(
     allow_public_tools: bool = False,
     after_write: Callable[[Request, Any], Awaitable[None]] | None = None,
     use_only: bool = False,
+    tool_resource_id: str,
 ) -> APIRouter:
     """``GET`` / ``PUT /{plural}/{entity_id}/access`` for an owned model. Include it BEFORE the model's CRUD router.
 
@@ -65,6 +68,7 @@ def make_access_router(
         summary=f"Who {name} is shared with",
         responses=common_responses(404, 500),
     )
+    @route_tool(resource_id=tool_resource_id, tool_id="get_access")
     async def _get_access(
         request: Request,
         entity_id: str = Path(..., description="Entity id."),
@@ -81,6 +85,7 @@ def make_access_router(
         summary=f"Change who {name} is shared with (owners only)",
         responses=common_responses(403, 404, 409, 422, 500),
     )
+    @route_tool(resource_id=tool_resource_id, tool_id="put_access")
     async def _put_access(
         request: Request,
         entity_id: str = Path(..., description="Entity id."),
@@ -113,6 +118,7 @@ users_lookup_router = APIRouter(tags=["users"])
     summary="Find users to share with by username prefix, or name the ids the console's badges show",
     responses=common_responses(403, 422, 500),
 )
+@route_tool(scoped_id="users__lookup_users")
 async def _lookup_users(
     request: Request,
     q: str = Query(default="", max_length=64, description="Username prefix, case-insensitive."),

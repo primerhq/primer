@@ -115,13 +115,16 @@ async def test_all_tools_carries_the_interruptible_flag(client):
 async def test_builtin_toolsets_lists_every_toolset_an_agent_can_bind(client):
     r = await client.get("/v1/toolsets/builtin")
     assert r.status_code == 200, r.text
-    assert [it["id"] for it in r.json()["items"]] == BUILTIN_IDS
+    ids = [it["id"] for it in r.json()["items"]]
+    assert ids[: len(BUILTIN_IDS)] == BUILTIN_IDS
+    assert ids[len(BUILTIN_IDS) :] == sorted(set(RESERVED_TOOLSET_IDS) - set(BUILTIN_IDS))
 
 
 def test_the_catalogue_is_exactly_the_reserved_toolset_ids():
     ids = [spec["id"] for spec in providers._BUILTIN_TOOLSETS]
     assert len(ids) == len(set(ids)) == 10
-    assert set(ids) == RESERVED_TOOLSET_IDS
+    assert set(ids) < set(RESERVED_TOOLSET_IDS)
+    assert {spec["id"] for spec in providers._all_builtin_toolsets()} == set(RESERVED_TOOLSET_IDS)
 
 
 @pytest.mark.asyncio

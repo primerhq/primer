@@ -39,6 +39,8 @@ mapping covers the cases the service layer reports:
 
 from __future__ import annotations
 
+from primer.api.route_tools import route_tool
+
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -103,6 +105,7 @@ def _trigger_storage(request: Request):
 # GET/PUT /triggers/{id}/access; mounted under /v1 before ``triggers_router`` (the route-order rule of _crud.py).
 trigger_access_router = make_access_router(
     model_cls=Trigger, plural="triggers", storage_dep=_trigger_storage, tag="triggers",
+    tool_resource_id="triggers",
 )
 
 
@@ -352,6 +355,7 @@ async def delete_trigger_endpoint(
     "/{trigger_id}/rotate_token",
     summary="Rotate the webhook token for a webhook trigger",
 )
+@route_tool(scoped_id="triggers__rotate_token")
 async def rotate_token_endpoint(
     request: Request,
     trigger_id: str = Path(...),

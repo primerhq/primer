@@ -19,6 +19,9 @@ already supports out of the box.
 
 from __future__ import annotations
 
+from primer.api.route_tools import CrudToolDeclaration, route_tool
+from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS
+
 import logging
 
 import re
@@ -156,6 +159,14 @@ agent_access_router = make_access_router(
     plural="agents",
     storage_dep=get_agent_storage,
     tag="agents",
+    tool_resource_id="agents",
+)
+
+
+AGENT_ROUTE_TOOLS = CrudToolDeclaration(
+    resource_id="agents",
+    generated_operations=frozenset({"find"}),
+    guards=AGENT_GUARDS,
 )
 
 
@@ -163,6 +174,7 @@ agent_router = make_crud_router(
     model_cls=Agent,
     storage_dep=get_agent_storage,
     plural="agents",
+    tool_declaration=AGENT_ROUTE_TOOLS,
     tag="agents",
     cdc_kind="agent",
     managed_by_field="harness_id",
@@ -183,6 +195,7 @@ agent_router = make_crud_router(
     summary="Validate the agent's external references",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="agents__agent_status")
 async def agent_status(
     request: Request,
     agent_id: str = Path(..., description="Agent id"),
@@ -323,6 +336,14 @@ graph_access_router = make_access_router(
     plural="graphs",
     storage_dep=get_graph_storage,
     tag="graphs",
+    tool_resource_id="graphs",
+)
+
+
+GRAPH_ROUTE_TOOLS = CrudToolDeclaration(
+    resource_id="graphs",
+    generated_operations=frozenset({"find"}),
+    guards=GRAPH_GUARDS,
 )
 
 
@@ -330,6 +351,7 @@ graph_router = make_crud_router(
     model_cls=Graph,
     storage_dep=get_graph_storage,
     plural="graphs",
+    tool_declaration=GRAPH_ROUTE_TOOLS,
     tag="graphs",
     cdc_kind="graph",
     managed_by_field="harness_id",
@@ -348,6 +370,7 @@ graph_router = make_crud_router(
     summary="Validate the graph's external references",
     responses=common_responses(404, 500, 503),
 )
+@route_tool(scoped_id="graphs__graph_status")
 async def graph_status(
     request: Request,
     graph_id: str = Path(..., description="Graph id"),
@@ -392,6 +415,7 @@ async def graph_status(
     summary="Read graph-level turn log (superstep events)",
     responses=common_responses(404, 500, 503),
 )
+@route_tool(scoped_id="graphs__get_graph_run_turn_log")
 async def get_graph_run_turn_log(
     request: Request,
     graph_id: str = Path(..., description="Graph id"),
@@ -438,6 +462,7 @@ async def get_graph_run_turn_log(
     summary="Read a single node's turn log within a graph run",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="graphs__get_graph_node_turn_log")
 async def get_graph_node_turn_log(
     request: Request,
     graph_id: str = Path(..., description="Graph id"),
@@ -522,6 +547,7 @@ class _NodeStateOut(BaseModel):
     summary="Per-node runtime status snapshot for a graph run",
     responses=common_responses(404, 500),
 )
+@route_tool(scoped_id="graphs__get_graph_run_node_states")
 async def get_graph_run_node_states(
     request: Request,
     graph_id: str = Path(..., description="Graph id"),
