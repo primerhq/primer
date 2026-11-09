@@ -643,11 +643,26 @@ async def test_a_queued_steer_committed_after_checkpoint_is_realized_after_relea
     assert row.status == SessionStatus.WAITING and row.turn_status == "idle"
     assert not has_open_turn(world.ws.lines(), cursor=0), "the terminal checkpoint has completed"
     await _store_pending(world, "second")
+    real_upsert = world.engine.upsert
+    rearm_attempts = 0
+    rearmed = asyncio.Event()
+
+    async def observe_rearm(*args, **kwargs):
+        nonlocal rearm_attempts
+        await real_upsert(*args, **kwargs)
+        rearm_attempts += 1
+        if rearm_attempts == 2:
+            # The first upsert is wake_session promoting the queue head; the
+            # second is wrapper-finally's fresh-lease repair after that wake.
+            rearmed.set()
+
+    world.engine.upsert = observe_rearm  # type: ignore[method-assign]
 
     world.allow_release.set()
-    await _until(lambda: not pool._in_flight, "the old execution slot never closed")
+    await asyncio.wait_for(rearmed.wait(), 5.0)
 
     row = await world.row()
+    assert rearm_attempts == 2
     assert row.turn_status == "claimable", (
         "post-release recovery did not realize the queued head"
     )
@@ -681,17 +696,22 @@ async def test_the_sweep_immediately_repairs_a_post_release_wake_whose_claim_ups
     await _store_pending(world, "second")
     real_upsert = world.engine.upsert
     failures = 0
+    recovery_failed = asyncio.Event()
 
     async def fail_twice(*args, **kwargs):
         nonlocal failures
         if failures < 2:
             failures += 1
+            if failures == 2:
+                # At this boundary wake_session has durably promoted the
+                # queue head and wrapper-finally has attempted its repair.
+                recovery_failed.set()
             raise ConnectionError("the lease upsert lost its connection")
         await real_upsert(*args, **kwargs)
 
     world.engine.upsert = fail_twice  # type: ignore[method-assign]
     world.allow_release.set()
-    await _until(lambda: not pool._in_flight, "the old execution slot never closed")
+    await asyncio.wait_for(recovery_failed.wait(), 5.0)
 
     row = await world.row()
     assert failures == 2 and row.turn_status == "claimable"
