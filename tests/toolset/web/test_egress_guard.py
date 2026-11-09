@@ -143,9 +143,7 @@ def test_app_config_egress_allow_defaults_empty_and_validates():
 
 
 async def test_lifespan_installs_the_configured_allowlist(tmp_path, monkeypatch):
-    from fastapi import FastAPI
-
-    from primer.api.app import _make_lifespan
+    from primer.api.app import create_app
     from primer.api.config import AppConfig
     from primer.common import netguard
     from primer.common.netguard import EgressRefused
@@ -159,7 +157,7 @@ async def test_lifespan_installs_the_configured_allowlist(tmp_path, monkeypatch)
         auto_bootstrap=False,
         egress_allow=["127.0.0.1/32"],
     )
-    app = FastAPI(lifespan=_make_lifespan(cfg))
+    app = create_app(cfg)
     async with app.router.lifespan_context(app):
         assert await netguard.vet_host("127.0.0.1", 80) == ["127.0.0.1"]
 

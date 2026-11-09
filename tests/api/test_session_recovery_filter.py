@@ -27,9 +27,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 
-from primer.api.app import _build_storage_provider, _make_lifespan
+from primer.api.app import _build_storage_provider, create_app
 from primer.api.config import AppConfig
 from primer.model.provider import (
     SqliteConfig,
@@ -231,7 +230,7 @@ class TestBootRecovery:
             "primer.api.app._build_storage_provider", lambda cfg: probe_provider,
         )
 
-        app = FastAPI(lifespan=_make_lifespan(_boot_app_config(db_path)))
+        app = create_app(_boot_app_config(db_path))
         async with app.router.lifespan_context(app):
             pass
 
@@ -252,7 +251,7 @@ class TestBootRecovery:
         db_path = tmp_path / "recovery2.sqlite"
         await _seed_boot_matrix(db_path)
 
-        app = FastAPI(lifespan=_make_lifespan(_boot_app_config(db_path)))
+        app = create_app(_boot_app_config(db_path))
         async with app.router.lifespan_context(app):
             engine = app.state.claim_engine
             from primer.int.claim import ClaimKind
