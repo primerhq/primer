@@ -54,6 +54,7 @@ _DISPATCH_TIMEOUT_S = 30.0
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_LOCAL_REF_DEPTH = 64
 _COMPILED_ROUTE_CONTRACT_CACHE_SIZE = 8
+_STABLE_ROUTE_PART_CACHE_SIZE = 4_096
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -883,16 +884,57 @@ class _RouteCompilationKey:
 
 
 @dataclass(frozen=True)
+class _StableRoutePartKey:
+    """Identity guard for one immutable source route declaration."""
+
+    full_path: str
+    endpoint: _IdentityKey
+    inherited_dependencies: tuple[tuple[Any, ...], ...]
+
+
+@dataclass(frozen=True)
+class _GeneratedRouteToolBlueprint:
+    """App-independent descriptor data with its mutable schema serialized."""
+
+    operation_id: str
+    method: str
+    path: str
+    metadata: RouteToolMetadata
+    bindings: tuple[_ArgumentBinding, ...]
+    tool_id: str
+    toolset_id: str
+    description: str
+    args_schema_encoded: bytes
+    yields: bool
+    requires_workspace: bool
+    required_role: str | None
+    tool_class: Literal["standard", "notifying"]
+    interruptible: bool
+    read_only: bool
+    preview_args: tuple[str, ...] | None
+    preview_lead: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
 class _CompiledRouteSchema:
-    """Serialized OpenAPI paths/components detached from every application."""
+    """App-free schema and optional immutable generated-tool blueprints."""
 
     encoded: bytes
+    blueprints: tuple[_GeneratedRouteToolBlueprint, ...] | None = None
 
 
 _COMPILED_ROUTE_CONTRACTS: OrderedDict[
     _RouteCompilationKey, _CompiledRouteSchema
 ] = OrderedDict()
-_COMPILED_ROUTE_CONTRACTS_LOCK = threading.Lock()
+_STABLE_ROUTE_CONTRACT_PARTS: OrderedDict[
+    int,
+    tuple[
+        weakref.ReferenceType[APIRoute],
+        dict[_StableRoutePartKey, tuple[Any, ...]],
+    ],
+] = OrderedDict()
+# A weak-route cleanup can run during an allocation made under this lock.
+_COMPILED_ROUTE_CONTRACTS_LOCK = threading.RLock()
 
 
 def _openapi_callable_contract(app: FastAPI) -> tuple[_IdentityKey, ...]:
@@ -997,42 +1039,120 @@ def _dependant_contract(dependant: Any) -> tuple[Any, ...]:
     )
 
 
-def _route_compilation_key(
+def _route_contract_part(
+    full_path: str,
+    route: APIRoute,
+    inherited_dependency_contracts: tuple[tuple[Any, ...], ...],
+) -> tuple[Any, ...]:
+    return (
+        full_path,
+        route.include_in_schema,
+        tuple(sorted((route.methods or set()) & _HTTP_METHODS)),
+        route.unique_id,
+        _callable_contract(route.endpoint),
+        route.operation_id,
+        route.name,
+        route.summary,
+        route.description,
+        route.response_description,
+        route.status_code,
+        _type_contract(route.response_model),
+        route.response_model_by_alias,
+        _value_contract(route.response_model_include),
+        _value_contract(route.response_model_exclude),
+        route.response_model_exclude_unset,
+        route.response_model_exclude_defaults,
+        route.response_model_exclude_none,
+        _value_contract(route.response_class),
+        tuple(route.tags or ()),
+        _value_contract(route.responses),
+        tuple(_IdentityKey(callback) for callback in route.callbacks),
+        route.deprecated,
+        _value_contract(route.openapi_extra),
+        _dependant_contract(route.dependant),
+        route_tool_metadata(route.endpoint),
+        inherited_dependency_contracts,
+    )
+
+
+def _stable_route_contract_part(
+    full_path: str,
+    route: APIRoute,
+    inherited_dependencies: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    """Reuse a route part only for the exact source route and endpoint objects."""
+
+    inherited_contracts = tuple(
+        _dependency_contract(dependency)
+        for dependency in inherited_dependencies
+    )
+    key = _StableRoutePartKey(
+        full_path=full_path,
+        endpoint=_IdentityKey(route.endpoint),
+        inherited_dependencies=inherited_contracts,
+    )
+    route_id = id(route)
+    with _COMPILED_ROUTE_CONTRACTS_LOCK:
+        bucket = _STABLE_ROUTE_CONTRACT_PARTS.get(route_id)
+        if bucket is not None and bucket[0]() is route:
+            cached = bucket[1].get(key)
+            if cached is not None:
+                _STABLE_ROUTE_CONTRACT_PARTS.move_to_end(route_id)
+                return cached
+        elif bucket is not None:
+            _STABLE_ROUTE_CONTRACT_PARTS.pop(route_id, None)
+
+    compiled = _route_contract_part(full_path, route, inherited_contracts)
+
+    def discard(dead_ref: weakref.ReferenceType[APIRoute]) -> None:
+        with _COMPILED_ROUTE_CONTRACTS_LOCK:
+            current = _STABLE_ROUTE_CONTRACT_PARTS.get(route_id)
+            if current is not None and current[0] is dead_ref:
+                _STABLE_ROUTE_CONTRACT_PARTS.pop(route_id, None)
+
+    with _COMPILED_ROUTE_CONTRACTS_LOCK:
+        bucket = _STABLE_ROUTE_CONTRACT_PARTS.get(route_id)
+        if bucket is not None and bucket[0]() is route:
+            route_parts = bucket[1]
+        else:
+            route_parts = {}
+            _STABLE_ROUTE_CONTRACT_PARTS[route_id] = (
+                weakref.ref(route, discard),
+                route_parts,
+            )
+        existing = route_parts.get(key)
+        if existing is not None:
+            _STABLE_ROUTE_CONTRACT_PARTS.move_to_end(route_id)
+            return existing
+        route_parts[key] = compiled
+        _STABLE_ROUTE_CONTRACT_PARTS.move_to_end(route_id)
+        while len(_STABLE_ROUTE_CONTRACT_PARTS) > _STABLE_ROUTE_PART_CACHE_SIZE:
+            _STABLE_ROUTE_CONTRACT_PARTS.popitem(last=False)
+    return compiled
+
+
+def _route_compilation_key_uncached(
     app: FastAPI,
     walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+    *,
+    stable_route_graph: bool = False,
 ) -> _RouteCompilationKey:
     route_contracts = tuple(
         (
-            full_path,
-            route.include_in_schema,
-            tuple(sorted((route.methods or set()) & _HTTP_METHODS)),
-            route.unique_id,
-            _callable_contract(route.endpoint),
-            route.operation_id,
-            route.name,
-            route.summary,
-            route.description,
-            route.response_description,
-            route.status_code,
-            _type_contract(route.response_model),
-            route.response_model_by_alias,
-            _value_contract(route.response_model_include),
-            _value_contract(route.response_model_exclude),
-            route.response_model_exclude_unset,
-            route.response_model_exclude_defaults,
-            route.response_model_exclude_none,
-            _value_contract(route.response_class),
-            tuple(route.tags or ()),
-            _value_contract(route.responses),
-            tuple(_IdentityKey(callback) for callback in route.callbacks),
-            route.deprecated,
-            _value_contract(route.openapi_extra),
-            _dependant_contract(route.dependant),
-            route_tool_metadata(route.endpoint),
-            tuple(
-                _dependency_contract(dependency)
-                for dependency in inherited_dependencies
-            ),
+            _stable_route_contract_part(
+                full_path,
+                route,
+                inherited_dependencies,
+            )
+            if stable_route_graph
+            else _route_contract_part(
+                full_path,
+                route,
+                tuple(
+                    _dependency_contract(dependency)
+                    for dependency in inherited_dependencies
+                ),
+            )
         )
         for full_path, route, inherited_dependencies in walked_routes
         if route.include_in_schema
@@ -1060,6 +1180,26 @@ def _route_compilation_key(
     )
 
 
+def _route_compilation_key(
+    app: FastAPI,
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+    *,
+    stable_route_graph: bool = False,
+) -> _RouteCompilationKey:
+    """Return the structural key, reusing only exact stable route declarations.
+
+    The house app factories promise their module-level route declarations are
+    immutable after construction. Their identity cache never equates distinct
+    closure endpoint objects. Dynamic apps keep deriving every route part.
+    """
+
+    return _route_compilation_key_uncached(
+        app,
+        walked_routes,
+        stable_route_graph=stable_route_graph,
+    )
+
+
 def _compile_route_schema(
     app: FastAPI,
     walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
@@ -1082,15 +1222,22 @@ def _compiled_route_schema(
     walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
 ) -> dict[str, Any]:
     key = _route_compilation_key(app, walked_routes)
+    compiled = _compiled_route_schema_entry(app, walked_routes, key)
+    return json.loads(compiled.encoded)
+
+
+def _compiled_route_schema_entry(
+    app: FastAPI,
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+    key: _RouteCompilationKey,
+) -> _CompiledRouteSchema:
+    """Return the one published app-free cache entry for ``key``."""
+
     with _COMPILED_ROUTE_CONTRACTS_LOCK:
         cached = _COMPILED_ROUTE_CONTRACTS.get(key)
         if cached is not None:
             _COMPILED_ROUTE_CONTRACTS.move_to_end(key)
-            encoded = cached.encoded
-        else:
-            encoded = None
-    if encoded is not None:
-        return json.loads(encoded)
+            return cached
 
     compiled = _compile_route_schema(app, walked_routes)
     with _COMPILED_ROUTE_CONTRACTS_LOCK:
@@ -1103,7 +1250,7 @@ def _compiled_route_schema(
             while len(_COMPILED_ROUTE_CONTRACTS) > _COMPILED_ROUTE_CONTRACT_CACHE_SIZE:
                 _COMPILED_ROUTE_CONTRACTS.popitem(last=False)
             published = compiled
-    return json.loads(published.encoded)
+    return published
 
 
 def _clear_compiled_route_tool_cache() -> None:
@@ -1111,35 +1258,25 @@ def _clear_compiled_route_tool_cache() -> None:
 
     with _COMPILED_ROUTE_CONTRACTS_LOCK:
         _COMPILED_ROUTE_CONTRACTS.clear()
+        _STABLE_ROUTE_CONTRACT_PARTS.clear()
 
 
-def build_generated_route_toolsets(
-    app: FastAPI,
-    *,
-    publish_default_gates: bool = False,
-) -> GeneratedRouteToolSnapshot:
-    """Build every declared generated provider exactly once for ``app``."""
+def _compile_route_tool_blueprints(
+    schema: Mapping[str, Any],
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+) -> tuple[_GeneratedRouteToolBlueprint, ...]:
+    """Derive and validate the app-independent half of generated tools."""
 
-    cached = getattr(app.state, "generated_route_toolsets", None)
-    if isinstance(cached, GeneratedRouteToolSnapshot):
-        if publish_default_gates:
-            _publish_generated_default_gates(cached)
-        return cached
-
-    _install_generated_stream_cleanup(app.routes)
-    walked_routes = tuple(_walk_api_routes(app.routes))
-    schema = _compiled_route_schema(app, walked_routes)
     components = schema.get("components") or {}
     by_path_method = {
         (path, method.upper()): operation
-        for path, path_item in schema.get("paths", {}).items()
+        for path, path_item in (schema.get("paths") or {}).items()
         for method, operation in path_item.items()
         if method.upper() in _HTTP_METHODS
     }
-    generated: list[GeneratedRouteTool] = []
-    provider_registries: dict[str, dict[str, tuple[Tool, Callable[..., Any]]]] = {}
+    generated: list[_GeneratedRouteToolBlueprint] = []
     seen_operations: set[str] = set()
-    owning_app_ref = weakref.ref(app)
+    seen_tools: dict[tuple[str, str], str] = {}
 
     for full_path, route, inherited_dependencies in walked_routes:
         if not route.include_in_schema:
@@ -1157,13 +1294,29 @@ def build_generated_route_toolsets(
                 continue
             operation_id = operation.get("operationId")
             if not isinstance(operation_id, str) or not operation_id:
-                raise ConfigError(f"declared route tool lacks operationId: {method} {route.path_format}")
+                raise ConfigError(
+                    "declared route tool lacks operationId: "
+                    f"{method} {route.path_format}"
+                )
             if operation_id in seen_operations:
                 raise ConfigError(f"duplicate generated operation id {operation_id!r}")
             seen_operations.add(operation_id)
-            toolset_id, tool_id = _scoped_id(route, operation, metadata, normalized_path)
-            args_schema, bindings = derive_argument_schema(operation, components, metadata)
-            read_only = metadata.read_only if metadata.read_only is not None else method in {"GET", "HEAD"}
+            toolset_id, tool_id = _scoped_id(
+                route,
+                operation,
+                metadata,
+                normalized_path,
+            )
+            args_schema, bindings = derive_argument_schema(
+                operation,
+                components,
+                metadata,
+            )
+            read_only = (
+                metadata.read_only
+                if metadata.read_only is not None
+                else method in {"GET", "HEAD"}
+            )
             tool = make_tool(
                 id=tool_id,
                 toolset_id=toolset_id,
@@ -1173,7 +1326,11 @@ def build_generated_route_toolsets(
                 examples=[],
                 yields=metadata.yields,
                 requires_workspace=metadata.requires_workspace,
-                required_role=_required_role(route, metadata, inherited_dependencies),
+                required_role=_required_role(
+                    route,
+                    metadata,
+                    inherited_dependencies,
+                ),
                 interruptible=(
                     metadata.interruptible
                     if metadata.interruptible is not None
@@ -1181,14 +1338,147 @@ def build_generated_route_toolsets(
                 ),
                 read_only=read_only,
             )
-            descriptor = GeneratedRouteTool(operation_id, method, normalized_path, metadata, bindings, tool)
-            registry = provider_registries.setdefault(toolset_id, {})
-            if tool_id in registry:
-                previous = next(item for item in generated if item.tool.toolset_id == toolset_id and item.tool.id == tool_id)
+            scoped_id = (toolset_id, tool_id)
+            previous = seen_tools.get(scoped_id)
+            if previous is not None:
                 raise ConfigError(
                     f"generated scoped id collision {toolset_id}__{tool_id}: "
-                    f"{previous.operation_id!r} and {operation_id!r}; declare an explicit override"
+                    f"{previous!r} and {operation_id!r}; declare an explicit override"
                 )
+            seen_tools[scoped_id] = operation_id
+            blueprint = _GeneratedRouteToolBlueprint(
+                operation_id=operation_id,
+                method=method,
+                path=normalized_path,
+                metadata=metadata,
+                bindings=bindings,
+                tool_id=tool.id,
+                toolset_id=tool.toolset_id,
+                description=tool.description,
+                args_schema_encoded=json.dumps(
+                    tool.args_schema,
+                    separators=(",", ":"),
+                ).encode(),
+                yields=tool.yields,
+                requires_workspace=tool.requires_workspace,
+                required_role=tool.required_role,
+                tool_class=tool.tool_class,
+                interruptible=tool.interruptible,
+                read_only=tool.read_only,
+                preview_args=tool.preview_args,
+                preview_lead=tool.preview_lead,
+            )
+            if _tool_from_blueprint(blueprint) != tool:
+                raise ConfigError(
+                    f"generated tool blueprint lost fields for {toolset_id}__{tool_id}"
+                )
+            generated.append(blueprint)
+
+    return tuple(sorted(generated, key=lambda item: item.operation_id))
+
+
+def _compiled_route_tool_blueprints(
+    key: _RouteCompilationKey,
+    compiled: _CompiledRouteSchema,
+    walked_routes: Sequence[tuple[str, APIRoute, tuple[Any, ...]]],
+) -> tuple[_GeneratedRouteToolBlueprint, ...]:
+    """Return the one published immutable blueprint tuple for ``key``."""
+
+    if compiled.blueprints is not None:
+        return compiled.blueprints
+
+    candidate = _compile_route_tool_blueprints(
+        json.loads(compiled.encoded),
+        walked_routes,
+    )
+    with _COMPILED_ROUTE_CONTRACTS_LOCK:
+        current = _COMPILED_ROUTE_CONTRACTS.get(key)
+        if current is not None and current.blueprints is not None:
+            _COMPILED_ROUTE_CONTRACTS.move_to_end(key)
+            return current.blueprints
+        encoded = current.encoded if current is not None else compiled.encoded
+        published = _CompiledRouteSchema(
+            encoded=encoded,
+            blueprints=candidate,
+        )
+        _COMPILED_ROUTE_CONTRACTS[key] = published
+        _COMPILED_ROUTE_CONTRACTS.move_to_end(key)
+        while len(_COMPILED_ROUTE_CONTRACTS) > _COMPILED_ROUTE_CONTRACT_CACHE_SIZE:
+            _COMPILED_ROUTE_CONTRACTS.popitem(last=False)
+    return candidate
+
+
+def _tool_from_blueprint(blueprint: _GeneratedRouteToolBlueprint) -> Tool:
+    """Create the fresh mutable Tool owned by one application snapshot."""
+
+    return Tool(
+        id=blueprint.tool_id,
+        toolset_id=blueprint.toolset_id,
+        description=blueprint.description,
+        args_schema=json.loads(blueprint.args_schema_encoded),
+        examples=[],
+        yields=blueprint.yields,
+        requires_workspace=blueprint.requires_workspace,
+        required_role=blueprint.required_role,
+        tool_class=blueprint.tool_class,
+        interruptible=blueprint.interruptible,
+        read_only=blueprint.read_only,
+        preview_args=blueprint.preview_args,
+        preview_lead=blueprint.preview_lead,
+    )
+
+
+def build_generated_route_toolsets(
+    app: FastAPI,
+    *,
+    publish_default_gates: bool = False,
+    _stable_route_graph: bool = False,
+) -> GeneratedRouteToolSnapshot:
+    """Build every declared generated provider exactly once for ``app``."""
+
+    cached = getattr(app.state, "generated_route_toolsets", None)
+    if isinstance(cached, GeneratedRouteToolSnapshot):
+        if publish_default_gates:
+            _publish_generated_default_gates(cached)
+        return cached
+
+    _install_generated_stream_cleanup(app.routes)
+    walked_routes = tuple(_walk_api_routes(app.routes))
+    compilation_key = _route_compilation_key(
+        app,
+        walked_routes,
+        stable_route_graph=_stable_route_graph,
+    )
+    compiled = _compiled_route_schema_entry(
+        app,
+        walked_routes,
+        compilation_key,
+    )
+    blueprints = _compiled_route_tool_blueprints(
+        compilation_key,
+        compiled,
+        walked_routes,
+    )
+    generated: list[GeneratedRouteTool] = []
+    provider_registries: dict[str, dict[str, tuple[Tool, Callable[..., Any]]]] = {}
+    owning_app_ref = weakref.ref(app)
+    blueprints_by_provider: dict[str, list[_GeneratedRouteToolBlueprint]] = {}
+    for blueprint in blueprints:
+        blueprints_by_provider.setdefault(blueprint.toolset_id, []).append(blueprint)
+
+    for toolset_id, provider_blueprints in sorted(blueprints_by_provider.items()):
+        registry = provider_registries.setdefault(toolset_id, {})
+        for blueprint in provider_blueprints:
+            tool = _tool_from_blueprint(blueprint)
+            descriptor = GeneratedRouteTool(
+                operation_id=blueprint.operation_id,
+                method=blueprint.method,
+                path=blueprint.path,
+                metadata=blueprint.metadata,
+                bindings=blueprint.bindings,
+                tool=tool,
+            )
+            tool_id = tool.id
 
             async def handler(arguments: dict[str, Any], *, ctx: ToolContext | None = None, _descriptor=descriptor) -> ToolCallResult:
                 owning_app = owning_app_ref()

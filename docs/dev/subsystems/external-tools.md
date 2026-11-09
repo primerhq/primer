@@ -233,11 +233,13 @@ an invocation body. A curated tool suppresses its generated twin. Provider and
 tool ids come from route declarations, and an id collision refuses the app
 build rather than overwriting a stored or fixed provider.
 
-The expensive OpenAPI compilation is reused only when the complete route
-contract matches. The cache is bounded and its entries contain
-only a serialized OpenAPI schema, with no app-bound handler. Each app decodes
-its own schema copy, derives new descriptors, and constructs new providers
-whose handlers dispatch through that app, preserving dependency overrides,
+The expensive OpenAPI and immutable-descriptor compilation is reused only when
+the complete route contract matches. The cache is bounded and contains no
+app-bound handler or mutable Tool model. The house app factories reuse a
+structural route-key part only for the exact same source route and endpoint
+objects; a fresh closure endpoint cannot hit that identity fast path. Each app
+decodes fresh mutable schemas and constructs new Tools, providers and handlers
+that dispatch through that app, preserving dependency overrides,
 authentication state and test isolation.
 
 Calling one of these generated tools re-enters the FastAPI app through a

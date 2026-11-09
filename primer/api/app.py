@@ -158,7 +158,11 @@ def create_app(config: AppConfig) -> FastAPI:
     _mount_metrics(app, config)
     _install_root_redirect(app)
     register_error_handlers(app)
-    generated = build_generated_route_toolsets(app, publish_default_gates=True)
+    generated = build_generated_route_toolsets(
+        app,
+        publish_default_gates=True,
+        _stable_route_graph=True,
+    )
     register_generated_api_toolset_ids(set(generated.providers))
     app.state.generated_route_toolsets = generated
     return app
@@ -486,7 +490,11 @@ def create_test_app(
     app.state.channel_dispatcher = _test_channel_dispatcher
     _mount_routers(app)
     register_error_handlers(app)
-    generated = build_generated_route_toolsets(app, publish_default_gates=True)
+    generated = build_generated_route_toolsets(
+        app,
+        publish_default_gates=True,
+        _stable_route_graph=True,
+    )
     register_generated_api_toolset_ids(set(generated.providers))
     app.state.generated_route_toolsets = generated
     provider_registry.install_generated_api_toolsets(generated.providers)
