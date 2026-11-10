@@ -140,10 +140,12 @@ async def test_mcp_service_drives_a_session_end_to_end(
 
     # Enable the MCP endpoint with the session-drive allowlist. The PUT
     # validator re-runs the exposability floor, so a yielding / session-only
-    # tool would be rejected here -- these four are accepted.
+    # tool would be rejected here -- these four are accepted. Fresh exposure
+    # rows default to ``rbac`` mode (caller-aware, not allowlist-narrowed),
+    # so the legacy gate this recipe exercises is switched on explicitly.
     enable = await authed_client.put(
         "/v1/mcp_exposure",
-        json={"enabled": True, "allowed_tools": _ALLOWLIST},
+        json={"enabled": True, "mode": "allowlist", "allowed_tools": _ALLOWLIST},
     )
     assert enable.status_code in (200, 204), enable.text
 

@@ -304,21 +304,37 @@ class McpDoor:
         except Exception as exc:  # noqa: BLE001 - the SDK raises the JSON-RPC error for a tool that is not exposed
             return (MISSING if "not exposed" in str(exc).lower() or "method" in str(exc).lower() else f"error-{exc!r}"), ""
         text = " ".join(getattr(part, "text", "") for part in result.content)
-        if not result.is_error:
-            try:
-                envelope = json.loads(text)
-            except ValueError:
-                return f"meta-error-{text}", text
-            if envelope.get("ok") is True:
-                return OK, str(envelope.get("output", ""))
-            text = str(envelope.get("error", "tool unavailable"))
         try:
-            error = str(json.loads(text).get("type", "")).lower()
+            envelope = json.loads(text)
         except ValueError:
-            error = text.lower()
-        if "forbidden" in error or "access_denied" in error:
+            return f"meta-error-{text}", text
+        if envelope.get("ok") is True:
+            return OK, str(envelope.get("output", ""))
+        # The M2 refusal is the fixed nested envelope {"ok": false, "error": {"code", "message"}} (isError true): it
+        # carries no existence wording on the wire, so a not-exposed or unavailable tool classifies like a missing row.
+        error = envelope.get("error") or {}
+        code = str(error.get("code", ""))
+        if code == "access_denied":
             return DENIED, text
-        return (MISSING, text) if "not" in error and "found" in error or "not-found" in error else (f"tool-error-{error}", text)
+        if code == "tool_unavailable":
+            return MISSING, text  # the read level pins the exposure; this answer must not echo existence
+        message = str(error.get("message", ""))
+        status, verdict = None, ""
+        try:  # the tool_failed message is the inner tool's {"type", "message"} error result; RFC7807 shapes carry a numeric status
+            inner = json.loads(message)
+            if isinstance(inner, dict):
+                status = inner.get("status")
+                verdict = str(inner.get("type", ""))
+        except ValueError:
+            pass
+        if status == 404:
+            return MISSING, text
+        if status == 403:
+            return DENIED, text
+        verdict = verdict or message.lower()
+        if "forbidden" in verdict:
+            return DENIED, text
+        return (MISSING, text) if "not" in verdict and "found" in verdict or "not-found" in verdict else (f"tool-error-{verdict or 'unknown'}", text)
 
     async def get(self, kind: Kind, rid: str) -> str:
         return (await self._call(kind.tools[0], {"id": rid}))[0]
@@ -347,7 +363,9 @@ async def _mcp_door(admin: httpx.AsyncClient, user: httpx.AsyncClient, base_url:
 
     catalogue = {i["id"] for i in (await admin.get("/v1/tools/catalogue")).json().get("items", [])}
     exposable = sorted(set(tools) & catalogue)
-    enabled = await admin.put("/v1/mcp_exposure", json={"enabled": True, "allowed_tools": exposable})
+    # mode "allowlist" makes the saved allowlist the gate: a fresh exposure row defaults to "rbac" (caller-aware),
+    # which would ignore allowed_tools. The journey's exposure proof needs the legacy narrowing.
+    enabled = await admin.put("/v1/mcp_exposure", json={"enabled": True, "mode": "allowlist", "allowed_tools": exposable})
     assert enabled.status_code in (200, 204), enabled.text
     token = await user.post("/v1/auth/tokens", json={"name": label, "scopes": ["mcp"]})
     assert token.status_code == 201, token.text
