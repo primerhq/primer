@@ -13,9 +13,12 @@ role floor moved to per-call enforcement (see primer/mcp/dispatch.py
 * cookie session -> not 401/403 (passes through to SDK, full authority)
 * bearer with mcp scope -> not 401/403
 * bearer without mcp scope -> not 401/403 (CONNECTS; the tool CALL is
-  what gets denied, in-band, per-call)
-* restricted role -> not 401/403 (CONNECTS; a role-gated tool CALL is
-  what gets denied, in-band, per-call)
+  what gets denied, per call, as a fixed tool_unavailable envelope: the
+  scope gate runs at the discovery seam, so the unscoped catalogue is
+  empty and no scope wording reaches the wire)
+* restricted role -> not 401/403 (CONNECTS; a role-gated tool is hidden
+  from the caller's catalogue and a call_tool for it answers
+  tool_unavailable)
 
 A handful of tests below drive a real ``tools/call`` through the mount
 (over an in-process ASGI transport, no live socket) to prove the call-
@@ -24,6 +27,7 @@ level outcome, not just the connect-level status code.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -112,7 +116,7 @@ async def test_mcp_endpoint_accepts_cookie_session(client):
 
 @pytest.mark.asyncio
 async def test_mcp_endpoint_cookie_session_call_succeeds(client, app):
-    """Cookie session carries full authority: a real tools/call succeeds
+    """Cookie session carries full authority: a real ``call_tool`` succeeds
     with no scope check at all (``api_token`` is None for cookie auth)."""
     enable = await client.put(
         "/v1/mcp_exposure",
@@ -124,9 +128,11 @@ async def test_mcp_endpoint_cookie_session_call_succeeds(client, app):
         f"{c.name}={c.value}" for c in client.cookies.jar
     )
     result = await _mcp_call(
-        app, headers={"Cookie": cookie_header}, tool_name="misc__uuid_v4",
+        app, headers={"Cookie": cookie_header},
+        tool_name="call_tool", arguments={"scoped_id": "misc__uuid_v4"},
     )
     assert result.is_error is False, getattr(result, "content", result)
+    assert json.loads(result.content[0].text)["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -183,17 +189,23 @@ async def test_mcp_endpoint_with_bearer_mcp_scope_call_succeeds(
 
     client.cookies.clear()
     headers = {"Authorization": f"Bearer {plaintext}"}
-    result = await _mcp_call(app, headers=headers, tool_name="misc__uuid_v4")
+    result = await _mcp_call(
+        app, headers=headers,
+        tool_name="call_tool", arguments={"scoped_id": "misc__uuid_v4"},
+    )
     assert result.is_error is False, getattr(result, "content", result)
+    assert json.loads(result.content[0].text)["ok"] is True
 
 
 @pytest.mark.asyncio
 async def test_mcp_endpoint_with_bearer_no_mcp_scope_connects_then_call_denied(
     client, app, fake_storage_provider,
 ):
-    """Bearer without ``mcp`` scope -> CONNECTS (no connect-time 403); a
-    subsequent ``tools/call`` is denied IN-BAND with the scope message --
-    not a connection rejection and not a protocol-level error."""
+    """Bearer without ``mcp`` scope -> CONNECTS (no connect-time 403). The
+    scope gate runs at the discovery seam: an unscoped caller's catalogue
+    is empty, so a subsequent ``call_tool`` answers with the fixed
+    tool_unavailable envelope -- not a connection rejection, not a
+    protocol-level error, and no scope wording on the wire."""
     user = await _seeded_user(fake_storage_provider)
     plaintext = mint_plaintext()
     token = ApiToken(
@@ -220,11 +232,15 @@ async def test_mcp_endpoint_with_bearer_no_mcp_scope_connects_then_call_denied(
     assert resp.status_code != 401, resp.text
     assert resp.status_code != 403, resp.text
 
-    result = await _mcp_call(app, headers=headers, tool_name="misc__uuid_v4")
+    result = await _mcp_call(
+        app, headers=headers,
+        tool_name="call_tool", arguments={"scoped_id": "misc__uuid_v4"},
+    )
     assert result.is_error is True
-    text = result.content[0].text
-    assert "mcp" in text
-    assert "scope" in text
+    assert json.loads(result.content[0].text) == {
+        "ok": False,
+        "error": {"code": "tool_unavailable", "message": "Tool is unavailable."},
+    }
 
 
 @pytest.mark.asyncio
@@ -232,9 +248,10 @@ async def test_mcp_endpoint_restricted_role_connects_but_call_denied(
     client, raw_client, app,
 ):
     """A ``restricted``-role cookie session now CONNECTS (the connect-time
-    ``forbidden_role`` 403 was removed); the existing per-call
-    ``required_role`` floor is what denies a role-gated tool CALL instead
-    (``misc__uuid_v4`` needs ``user``, which ``restricted`` does not meet)."""
+    ``forbidden_role`` 403 was removed); the role floor at the discovery
+    seam hides ``misc__uuid_v4`` (needs ``user``) from the restricted
+    caller's catalogue, so a ``call_tool`` answers with the fixed
+    tool_unavailable envelope instead of dispatching."""
     from primer.auth.passwords import hash_password
 
     enable = await client.put(
@@ -265,7 +282,10 @@ async def test_mcp_endpoint_restricted_role_connects_but_call_denied(
         f"{c.name}={c.value}" for c in raw_client.cookies.jar
     )
     result = await _mcp_call(
-        app, headers={"Cookie": cookie_header}, tool_name="misc__uuid_v4",
+        app, headers={"Cookie": cookie_header},
+        tool_name="call_tool", arguments={"scoped_id": "misc__uuid_v4"},
     )
     assert result.is_error is True
-    assert "requires" in result.content[0].text
+    payload = json.loads(result.content[0].text)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "tool_unavailable"

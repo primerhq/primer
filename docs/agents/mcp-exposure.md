@@ -1,7 +1,7 @@
 ---
 slug: mcp-exposure
 title: MCP exposure - primer as an MCP server
-summary: How primer exposes its tools to external MCP clients via /v1/mcp, including the allowlist, scopes, and the safety gates that block dangerous tools.
+summary: Use primer's fixed MCP discovery and dispatch surface, including exposure modes, caller authorization, and call-time safety checks.
 related: [auth-and-tokens, tool-approval, semantic-search, yielding]
 mcp_tools: []
 ---
@@ -10,237 +10,191 @@ mcp_tools: []
 
 ## Overview
 
-Primer is two MCP citizens at once. It **consumes** MCP servers as a
-client when an operator configures a `provider: mcp` toolset - those
-remote tools then show up alongside primer's own. It also **hosts** an
-MCP server at `/v1/mcp` (Streamable HTTP transport) so other clients
-- Claude Desktop, Cursor, custom agents - can drive primer's own
-capabilities the same way an agent inside primer would.
+Primer consumes external MCP servers as configured toolsets and also hosts an
+inbound Streamable HTTP server at `/v1/mcp`. The inbound endpoint lets an MCP
+client discover and call Primer's reserved built-in tools as the person behind
+the client's cookie or bearer token.
 
-This doc is about the second half: the inbound MCP endpoint. The
-endpoint is opt-in. A fresh install has `enabled=False` and an empty
-allowlist, so the endpoint returns 503 until an operator turns it on
-and explicitly chooses which tools to expose. The reason for that
-opt-in posture is real: every exposed tool is a verb an unprivileged
-remote agent can execute against your primer deployment, and a few
-primer tools (the system `call_tool` meta-tool, the `web` HTTP
-request tool, every yielding tool) are dangerous or technically
-unsupported over MCP.
+The protocol advertises exactly three tools:
 
-Once enabled, the surface area is exactly the intersection of three
-sets: tools the operator has added to `allowed_tools`, tools that
-pass the `is_exposable()` check at call time, and tools the
-authenticated principal has scope for. Any agent connecting to
-`/v1/mcp` sees only what falls in all three.
+- `list_tools`: page and filter the caller-authorized catalogue.
+- `find_tools`: search that catalogue by words, with optional semantic wiki
+  ranking when the system collection has a working index.
+- `call_tool`: call one discovered scoped id with its arguments.
+
+The hundreds of target schemas are not advertised in `tools/list`. A client
+requests schemas from `list_tools` or `find_tools` only when it needs them. This
+keeps model context bounded while preserving the full authorized catalogue.
 
 ## Mental model
 
-The endpoint is governed by a **singleton** `McpExposure` row in
-storage. Its two fields are `enabled` (bool) and `allowed_tools`
-(sorted, deduped list of scoped tool ids). The singleton is created
-lazily on the first GET or PUT - a fresh install has no row, and the
-default constructed at first touch is `enabled=False,
-allowed_tools=[]`. That's the safest possible starting state: even if
-something goes wrong with auth, no tool is reachable.
+Discovery and dispatch are separate contracts, and neither trusts the
+other:
 
-A **scoped tool id** is `<toolset_id>__<tool_id>`: the name `tools/list`
-publishes and `tools/call` takes, and what `allowed_tools` holds (for
-example `system__wiki_search`, `system__list_agents`,
-`misc__get_datetime`; `primer/mcp/safety.py` `tool_scoped_id`). These
-docs also write a tool as `<toolset_id>::<tool_id>`
-(`system::list_agents`); over MCP it is the double-underscore form.
+- `tools/list` is a fixed advertisement (the three meta-tools), not a
+  catalogue. The caller-visible catalogue comes from `list_tools` /
+  `find_tools`, computed live against the caller's actor: exposure
+  mode, role and toolset grants, and (in allowlist mode) the saved
+  allowlist.
+- `call_tool` rechecks the same floors plus the `mcp` scope and the
+  live approval gate at call time. An id that was discoverable a
+  moment ago can be refused the next second, and the refusal answers
+  a fixed envelope that does not say why.
+- What is hidden is not announced: an empty or narrowed catalogue
+  never reveals the ids it withheld, and operator state (the mode,
+  the saved allowlist) is managed over REST or the console, never
+  through MCP.
 
-Primer also publishes reviewed REST operations as generated built-in tools.
-They use the same scoped-id grammar, one provider per API resource, and appear
-in the same catalogue and exposure allowlist as curated built-ins. For example,
-the internal-collections provider includes
-`internal_collections__get_config`, `internal_collections__put_config`,
-`internal_collections__delete_config`, `internal_collections__bootstrap` and
-`internal_collections__bootstrap_status`. A REST operation that already has a
-curated tool keeps that curated id and has no generated twin. Generated calls
-run the real REST validation, access checks and problem responses as the MCP
-caller's person after revalidating the real user row; they are not a second or
-weaker authorization surface. Generated writes carry the same default approval
-gating as curated writes. Calls are bounded to 30 seconds and a 1 MiB response;
-client cancellation cancels the in-process dispatch.
+## Exposure state
 
-Three filters run at every `tools/call`:
+One `McpExposure` row controls the endpoint:
 
-- **Allowlist.** The scoped id must appear in `allowed_tools`. Not in
-  list → `tool_not_allowed`, 403.
-- **Exposability.** The tool's provider is checked via
-  `is_exposable(tool, provider)`. It rejects every tool of a toolset
-  that is not one of primer's reserved built-in toolsets
-  (`not_system_toolset`): a toolset someone registered, an MCP one
-  included, is never reachable over `/v1/mcp`, whatever the allowlist
-  says. It also rejects yielding tools (MCP v1 has no pause/resume
-  primitive, so a tool that parks the session forever would deadlock
-  the client) and workspace tools that need a live `AgentSession`
-  (the MCP transport has no session context to bind them to). Future
-  safety classes go through the same gate.
-- **Auth scope.** The middleware that gates `/v1/mcp` requires the
-  `mcp` scope. Bearer tokens minted without `mcp` get 401 on the
-  handshake; cookie sessions bypass scope checks (operators trusted).
+- `enabled` is the global switch.
+- `mode` is `rbac` or `allowlist`.
+- `allowed_tools` is the saved narrowing set used in `allowlist` mode.
+- `updated_at` and `updated_by` are the audit stamp.
 
-The `tools/list` MCP method emits exactly the tools that pass all
-three. An agent calling `tools/list` and getting an empty array means
-either MCP isn't enabled, the allowlist is empty, or the auth
-principal's scope set excludes `mcp`. None of these are recoverable
-client-side; the operator has to act.
+A new row defaults to `enabled=false`, `mode=rbac`, and an empty saved
+allowlist. Rows created before the mode field existed keep their historical
+allowlist meaning: migration 32 writes `mode=allowlist`, and a rolling reader
+also interprets a missing mode that way.
 
-### Who the client acts as
+The modes differ only in the operator narrowing step:
 
-An MCP client acts as the person behind its credentials: the signed-in
-user for a cookie session, the token's owner for a bearer token (never
-the token itself). Because only built-in tools are exposed, an MCP
-client never sees or calls a tool of someone else's private toolset,
-and never makes primer send another person's MCP OAuth token. The
-built-in tools check the person's access themselves, exactly as they
-do for an agent run: a row the person cannot read answers like a
-missing one. Every write a call makes is recorded in the event log as
-that person (`user:<id>`), and so is the `mcp.tool_called` event of
-the call.
+- `rbac`: every otherwise-authorized reserved tool is discoverable.
+- `allowlist`: the tool must also be in `allowed_tools`.
 
-Tool approval policies are **incompatible with MCP exposure** by
-design. Approval pauses the call mid-flight waiting for an operator
-(or LLM-judge / Rego) decision; MCP v1 has no mechanism for the client
-to wait. So an allowlisted tool whose effective approval policy
-resolves to `required` is **refused at `tools/call`**: the dispatch
-path consults the same approval resolver the agent runtime uses, and
-when the verdict is `required` it returns the tool as not exposed
-(method-not-found on the wire) instead of running it. This is enforced
-at call time, not at list time, so the tool may still appear in
-`tools/list` but every call against it is blocked. The check is
-re-evaluated on every call, so toggling or deleting the policy takes
-effect immediately. To make such a tool actually callable over MCP,
-the operator drops or disables the approval policy first.
+Switching modes does not clear `allowed_tools`. The console leaves the saved
+set visible but inactive in RBAC mode, so switching back restores the same
+narrowing.
 
-## Lifecycle and states
+## Caller-aware catalogue
 
-The MCP exposure feature has no per-call state machine - every
-request is independent. The singleton `McpExposure` row has two
-relevant moments:
+Discovery and dispatch apply the same floors:
 
-- **Fresh / safe.** No row exists, or `enabled=False` with empty
-  allowlist. The `/v1/mcp` endpoint returns 503 with body
-  `{"error": "mcp_disabled"}`. `tools/list` is not reachable.
-- **Live.** `enabled=True` with at least one entry in allowlist. The
-  endpoint serves the MCP handshake; `tools/list` returns the
-  filtered tool set; `tools/call` dispatches.
+1. The endpoint must be enabled.
+2. In allowlist mode, the scoped id must be in the saved allowlist.
+3. `is_exposable` must accept it. Yielding tools, tools that require an agent
+   session, and tools of user-created toolsets are excluded.
+4. A bearer token must carry the `mcp` scope. Cookie sessions carry their
+   signed-in user's authority.
+5. The caller's role must meet the tool's declared role floor.
+6. `toolset_use` must allow the caller to use that reserved toolset and tool.
 
-Transitions are operator-driven via `PUT /v1/mcp_exposure`. The body
-accepts `enabled`, `allowed_tools`, or both. When `allowed_tools` is
-supplied, every scoped id is validated against the live catalogue -
-unknown ids or non-exposable ids cause 422 with the offending id in
-the response. This catches typos and prevents the operator from
-allowlisting a tool that can never actually be called.
+An MCP client acts as the token owner or signed-in user, never as the token
+record itself. Built-in target handlers apply their normal entity access checks
+too. A private row the person cannot read continues to answer like a missing
+row.
 
-## MCP tools
+User-created MCP, Python, or harness toolsets are deliberately not re-exported
+through this endpoint. Registering an external MCP toolset makes it available
+to authorized Primer runs; it does not turn Primer into a relay for that
+server.
 
-This capability has no MCP tools of its own - exposure config is
-operator-only (REST + console UI). Agents see exposure indirectly:
-they observe the tool set that `tools/list` returns and accept that
-this is the universe they can call. There's no "what would I be able
-to call if I had more scope?" introspection endpoint.
+## Discovery tools
 
-## Workflows
+`list_tools` uses a deterministic scoped-id keyset cursor. Its fixed input
+supports `cursor`, `limit`, `toolset_id`, `resource`, `read_only`,
+`required_role`, `text_prefix`, and `include_schema`. Each item returns a stable
+scoped id, reference path, purpose, role and capability facts, plus `schema`
+only when requested.
 
-### Workflow 1 - operator turns on MCP for the first time
-
-**Goal.** Enable the endpoint, allowlist a starter set of tools, mint
-a token, hand it to Claude Desktop.
-
-1. Operator opens the MCP exposure page in the console. It shows
-   "MCP exposure disabled". They click "Enable".
-2. The page renders the live tool catalogue with checkboxes. Tools
-   that pass `is_exposable()` are checkable; yielding and session-
-   bound tools are greyed out with a tooltip explaining why.
-3. Operator checks `system__wiki_search`, `system__wiki_read`,
-   `system__list_agents`, `system__get_agent`, `system__list_collections`,
-   `system__get_document_content`, `misc__get_datetime`. They click
-   Save.
-4. The PUT validates each scoped id against the catalogue and writes
-   the row. Subsequent `tools/list` calls return exactly those seven.
-5. Operator goes to API Tokens, mints a token with `scope=["mcp"]`,
-   pastes the plaintext into the desktop config.
-
-### Workflow 2 - agent discovers it can't call a tool it expected
-
-**Goal.** Diagnose a `tool_not_allowed` error from the agent side.
-
-The agent sees `tools/call` return:
+Example:
 
 ```json
 {
-  "is_error": true,
-  "output": "{\"type\":\"tool-not-allowed\",\"message\":\"workspaces::create_workspace not in allowed_tools\"}"
+  "text_prefix": "collections_api__",
+  "read_only": true,
+  "limit": 20,
+  "include_schema": true
 }
 ```
 
-What it means: this scoped id is not currently callable. The operator
-either (a) hasn't added it to the allowlist, (b) had it but removed
-it, or (c) the tool has an effective approval policy of `required`, so
-it is refused at call time (approvals can't be collected over MCP).
+`find_tools` requires a query and accepts `cursor`, `limit`, and
+`include_schema`. Its lexical ranking always works, including on an install
+without semantic-search providers or an indexed system collection. When
+semantic wiki search is available, reference-page hits may improve the result,
+but every hit is exact-intersected with the caller-authorized catalogue before
+an id is returned. Search never reveals a hidden id.
 
-The agent should:
-1. Call `tools/list` to see what *is* available - there may be a
-   functional substitute. `workspaces::create_workspace` not allowed but
-   `workspaces::list_workspaces` is? Maybe the user wanted to use an
-   existing one.
-2. Surface the limitation clearly to the user: "I can read workspace
-   metadata but the operator has not granted me workspace creation."
-3. Not retry - the answer won't change without operator action.
+Both tools return:
+
+```json
+{"items": [], "next_cursor": null}
+```
+
+The cursor is opaque to the client. Reuse it with the same filters; do not
+parse or manufacture it.
+
+## Calling a target
+
+Call `call_tool` with the scoped id from discovery and the target arguments:
+
+```json
+{
+  "scoped_id": "auth__auth_status",
+  "arguments": {}
+}
+```
+
+A successful result is:
+
+```json
+{"ok": true, "output": "{...target result...}"}
+```
+
+A hidden, removed, malformed, or newly unauthorized id gets the same bounded
+answer:
+
+```json
+{"ok": false, "error": {"code": "tool_unavailable", "message": "Tool is unavailable."}}
+```
+
+This non-oracular error is intentional. It does not tell a caller whether the
+id exists behind another role, allowlist, scope, or toolset grant.
+
+`call_tool` does not trust a previous discovery response. It enters the
+existing `invoke_exposed` path, which rechecks live exposure mode, allowlist,
+exposability, MCP scope, role, toolset use, target schema, approval policy, and
+existence immediately before dispatch. The existing invocation audit and
+`mcp.tool_called` event record the outer call and target outcome.
+
+An approval policy whose live verdict is `required` refuses the call. MCP v1
+has no Primer-specific durable pause/resume exchange, so the endpoint does not
+invent one. Yielding targets stay unavailable for the same reason.
+
+## Operator workflow
+
+1. Open System > MCP server.
+2. Choose RBAC floor or Allowlist narrowing.
+3. If using an allowlist, select the saved target set and press Save.
+4. Enable the endpoint.
+5. Mint a bearer token with the `mcp` scope and configure the MCP client for
+   `/v1/mcp`.
+6. In the client, inspect the three advertised meta-tools. Use `find_tools` for
+   a goal, `list_tools` for deterministic browsing, then `call_tool` with a
+   returned scoped id.
+
+The console reports loading, empty and error states, keeps request buttons
+focusable while busy, and uses success/error toasts. On a narrow viewport the
+catalogue table scrolls horizontally rather than clipping its controls.
 
 ## Gotchas
 
-- **A tool called over MCP carries no run identity into what it
-  starts.** The MCP endpoint checks your role against the tool's floor,
-  but hands the handler no run context. So a session started with
-  `workspaces__create_workspace_session`, a subagent started with
-  `system__invoke_agent`, and a trigger or subscription saved through
-  the trigger tools all run (or fire) as an ordinary `user`, whatever
-  your own role: admin-only tools inside them are refused. Use the REST
-  routes (or the console) when the work needs admin rank.
-- **Hard-deny is empty in v1.** Earlier prototypes had a hardcoded
-  block on `system::call_tool` and `web__http_request`. That's been
-  removed - the operator owns exposure decisions. The constant
-  `HARD_DENY` lives on as an empty `frozenset` for backward
-  compatibility with importers. Tool dangerousness is a per-deployment
-  judgment now.
-- **Approval-gated tools are refused at call time, not hidden.**
-  If the operator adds a tool to `allowed_tools` and *also* sets an
-  enabled approval policy whose verdict is `required`, the tool may
-  still appear in `tools/list`, but every `tools/call` against it is
-  refused (returned as not exposed / method-not-found). The refusal is
-  intentionally indistinguishable from a non-allowlisted tool on the
-  wire so the allowlist's shape is not leaked; the real reason is in
-  the audit log. From the agent's side, treat such a tool as
-  uncallable and do not retry.
-- **Yielding tools are also invisible.** The agent will not see
-  `workspace_ext::subscribe_to_trigger`, `system::ask_user`, etc. Those
-  primitives are unavailable outside of primer's own agent runtime.
-- **The allowlist is a *set*, not a *prefix*.** There's no
-  `system::*` wildcard. Each tool is listed by full scoped id. Tools
-  added later via harness install need a follow-up allowlist update.
-- **GZip is bypassed for `/v1/mcp`.** The endpoint streams chunked
-  SSE events; the standard GZip middleware would buffer the whole
-  response, breaking the streaming contract. A subclassed
-  `GZipMiddleware` skips paths starting with `/v1/mcp`. If you write
-  a new middleware that wraps the response, be aware of this carve-
-  out.
-- **One audit log line per tool call.** Every MCP `tools/call` writes
-  a structured log entry with the principal, the scoped id, the
-  outcome, and the duration. There's no separate audit table - the
-  log stream is the audit trail.
+- An empty discovery result can mean the endpoint is disabled, the token lacks
+  `mcp`, no target passes the caller's role and toolset grants, or an allowlist
+  narrows everything away. The result does not reveal which hidden ids exist.
+- Approval changes after discovery take effect at the call.
+- A schema change after discovery is validated at the call.
+- There is no wildcard allowlist member. Each saved id is exact.
+- GZip remains bypassed for `/v1/mcp` because the transport streams events.
+- Generated REST tools use the same catalogue and access floors as curated
+  tools. Their dispatch reaches the real FastAPI route through the trusted
+  internal ASGI seam.
 
 ## Related
 
-- [auth-and-tokens](auth-and-tokens.md) - token minting and the `mcp`
-  scope; required before any MCP call goes through.
-- [tool-approval](tool-approval.md) - approval policies cause tools
-  to silently disappear from MCP `tools/list`.
-- [semantic-search](semantic-search.md) - `system::wiki_search` and
-  `system::wiki_read` find and read these very docs (in the `system`
-  collection) and are almost certainly going to be in your allowlist.
-- [yielding](yielding.md) - why yielding tools can't be exposed over
-  MCP and what the alternative is.
+- [auth-and-tokens](auth-and-tokens.md)
+- [tool-approval](tool-approval.md)
+- [semantic-search](semantic-search.md)
+- [yielding](yielding.md)

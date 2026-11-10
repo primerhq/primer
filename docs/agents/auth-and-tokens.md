@@ -264,4 +264,5 @@ server side.
 ## Related
 
 - [mcp-exposure](mcp-exposure.md) - what scopes gate, plus the
-  per-tool allowlist that also gates MCP access.
+  exposure mode whose allowlist only narrows discovery in legacy
+  `allowlist` mode.

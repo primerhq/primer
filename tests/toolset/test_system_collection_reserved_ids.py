@@ -145,15 +145,19 @@ async def test_mcp_tools_call_is_refused_and_an_ordinary_id_still_creates(door, 
     token = current_actor.set(Principal(type="user", id="admin-1", display="admin", role="admin", source="local"))
     try:
         async with _mcp_session(deps) as client:
-            refused = await client.call_tool("system__create_collection", arguments={"entity": {"id": cid, "description": "x"}})
-            created = await client.call_tool("system__create_collection", arguments={"entity": {"id": "mine", "description": "x"}})
+            refused = await client.call_tool("call_tool", arguments={"scoped_id": "system__create_collection", "arguments": {"entity": {"id": cid, "description": "x"}}})
+            created = await client.call_tool("call_tool", arguments={"scoped_id": "system__create_collection", "arguments": {"entity": {"id": "mine", "description": "x"}}})
     finally:
         current_actor.reset(token)
 
     assert refused.is_error is True
-    _assert_reserved(refused.content[0].text, cid)
+    refused_payload = json.loads(refused.content[0].text)
+    assert refused_payload["ok"] is False
+    assert refused_payload["error"]["code"] == "tool_failed"
+    _assert_reserved(refused_payload["error"]["message"], cid)
     assert await sp.get_storage(Collection).get(cid) is None
     assert created.is_error is False, created.content
+    assert json.loads(created.content[0].text)["ok"] is True
     assert await sp.get_storage(Collection).get("mine") is not None
 
 

@@ -72,17 +72,29 @@ def _actor(role: str) -> Principal:
 
 @pytest.mark.asyncio
 async def test_the_probe_tools_can_be_exposed_and_are_listed_with_their_schemas(deps: ExposureDeps) -> None:
-    """``update_exposure`` refuses a tool that does not exist or cannot be exposed (a yielding one, one that needs a workspace); it accepts these."""
+    """``update_exposure`` refuses a tool that does not exist or cannot be exposed (a yielding one, one that needs a workspace); it accepts these.
+
+    The wire then advertises exactly the three meta-tools, and the probe
+    tools' schemas reach the caller through ``find_tools`` projection.
+    """
     await update_exposure(enabled=True, allowed_tools=list(SCOPED.values()), updated_by="admin", deps=deps)
     server = build_mcp_server(lambda: deps)
 
-    async with _connected_client_session(server) as client:
-        listed = await client.list_tools()
+    actor_token = current_actor.set(_actor("admin"))
+    try:
+        async with _connected_client_session(server) as client:
+            listed = await client.list_tools()
+            hf = await client.call_tool("find_tools", arguments={"query": "check_huggingface_models", "limit": 10, "include_schema": True})
+            emb = await client.call_tool("find_tools", arguments={"query": "test_embedding_provider", "limit": 10, "include_schema": True})
+    finally:
+        current_actor.reset(actor_token)
 
     by_name = {tool.name: tool for tool in listed.tools}
-    assert set(by_name) == set(SCOPED.values())
-    assert by_name[SCOPED["check_huggingface_models"]].input_schema["required"] == ["models"]
-    assert "provider" in by_name[SCOPED["test_embedding_provider"]].input_schema["properties"]
+    assert set(by_name) == {"list_tools", "find_tools", "call_tool"}
+    hf_items = {item["scoped_id"]: item for item in json.loads(hf.content[0].text)["items"]}
+    emb_items = {item["scoped_id"]: item for item in json.loads(emb.content[0].text)["items"]}
+    assert hf_items[SCOPED["check_huggingface_models"]]["schema"]["required"] == ["models"]
+    assert "provider" in emb_items[SCOPED["test_embedding_provider"]]["schema"]["properties"]
 
 
 @pytest.mark.asyncio
@@ -95,12 +107,17 @@ async def test_check_huggingface_models_is_callable_over_mcp_by_an_admin(deps: E
     actor_token = current_actor.set(_actor("admin"))
     try:
         async with _connected_client_session(server) as client:
-            result = await client.call_tool(SCOPED["check_huggingface_models"], arguments=ARGUMENTS["check_huggingface_models"])
+            result = await client.call_tool(
+                "call_tool",
+                arguments={"scoped_id": SCOPED["check_huggingface_models"], "arguments": ARGUMENTS["check_huggingface_models"]},
+            )
     finally:
         current_actor.reset(actor_token)
 
     assert result.is_error is False
-    assert json.loads(result.content[0].text) == {
+    payload = json.loads(result.content[0].text)
+    assert payload["ok"] is True
+    assert json.loads(payload["output"]) == {
         "models": [{"name": MODEL, "ok": True, "status": "ok", "detail": "Can be pulled"}],
     }
 

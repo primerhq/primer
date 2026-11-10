@@ -64,51 +64,83 @@ You're connected to primer's MCP endpoint at `/v1/mcp` over
 Streamable HTTP. Your auth is one of two things:
 
 - A **bearer token** (`Authorization: Bearer <plaintext>`). Tokens
-  carry a scope list; you need the `mcp` scope to reach this
-  endpoint. Tokens are operator-minted and revocable.
+  carry a scope list. A bearer without `mcp` can still connect and see
+  the three meta-tools, but the `mcp` scope is what gates discovery
+  and calls. Tokens are operator-minted and revocable.
 - A **cookie session** (rare for external clients; mostly the
   operator console). Cookies bypass scope checks.
 
-The tools you can call are exactly the intersection of three sets:
+The endpoint advertises exactly three meta-tools - never the target
+catalogue:
 
-- **Allowlist.** The operator's `McpExposure.allowed_tools` list.
-  Tools not in it are unreachable. If `tools/list` returns empty,
-  the operator hasn't enabled exposure or hasn't allowlisted
-  anything yet.
+- **`list_tools`** - page the catalogue you are authorized to see,
+  with deterministic filters and a keyset cursor (`cursor`, `limit`,
+  `include_schema`).
+- **`find_tools`** - search that catalogue by words, with optional
+  semantic backing over the `system` wiki's tool reference pages.
+- **`call_tool`** - call one discovered tool by its scoped id with its
+  arguments: `{"scoped_id": "system__wiki_read", "arguments": {...}}`.
+
+Every `toolset::tool` named in this guide is called that way: pass the
+`__`-scoped id to `call_tool`. Tool ids are scoped: over the wire a
+tool is named `<toolset_id>__<tool_id>` (e.g. `system__list_agents`,
+`system__wiki_search`, `collections__search`); this guide and the docs
+also write the same tool as `<toolset_id>::<tool_id>`
+(`system::list_agents`). Discovery is caller-aware: `list_tools`
+and `find_tools` never reveal an id you cannot use, and an empty
+catalogue can mean the endpoint is disabled, your token lacks `mcp`,
+your role or toolset grants narrow everything away, or an allowlist
+mode excludes every tool - the answer does not say which.
+
+What a caller may use is the intersection of:
+
+- **Exposure mode.** `rbac` (the default): every otherwise-authorized
+  reserved built-in and generated tool clears the caller's role floor
+  and toolset grants. `allowlist`: the scoped id must additionally be
+  in the operator's saved `allowed_tools` set; an empty allowlist is
+  not allow-all.
 - **Exposability.** Yielding tools (`ask_user`, `subscribe_to_trigger`,
-  `_approval`) are silently dropped - MCP has no pause/resume.
-  Session-bound workspace tools (e.g. `watch_files`) are dropped
-  too. Tools with `required` tool approval policies are silently
-  dropped (operator owns visibility decisions there). That includes
-  every tool that creates, updates or deletes an agent, a graph or a
-  trigger (`system::create_agent`, `system::update_graph`,
+  `_approval`) and session-bound workspace tools (e.g. `watch_files`)
+  are never surfaced by discovery, and `call_tool` refuses them - MCP
+  has no pause/resume. Tools with a `required` tool approval policy are
+  never surfaced either, and `call_tool` refuses them with the fixed
+  `tool_unavailable` envelope (the audit/event reason is
+  `approval_required`; the operator owns visibility decisions there).
+  That includes every tool that creates, updates or deletes an agent,
+  a graph or a trigger (`system::create_agent`, `system::update_graph`,
   `trigger::create`, the deletes and the `crud` tools), every approval
   policy write (`system::create_tool_approval_policy` and its update
   and delete), a `system::create_toolset` or `update_toolset` whose
   body is a Python or stdio MCP toolset (an http or sse one goes
   through), and `harness::harness__install`, `harness__sync` and
   `harness__uninstall`: they are gated by default, whatever the
-  caller's role, so over MCP they are refused (`approval_required`)
-  unless the operator disables or retunes their gate.
-- **Scope.** Bearer tokens without `mcp` get 401 before they ever
-  see `tools/list`.
+  caller's role, so over MCP they are refused with the fixed
+  `tool_unavailable` envelope (the audit/event reason is
+  `approval_required`) unless the operator disables or retunes their
+  gate. The exposure
+  surface publishes reserved built-in and generated tools only; a
+  user-registered toolset's tools are never callable over MCP.
+- **Scope.** Bearer tokens without `mcp` still connect and see the
+  three meta-tools; their catalogue is empty (the scope gate runs at
+  the discovery seam) and every `call_tool` answers the fixed
+  `tool_unavailable` envelope. The gate runs at discovery and call
+  time, never at connect time.
 
-Tool IDs are scoped: over MCP a tool is named `<toolset_id>__<tool_id>`
-(e.g. `system__list_agents`, `system__wiki_search`,
-`collections__search`); this guide and the docs also write the same
-tool as `<toolset_id>::<tool_id>` (`system::list_agents`).
+`call_tool` rechecks all of this - live exposure mode, allowlist,
+role, toolset grants, scope and the approval gate - at call time; a
+listed id can be refused the next second.
 
-Error envelopes from `tools/call`:
-
-```json
-{
-  "is_error": true,
-  "output": "{\"type\":\"<error-type>\",\"message\":\"<human-readable>\"}"
-}
-```
-
-Common error types: `tool-not-allowed`, `validation-error`,
-`subsystem-inactive`, `not-found`, `auth-error`, `tool-error`.
+Refusals answer a fixed envelope instead of the inner detail: an
+unavailable or unseen target answers
+`{"ok": false, "error": {"code": "tool_unavailable", "message": "Tool is unavailable."}}`
+(as `isError`), a role or scope denial answers `access_denied`,
+arguments that do not match the target's schema answer
+`invalid_arguments`, and a target that raised answers `tool_failed`
+with a bounded, credential-scrubbed message. A name that is not one of
+the three meta-tools answers JSON-RPC method-not-found with the same
+fixed message as a refused tool, and outer failures are fixed text too
+(`Input validation error: arguments`, `Tool dispatch failed.`) - never
+an echo of your input.
 
 ## 3. How to learn more - the documentation contract
 
@@ -170,7 +202,7 @@ collection. Read the full doc with
 | `tool-approval` | Pre-dispatch gates on tool calls. Approval kinds (required/policy/llm), fail-closed semantics, supersession by new user turns, interaction with MCP exposure. |
 | `harnesses` | Git-installed entity bundles. Lifecycle (draft → ready → installed → outdated), fetch/install/sync/uninstall, managed entity guard. |
 | `channels` | Slack/Telegram/Discord adapters. ChannelProvider → Channel → WorkspaceChannelAssociation, forwarding flags, first-reply-wins, fire-and-forget posts. |
-| `mcp-exposure` | The MCP server endpoint itself. The `McpExposure` singleton, the allowlist, scope auth, hard-deny (none in v1), GZip bypass. |
+| `mcp-exposure` | The MCP server endpoint itself. The `McpExposure` singleton, the exposure mode (rbac floor / allowlist narrowing), the saved allowlist, scope auth, hard-deny (none in v1), GZip bypass. |
 | `auth-and-tokens` | API tokens, scopes, cookie vs bearer, token minting, revocation, the `mcp` scope. |
 
 ### Recipes by goal
@@ -216,14 +248,16 @@ End-to-end recipes live under `cookbook/` slugs, read the same way
 If this is your first time on this primer deployment, this is the
 shortest path to understanding what's available:
 
-1. **List the tools you have.** Call `tools/list`. The shape of
-   that list - what's in the allowlist, what's missing - tells you
-   the operator's intent for your role.
+1. **Learn the three meta-tools.** `tools/list` always names exactly
+   three tools: `list_tools`, `find_tools`, `call_tool` - never the
+   target catalogue. The catalogue you may actually call is yours
+   alone: `list_tools` pages it (filters, `include_schema`) and
+   `find_tools` searches it by purpose. An empty catalogue means the
+   operator's mode, your token's scope, or your role and grants
+   narrowed everything away - not that there are no tools.
 
-2. **Read the table of contents.** Call:
-   ```json
-   {"tool": "system::wiki_read", "arguments": {"path": ""}}
-   ```
+2. **Read the table of contents.** Call `call_tool` with
+   `{"scoped_id": "system__wiki_read", "arguments": {"path": ""}}`.
    It lists the wiki's sections, the tool reference, the live install
    map and the agent docs. Then search by topic with
    `system::wiki_search`; `mode_used: "fulltext"` in its answer means
@@ -275,8 +309,9 @@ Full recipe: `cookbook/create-and-run-a-session`.
   invocation. For human-in-the-loop multi-step work, use sessions
   with the `subscribe_to_trigger` yielding tool.
 - **Yielding tools over MCP** - `ask_user`, `subscribe_to_trigger`,
-  `_approval` are not exposed to MCP clients. Poll instead, or rely
-  on primer's own internal agents.
+  `_approval` are never surfaced by discovery, and `call_tool`
+  refuses them (no pause/resume over MCP in v1). Poll instead, or
+  rely on primer's own internal agents.
 - **Live document upload (multipart `POST /v1/documents` with
   embedding)** - deferred. `POST /v1/documents` persists the row;
   vectorising is a follow-up.

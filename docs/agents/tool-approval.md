@@ -67,10 +67,14 @@ The thing that catches everyone is the interaction with MCP. The MCP
 exposure layer treats "this tool has a `required`-type policy" as
 "this tool cannot be exposed to MCP clients at all" - because MCP
 has no pause/resume primitive. So if you add an approval policy to a
-tool that was previously available over MCP, it silently disappears
-from external `tools/list`. This is by design; agents reaching primer
-over MCP can't sit through a human approval loop, so the tool
-becomes inaccessible. To restore it: drop the policy. This includes the
+tool that was previously available over MCP, it becomes invisible to
+discovery: `list_tools` and `find_tools` never surface it to the
+caller, and a `call_tool` for it is refused at call time with the
+fixed `tool_unavailable` envelope (`approval_required` is the
+audit/event reason only; the wire never says why). This is by design;
+agents reaching primer over
+MCP can't sit through a human approval loop, so the tool becomes
+inaccessible. To restore it: drop the policy. This includes the
 tools the platform gates by default: over MCP, every create, update and
 delete of an agent, a graph or a trigger (`crud`, and the `system` and
 `trigger` tools such as `system::create_agent`, `trigger::create` and
@@ -385,8 +389,10 @@ cannot remove or relax a gate without a person deciding it.
 
 What an agent *does* see:
 
-- A previously-available tool can disappear from the next
-  `tools/list` response. (If MCP exposure is involved.)
+- A previously-available tool can disappear from `list_tools`/
+  `find_tools` discovery, and a direct `call_tool` for it answers the
+  fixed `tool_unavailable` envelope (the audit/event reason is
+  `approval_required`). (If MCP exposure is involved.)
 - A tool call can return a `tool_rejected` result when an approval
   was set up while the agent was running. The output contains the
   reason string ("rejected by operator: <message>").
@@ -494,9 +500,11 @@ but require human review for any other host.
   the message is queued behind the open turn and the approval stays
   pending (no auto-rejection). To abandon the gated call, cancel its
   yield (an approver or an admin) or cancel the session.
-- **MCP exposure silently hides approval-gated tools.** Adding a
+- **MCP exposure hides approval-gated tools from discovery.** Adding a
   `required` policy to a tool that's in `mcp_exposure.allowed_tools`
-  removes it from MCP `tools/list` until the policy is dropped.
+  removes it from `list_tools`/`find_tools` and turns a direct
+  `call_tool` into a fixed `tool_unavailable` refusal (the audit/event
+  reason is `approval_required`) until the policy is dropped.
   Operators with both surfaces in play need to remember this.
 - **One policy per `(toolset_id, tool_name)`.** There's no wildcard
   tool name, no policy that applies to "every tool in this toolset",

@@ -10,7 +10,8 @@
 //                      (sourced from GET /v1/mcp_exposure/available) and an
 //                      allowlist editor PUT'd back to /v1/mcp_exposure.
 //
-// PUT shape:  { enabled?: bool, allowed_tools?: string[] }
+// PUT shape:  { enabled?: bool, mode?: "rbac" | "allowlist",
+//               allowed_tools?: string[] }
 // Both fields are optional ("PATCH-shaped" -- spec §6); the page sends
 // only the field that changed so a toggle never accidentally clobbers
 // the allowlist and vice versa.
@@ -130,6 +131,12 @@ function MC_reasonLabel(reason) {
   return reason;
 }
 
+function MC_toast(toast) {
+  if (window.primerApi && window.primerApi.toastPush) {
+    window.primerApi.toastPush(toast);
+  }
+}
+
 // ============================================================================
 // MC_McpPage — top-level page
 // ============================================================================
@@ -178,6 +185,10 @@ function MC_EndpointPanel({ exposure, availableItems }) {
 
   const row = exposure.data;
   const enabled = !!(row && row.enabled);
+  // Rows written before Tools Universal M2 have no mode and retain the
+  // historical allowlist meaning. The migration persists this value, but the
+  // fallback keeps a rolling deployment safe while old rows are still read.
+  const mode = row && row.mode ? row.mode : "allowlist";
   const allowedCount = Array.isArray(row && row.allowed_tools)
     ? row.allowed_tools.length
     : 0;
@@ -186,6 +197,7 @@ function MC_EndpointPanel({ exposure, availableItems }) {
   const totalCount = Array.isArray(availableItems) ? availableItems.length : null;
 
   const [busy, setBusy] = React.useState(false);
+  const [modeBusy, setModeBusy] = React.useState(false);
   const [toggleError, setToggleError] = React.useState(null);
   const [copiedUrl, setCopiedUrl] = React.useState(false);
   const [copiedConfig, setCopiedConfig] = React.useState(false);
@@ -199,10 +211,35 @@ function MC_EndpointPanel({ exposure, availableItems }) {
       // PATCH-shaped: send only the field we're changing.
       await apiFetch("PUT", "/mcp_exposure", { enabled: !enabled });
       exposure.refetch();
+      MC_toast({
+        kind: "success",
+        title: enabled ? "MCP endpoint disabled" : "MCP endpoint enabled",
+      });
     } catch (err) {
-      setToggleError(MC_extractError(err));
+      const refusal = MC_extractError(err);
+      setToggleError(refusal);
+      MC_toast({ kind: "error", title: "Couldn't update the MCP endpoint", detail: refusal.message || "" });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const changeMode = async (nextMode) => {
+    if (modeBusy || exposure.loading || nextMode === mode) return;
+    setModeBusy(true);
+    setToggleError(null);
+    try {
+      // Deliberately omit allowed_tools. Switching modes never destroys the
+      // operator's saved narrowing, so returning to allowlist mode restores it.
+      await apiFetch("PUT", "/mcp_exposure", { mode: nextMode });
+      exposure.refetch();
+      MC_toast({ kind: "success", title: "MCP exposure mode saved", detail: nextMode === "rbac" ? "RBAC floor" : "Allowlist narrowing" });
+    } catch (err) {
+      const refusal = MC_extractError(err);
+      setToggleError(refusal);
+      MC_toast({ kind: "error", title: "Couldn't change the MCP exposure mode", detail: refusal.message || "" });
+    } finally {
+      setModeBusy(false);
     }
   };
 
@@ -247,7 +284,8 @@ function MC_EndpointPanel({ exposure, availableItems }) {
             size="sm"
             kind={enabled ? "default" : "primary"}
             icon={enabled ? "pause" : "play"}
-            disabled={busy || exposure.loading}
+            disabled={exposure.loading}
+            busy={busy}
             onClick={toggle}
             data-testid="mcp-toggle-btn"
           >
@@ -263,6 +301,61 @@ function MC_EndpointPanel({ exposure, availableItems }) {
           detail={toggleError.message || ""}
         />
       )}
+
+      {exposure.error && !row && (
+        <Banner
+          kind="error"
+          title={exposure.error.title || "Couldn't load MCP exposure settings"}
+          detail={exposure.error.detail || exposure.error.message || ""}
+          actions={<Btn size="sm" icon="refresh" onClick={exposure.refetch}>Retry</Btn>}
+        />
+      )}
+
+      <fieldset
+        data-testid="mcp-exposure-mode"
+        style={{ border: 0, padding: 0, margin: 0 }}
+        aria-busy={modeBusy ? "true" : undefined}
+      >
+        <legend className="field-label">Exposure mode</legend>
+        <div
+          role="radiogroup"
+          aria-label="MCP exposure mode"
+          style={{ display: "flex", gap: 12, flexWrap: "wrap" }}
+        >
+          <label className="panel" style={{ padding: 10, flex: "1 1 240px", cursor: modeBusy ? "wait" : "pointer" }}>
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="radio"
+                name="mcp-exposure-mode"
+                value="rbac"
+                checked={mode === "rbac"}
+                aria-disabled={modeBusy || exposure.loading ? "true" : undefined}
+                onChange={() => changeMode("rbac")}
+              />
+              <strong>RBAC floor</strong>
+            </span>
+            <span className="muted text-sm" style={{ display: "block", marginTop: 4 }}>
+              Show every MCP-safe built-in tool the caller's role and grants permit.
+            </span>
+          </label>
+          <label className="panel" style={{ padding: 10, flex: "1 1 240px", cursor: modeBusy ? "wait" : "pointer" }}>
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="radio"
+                name="mcp-exposure-mode"
+                value="allowlist"
+                checked={mode === "allowlist"}
+                aria-disabled={modeBusy || exposure.loading ? "true" : undefined}
+                onChange={() => changeMode("allowlist")}
+              />
+              <strong>Allowlist narrowing</strong>
+            </span>
+            <span className="muted text-sm" style={{ display: "block", marginTop: 4 }}>
+              Apply the saved allowlist after the caller's RBAC and access checks.
+            </span>
+          </label>
+        </div>
+      </fieldset>
 
       <div className="field" style={{ margin: 0 }}>
         <label className="field-label" htmlFor="mcp-endpoint-url-input">Endpoint URL</label>
@@ -345,6 +438,8 @@ function MC_ToolsPanel({ exposure, available }) {
   const items = Array.isArray(available.data?.items) ? available.data.items : [];
   const row = exposure.data;
   const masterEnabled = !!(row && row.enabled);
+  const exposureMode = row && row.mode ? row.mode : "allowlist";
+  const allowlistActive = masterEnabled && exposureMode === "allowlist";
   // The memo depends on the sorted CONTENT, not the array's identity: any
   // new row object (the master toggle's refetch, a poll-driven re-read
   // after another admin's edit) would otherwise rebuild the Set and the
@@ -447,7 +542,7 @@ function MC_ToolsPanel({ exposure, available }) {
 
   const toggleScoped = (scoped_id, exposable) => {
     if (!exposable) return; // Non-exposable rows are not editable.
-    if (!masterEnabled) return; // Notes 4: checkboxes disabled while the master toggle is off.
+    if (!allowlistActive) return;
     setDraft((prev) => {
       const next = new Set(prev);
       if (next.has(scoped_id)) next.delete(scoped_id);
@@ -463,8 +558,8 @@ function MC_ToolsPanel({ exposure, available }) {
   // Non-exposable rows are never affected (the server would reject the
   // id anyway); nothing is affected while the master toggle is off.
   const visibleExposable = React.useMemo(
-    () => (masterEnabled ? pageItems.filter((it) => it.exposable) : []),
-    [pageItems, masterEnabled],
+    () => (allowlistActive ? pageItems.filter((it) => it.exposable) : []),
+    [pageItems, allowlistActive],
   );
   const visibleSelectedCount = React.useMemo(
     () => visibleExposable.reduce((n, it) => n + (draft.has(it.scoped_id) ? 1 : 0), 0),
@@ -506,6 +601,7 @@ function MC_ToolsPanel({ exposure, available }) {
   };
 
   const recommendSafeDefaults = () => {
+    if (!allowlistActive) return;
     // Pre-select the conservative read-only set across exposable items.
     // Non-exposable tools are skipped (no point staging an id the
     // server will reject at PUT validation time).
@@ -526,8 +622,11 @@ function MC_ToolsPanel({ exposure, available }) {
       const allowed_tools = Array.from(draft).sort();
       await apiFetch("PUT", "/mcp_exposure", { allowed_tools });
       exposure.refetch();
+      MC_toast({ kind: "success", title: "MCP allowlist saved", detail: `${allowed_tools.length} tools` });
     } catch (err) {
-      setSaveError(MC_extractError(err));
+      const refusal = MC_extractError(err);
+      setSaveError(refusal);
+      MC_toast({ kind: "error", title: "Couldn't save the MCP allowlist", detail: refusal.message || "" });
     } finally {
       setSaving(false);
     }
@@ -605,6 +704,7 @@ function MC_ToolsPanel({ exposure, available }) {
             kind="ghost"
             icon="zap"
             onClick={recommendSafeDefaults}
+            disabled={!allowlistActive}
             data-testid="recommend-safe-defaults-btn"
             title="Pre-select a conservative read-only set (still requires Save)"
           >
@@ -615,7 +715,8 @@ function MC_ToolsPanel({ exposure, available }) {
             kind="ghost"
             icon="refresh"
             onClick={resetDraft}
-            disabled={!isDirty || saving}
+            disabled={!isDirty || !allowlistActive}
+            blocked={saving}
           >
             Reset
           </Btn>
@@ -624,7 +725,8 @@ function MC_ToolsPanel({ exposure, available }) {
             kind="primary"
             icon="check"
             onClick={save}
-            disabled={!isDirty || saving}
+            disabled={!isDirty || !allowlistActive}
+            busy={saving}
             data-testid="save-allowed-btn"
           >
             {saving ? "Saving…" : "Save"}
@@ -652,6 +754,16 @@ function MC_ToolsPanel({ exposure, available }) {
         </div>
       )}
 
+      {masterEnabled && exposureMode === "rbac" && (
+        <div style={{ padding: "0 12px 10px" }} data-testid="mcp-rbac-mode-hint">
+          <Banner
+            kind="info"
+            title="RBAC-floor mode is active"
+            detail="Saved allowlist is preserved but inactive. Switch to Allowlist narrowing to edit or apply it."
+          />
+        </div>
+      )}
+
       {available.loading && items.length === 0 && (
         <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
           Loading catalogue…
@@ -672,14 +784,20 @@ function MC_ToolsPanel({ exposure, available }) {
           No tools match the current filters.
         </div>
       )}
+      {!available.loading && !available.error && items.length === 0 && (
+        <div className="muted text-sm" style={{ padding: 30, textAlign: "center" }}>
+          No exposable tools are available.
+        </div>
+      )}
 
       {visibleItems.length > 0 && (
         <React.Fragment>
         <Pager pager={pager} label="tools" />
+        <div data-testid="mcp-tools-scroll" style={{ overflowX: "auto" }}>
         <table
           data-testid="mcp-tools-table"
           className="table"
-          style={{ width: "100%", fontSize: 12 }}
+          style={{ width: "100%", minWidth: 760, fontSize: 12 }}
         >
           <thead>
             <tr>
@@ -689,10 +807,12 @@ function MC_ToolsPanel({ exposure, available }) {
                   type="checkbox"
                   checked={allVisibleSelected}
                   onChange={toggleAllVisible}
-                  disabled={visibleExposable.length === 0}
+                  disabled={visibleExposable.length === 0 || !allowlistActive}
                   title={
                     !masterEnabled
                       ? "MCP endpoint is disabled"
+                      : !allowlistActive
+                      ? "Allowlist editor is inactive in RBAC-floor mode"
                       : visibleExposable.length === 0
                       ? "No exposable tools on this page"
                       : allVisibleSelected
@@ -738,10 +858,14 @@ function MC_ToolsPanel({ exposure, available }) {
                       <input
                         type="checkbox"
                         checked={staged}
-                        disabled={!masterEnabled}
+                        disabled={!allowlistActive}
                         onChange={() => toggleScoped(it.scoped_id, true)}
                         aria-label={`Allow ${it.scoped_id}`}
-                        title={!masterEnabled ? "MCP endpoint is disabled" : undefined}
+                        title={!masterEnabled
+                          ? "MCP endpoint is disabled"
+                          : !allowlistActive
+                          ? "Allowlist editor is inactive in RBAC-floor mode"
+                          : undefined}
                       />
                     ) : (
                       <Icon name="x-circle" size={14} className="muted" />
@@ -800,6 +924,7 @@ function MC_ToolsPanel({ exposure, available }) {
             })}
           </tbody>
         </table>
+        </div>
         </React.Fragment>
       )}
     </div>

@@ -135,6 +135,50 @@ def _make_mcp_auth_gate(app: FastAPI):
     return _mcp_auth_gate
 
 
+def _build_semantic_search(app: FastAPI) -> "Callable[[str, int], Awaitable[list[str]]] | None":
+    """The optional semantic seam for ``find_tools``: system-wiki reference pages only.
+
+    Returns ``None`` (meta-tools stay lexical-only) when the install has
+    no semantic registry. Every failure degrades to ``[]`` so MCP never
+    depends on the index: the ladder's own fulltext rung is the lexical
+    bootstrap fallback, and ``find_tools`` always computes its lexical
+    matches and intersects semantic hits with the authorized catalogue.
+    """
+    registry = getattr(app.state, "semantic_search_registry", None)
+    if registry is None:
+        return None
+
+    async def search(query: str, limit: int) -> list[str]:
+        from primer.knowledge.collection_query import query_collection
+        from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
+        from primer.knowledge.wiki.reference import REFERENCE_TOOLS
+        from primer.mcp.exposure import _person_for_actor
+        from primer.mcp.server import current_actor
+        from primer.model.collection import Collection
+
+        try:
+            sp = app.state.storage_provider
+            collection = await sp.get_storage(Collection).get(SYSTEM_COLLECTION_ID)
+            if collection is None:
+                return []
+            outcome = await query_collection(
+                sp=sp,
+                provider_registry=app.state.provider_registry,
+                semantic_search_registry=registry,
+                collection=collection,
+                query=query,
+                limit=limit,
+                path_prefix=REFERENCE_TOOLS,
+                mode="auto",
+                person=_person_for_actor(current_actor.get()),
+            )
+        except Exception:  # noqa: BLE001 - an optional seam must never take MCP down
+            return []
+        return [h["path"] for h in outcome.hits if isinstance(h, dict) and h.get("path")]
+
+    return search
+
+
 async def _start_mcp_mount(
     app: FastAPI,
     *,
@@ -154,11 +198,17 @@ async def _start_mcp_mount(
     from primer.mcp.exposure import ExposureDeps
     from primer.mcp.server import build_mcp_server
 
+    # ``app.state.semantic_search_registry`` is set by the production
+    # lifespan and the test app factory before this mount starts; when
+    # it is absent the seam is None and find_tools stays lexical-only.
+    semantic_search = _build_semantic_search(app)
+
     def _deps_factory():
         return ExposureDeps(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             approval_resolver=approval_resolver,
+            semantic_search=semantic_search,
         )
 
     mcp_server = build_mcp_server(_deps_factory)

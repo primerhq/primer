@@ -257,5 +257,6 @@ Response:
   page carries.
 - [graphs](graphs.md) - a graph's description is what its live-map
   page carries.
-- [mcp-exposure](mcp-exposure.md) - only tools in the operator's
-  allowlist appear in `tools/list`.
+- [mcp-exposure](mcp-exposure.md) - discovery (`list_tools`/
+  `find_tools`) shows each caller only the tools its role, grants and
+  the exposure mode permit.

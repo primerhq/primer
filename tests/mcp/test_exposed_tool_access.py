@@ -13,6 +13,7 @@ to ``list_exposed_tools`` / ``invoke_exposed`` before letting them pass.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -68,7 +69,13 @@ async def test_an_admin_cannot_expose_a_private_toolsets_tool(fake_storage_provi
 @pytest.mark.parametrize("who", ["ub", "ua", "ug", "root"])
 @pytest.mark.asyncio
 async def test_an_allowlisted_private_tool_is_listed_and_called_by_nobody(fake_storage_provider, who) -> None:
-    """Stranger, owner, read grantee and admin alike: the floor wins over a stored allowlist."""
+    """Stranger, owner, read grantee and admin alike: the floor wins over a stored allowlist.
+
+    Pinned on the meta surface: ``list_tools`` never projects the private
+    tool to any caller, and ``call_tool`` answers it with the same fixed
+    tool_unavailable envelope as an id that does not exist (no leak, no
+    validation difference).
+    """
     deps, ats = await _private_toolset(fake_storage_provider)
     await fake_storage_provider.get_storage(McpExposure).create(McpExposure(
         enabled=True, allowed_tools=[SECRET, BUILTIN, "ats__nope"], updated_at=datetime.now(timezone.utc),
@@ -76,15 +83,16 @@ async def test_an_allowlisted_private_tool_is_listed_and_called_by_nobody(fake_s
     server = build_mcp_server(lambda: deps)
     actor = _user(who, role="admin" if who == "root" else "user")
 
-    listed = await _as(actor, server, "tools/list")
-    assert [tool.name for tool in listed.tools] == [BUILTIN]
-    refusals = {}
+    listed = await _as(actor, server, "tools/call", CallToolRequestParams(name="list_tools", arguments={"limit": 100}))
+    ids = [item["scoped_id"] for item in json.loads(listed.content[0].text)["items"]]
+    assert SECRET not in ids
+    assert BUILTIN in ids
     for name, arguments in ((SECRET, {"n": 1}), (SECRET, {}), ("ats__nope", {"n": 1})):  # {} fails the schema: no validation leak
-        with pytest.raises(MCPError) as info:
-            await _as(actor, server, "tools/call", CallToolRequestParams(name=name, arguments=arguments))
-        assert info.value.code == METHOD_NOT_FOUND
-        refusals[name] = info.value.message.replace(name, "<tool>")
-    assert refusals[SECRET] == refusals["ats__nope"]
+        out = await _as(actor, server, "tools/call", CallToolRequestParams(name="call_tool", arguments={"scoped_id": name, "arguments": arguments}))
+        assert out.is_error is True
+        assert json.loads(out.content[0].text) == {
+            "ok": False, "error": {"code": "tool_unavailable", "message": "Tool is unavailable."},
+        }
     assert ats.calls == []
-    builtin = await _as(actor, server, "tools/call", CallToolRequestParams(name=BUILTIN, arguments={}))
+    builtin = await _as(actor, server, "tools/call", CallToolRequestParams(name="call_tool", arguments={"scoped_id": BUILTIN, "arguments": {}}))
     assert builtin.is_error is False

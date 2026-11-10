@@ -31,6 +31,7 @@ def log_invoke(
     ok: bool,
     duration_ms: float,
     error_code: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Emit one audit record for an MCP ``tools/call`` request.
 
@@ -58,6 +59,10 @@ def log_invoke(
         Stable code from Spec §13 (``"not_exposed"`` /
         ``"dispatch_failed"``) when ``ok`` is ``False``, ``None``
         otherwise.
+    reason
+        Audit-only stable denial detail (the ``NotExposed`` reason for a
+        refused ``call_tool``, ``"access_denied"`` for a retained
+        in-band scope/role refusal). Never surfaced on the wire.
     """
     logger.info(
         "mcp.invoke",
@@ -68,6 +73,7 @@ def log_invoke(
             "ok": ok,
             "duration_ms": round(duration_ms, 2),
             "error_code": error_code,
+            "reason": reason,
         },
     )
 

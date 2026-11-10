@@ -7,13 +7,14 @@ Against the hermetic OAuth + MCP mock (``tests/_support/mock_oauth_mcp.py``) and
 3. B runs the same agent: no token is sent and the tool answers that the person the run acts for must sign in. B connects
    for themselves; B's run succeeds and the mock sees a token that is not A's.
 4. B disconnects; A's run still succeeds on A's own sign-in.
-5. C (T is not shared with them) connects an MCP client: ``tools/list`` has none of T's tools and ``tools/call T__echo`` is
-   refused like an unknown tool.
+5. C (T is not shared with them) connects an MCP client: ``tools/list`` advertises only the three meta-tools
+   (none of T's) and ``call_tool`` for ``T__echo`` answers with the fixed ``tool_unavailable`` envelope.
 6. The ``toolset.updated`` event of A's sharing change names A (``user:<A id>``), not ``system``.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -164,11 +165,18 @@ async def _c_mcp_client_sees_no_tool_of(admin: httpx.AsyncClient, c: httpx.Async
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 names = {tool.name for tool in (await session.list_tools()).tools}
-                assert names == {"misc__uuid_v4"}
+                assert names == {"list_tools", "find_tools", "call_tool"}
                 assert not any(name.startswith(f"{toolset_id}__") for name in names)
-                try:
-                    result = await session.call_tool(f"{toolset_id}__echo", arguments={"text": "hi"})
-                except Exception as exc:  # noqa: BLE001 - the SDK raises the JSON-RPC method-not-found error
-                    assert "not exposed" in str(exc).lower() or "method" in str(exc).lower(), repr(exc)
-                else:
-                    assert result.is_error, "a tool of an owned toolset was called over MCP"
+                result = await session.call_tool(
+                    "call_tool",
+                    arguments={
+                        "scoped_id": f"{toolset_id}__echo",
+                        "arguments": {"text": "hi"},
+                    },
+                )
+                assert result.is_error is True
+                body = json.loads("".join(getattr(part, "text", "") for part in result.content))
+                assert body == {
+                    "ok": False,
+                    "error": {"code": "tool_unavailable", "message": "Tool is unavailable."},
+                }

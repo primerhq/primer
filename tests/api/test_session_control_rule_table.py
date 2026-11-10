@@ -1996,15 +1996,24 @@ async def test_fire_now_over_the_real_mcp_endpoint_fires_a_trigger_only_when_the
     else:
         sent = {"Authorization": f"Bearer {await _mcp_token(sp, carol_id if asker.startswith('carol') else admin_id)}"}
 
-    result = await _mcp_call(app, headers=sent, tool_name="trigger__fire_now", arguments={"id": FIRE_TRIGGER})
+    result = await _mcp_call(
+        app, headers=sent, tool_name="call_tool",
+        arguments={"scoped_id": "trigger__fire_now", "arguments": {"id": FIRE_TRIGGER}},
+    )
 
-    text = result.content[0].text
+    payload = json.loads(result.content[0].text)
     if not accepted:
-        assert (result.is_error, json.loads(text)) == (True, {"type": "trigger_not_found", "message": FIRE_TRIGGER}), text
+        assert result.is_error is True, result.content[0].text
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "tool_failed"
+        assert json.loads(payload["error"]["message"]) == {
+            "type": "trigger_not_found", "message": FIRE_TRIGGER,
+        }, result.content[0].text
         assert await _fire_rows(sp) == before, f"a refused MCP fire fired ({who})"
         return
-    assert result.is_error is False, text
-    assert await _fired(sp), text
+    assert result.is_error is False, result.content[0].text
+    assert payload["ok"] is True
+    assert await _fired(sp), result.content[0].text
 
 
 @pytest.mark.parametrize(("run_as", "accepted"), [pytest.param(USER, False, id="a user's run"), pytest.param(ADMIN, True, id="an admin's run")])

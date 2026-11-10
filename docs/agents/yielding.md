@@ -36,8 +36,11 @@ Yielding tools are powerful, but they're also unavailable over MCP.
 The MCP transport has no pause/resume mechanism - `tools/call` is a
 single request/response. If primer exposed a yielding tool to an
 MCP client, the response would either time out or hang the client
-forever. Primer's MCP `is_exposable()` gate therefore drops every
-yielding tool from `tools/list`. Inside primer's own agent runtime
+forever. Primer's MCP `is_exposable()` gate therefore keeps every
+yielding tool out of discovery: `list_tools`/`find_tools` never
+surface it and a `call_tool` for it is refused (yielding is
+unsupported over MCP in v1 - there is no pause/resume primitive).
+Inside primer's own agent runtime
 (when a primer-hosted agent calls a tool during a session
 turn), yields work normally; outside, they aren't visible at all.
 
@@ -148,7 +151,8 @@ yields in primer:
 - `_approval` - internal yield used by tool approval (not a tool the
   agent can call directly; it's a side effect of the dispatch gate).
 
-None of these appear in MCP `tools/list`. They are visible to
+None of these appear in MCP discovery (`list_tools`/`find_tools`); a
+`call_tool` for one is refused. They are visible to
 agents running inside primer's own session runtime.
 
 For external MCP-hosted agents who need wait-for-event behaviour:

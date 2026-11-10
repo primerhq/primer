@@ -228,7 +228,10 @@ async def invoke_exposed(
     member. Denial is IN-BAND, same shape as the RBAC floor below.
     """
     exposure = await get_exposure(deps)
-    if not exposure.enabled or scoped_id not in set(exposure.allowed_tools):
+    if not exposure.enabled or (
+        exposure.mode == "allowlist"
+        and scoped_id not in set(exposure.allowed_tools)
+    ):
         raise NotExposed(scoped_id, reason="not_in_allowlist")
     if "__" not in scoped_id:
         raise NotExposed(scoped_id, reason="malformed_id")
