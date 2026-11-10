@@ -546,6 +546,11 @@ Read the description + system_prompt to confirm fit.
   LLM sees the error and (usually) recovers. This is the
   recovery loop you may have seen as "invalid arguments for X" in
   session logs.
+- **Generated REST streams fail as a whole.** An interrupted response returns
+  the tool error `route-tool-stream-failed` with message `generated REST response
+  stream failed`. No partial body or provider exception text reaches the result,
+  including over MCP. Treat it as a failed call; partial audio is not a completed
+  synthesis.
 - **A toolset that cannot list its tools is left out of the turn.** An
   MCP toolset whose server is down, needs a sign-in or does not answer
   within 60 seconds no longer ends the turn: the turn starts without that

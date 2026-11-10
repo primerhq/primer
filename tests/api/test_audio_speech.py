@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -108,6 +109,24 @@ async def test_a_failure_after_the_first_chunk_aborts_the_http_response(client, 
     await _configure(client, app, stub)
     with pytest.raises(Exception, match="SpeechStreamBroken|dropped|speech stream"):
         await client.post("/v1/audio/speech", json={"input": "hello"})
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_first_chunk_aborts_the_generated_tool(client, app) -> None:
+    from primer.access.acting import acting_as
+    from primer.access.person import Person
+
+    stub = _StubTTS([b"a", SpeechError(code="provider_error", message="dropped")])
+    await _configure(client, app, stub)
+    provider = app.state.generated_route_toolsets.providers["audio"]
+    with acting_as(Person(None, "system")):
+        result = await provider.call(tool_name="synthesize_speech", arguments={"body": {"input": "hello"}})
+    assert result.is_error
+    assert json.loads(result.output) == {
+        "type": "route-tool-stream-failed",
+        "message": "generated REST response stream failed",
+    }
+    assert len(stub.calls) == 1
 
 
 # ---------- HTTP surface ---------------------------------------------

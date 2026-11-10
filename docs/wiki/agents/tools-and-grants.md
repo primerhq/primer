@@ -28,6 +28,7 @@ Routing tries the workspace tools first, then the toolset routing table:
 - A call naming a tool the agent did not register is refused before dispatch with an unsupported-content error (422, `/errors/unsupported-content`) that ends the turn.
 - The toolset's role floor is checked before any approval gate: a tool the run's role may not clear comes back as an in-band error result (the call is never executed), so the model can react.
 - A tool handler that throws feeds its error text back to the model as the call's result. The turn continues; that is the recovery loop.
+- A generated REST tool whose response stream fails returns an error with type `route-tool-stream-failed` and message `generated REST response stream failed`. It returns no partial body or provider exception text, including over MCP. Treat it as a failed call; partial audio is not a completed synthesis.
 
 ### Unavailable toolsets
 

@@ -131,6 +131,23 @@ an auth-enabled app; an unattributed person never gains that identity. There is
 no localhost, cookie, or role-only surrogate. Dispatch has a 30 second bound,
 propagates task cancellation, rejects recursive generated dispatch, caps a
 response at 1 MiB, and writes a bounded audit record without arguments.
+Its private transport advertises ASGI HTTP spec 2.4 so cancellation reaches a
+streaming producer without a legacy disconnect task group's repeated
+cancellation of the producer's own async finalizer. Explicit iterator closure
+and producer shutdown run on their own tasks using the shared shielded-cleanup
+pattern, with a separate one-second wait bound. The transport owns one cancel
+request per dispatch, independent of the producer's historical cancellation
+counter. Repeated caller cancellation is recorded while waiting with
+`asyncio.wait`, then propagated without cancelling the cleanup task. A primary
+producer/caller failure takes precedence over closure failure; an otherwise
+successful stream with failed closure is still a failure. Bytes sent after a
+terminal response body are ignored, and sending after a transport abort raises
+`OSError` as required by the advertised HTTP spec. A producer exception after a
+response starts, including after middleware terminates partial successful
+bytes, returns the fixed `route-tool-stream-failed` tool error and a
+`stream_failed` audit outcome. Exception details remain only in the private
+cause chain and never enter the tool/MCP response. Fully delivered HTTP errors
+retain their RFC 7807 payload and status.
 Mutating routes are non-interruptible unless their declaration explicitly
 proves otherwise, and their generated tools join the same default
 approval-policy seed as curated writes; reads remain ungated.

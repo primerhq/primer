@@ -14,6 +14,7 @@ from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import anyio
 import httpx
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Request, Security, UploadFile
@@ -1336,6 +1337,230 @@ async def test_streaming_response_limit_stops_producer_at_crossing_chunk() -> No
     }
     assert app.state.oversize_stream_chunks == 4
     assert app.state.oversize_stream_cleaned is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled_scope", [False, True])
+async def test_response_limit_awaits_stream_cleanup_in_cancelled_scope(cancelled_scope) -> None:
+    app = FastAPI()
+    cleaned = asyncio.Event()
+    produced = 0
+
+    class CancelOnCrossingChunk:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            size = 0
+            with anyio.CancelScope() as cancel_scope:
+                async def forward(message):
+                    nonlocal size
+                    if message["type"] == "http.response.body":
+                        size += len(message.get("body", b""))
+                        if size > 1_048_576:
+                            cancel_scope.cancel()
+                    await send(message)
+
+                await self.app(scope, receive, forward)
+
+    if cancelled_scope:
+        # A surrounding middleware may still own an AnyIO scope even with
+        # the private transport's HTTP 2.4 StreamingResponse path.
+        app.add_middleware(CancelOnCrossingChunk)
+
+    async def chunks():
+        nonlocal produced
+        try:
+            for _ in range(8):
+                produced += 1
+                yield b"x" * 300_000
+        finally:
+            # Unlike asyncio.sleep(0), an AnyIO checkpoint observes the
+            # enclosing cancelled Starlette task-group scope on every await.
+            await anyio.sleep(0)
+            cleaned.set()
+
+    @app.get("/v1/stream")
+    @route_tool(scoped_id="stream_probe__stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(chunks())
+
+    snapshot = build_generated_route_toolsets(app)
+    result = await _call(snapshot.providers["stream_probe"], "stream", {}, Person(None, "system"))
+
+    assert result.is_error
+    assert json.loads(result.output)["type"] == "route-tool-response-too-large"
+    assert produced == 4
+    assert cleaned.is_set(), "dispatch returned before async iterator cleanup completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["cancel", "timeout"])
+@pytest.mark.parametrize("body_kind", ["iterator", "generator"])
+async def test_aborted_dispatch_awaits_iterator_close(termination, body_kind, monkeypatch) -> None:
+    app = FastAPI()
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+    cleaned = asyncio.Event()
+    closes = 0
+
+    class Body:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def aclose(self):
+            nonlocal closes
+            closes += 1
+            await anyio.sleep(0)
+            cleaned.set()
+
+    async def chunks():
+        nonlocal closes
+        try:
+            yield b"first"
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+            closes += 1
+            await anyio.sleep(0)
+            cleaned.set()
+
+    @app.get("/v1/stream")
+    @route_tool(scoped_id="stream_probe__stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(Body() if body_kind == "iterator" else chunks())
+
+    snapshot = build_generated_route_toolsets(app)
+    if termination == "timeout":
+        monkeypatch.setattr(route_tools_module, "_DISPATCH_TIMEOUT_S", 0.05)
+    task = asyncio.create_task(
+        _call(snapshot.providers["stream_probe"], "stream", {}, Person(None, "system"))
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    if termination == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        result = await task
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "route-tool-timeout"
+    assert stopped.is_set()
+    assert cleaned.is_set(), "dispatch returned before async iterator cleanup completed"
+    assert closes == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oversize", [False, True])
+async def test_pathological_iterator_close_is_bounded(oversize, monkeypatch) -> None:
+    app = FastAPI()
+    close_started = asyncio.Event()
+    close_cancelled = asyncio.Event()
+
+    class Body:
+        sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return b"x" * (1_048_577 if oversize else 1)
+
+        async def aclose(self):
+            close_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                close_cancelled.set()
+
+    @app.get("/v1/stream")
+    @route_tool(scoped_id="stream_probe__stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(Body())
+
+    snapshot = build_generated_route_toolsets(app)
+    monkeypatch.setattr(route_tools_module, "_STREAM_CLEANUP_TIMEOUT_S", 0.01, raising=False)
+    invocation = asyncio.wait_for(
+        _call(snapshot.providers["stream_probe"], "stream", {}, Person(None, "system")),
+        timeout=1,
+    )
+    if oversize:
+        result = await invocation
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "route-tool-response-too-large"
+    else:
+        result = await invocation
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "route-tool-stream-failed"
+    assert close_started.is_set()
+    assert close_cancelled.is_set(), "cleanup was abandoned without cancelling its await"
+
+
+@pytest.mark.asyncio
+async def test_completed_unhandled_error_retains_rfc7807_response() -> None:
+    app = FastAPI()
+
+    @app.get("/v1/failure")
+    @route_tool(scoped_id="stream_probe__failure")
+    async def failure() -> None:
+        raise RuntimeError("private failure details")
+
+    register_error_handlers(app)
+    snapshot = build_generated_route_toolsets(app)
+    result = await _call(snapshot.providers["stream_probe"], "failure", {}, Person(None, "system"))
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["status"] == 500
+    assert payload["type"] == "/errors/internal"
+    assert "private failure details" not in result.output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_incomplete_stream_failure_is_bounded_after_response_start(partial, caplog) -> None:
+    app = FastAPI()
+
+    class StreamBroken(Exception):
+        pass
+
+    failure = StreamBroken("stream failed")
+
+    async def chunks():
+        if partial:
+            yield b"partial bytes"
+        raise failure
+
+    @app.get("/v1/stream")
+    @route_tool(scoped_id="stream_probe__stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(chunks())
+
+    register_error_handlers(app)
+    snapshot = build_generated_route_toolsets(app)
+    with caplog.at_level(logging.INFO, logger="primer.api.route_tool.audit"):
+        result = await _call(snapshot.providers["stream_probe"], "stream", {}, Person(None, "system"))
+    assert result.is_error
+    assert json.loads(result.output) == {
+        "type": "route-tool-stream-failed",
+        "message": "generated REST response stream failed",
+    }
+    assert any(
+        getattr(record, "outcome", None) == "stream_failed"
+        for record in caplog.records
+        if record.name == "primer.api.route_tool.audit"
+    )
 
 
 @pytest.mark.asyncio

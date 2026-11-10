@@ -26,6 +26,7 @@ from types import MappingProxyType
 from typing import Any, Literal, TypeVar, get_args, get_origin
 from urllib.parse import quote
 
+import anyio
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute, _IncludedRouter, request_response
@@ -33,6 +34,7 @@ from starlette.responses import Response, StreamingResponse
 from starlette.types import Send
 
 from primer.access.person import Person, person_for_tool
+from primer.common.shielded import run_in_background
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import ConfigError
 from primer.model.yield_ import ToolContext
@@ -51,6 +53,7 @@ _TRUST_PERSON_SCOPE_KEY = "primer.route_tool_person"
 _TRUST_OBJECT = object()
 _DISPATCH_DEPTH: ContextVar[int] = ContextVar("primer_route_tool_dispatch_depth", default=0)
 _DISPATCH_TIMEOUT_S = 30.0
+_STREAM_CLEANUP_TIMEOUT_S = 1.0
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_LOCAL_REF_DEPTH = 64
 _COMPILED_ROUTE_CONTRACT_CACHE_SIZE = 8
@@ -537,6 +540,28 @@ class _ResponseEncodingRejected(BaseException):
         self.content_encoding = content_encoding
 
 
+class _RouteStreamFailed(Exception):
+    """A private, fixed-text boundary; provider exception text is never public."""
+
+    def __init__(self, status_code: int | None) -> None:
+        super().__init__("generated REST response stream failed")
+        self.status_code = status_code
+
+
+async def _wait_cleanup_owner(task: asyncio.Task[None]) -> asyncio.CancelledError | None:
+    """Drain a bounded cleanup owner without forwarding caller cancellation."""
+
+    cancelled = None
+    with anyio.CancelScope(shield=True):
+        while not task.done():
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+    task.result()
+    return cancelled
+
+
 def _contains_response_limit(exc: BaseException) -> bool:
     if isinstance(exc, _ResponseLimitExceeded):
         return True
@@ -593,7 +618,10 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
 
         scope = {
             "type": "http",
-            "asgi": {"version": "3.0"},
+            # This in-process transport supports HTTP spec 2.4. Older specs
+            # make Starlette use an AnyIO disconnect task group whose level
+            # cancellation can interrupt a generator's own async finalizer.
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
             "http_version": "1.1",
             "method": request.method,
             "headers": [(key.lower(), value) for key, value in request.headers.raw],
@@ -617,6 +645,7 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
             _ResponseLimitExceeded | _ResponseEncodingRejected
         ] = asyncio.get_running_loop().create_future()
         abort_hold = asyncio.Event()
+        connection_closed = False
 
         async def receive() -> dict[str, Any]:
             nonlocal request_complete
@@ -632,6 +661,10 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
 
         async def send(message: Mapping[str, Any]) -> None:
             nonlocal response_headers, response_size, response_started, status_code
+            if response_complete.is_set():
+                return
+            if connection_closed or abort.done():
+                raise OSError("generated response connection is closed")
             if message["type"] == "http.response.start":
                 if response_started:
                     raise RuntimeError("ASGI response started more than once")
@@ -658,18 +691,27 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
                 response_complete.set()
 
         app_task = asyncio.create_task(self._app(scope, receive, send))
+        drain_owner: asyncio.Task[None] | None = None
 
         async def cancel_app_task() -> None:
-            caller = asyncio.current_task()
-            cancellation_count = caller.cancelling() if caller is not None else 0
-            app_task.cancel()
-            try:
-                await app_task
-            except asyncio.CancelledError:
-                if caller is not None and caller.cancelling() > cancellation_count:
-                    raise
-            except Exception:
-                pass
+            nonlocal connection_closed, drain_owner
+            connection_closed = True
+            if drain_owner is None:
+                async def drain() -> None:
+                    # This owner sends exactly one cancellation, regardless
+                    # of a provider's historical Task.cancelling() counter.
+                    app_task.cancel()
+                    await asyncio.wait({app_task})
+                    if not app_task.cancelled():
+                        app_task.exception()
+
+                drain_owner = asyncio.create_task(run_in_background(
+                    drain(), what="generated route tool", verb="producer shutdown",
+                    wait_s=_STREAM_CLEANUP_TIMEOUT_S,
+                ))
+            cancelled = await _wait_cleanup_owner(drain_owner)
+            if cancelled is not None:
+                raise cancelled
 
         try:
             done, _pending = await asyncio.wait(
@@ -681,9 +723,8 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
                 raise abort.result() from None
 
             try:
-                await app_task
+                app_task.result()
             except BaseException as exc:
-                response_complete.set()
                 encoding_rejection = _find_response_encoding_rejection(exc)
                 if encoding_rejection is not None:
                     raise _ResponseEncodingRejected(
@@ -694,6 +735,14 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
                     raise _ResponseLimitExceeded(status_code) from None
                 if not isinstance(exc, Exception):
                     raise
+                # ServerErrorMiddleware re-raises after delivering its complete
+                # error response. Middleware can also terminate a partial 200
+                # before re-raising a producer failure: that is still a failure.
+                if response_started and (
+                    status_code < 400 or not response_complete.is_set()
+                ):
+                    raise _RouteStreamFailed(status_code) from exc
+                response_complete.set()
                 if status_code is None:
                     status_code = 500
                 if response_headers is None:
@@ -703,9 +752,9 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
                 await cancel_app_task()
 
         if not response_complete.is_set():
-            raise RuntimeError("ASGI application returned without completing a response")
+            raise _RouteStreamFailed(status_code)
         if status_code is None or response_headers is None:
-            raise RuntimeError("ASGI application returned an incomplete response")
+            raise _RouteStreamFailed(status_code)
         return httpx.Response(
             status_code,
             headers=response_headers,
@@ -748,12 +797,36 @@ def _install_stream_cleanup(route: APIRoute) -> bool:
             body_iterator = response.body_iterator
 
             async def stream_response(send: Send) -> None:
+                primary: BaseException | None = None
                 try:
                     await original_stream_response(send)
-                finally:
-                    aclose = getattr(body_iterator, "aclose", None)
-                    if aclose is not None:
-                        await aclose()
+                except BaseException as exc:
+                    primary = exc
+                aclose = getattr(body_iterator, "aclose", None)
+                if aclose is not None:
+                    async def close() -> None:
+                        with anyio.fail_after(_STREAM_CLEANUP_TIMEOUT_S, shield=True):
+                            await aclose()
+
+                    # An own task protects closure from raw repeated Task.cancel
+                    # as well as AnyIO level cancellation in surrounding scopes.
+                    close_task = asyncio.create_task(close())
+                    owner = asyncio.create_task(run_in_background(
+                        close_task, what="generated route tool", verb="iterator close",
+                        wait_s=_STREAM_CLEANUP_TIMEOUT_S,
+                    ))
+                    cancelled = await _wait_cleanup_owner(owner)
+                    primary = primary or cancelled
+                    try:
+                        if close_task.done():
+                            close_task.result()
+                        else:
+                            close_task.cancel()
+                            raise TimeoutError("generated iterator close timed out")
+                    except BaseException as exc:
+                        primary = primary or exc
+                if primary is not None:
+                    raise primary
 
             response.stream_response = stream_response
             return response
@@ -1596,6 +1669,16 @@ def build_generated_route_toolsets(
                             },
                             separators=(",", ":"),
                         ),
+                        is_error=True,
+                    )
+                except _RouteStreamFailed as exc:
+                    status_code = exc.status_code
+                    outcome = "stream_failed"
+                    return ToolCallResult(
+                        output=json.dumps({
+                            "type": "route-tool-stream-failed",
+                            "message": "generated REST response stream failed",
+                        }, separators=(",", ":")),
                         is_error=True,
                     )
                 except TimeoutError:
