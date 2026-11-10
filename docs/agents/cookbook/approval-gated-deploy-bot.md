@@ -18,7 +18,7 @@ An operator messages a Slack channel with a deploy command. The agent plans the 
 
 ## Prerequisites
 - A Slack app with App (`xapp-...`) and Bot (`xoxb-...`) tokens.
-- A `deploy-tools` toolset registered with a `deploy_prod` tool and a `channels` toolset for posting results back.
+- A `deploy-tools` toolset registered with a `deploy_prod` tool.
 - A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`), and a workspace template available.
 - The default approval gate of `system::create_agent` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gate is on, that step is refused (`approval_required`). Run from an agent session instead, the call parks until an operator approves it.
 
@@ -72,10 +72,10 @@ Wait until `phase` is `running`.
 {
   "entity": {
     "id": "deploy-bot",
-    "description": "Plans a deploy then calls deploy_prod, posting the outcome back to the channel",
+    "description": "Plans a deploy then calls deploy_prod, reporting the outcome",
     "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" },
-    "tools": ["deploy-tools__deploy_prod", "channels__post_message"],
-    "system_prompt": ["You are a deploy coordinator. Given a deploy target, produce a concise plan (services, migrations, cache flushes), then call deploy_prod with the target. After it resolves, post the outcome back to the originating channel. If the call is rejected, report the rejection and end cleanly."]
+    "tools": ["deploy-tools__deploy_prod"],
+    "system_prompt": ["You are a deploy coordinator. Given a deploy target, produce a concise plan (services, migrations, cache flushes), then call deploy_prod with the target. End the turn by stating the outcome, or the rejection, plainly; the workspace's reply binding forwards your final answer to the originating channel."]
   }
 }
 ```

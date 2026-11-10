@@ -4,9 +4,12 @@ Built with every optional collaborator wired (the real app wires them): a tool t
 workspace registry, is a real tool. A name is stale only if no wiring has it.
 
 ``built_in_providers()`` maps ``toolset id -> provider`` for all ten curated toolsets (``collections`` included: a
-check that left one out would pass for every document that names its tools; ``canvas`` joined with pivot P5, design 8.3). Generated REST-backed
-providers are covered by the route-tool inventory instead. ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
-derives from it. A tool is reachable under every spelling the docs use: its registered (bare) id and the catalog's scoped id (a call's
+check that left one out would pass for every document that names its tools; ``canvas`` joined with pivot P5, design 8.3).
+``reserved_tools()`` (M3) is the whole live catalogue the docs may cite: the curated ten, every generated REST-backed
+provider (wired production-shaped through ``create_test_app``, the docs-vs-registry checks run against that live
+catalogue) and the session and client scopes (``collect_tool_entries`` adds them, as the boot does). ``built_in_tools()``
+maps ``toolset id -> {spelling -> Tool}`` and derives from it; ``reserved_tools()`` derives the same for the catalogue.
+A tool is reachable under every spelling the docs use: its registered (bare) id and the catalog's scoped id (a call's
 ``tool_name`` is the bare id, ``list``; the docs name the tool by its scoped id, ``harness__list``).
 """
 
@@ -80,6 +83,49 @@ def built_in_tools() -> dict[str, dict[str, Tool]]:
                 spellings[tool.id] = tool
                 spellings[f"{toolset_id}__{tool.id}"] = tool
             built[toolset_id] = spellings
+        return built
+
+    return asyncio.run(collect())
+
+
+@lru_cache(maxsize=1)
+def reserved_tools() -> dict[str, dict[str, Tool]]:
+    """``toolset id -> {spelling -> Tool}`` for the whole live tool catalogue the docs may cite (M3):
+    the ten curated toolsets, every generated REST-backed provider, and the session and client scopes.
+
+    The generated half is wired production-shaped: ``create_test_app`` compiles the per-resource route
+    toolsets from the mounted routers onto a real ``ProviderRegistry`` (the same flow the production
+    build and lifespan run), and ``collect_tool_entries`` adds the session and client scopes exactly
+    as the boot does. So a doc that cites a generated tool (``agents__get_access``) or a scope tool
+    (``workspace__read``) is checked like any other. A stale citation is a red suite (W1-08b), not a
+    runbook typo. Cached like ``built_in_tools``: read them, do not change them.
+    """
+    from primer.api.app import create_test_app
+    from primer.api.registries import ProviderRegistry
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+    from primer.toolset.tool_catalog import collect_tool_entries
+    from tests.conftest import _FakeStorageProvider
+
+    sp = _FakeStorageProvider()
+    registry = ProviderRegistry(
+        sp,
+        llm_factory=lambda p: object(),
+        embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(),
+        toolset_factory=lambda p: object(),
+    )
+    create_test_app(storage_provider=sp, provider_registry=registry)
+
+    async def collect() -> dict[str, dict[str, Tool]]:
+        providers = dict(built_in_providers())  # the curated ten, built with the fixture's fakes
+        for toolset_id in sorted(RESERVED_TOOLSET_IDS):
+            if toolset_id not in providers:
+                providers[toolset_id] = await registry.get_toolset(toolset_id)
+        built: dict[str, dict[str, Tool]] = {}
+        for entry in await collect_tool_entries(providers):
+            spellings = built.setdefault(entry.toolset_id, {})
+            spellings[entry.tool.id] = entry.tool
+            spellings[f"{entry.toolset_id}__{entry.tool.id}"] = entry.tool
         return built
 
     return asyncio.run(collect())

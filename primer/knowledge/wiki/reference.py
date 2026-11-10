@@ -4,6 +4,14 @@
 into ``reference/tools/<toolset>/<tool>`` pages plus the index pages above them, so a
 page cannot drift from the code: it is rendered from the tool's own descriptor.
 
+The generated REST-backed tools carry structured documentation on the descriptor itself
+(M3: the wire-excluded ``purpose``/``use_when``/``origin``/``operation``/``result_contract``/
+``error_contract`` fields, set only by ``route_tools._tool_from_blueprint``). Their pages
+render the ``Purpose:``/``Use when:`` lines under "What it does", a ``Result and errors``
+section, and the ``Origin:``/``Operation:`` facts. A curated tool keeps every field None
+and renders byte-identically to the plain six-section page. Two entries claiming one path
+raise :class:`~primer.knowledge.wiki.pages.WikiSourceError`.
+
 The entries are read through :class:`ToolEntryView`, which is exactly the part of
 ``primer.toolset.tool_catalog.ToolEntry`` the pages use. Reading them through a protocol
 keeps ``primer.knowledge`` from importing ``primer.toolset`` (the two packages import each
@@ -13,15 +21,12 @@ from __future__ import annotations
 
 import copy
 import json
-import logging
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
-from primer.knowledge.wiki.pages import SUMMARY_MAX, WikiPage, page_line, sibling_key
+from primer.knowledge.wiki.pages import SUMMARY_MAX, WikiPage, WikiSourceError, page_line, sibling_key
 from primer.model.chat import Tool, ToolExample
-
-logger = logging.getLogger(__name__)
 
 REFERENCE_ROOT = "reference"
 REFERENCE_TOOLS = "reference/tools"
@@ -164,12 +169,23 @@ def _tool_page(entry: ToolEntryView, linked_from: Sequence[str]) -> WikiPage:
     approval = entry.default_gate or "none"
     summary = _summary_of(tool.description)
     used_in = [f"- [{path}]({path})" for path in sorted(set(linked_from))] or [_NOT_DOCUMENTED]
-    body = "\n".join([
+    body_parts: list[str] = [
         f"# {entry.scoped_id}",
         "",
         "## What it does",
         "",
         _prose(tool),
+    ]
+    # The structured metadata the generated tools carry (M3); a curated tool keeps every
+    # field None and renders exactly the six sections it always had.
+    metadata_lines: list[str] = []
+    if tool.purpose is not None:
+        metadata_lines.append(f"- Purpose: {tool.purpose}")
+    if tool.use_when is not None:
+        metadata_lines.append(f"- Use when: {tool.use_when}")
+    if metadata_lines:
+        body_parts += ["", *metadata_lines]
+    body_parts += [
         "",
         "## Call it",
         "",
@@ -180,6 +196,16 @@ def _tool_page(entry: ToolEntryView, linked_from: Sequence[str]) -> WikiPage:
         "## Arguments",
         "",
         _json_block(tool.args_schema, sort_keys=True),
+    ]
+    if tool.origin is not None and tool.result_contract is not None and tool.error_contract is not None:
+        body_parts += [
+            "",
+            "## Result and errors",
+            "",
+            f"- Result: {tool.result_contract}",
+            f"- Errors: {tool.error_contract}",
+        ]
+    body_parts += [
         "",
         "## Facts",
         "",
@@ -188,6 +214,12 @@ def _tool_page(entry: ToolEntryView, linked_from: Sequence[str]) -> WikiPage:
         f"- Approval by default: {approval}",
         f"- Pauses the turn: {_yes_no(entry.pauses_turn)}",
         f"- Needs a workspace: {_yes_no(entry.needs_workspace)}",
+    ]
+    if tool.origin is not None:
+        body_parts.append(f"- Origin: {tool.origin}")
+    if tool.operation is not None:
+        body_parts.append(f"- Operation: {tool.operation}")
+    body_parts += [
         "",
         "## Examples",
         "",
@@ -196,25 +228,33 @@ def _tool_page(entry: ToolEntryView, linked_from: Sequence[str]) -> WikiPage:
         "## Used in",
         "",
         *used_in,
-    ]) + "\n"
+    ]
+    body = "\n".join(body_parts) + "\n"
+    meta: dict[str, Any] = {
+        "kind": "reference",
+        "summary": summary,
+        "toolset": entry.toolset_id,
+        "tool": tool.id,
+        "scoped_id": entry.scoped_id,
+        "role": entry.required_role,
+        "pauses_turn": entry.pauses_turn,
+        "needs_workspace": entry.needs_workspace,
+        "approval_by_default": approval,
+        "call": "call_tool" if entry.via_call_tool else "direct",
+    }
+    if tool.origin is not None:
+        meta["origin"] = tool.origin
+    if tool.operation is not None:
+        meta["operation"] = tool.operation
+    if tool.purpose is not None:
+        meta["purpose"] = tool.purpose
     return WikiPage(
         path=reference_path(entry.toolset_id, tool.id),
         title=entry.scoped_id,
         summary=summary,
         body=body,
         kind="reference",
-        meta={
-            "kind": "reference",
-            "summary": summary,
-            "toolset": entry.toolset_id,
-            "tool": tool.id,
-            "scoped_id": entry.scoped_id,
-            "role": entry.required_role,
-            "pauses_turn": entry.pauses_turn,
-            "needs_workspace": entry.needs_workspace,
-            "approval_by_default": approval,
-            "call": "call_tool" if entry.via_call_tool else "direct",
-        },
+        meta=meta,
     )
 
 
@@ -252,7 +292,8 @@ def reference_pages(
 
     ``used_in`` maps a tool page's path to the feature pages that link to it. The roots exist
     even when there are no entries, so a link to them always resolves. A second entry for the
-    same toolset and tool is logged and dropped.
+    same toolset and tool raises :class:`WikiSourceError` (a page two descriptors would render
+    differently is a build error; the boot pass logs it and keeps the stored wiki).
     """
     tool_pages: dict[str, WikiPage] = {}
     by_toolset: dict[str, list[WikiPage]] = {}
@@ -260,8 +301,12 @@ def reference_pages(
     for entry in sorted(entries, key=lambda e: (e.toolset_id, e.tool.id)):
         path = reference_path(entry.toolset_id, entry.tool.id)
         if path in tool_pages:
-            logger.warning("wiki reference: two tools claim %s; keeping the first", path)
-            continue
+            first = tool_pages[path]
+            raise WikiSourceError(
+                f"{path}: two entries claim the same scoped id {entry.scoped_id!r} "
+                f"({first.meta['toolset']}::{first.meta['tool']} and {entry.toolset_id}::{entry.tool.id}); "
+                "the reference page would be ambiguous"
+            )
         page = _tool_page(entry, used_in.get(path, ()))
         tool_pages[path] = page
         by_toolset.setdefault(entry.toolset_id, []).append(page)

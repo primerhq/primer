@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.docs._live_toolsets import built_in_tools
+from tests.docs._live_toolsets import reserved_tools
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
@@ -38,14 +38,22 @@ TOOL_DOCS = [*AGENT_DOCS, *WIKI_DOCS, *DEV_DOCS]
 
 @lru_cache(maxsize=1)
 def _built_in_tools() -> dict[str, frozenset[str]]:
-    """``{toolset id: {every spelling of each tool's name}}`` for the built-in toolsets (see ``_live_toolsets``)."""
-    return {toolset_id: frozenset(spellings) for toolset_id, spellings in built_in_tools().items()}
+    """``{toolset id: {every spelling of each tool's name}}`` for the whole reserved union: the curated
+    built-ins plus the generated REST-backed providers (see ``_live_toolsets.reserved_tools``). A doc that
+    cites a generated tool is checked like any other: a stale citation is a red suite (W1-08b)."""
+    return {toolset_id: frozenset(spellings) for toolset_id, spellings in reserved_tools().items()}
 
 
 def _tool_refs_in(text: str) -> list[tuple[int, str, str]]:
-    """``(line, toolset id, tool name)`` for every reference to a tool of a toolset that is built here."""
+    """``(line, toolset id, tool name)`` for every reference to a tool of a toolset that is built here.
+
+    The toolset id must be the WHOLE token: a user toolset named ``deploy-tools`` cited as
+    ``deploy-tools__deploy_prod`` is not a reference to the built-in ``tools`` toolset (the hyphen
+    boundary is the tell; built-in ids carry none). A name that ends in ``_`` is a documented stem
+    (``find_<kind>``), not a tool.
+    """
     toolsets = _built_in_tools()
-    pattern = re.compile(r"\b(" + "|".join(sorted(toolsets)) + r")(?:::|__)([a-z][a-z0-9_]*)")
+    pattern = re.compile(r"(?<![\w-])(" + "|".join(sorted(toolsets)) + r")(?:::|__)([a-z][a-z0-9_]*)")
     found = []
     for number, line in enumerate(text.splitlines(), 1):
         for toolset_id, name in pattern.findall(line):
@@ -61,6 +69,14 @@ def _tool_references(doc: Path) -> list[tuple[int, str, str]]:
 def test_the_built_in_toolsets_are_not_empty_so_the_check_cannot_pass_vacuously() -> None:
     tools = _built_in_tools()
     assert {"system", "workspaces", "workspace_ext", "trigger", "harness", "crud", "web", "misc"} <= set(tools)
+    # the generated union is merged in too (M3): a guard that only saw the curated ten would pass
+    # vacuously for every doc that cites a generated tool
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+
+    assert set(RESERVED_TOOLSET_IDS) <= set(tools)
+    assert "agents" in tools and "sessions" in tools and "channels" in tools
+    # the session and client scopes carry real tools the docs cite (workspace__read, client__open_file)
+    assert "workspace" in tools and "client" in tools
     empty = [toolset_id for toolset_id, names in tools.items() if not names]
     assert not empty, f"these toolsets built with no tools, so every doc reference to them would read as stale: {empty}"
     assert len(tools["system"]) > 50 and "set_reply_binding" in tools["system"]
@@ -88,6 +104,116 @@ def test_the_tool_reference_scan_finds_references_at_all() -> None:
 
 def test_the_wiki_is_scanned_for_tool_names() -> None:
     assert any("docs/wiki" in p.as_posix() for p in TOOL_DOCS)
+
+
+# The citation rule (docs/wiki/runbooks/conventions.md): a tool is cited by its exact scoped id AND
+# linked to its exact generated reference page, e.g. [`system__describe_tool`](reference/tools/system/describe_tool).
+# Two halves are enforced on every reference-page link: the target is the page reference_path(toolset, tool)
+# of a tool the live catalogue has (a target the catalogue no longer has is a stale citation, a red suite,
+# W1-08b), and, when the label backticks a scoped id, the target is that id's OWN page (a real id linked to
+# another real tool's page is still a wrong citation). A label that cites no tool ([reference](...)) is
+# checked for target existence only.
+_REF_LINK = re.compile(
+    r"\[(?P<label>[^\]]*)\]\(\s*reference/tools/(?P<toolset>[a-z0-9_]+)/(?P<tool>[a-z0-9_]+)(?:#[^)\s]*)?\s*\)"
+)
+_BACKTICKED_SCOPED_ID = re.compile(r"`([a-z0-9_]+)__([a-z0-9_]+)`")
+
+
+def _reference_links_in(text: str) -> list[tuple[int, str, str, str]]:
+    """``(line, label, toolset id, tool name)`` for every markdown link whose target is a generated reference page."""
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for match in _REF_LINK.finditer(line):
+            found.append((number, match.group("label"), match.group("toolset"), match.group("tool")))
+    return found
+
+
+def _mismatched_pairs_in(text: str) -> list[tuple[int, str, str]]:
+    """``(line, cited id, target)`` for every reference-page link whose label backticks a scoped id that the
+    target is not the page of (the exact-pair half of the citation rule)."""
+    mismatched = []
+    for number, label, toolset_id, name in _reference_links_in(text):
+        cited = [f"{ts}__{tool}" for ts, tool in _BACKTICKED_SCOPED_ID.findall(label)]
+        if cited and f"{toolset_id}__{name}" not in cited:
+            mismatched.append((number, ", ".join(cited), f"{toolset_id}/{name}"))
+    return mismatched
+
+
+@pytest.mark.parametrize("doc", TOOL_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+def test_docs_link_only_reference_pages_of_tools_that_exist(doc: Path) -> None:
+    tools = _built_in_tools()
+    stale = [
+        f"  line {number}: {toolset_id}__{name}"
+        for number, _, toolset_id, name in _reference_links_in(doc.read_text(encoding="utf-8"))
+        if toolset_id not in tools or name not in tools[toolset_id]
+    ]
+    assert not stale, (
+        f"{doc.relative_to(REPO)} links reference pages whose tool the live catalogue does not have "
+        "(the citation's link target is not the exact page of a real tool):\n" + "\n".join(stale)
+    )
+
+
+@pytest.mark.parametrize("doc", TOOL_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+def test_docs_pair_each_cited_scoped_id_with_its_own_reference_page(doc: Path) -> None:
+    mismatched = _mismatched_pairs_in(doc.read_text(encoding="utf-8"))
+    assert not mismatched, (
+        f"{doc.relative_to(REPO)} cites a scoped id and links another tool's page (the target must be "
+        "reference/tools/<same toolset>/<same tool>):\n"
+        + "\n".join(f"  line {number}: {cited} -> reference/tools/{target}" for number, cited, target in mismatched)
+    )
+
+
+def test_the_pair_scan_has_real_citations_to_check() -> None:
+    """The pairing rule must not be vacuous: some doc backticks a scoped id in a reference-page link's label."""
+    cited = [
+        str(doc.relative_to(REPO))
+        for doc in TOOL_DOCS
+        if any(_BACKTICKED_SCOPED_ID.search(label) for _, label, _, _ in _reference_links_in(doc.read_text(encoding="utf-8")))
+    ]
+    assert cited, "no doc backticks a scoped id in a reference-page link; the exact-pair scan would pass nothing"
+
+
+def test_the_reference_link_scan_finds_references_at_all() -> None:
+    """The scan must see the links it is meant to check: a regex that stopped matching would pass every doc."""
+    total = sum(len(_reference_links_in(doc.read_text(encoding="utf-8"))) for doc in TOOL_DOCS)
+    assert total > 10, f"only {total} reference-page links found in the docs"
+
+
+def test_a_reference_link_to_an_invented_tool_is_reported() -> None:
+    """The typo'd target is reported, the exact one is not (the check is exact, not prefix or fuzzy)."""
+    text = (
+        "exact call: [`agents__get_access`](reference/tools/agents/get_access) and "
+        "the stale one [`agents__get_access`](reference/tools/agents/get_acess).\n"
+    )
+    tools = _built_in_tools()
+    refs = _reference_links_in(text)
+    assert [(toolset, name) for _, _, toolset, name in refs] == [
+        ("agents", "get_access"), ("agents", "get_acess"),
+    ]
+    stale = [
+        f"{toolset_id}__{name}"
+        for _, _, toolset_id, name in refs
+        if toolset_id not in tools or name not in tools[toolset_id]
+    ]
+    assert stale == ["agents__get_acess"]
+
+
+def test_a_cited_id_linked_to_a_different_real_page_is_reported() -> None:
+    """A real scoped id pointing at a different real tool's page is a wrong pairing: the target exists, so
+    only the exact-pair half catches it."""
+    text = (
+        "mismatched: [`system__create_agent`](reference/tools/agents/get_access) and "
+        "paired: [`system__create_agent`](reference/tools/system/create_agent).\n"
+    )
+    tools = _built_in_tools()
+    refs = _reference_links_in(text)
+    assert [(toolset, name) for _, _, toolset, name in refs] == [
+        ("agents", "get_access"), ("system", "create_agent"),
+    ]
+    # both targets are real tools of the live catalogue, so the existence half passes ...
+    assert all(toolset_id in tools and name in tools[toolset_id] for _, _, toolset_id, name in refs)
+    # ... and the exact-pair half reports the mismatch (and only the mismatch)
+    assert _mismatched_pairs_in(text) == [(1, "system__create_agent", "agents/get_access")]
 
 
 # ---- endpoints ------------------------------------------------------------------------------------------------------------------

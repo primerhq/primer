@@ -11,7 +11,8 @@ import re
 
 import pytest
 
-from primer.knowledge.wiki.pages import SUMMARY_MAX
+from primer.knowledge.wiki.build import by_purpose_rows
+from primer.knowledge.wiki.pages import SUMMARY_MAX, WikiSourceError
 from primer.knowledge.wiki.reference import (
     REFERENCE_ROOT,
     REFERENCE_TOOLS,
@@ -23,6 +24,7 @@ from primer.model.chat import Tool, ToolExample
 from tests.knowledge.wiki._entries import (
     OBJECT_SCHEMA,
     StandInEntry,
+    entry_from_tool,
     make_entry,
     real_entries,
 )
@@ -445,13 +447,108 @@ def test_no_tools_still_gives_the_two_roots():
     assert pages["reference/tools"].body.endswith("## Pages\n\n_(none)_\n")
 
 
-def test_a_duplicate_entry_keeps_the_first_and_says_so(caplog):
-    first = make_entry("misc", "t", purpose="First.")
-    second = make_entry("misc", "t", purpose="Second.")
-    with caplog.at_level(logging.WARNING):
-        pages = reference_pages([first, second], used_in={})
-    assert pages["reference/tools/misc/t"].summary == "First."
-    assert "reference/tools/misc/t" in caplog.text
+def test_two_entries_that_claim_one_reference_path_raise():
+    """A second descriptor for the same toolset and tool is a build error, not a warn-and-drop: the page it would
+    render is ambiguous, and the boot pass keeps the stored wiki behind its WikiSourceError catch."""
+    first = _generated_entry()
+    second = make_entry("agents", "get_agent")
+    with pytest.raises(WikiSourceError, match="reference/tools/agents/get_agent"):
+        reference_pages([first, second], used_in={})
+
+
+def test_removing_an_entry_removes_its_page_and_its_purpose_row():
+    # the by-purpose builder reads the descriptor FIELD (make_tool's purpose/when are prose)
+    a = entry_from_tool(Tool(
+        id="get_datetime", toolset_id="misc", description="Return the current date and time.",
+        args_schema={"type": "object"}, required_role="user", purpose="Return the current time.",
+    ))
+    b = entry_from_tool(Tool(
+        id="echo", toolset_id="misc", description="Echo the input.",
+        args_schema={"type": "object"}, required_role="user", purpose="Echo the input back.",
+    ))
+    # the rows sort by purpose, which here is the reverse of the entry order
+    assert by_purpose_rows([a, b]) == [
+        "| Echo the input back. | reference/tools/misc/echo |",
+        "| Return the current time. | reference/tools/misc/get_datetime |",
+    ]
+    both = reference_pages([a, b], used_in={})
+    assert {"reference/tools/misc/get_datetime", "reference/tools/misc/echo"} <= set(both)
+    left = reference_pages([a], used_in={})
+    assert "reference/tools/misc/echo" not in left
+    assert by_purpose_rows([a]) == ["| Return the current time. | reference/tools/misc/get_datetime |"]
+    assert by_purpose_rows([]) == []
+
+
+# ---- generated metadata (M3) --------------------------------------------------------
+#
+# The six wire-excluded Tool fields carry the structured documentation the generated
+# reference page renders; curated tools (make_tool) leave them None and render exactly
+# as before (the GOLDEN and the meta pins above are the byte-identity guard).
+
+
+GEN_ORIGIN = "GET /v1/agents/{agent_id}"
+GEN_OPERATION = "get_agent"
+GEN_RESULT = "the GET /v1/agents/{agent_id} response body (JSON parsed; non-JSON base64)"
+GEN_ERRORS = "a 4xx/5xx answer is an error result carrying the route's body (RFC 7807 problem+json where the route maps errors)"
+
+
+def _generated_entry() -> StandInEntry:
+    tool = Tool(
+        id="get_agent",
+        toolset_id="agents",
+        description="Fetch one Agent by id.",
+        args_schema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]},
+        required_role="user",
+        purpose="Look up one Agent by its id.",
+        use_when="Use when you have an agent id and want its row.",
+        origin=GEN_ORIGIN,
+        operation=GEN_OPERATION,
+        result_contract=GEN_RESULT,
+        error_contract=GEN_ERRORS,
+    )
+    return entry_from_tool(tool)
+
+
+def test_a_generated_entry_renders_its_metadata_lines_and_section():
+    entry = _generated_entry()
+    page = reference_pages([entry], used_in={})["reference/tools/agents/get_agent"]
+    body = page.body
+    what = body.split("## What it does\n", 1)[1].split("\n## ", 1)[0]
+    assert what.strip() == (
+        "Fetch one Agent by id.\n\n"
+        "- Purpose: Look up one Agent by its id.\n"
+        "- Use when: Use when you have an agent id and want its row."
+    )
+    # the section sits between Arguments and Facts
+    section = body.split("## Result and errors\n", 1)[1].split("\n## ", 1)[0]
+    assert section.strip() == f"- Result: {GEN_RESULT}\n- Errors: {GEN_ERRORS}"
+    facts = body.split("## Facts\n", 1)[1].split("\n## ", 1)[0]
+    assert f"- Origin: {GEN_ORIGIN}" in facts and f"- Operation: {GEN_OPERATION}" in facts
+    assert _headings(body) == [
+        "## What it does", "## Call it", "## Arguments", "## Result and errors",
+        "## Facts", "## Examples", "## Used in",
+    ]
+    assert page.meta["origin"] == GEN_ORIGIN
+    assert page.meta["operation"] == GEN_OPERATION
+    assert page.meta["purpose"] == "Look up one Agent by its id."
+
+
+def test_the_result_and_errors_section_is_omitted_when_a_contract_is_missing():
+    entry = _generated_entry()
+    missing_result = entry_from_tool(entry.tool.model_copy(update={"result_contract": None}))
+    assert "## Result and errors" not in reference_pages([missing_result], used_in={})[
+        "reference/tools/agents/get_agent"
+    ].body
+    # a curated tool (every field None) renders the six headings, no new lines
+    curated = entry_from_tool(
+        entry.tool.model_copy(
+            update={name: None for name in ("purpose", "use_when", "origin", "operation", "result_contract", "error_contract")},
+        )
+    )
+    page = reference_pages([curated], used_in={})["reference/tools/agents/get_agent"]
+    assert _headings(page.body) == SIX_HEADINGS
+    assert "Purpose:" not in page.body and "Origin:" not in page.body
+    assert "origin" not in page.meta and "operation" not in page.meta and "purpose" not in page.meta
 
 
 def test_pages_come_back_sorted_and_the_same_every_time():

@@ -8,11 +8,15 @@ the decision.
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
+from primer.knowledge.collection_query import query_collection
 from primer.knowledge.system_collection import (
     SYSTEM_COLLECTION_ID,
     WIKI_TITLE,
@@ -20,15 +24,24 @@ from primer.knowledge.system_collection import (
     regenerate_system_collection,
 )
 from primer.knowledge.tree import DocumentTreeService
+from primer.knowledge.wiki.reference import reference_path
 from primer.knowledge.wiki.stamp import read_stamp
 from primer.model.access import Access
 from primer.model.agent import Agent, AgentModel
-from primer.model.collection import Collection
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.except_ import NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.provider import (
     SqliteConfig, StorageProviderConfig, StorageProviderType,
 )
+from primer.model.user import User
+from primer.model.yield_ import ToolContext
 from primer.storage.factory import StorageProviderFactory
+from primer.toolset.collections import build_collections_toolset
 from primer.toolset.misc import build_misc_toolset
 
 MISC = {"misc": build_misc_toolset()}
@@ -544,3 +557,221 @@ async def test_prune_live_does_not_keep_stale_slug_matching_hashed_entity_id(sp,
     await _read(sp, f"this-install/agents/{mapped_slug}")
     with pytest.raises(NotFoundError):
         await _read(sp, f"this-install/agents/{entity_id}")
+
+
+# ---- the generated providers feed the wiki (M3) ----------------------------------------------------------
+#
+# The ten curated toolsets below are only the floor: the real boot wires the whole reserved
+# union (curated + every generated REST-backed provider) onto the registry, and the wiki's
+# reference pages are generated from that live catalogue. These tests prove the generated
+# half of the union feeds the durable wiki, and that the generated pages are found by the
+# search ladder only for callers the ladder may serve.
+
+
+CURATED_TOOLSET_IDS = frozenset({
+    "system", "crud", "collections", "harness", "trigger", "workspaces",
+    "workspace_ext", "web", "misc", "canvas",
+})
+
+
+async def _reserved_toolset_providers(fake_storage_provider) -> tuple[object, dict[str, object]]:
+    """The registry the production lifespan wires: fixed built-ins plus the generated route
+    toolsets compiled from the mounted routers (the completeness suite's pattern)."""
+    from primer.api.app import create_test_app
+    from primer.api.registries import ProviderRegistry
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+
+    registry = ProviderRegistry(
+        fake_storage_provider,
+        llm_factory=lambda p: object(),  # type: ignore[arg-type]
+        embedder_factory=lambda p: object(),  # type: ignore[arg-type]
+        cross_encoder_factory=lambda p: object(),  # type: ignore[arg-type]
+        toolset_factory=lambda p: object(),  # type: ignore[arg-type]
+    )
+    create_test_app(storage_provider=fake_storage_provider, provider_registry=registry)
+    return registry, {tid: await registry.get_toolset(tid) for tid in sorted(RESERVED_TOOLSET_IDS)}
+
+
+def _run_over_the_full_union(monkeypatch, providers: dict) -> None:
+    """The ``wiki`` fixture pins RESERVED to {"misc"}; these tests run over the whole union."""
+    monkeypatch.setattr(
+        "primer.knowledge.system_collection.RESERVED_TOOLSET_IDS", frozenset(providers),
+    )
+
+
+def _generated_entries(entries) -> list:
+    curated = CURATED_TOOLSET_IDS
+    return [e for e in entries if e.toolset_id not in curated]
+
+
+@pytest.mark.asyncio
+async def test_generated_providers_feed_the_durable_reference_pages(sp, wiki, fake_storage_provider, monkeypatch):
+    """A generated scoped id has a durable reference page whose body matches the live descriptor."""
+    from primer.toolset.tool_catalog import collect_tool_entries
+
+    _registry, providers = await _reserved_toolset_providers(fake_storage_provider)
+    entries = await collect_tool_entries(providers)
+    _run_over_the_full_union(monkeypatch, providers)
+
+    wrote = await regenerate_system_collection(sp, toolset_providers=providers, app_version="0.6.0")
+    assert wrote > 0
+
+    generated = _generated_entries(entries)
+    assert generated, "the boot feed carried no generated tool, so this proves nothing"
+    for entry in sorted(generated, key=lambda e: e.scoped_id)[:3]:
+        res = await _read(sp, reference_path(entry.toolset_id, entry.tool.id))
+        assert res.document.meta["origin"] == entry.tool.origin
+        assert res.document.meta["operation"] == entry.tool.operation
+        assert f"- Origin: {entry.tool.origin}" in res.body
+        assert f"- Operation: {entry.tool.operation}" in res.body
+        assert "## Result and errors" in res.body
+
+    # a curated page stays stable: no generated section, no origin fact
+    curated = await _read(sp, "reference/tools/misc/get_datetime")
+    assert "## Result and errors" not in curated.body
+    assert "- Origin:" not in curated.body
+
+
+class _VectorStore:
+    """A vector store that keeps every placed record and returns them all (constant fake
+    embeddings make every document equally similar, so a hit is a membership check over
+    what the indexing pass actually wrote)."""
+
+    def __init__(self) -> None:
+        self.records: list = []
+
+    async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
+        pass
+
+    async def put(self, record):
+        self.records.append(record)
+
+    async def search(self, collection_id, vector, k):
+        from primer.model.vector import SearchResult
+
+        return [SearchResult(record=r, score=1.0) for r in self.records[:k]]
+
+    async def delete(self, collection_id, document_id):
+        self.records = [
+            r for r in self.records
+            if not (r.collection_id == collection_id and r.document_id == document_id)
+        ]
+
+    async def search_by_meta(self, collection_id, meta=None):
+        return [r for r in self.records if r.collection_id == collection_id]
+
+
+@pytest.mark.asyncio
+async def test_the_generated_pages_are_discoverable_by_the_search_ladder(sp, wiki, fake_storage_provider, monkeypatch):
+    """The lexical and semantic ladders both find a generated reference page's own generated
+    content (its origin line), after the index-on-write pass has vectorised the wiki."""
+    from tests.knowledge.test_indexing import _Emb
+
+    class _QueryEmb(_Emb):
+        # query_collection embeds the query with the config kwarg the indexing pass never
+        # uses; the bare _Emb predates it, so accept (and ignore) it
+        async def embed(self, *, model, inputs, output_dimensions=None, config=None):
+            return await super().embed(model=model, inputs=inputs)
+
+    registry, providers = await _reserved_toolset_providers(fake_storage_provider)
+    _run_over_the_full_union(monkeypatch, providers)
+
+    await sp.get_storage(Collection).create(Collection(
+        id=SYSTEM_COLLECTION_ID, description="Primer system reference", system=True,
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="emb", model="m"),
+            vector_store_provider_id="ssp", state="ready",
+        ),
+    ))
+    store = _VectorStore()
+    registry.get_embedder = AsyncMock(return_value=_QueryEmb(dim=4))  # type: ignore[method-assign]
+    ssr = AsyncMock()
+    ssr.get_store = AsyncMock(return_value=store)
+
+    wrote = await regenerate_system_collection(
+        sp, toolset_providers=providers, provider_registry=registry,
+        semantic_search_registry=ssr, app_version="0.6.0",
+    )
+    assert wrote > 0
+    assert store.records, "the index-on-write pass should have vectorised the wiki"
+
+    from primer.toolset.tool_catalog import collect_tool_entries
+
+    generated = sorted(_generated_entries(await collect_tool_entries(providers)), key=lambda e: e.scoped_id)
+    entry = generated[0]
+    target = reference_path(entry.toolset_id, entry.tool.id)
+
+    coll = await sp.get_storage(Collection).get(SYSTEM_COLLECTION_ID)
+    literal = await query_collection(
+        sp=sp, provider_registry=registry, semantic_search_registry=ssr,
+        collection=coll, query=entry.tool.origin, limit=5, mode="literal",
+    )
+    assert literal.mode_used == "literal"
+    assert any(h["path"] == target for h in literal.hits)
+
+    semantic = await query_collection(
+        sp=sp, provider_registry=registry, semantic_search_registry=ssr,
+        collection=coll, query="reference", limit=500, mode="semantic",
+    )
+    assert semantic.mode_used == "semantic"
+    assert target in [h["path"] for h in semantic.hits]
+
+
+def _caller_ctx(uid: str, role: str = "user") -> ToolContext:
+    return ToolContext(
+        tool_call_id="c", session_id="s", workspace_id="w",
+        initiated_by=PrincipalRef(type="user", id=uid, display=uid, role=role, source="local", user_id=uid),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_caller_who_may_not_use_the_search_providers_gets_no_semantic_hits(
+    sp, wiki, fake_storage_provider, monkeypatch,
+):
+    """The M2 authorisation intersection over the M3 content: a caller who may not use the
+    collection's search providers is refused the semantic rung (no hits) and falls back to
+    the content store on ``auto``; nothing semantic is served to them."""
+    from primer.model.provider import EmbeddingProvider, EmbeddingProviderType, SemanticSearchProvider
+    from tests.knowledge.test_search_provider_use import _embedder, _ssp
+
+    users = sp.get_storage(User)
+    now = datetime.now(UTC)
+    for uid, role in (("ada", "user"), ("root", "admin")):
+        await users.create(User(id=uid, username=uid, created_at=now, role=role))
+    # the provider rows exist, but ada may not use them (an admin may use any)
+    await sp.get_storage(EmbeddingProvider).create(_embedder("emb", Access()))
+    await sp.get_storage(SemanticSearchProvider).create(_ssp("ssp", Access()))
+    await sp.get_storage(Collection).create(Collection(
+        id=SYSTEM_COLLECTION_ID, description="Primer system reference", system=True,
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="emb", model="m"),
+            vector_store_provider_id="ssp", state="ready",
+        ),
+    ))
+
+    registry, providers = await _reserved_toolset_providers(fake_storage_provider)
+    _run_over_the_full_union(monkeypatch, providers)
+    wrote = await regenerate_system_collection(sp, toolset_providers=providers, app_version="0.6.0")
+    assert wrote > 0
+
+    tools = build_collections_toolset(
+        storage_provider=sp, provider_registry=AsyncMock(), semantic_search_registry=AsyncMock(),
+    )
+    refused = await tools.call(
+        tool_name="search",
+        arguments={"collection": SYSTEM_COLLECTION_ID, "query": "Reference", "mode": "semantic"},
+        ctx=_caller_ctx("ada"),
+    )
+    assert refused.is_error
+    body = json.loads(refused.output)
+    assert body["type"] == "conflict" and "not available to you" in refused.output
+    assert "hits" not in body
+
+    auto = await tools.call(
+        tool_name="search",
+        arguments={"collection": SYSTEM_COLLECTION_ID, "query": "Reference"},
+        ctx=_caller_ctx("ada"),
+    )
+    assert not auto.is_error, auto.output
+    body = json.loads(auto.output)
+    assert body["mode_used"] == "fulltext" and "not available to you" in body["note"]

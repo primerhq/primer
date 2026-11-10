@@ -788,6 +788,67 @@ class Tool(Describeable):
             "In-memory metadata only; excluded from serialization."
         ),
     )
+    purpose: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Structured documentation metadata the generated reference page renders under "
+            "'What it does' (the 'Purpose:' line). Set only for the generated REST-backed "
+            "tools, from the route's declared purpose (RouteToolMetadata.purpose); a curated "
+            "tool's description prose is its purpose, so it stays None. No prose is parsed "
+            "to recover it. In-memory metadata only; excluded from serialization."
+        ),
+    )
+    use_when: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "The 'Use when:' line the generated reference page renders under 'What it does'. "
+            "Set only for the generated REST-backed tools, from the route's declared use_when "
+            "(RouteToolMetadata.use_when); curated tools stay None. In-memory metadata only; "
+            "excluded from serialization."
+        ),
+    )
+    origin: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "The exact route the generated tool calls, '<METHOD> <path>' as declared on the "
+            "route. Set only for the generated REST-backed tools (the descriptor's origin is "
+            "the route); a curated tool's scoped id is its origin, so it stays None. "
+            "In-memory metadata only; excluded from serialization."
+        ),
+    )
+    operation: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "The route's operation id the generated tool is built from. Set only for the "
+            "generated REST-backed tools; curated tools have no REST operation, so they stay "
+            "None. In-memory metadata only; excluded from serialization."
+        ),
+    )
+    result_contract: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "What a successful generated call returns, stated for the reference page's "
+            "'Result and errors' section; derived at build time from the route (mirroring the "
+            "handler's response shaping), never parsed from prose. Set only for the generated "
+            "REST-backed tools; curated tools stay None. In-memory metadata only; excluded "
+            "from serialization."
+        ),
+    )
+    error_contract: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "What an error answer from a generated call carries, stated for the reference "
+            "page's 'Result and errors' section; derived at build time from the route. Set "
+            "only for the generated REST-backed tools; curated tools stay None. In-memory "
+            "metadata only; excluded from serialization."
+        ),
+    )
 
 
 def tool_catalogue_flags(tool: Any) -> dict[str, Any]:
