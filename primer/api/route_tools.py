@@ -1425,6 +1425,17 @@ def _compile_route_tool_blueprints(
                 ),
                 read_only=read_only,
             )
+            # M3: the structured documentation fields the generated reference page renders.
+            # The prose purpose/when above become the description; these are derived from the
+            # route (never parsed from prose), so the blueprint round-trips the tool below.
+            tool = tool.model_copy(
+                update=_generated_descriptor_fields(
+                    method,
+                    normalized_path,
+                    operation_id,
+                    metadata,
+                ),
+            )
             scoped_id = (toolset_id, tool_id)
             previous = seen_tools.get(scoped_id)
             if previous is not None:
@@ -1495,8 +1506,37 @@ def _compiled_route_tool_blueprints(
     return candidate
 
 
+def _generated_descriptor_fields(
+    method: str, path: str, operation_id: str, metadata: RouteToolMetadata,
+) -> dict[str, str | None]:
+    """The six documentation fields a generated tool carries (M3), derived from the route.
+
+    ``purpose`` and ``use_when`` are the route's declaration; ``origin``/``operation`` are the
+    route's coordinates; the two contract sentences mirror the handler's fixed response
+    shaping (``_response_result`` buffers the full body; a 4xx/5xx answer carries it). Every
+    value is deterministic in the blueprint, so the round-trip check at the cache holds.
+    """
+    origin = f"{method} {path}"
+    return {
+        "purpose": metadata.purpose,
+        "use_when": metadata.use_when,
+        "origin": origin,
+        "operation": operation_id,
+        "result_contract": f"the {origin} response body (JSON parsed; non-JSON base64)",
+        "error_contract": (
+            "a 4xx/5xx answer is an error result carrying the route's body "
+            "(RFC 7807 problem+json where the route maps errors)"
+        ),
+    }
+
+
 def _tool_from_blueprint(blueprint: _GeneratedRouteToolBlueprint) -> Tool:
-    """Create the fresh mutable Tool owned by one application snapshot."""
+    """Create the fresh mutable Tool owned by one application snapshot.
+
+    The six documentation fields are the descriptor's own (M3): every value is derived from
+    the blueprint by :func:`_generated_descriptor_fields`, so the round-trip check at the
+    cache holds.
+    """
 
     return Tool(
         id=blueprint.tool_id,
@@ -1512,6 +1552,12 @@ def _tool_from_blueprint(blueprint: _GeneratedRouteToolBlueprint) -> Tool:
         read_only=blueprint.read_only,
         preview_args=blueprint.preview_args,
         preview_lead=blueprint.preview_lead,
+        **_generated_descriptor_fields(
+            blueprint.method,
+            blueprint.path,
+            blueprint.operation_id,
+            blueprint.metadata,
+        ),
     )
 
 
