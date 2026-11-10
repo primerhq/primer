@@ -7,7 +7,7 @@ related: [toolsets/mcp-toolsets, agents/tools-and-grants]
 ---
 ## Goal
 
-Bring an internal service's tools into this install. Register its MCP server as a toolset, check that it answers and whether it needs a sign-in, then give one of its tools to an agent. A person can also publish the tools to outside MCP clients.
+Bring an internal service's tools into this install. Register its MCP server as a toolset, check that it answers and whether it needs a sign-in, then give one of its tools to an agent. A person can also publish this install's built-in tools to outside MCP clients; a toolset registered here is never among the exposable ones.
 
 ## Prerequisites
 
@@ -73,9 +73,9 @@ The answer tells you three things:
 
 Add the scoped id `internal-kb__search_kb` to the agent's `tools` list. `system__update_agent` replaces the whole agent: read it with `system__get_agent`, add the id, and send the full body back. The update is approval-gated by default, so it parks until a person approves it ([create and edit agents](agents/create-and-edit), [tool grants](agents/tools-and-grants)). An agent that holds `system__call_tool` reaches the tool without a grant: name `internal-kb` as the `toolset_id` and `search_kb` as the `tool_name`.
 
-### 5. Publish the tools to outside MCP clients (a person)
+### 5. Publish built-in tools to outside MCP clients (a person)
 
-No agent tool does this. An admin turns the MCP endpoint on and picks the published tools in the console's MCP server page (the exposure list, `PUT /v1/mcp_exposure`, takes only a console sign-in, never a bearer token). An outside client then sees them at `POST /v1/mcp` with a token that has the `mcp` scope ([not agent-callable](not-agent-callable)).
+No agent tool does this, and the exposure surface publishes only this install's reserved built-in and generated tools: the tools of a toolset registered here are never exposable, and no allowlist entry can add one. An admin turns the MCP endpoint on and picks the exposure mode in the console's MCP server page - the RBAC floor publishes every authorized built-in tool to a caller who clears it, and allowlist narrowing limits discovery to the saved set (`PUT /v1/mcp_exposure` takes only a console sign-in, never a bearer token). An outside client then connects to `POST /v1/mcp` with a token that has the `mcp` scope; its `tools/list` response advertises exactly three meta-tools, and it discovers the catalogue with `list_tools` / `find_tools` and calls a discovered scoped id through `call_tool` ([not agent-callable](not-agent-callable)).
 
 ## Verify
 
@@ -88,7 +88,7 @@ No agent tool does this. An admin turns the MCP endpoint on and picks the publis
 - The sign-in belongs to the toolset: one per toolset, shared by every agent that uses it, never one per person. Changing the URL or any OAuth setting of an OAuth toolset needs an admin and signs it out.
 - To move the server to another host, send the header values again. A masked value sent back keeps the stored secret only on the same origin (scheme, host and port); on a new one the write answers `type=validation-error` and stores nothing.
 - The server's tools carry no approval gate. To gate one that writes, an admin adds an approval policy for it ([approval policies](approvals/policies)).
-- Outside MCP clients never see a pausing tool or a tool whose approval policy is `required`, even when it is on the exposure list.
+- Outside MCP clients never see a pausing tool or a tool whose approval policy is `required`: discovery (`list_tools` / `find_tools`) does not surface them, and `call_tool` refuses them at call time with the fixed `tool_unavailable` envelope (the audit/event reason is `approval_required`; yielding is unsupported over MCP in v1) even when the saved allowlist contains one.
 
 ## Related
 

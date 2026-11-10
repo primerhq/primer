@@ -11,7 +11,7 @@ import pytest
 from primer.mcp.dispatch import NotExposed, invoke_exposed, list_exposed_tools
 from primer.mcp.exposure import ExposureDeps, _clear_routing_cache, get_exposure, list_available_tools
 from primer.mcp.safety import tool_scoped_id
-from primer.mcp.server import _input_validation_error
+from primer.mcp.server import _input_validation_error, current_actor
 from primer.model.chat import Tool
 from primer.model.mcp_exposure import McpExposure
 from primer.model.provider import Toolset, ToolsetProviderType
@@ -47,7 +47,12 @@ async def _deps() -> ExposureDeps:
     })
     deps = ExposureDeps(storage_provider=sp, provider_registry=registry)
     row = await get_exposure(deps)
-    await sp.get_storage(McpExposure).update(row.model_copy(update={"enabled": True, "allowed_tools": ALLOWED}))
+    # Pin the legacy narrowing semantics: this characterization pins the
+    # not_in_allowlist reason, which only fires in allowlist mode (a lazy
+    # row is created in rbac mode, where the allowlist is inactive).
+    await sp.get_storage(McpExposure).update(
+        row.model_copy(update={"enabled": True, "allowed_tools": ALLOWED, "mode": "allowlist"})
+    )
     return deps
 
 
@@ -56,12 +61,32 @@ async def test_exposed_list() -> None:
     assert [tool_scoped_id(t) for t, _ in await list_exposed_tools(deps)] == ["misc__uuid_v4", "misc__now"]
 
 
-async def test_input_precheck() -> None:
+async def test_input_precheck(system_actor) -> None:
+    """Outer validation is the fixed meta schema (a raw scoped id is no
+    longer a wire name); inner target-schema validation runs inside
+    call_tool with a bounded invalid_arguments envelope."""
+    from primer.mcp.meta_tools import call_tool
+
     deps = await _deps()
-    assert await _input_validation_error(deps, "misc__uuid_v4", {}) == "'n' is a required property"
-    assert await _input_validation_error(deps, "misc__uuid_v4", {"n": 1}) is None
-    for name in ("ext__hello", "acme__ts__hi", "misc__yield", "nope__x"):
-        assert await _input_validation_error(deps, name, {}) is None
+    assert await _input_validation_error(deps, "list_tools", {"limit": 0}) is not None
+    assert await _input_validation_error(deps, "list_tools", {}) is None
+    assert await _input_validation_error(deps, "misc__uuid_v4", {}) is None
+
+    actor_token = current_actor.set(system_actor)
+    try:
+        denied = await call_tool(deps, {"scoped_id": "misc__uuid_v4", "arguments": {}})
+        ok = await call_tool(deps, {"scoped_id": "misc__uuid_v4", "arguments": {"n": 1}})
+    finally:
+        current_actor.reset(actor_token)
+
+    assert denied == {
+        "ok": False,
+        "error": {
+            "code": "invalid_arguments",
+            "message": "Arguments do not match the tool schema: 'n' is a required property",
+        },
+    }
+    assert ok["ok"] is True
 
 
 async def test_invoke_answers(system_actor) -> None:

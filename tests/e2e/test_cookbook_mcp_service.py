@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +81,21 @@ def _result_text(call_result) -> str:
         if text:
             parts.append(text)
     return "\n".join(parts)
+
+
+async def _meta_call(session, scoped_id: str, arguments: dict):
+    """Call one catalogue target through M2's fixed ``call_tool`` envelope."""
+    outer = await session.call_tool(
+        "call_tool",
+        arguments={"scoped_id": scoped_id, "arguments": arguments},
+    )
+    if outer.is_error:
+        return outer
+    envelope = json.loads(_result_text(outer))
+    return SimpleNamespace(
+        is_error=not envelope.get("ok", False),
+        content=[SimpleNamespace(text=envelope.get("output") or envelope.get("error", ""))],
+    )
 
 
 @smk("SMK-COOKBOOK-16")
@@ -147,22 +163,25 @@ async def test_mcp_service_drives_a_session_end_to_end(
             async with ClientSession(read, write) as sess:
                 await sess.initialize()
 
-                # ---- (1) exposure gate: only the allowlisted ids are listed.
+                # ---- (1) protocol advertises only the fixed meta-tools; the
+                # caller-aware catalogue applies the saved allowlist.
                 listed = await sess.list_tools()
                 names = {t.name for t in listed.tools}
-                assert names == set(_ALLOWLIST), (
-                    f"tools/list is not exactly the allowlist: "
-                    f"unexpected={names - set(_ALLOWLIST)} "
-                    f"missing={set(_ALLOWLIST) - names}"
+                assert names == {"list_tools", "find_tools", "call_tool"}
+                catalogue_result = await sess.call_tool(
+                    "list_tools", arguments={"limit": 100},
                 )
-                assert _FORBIDDEN not in names, (
-                    f"non-allowlisted {_FORBIDDEN!r} leaked into tools/list"
-                )
+                assert not catalogue_result.is_error, _result_text(catalogue_result)
+                catalogue = json.loads(_result_text(catalogue_result))
+                catalogue_ids = {item["scoped_id"] for item in catalogue["items"]}
+                assert catalogue_ids == set(_ALLOWLIST)
+                assert _FORBIDDEN not in catalogue_ids
 
                 # ---- (2) create a session over MCP -- it RUNS.
-                created = await sess.call_tool(
+                created = await _meta_call(
+                    sess,
                     "workspaces__create_workspace_session",
-                    arguments={
+                    {
                         "workspace_id": wid,
                         "binding": {"kind": "agent", "agent_id": agent["agent_id"]},
                         "initial_instructions": "Reply with exactly: PONG",
@@ -192,9 +211,10 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 # reads are admin-only (A-22) and this client is not one.
                 content = ""
                 for _ in range(120):
-                    read_res = await sess.call_tool(
+                    read_res = await _meta_call(
+                        sess,
                         "workspaces__read_workspace_session_messages",
-                        arguments={"workspace_id": wid, "session_id": sid},
+                        {"workspace_id": wid, "session_id": sid},
                     )
                     if not read_res.is_error:
                         # The instruction itself says PONG: only the
@@ -226,9 +246,10 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 assert rest.get("session_state") == "parked", rest
 
                 # ---- (5) cancel a freshly-created session over MCP.
-                created2 = await sess.call_tool(
+                created2 = await _meta_call(
+                    sess,
                     "workspaces__create_workspace_session",
-                    arguments={
+                    {
                         "workspace_id": wid,
                         "binding": {
                             "kind": "agent", "agent_id": agent["agent_id"],
@@ -240,9 +261,10 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 assert not created2.is_error, _result_text(created2)
                 sid2 = json.loads(_result_text(created2))["id"]
 
-                cancelled = await sess.call_tool(
+                cancelled = await _meta_call(
+                    sess,
                     "workspaces__cancel_workspace_session",
-                    arguments={"workspace_id": wid, "session_id": sid2},
+                    {"workspace_id": wid, "session_id": sid2},
                 )
                 assert not cancelled.is_error, _result_text(cancelled)
 
@@ -255,9 +277,10 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 # exactly the "ENDED reserved for explicit end" case.
                 term = None
                 for _ in range(120):
-                    got = await sess.call_tool(
+                    got = await _meta_call(
+                        sess,
                         "workspaces__get_workspace_session",
-                        arguments={"workspace_id": wid, "session_id": sid2},
+                        {"workspace_id": wid, "session_id": sid2},
                     )
                     body = json.loads(_result_text(got))
                     info = body.get("info", {})

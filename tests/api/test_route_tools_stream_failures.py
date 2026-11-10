@@ -271,14 +271,23 @@ async def test_arbitrary_late_stream_secret_is_bounded_through_real_mcp(fake_sto
     handler = build_mcp_server(lambda: deps).get_request_handler("tools/call").handler
     token = current_actor.set(Principal(type="system", id="test-system", display="system", source="internal"))
     try:
-        result = await handler(None, CallToolRequestParams(name="misc__stream_probe", arguments={}))
+        result = await handler(
+            None,
+            CallToolRequestParams(
+                name="call_tool",
+                arguments={"scoped_id": "misc__stream_probe", "arguments": {}},
+            ),
+        )
     finally:
         current_actor.reset(token)
     assert result.is_error
-    text = result.content[0].text
-    assert secret not in text
-    assert len(text) < 256
-    assert json.loads(text) == {
+    payload = json.loads(result.content[0].text)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "tool_failed"
+    message = payload["error"]["message"]
+    assert secret not in message
+    assert len(message) < 256
+    assert json.loads(message) == {
         "type": "route-tool-stream-failed",
         "message": "generated REST response stream failed",
     }

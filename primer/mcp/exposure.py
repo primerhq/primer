@@ -67,6 +67,10 @@ class ExposureDeps:
     storage_provider: Any
     provider_registry: Any
     approval_resolver: Any = None
+    # Optional semantic search seam. It receives ``(query, limit)`` and
+    # returns stable wiki reference paths. Discovery always has a lexical
+    # fallback, so boot and MCP never depend on an index being configured.
+    semantic_search: Any = None
 
 
 class ToolUnknown(Exception):
@@ -86,6 +90,82 @@ class ToolNotExposable(Exception):
         self.reason = reason
 
 
+@dataclass(frozen=True)
+class AuthorizedTool:
+    """One reserved tool the current MCP caller may discover and call."""
+
+    tool: Tool
+    provider: Any
+    scoped_id: str
+    required_role: str
+
+
+def _person_for_actor(actor: Any) -> Any:
+    """Derive the access-control Person for an MCP request actor."""
+    from primer.access.person import Person
+
+    if actor is None:
+        return Person(None, "restricted")
+    if actor.type == "system":
+        return Person(None, "system")
+    return Person(actor.user_id, actor.role or "user")
+
+
+async def authorized_catalogue(
+    deps: ExposureDeps,
+    *,
+    actor: Any,
+    principal: str | None,
+    api_token_scopes: list[str] | None,
+) -> list[AuthorizedTool]:
+    """Return the reserved catalogue visible to one MCP caller.
+
+    This is the single discovery authorization seam. It applies the global
+    switch, legacy allowlist or RBAC mode, MCP bearer scope, exposability,
+    role floor, and per-person toolset use before an identifier is projected.
+    User-created toolsets are never walked.
+    """
+    from primer.access.tools import toolset_use
+    from primer.authz import _role_allows
+    from primer.model.api_token import SCOPE_MCP
+
+    exposure = await get_exposure(deps)
+    if not exposure.enabled:
+        return []
+    if api_token_scopes is not None and SCOPE_MCP not in api_token_scopes:
+        return []
+
+    candidates: list[tuple[Tool, Any, str, str]] = []
+    async for tool, provider in _iter_catalogue(
+        deps,
+        reserved_only=True,
+        principal=principal,
+    ):
+        scoped = tool_scoped_id(tool)
+        if exposure.mode == "allowlist" and scoped not in exposure.allowed_tools:
+            continue
+        ok, _reason = is_exposable(tool, provider=provider)
+        if not ok:
+            continue
+        required_role = provider.required_role(tool.id)
+        if not _role_allows(actor, required_role):
+            continue
+        candidates.append((tool, provider, scoped, required_role))
+
+    uses = await toolset_use(
+        deps.storage_provider,
+        _person_for_actor(actor),
+        [tool.toolset_id for tool, _provider, _scoped, _role in candidates],
+    )
+    out = [
+        AuthorizedTool(tool, provider, scoped, required_role)
+        for tool, provider, scoped, required_role in candidates
+        if uses.get(tool.toolset_id) is None
+        or tool.id in uses.get(tool.toolset_id, frozenset())
+    ]
+    return sorted(out, key=lambda item: item.scoped_id)
+
+
 async def get_exposure(deps: ExposureDeps) -> McpExposure:
     """Return the singleton row, lazily creating it on first call.
 
@@ -99,7 +179,7 @@ async def get_exposure(deps: ExposureDeps) -> McpExposure:
     row = await storage.get("singleton")
     if row is not None:
         return row
-    row = McpExposure(updated_at=_utcnow())
+    row = McpExposure(mode="rbac", updated_at=_utcnow())
     try:
         await storage.create(row)
     except Exception:  # noqa: BLE001 -- treat any create failure as a race
@@ -114,6 +194,7 @@ async def _iter_catalogue(
     deps: ExposureDeps,
     *,
     reserved_only: bool = False,
+    principal: str | None = None,
 ) -> AsyncIterator[tuple[Tool, Any]]:
     """Yield ``(Tool, ToolsetProvider)`` for every reachable tool.
 
@@ -148,7 +229,7 @@ async def _iter_catalogue(
         if provider is None:
             return
         try:
-            async for tool in provider.list_tools(principal=None):
+            async for tool in provider.list_tools(principal=principal):
                 key = tool_scoped_id(tool)
                 if key in seen:
                     continue
@@ -291,6 +372,7 @@ async def _validate_allowed_tools(
 async def update_exposure(
     *,
     enabled: bool | None,
+    mode: str | None = None,
     allowed_tools: list[str] | None,
     updated_by: str | None,
     deps: ExposureDeps,
@@ -306,6 +388,10 @@ async def update_exposure(
     row = await get_exposure(deps)
     if enabled is not None:
         row = row.model_copy(update={"enabled": enabled})
+    if mode is not None:
+        if mode not in ("allowlist", "rbac"):
+            raise ValueError("mode must be 'allowlist' or 'rbac'")
+        row = row.model_copy(update={"mode": mode})
     if allowed_tools is not None:
         await _validate_allowed_tools(allowed_tools, deps)
         row = row.model_copy(update={
@@ -361,6 +447,7 @@ async def list_available_tools(deps: ExposureDeps) -> list[dict]:
 
 
 __all__ = [
+    "AuthorizedTool",
     "ExposureDeps",
     "ToolUnknown",
     "ToolNotExposable",
@@ -368,4 +455,5 @@ __all__ = [
     "update_exposure",
     "list_available_tools",
     "build_routing_map",
+    "authorized_catalogue",
 ]

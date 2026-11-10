@@ -297,12 +297,21 @@ class McpDoor:
 
     async def _call(self, tool: str, arguments: dict) -> tuple[str, str]:
         try:
-            result = await self.session.call_tool(tool, arguments=arguments)
+            result = await self.session.call_tool(
+                "call_tool",
+                arguments={"scoped_id": tool, "arguments": arguments},
+            )
         except Exception as exc:  # noqa: BLE001 - the SDK raises the JSON-RPC error for a tool that is not exposed
             return (MISSING if "not exposed" in str(exc).lower() or "method" in str(exc).lower() else f"error-{exc!r}"), ""
         text = " ".join(getattr(part, "text", "") for part in result.content)
         if not result.is_error:
-            return OK, text
+            try:
+                envelope = json.loads(text)
+            except ValueError:
+                return f"meta-error-{text}", text
+            if envelope.get("ok") is True:
+                return OK, str(envelope.get("output", ""))
+            text = str(envelope.get("error", "tool unavailable"))
         try:
             error = str(json.loads(text).get("type", "")).lower()
         except ValueError:

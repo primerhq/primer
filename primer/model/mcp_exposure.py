@@ -35,6 +35,10 @@ class McpExposure(Identifiable):
 
     id: Literal["singleton"] = "singleton"
     enabled: bool = False
+    # ``allowlist`` is deliberately the model default: a row written by an
+    # older build has no mode field and must keep its legacy narrowing.
+    # Fresh rows are created explicitly as ``rbac`` by get_exposure().
+    mode: Literal["allowlist", "rbac"] = "allowlist"
     allowed_tools: list[str] = Field(default_factory=list)
     updated_at: datetime
     updated_by: str | None = None

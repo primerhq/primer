@@ -31,6 +31,7 @@ from __future__ import annotations
 from primer.api.route_tools import route_tool
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -83,6 +84,7 @@ class UpdateExposureBody(BaseModel):
     """PATCH-shaped body — ``None`` fields are left unchanged."""
 
     enabled: bool | None = None
+    mode: Literal["allowlist", "rbac"] | None = None
     allowed_tools: list[str] | None = None
 
 
@@ -126,6 +128,7 @@ async def update_exposure_endpoint(
     try:
         row = await update_exposure(
             enabled=body.enabled,
+            mode=body.mode,
             allowed_tools=body.allowed_tools,
             updated_by=principal,
             deps=deps,

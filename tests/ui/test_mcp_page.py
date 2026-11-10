@@ -125,4 +125,4 @@ def test_checkboxes_gated_on_master_toggle() -> None:
     start = src.index("const toggleScoped = ")
     end = src.index("\n  };", start)
     body = src[start:end]
-    assert "if (!masterEnabled) return;" in body
+    assert "if (!allowlistActive) return;" in body

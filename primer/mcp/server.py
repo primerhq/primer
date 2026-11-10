@@ -27,6 +27,7 @@ loops that exercise the handlers without an authenticated request.
 
 from __future__ import annotations
 
+import logging
 import time
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -47,14 +48,21 @@ from mcp.types import (
     Tool as McpTool,
 )
 
-from primer.common.log import redact_credentials
 from primer.mcp.audit import log_invoke
-from primer.mcp.dispatch import NotExposed, invoke_exposed, list_exposed_tools
 from primer.mcp.exposure import ExposureDeps
-from primer.mcp.safety import tool_scoped_id
+from primer.mcp.meta_tools import (
+    META_TOOL_DESCRIPTIONS,
+    META_TOOL_SCHEMAS,
+    call_tool_rejection,
+    invoke_meta_tool,
+    result_text,
+)
 
 if TYPE_CHECKING:
     from primer.model.principal import Principal
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---- Per-request context ---------------------------------------------------
@@ -110,30 +118,26 @@ async def _input_validation_error(
     just re-fetched ``tools/list`` sees a call rejected against the
     exact same shape.
 
-    Returns the human-readable validation message, or ``None`` when the
-    arguments are valid, the tool declares no schema, or the tool is not
-    found here at all -- an unresolvable name is ``_call``'s job to
+    Returns a fixed marker string when validation fails, or ``None`` when
+    the arguments are valid, the tool declares no schema, or the tool is
+    not found here at all -- an unresolvable name is ``_call``'s job to
     reject as not-exposed (JSON-RPC method-not-found), not this
     function's, so a lookup miss is silently treated as "nothing to
     validate against" rather than surfaced as a validation failure.
+
+    The marker is fixed on purpose: a jsonschema message would echo
+    caller-supplied values back to the client, and the three meta
+    schemas are fixed and fetchable from ``tools/list``.
     """
-    for tool, _provider in await list_exposed_tools(deps):
-        if tool_scoped_id(tool) != name:
-            continue
-        schema = tool.args_schema
-        if not schema:
-            return None
-        try:
-            jsonschema.validate(instance=arguments, schema=schema)
-        except jsonschema.exceptions.ValidationError as exc:
-            return exc.message
-        except jsonschema.exceptions.SchemaError:
-            # The tool's own advertised schema is malformed -- a
-            # provider bug, not the caller's fault. Do not block every
-            # call to this tool on it; proceed as if there were no
-            # schema to check (dispatch's own pydantic layer is still
-            # the real backstop either way).
-            return None
+    del deps
+    schema = META_TOOL_SCHEMAS.get(name)
+    if schema is None:
+        return None
+    try:
+        jsonschema.validate(instance=arguments, schema=schema)
+    except jsonschema.exceptions.ValidationError:
+        return "arguments"
+    except jsonschema.exceptions.SchemaError:
         return None
     return None
 
@@ -157,38 +161,55 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         """
         del ctx, params
         deps = deps_factory()
-        exposed = await list_exposed_tools(deps)
-        out: list[McpTool] = []
-        for tool, _provider in exposed:
-            out.append(
-                McpTool(
-                    name=tool_scoped_id(tool),
-                    description=tool.description or "",
-                    inputSchema=(
-                        tool.args_schema
-                        or {"type": "object", "properties": {}}
-                    ),
-                )
+        out = [
+            McpTool(
+                name=name,
+                description=META_TOOL_DESCRIPTIONS[name],
+                inputSchema=META_TOOL_SCHEMAS[name],
             )
+            for name in ("list_tools", "find_tools", "call_tool")
+        ]
         return ListToolsResult(tools=out)
 
     async def _call(ctx: Any, params: CallToolRequestParams) -> CallToolResult:
-        """Dispatch a single ``tools/call`` request.
+        """Dispatch a single ``tools/call`` request for one of the three fixed meta-tools.
 
-        Error mapping:
+        Error mapping (M2 wire contract):
 
-        * :class:`NotExposed` → JSON-RPC ``method-not-found`` so the
-          client treats the tool name as unknown. Operators see the
-          rich ``reason`` only in the audit log.
-        * A malformed argument shape → protocol-level ``isError=True``
-          BEFORE dispatch (see :func:`_input_validation_error` below).
-        * Any other exception from the dispatcher / provider → returned
-          as an MCP-level ``isError=True`` result, which is the SDK's
-          convention for tool-execution failures the client should
-          surface to the user without aborting the session.
+        * A name that is not one of ``list_tools`` / ``find_tools`` /
+          ``call_tool`` → JSON-RPC ``method-not-found`` with the fixed
+          message ``Tool is unavailable.`` -- the requested name is
+          never echoed back.
+        * Arguments that fail the meta schema → ``isError=True`` with
+          the fixed marker ``Input validation error: arguments`` before
+          dispatch (see :func:`_input_validation_error` below); a
+          jsonschema message would echo caller-supplied values.
+        * ``call_tool`` answers target refusals in-band through the
+          meta envelope (``tool_unavailable`` / ``access_denied`` /
+          ``invalid_arguments`` / ``tool_failed``), mapped to
+          ``isError=True`` below; the denial reason is audit-only via
+          :data:`primer.mcp.meta_tools.call_tool_rejection` and never
+          reaches the wire.
+        * Any other exception from the meta-tool dispatch → returned as
+          an MCP-level ``isError=True`` result carrying the fixed text
+          ``Tool dispatch failed.``; the exception detail is logged
+          server-side (``logger.exception``) so the operator keeps it
+          while the client sees one bounded message.
+        * Success answers the meta payload's ``ok`` shape, serialized
+          by :func:`primer.mcp.meta_tools.result_text`.
         """
         name = params.name
         arguments = params.arguments or {}
+        # call_tool's audit/event identity is the inner requested
+        # scoped_id, not the meta name, so audit and events keep the
+        # per-target resolution the raw wire used to have.
+        _inner_id = arguments.get("scoped_id")
+        audit_target = (
+            _inner_id
+            if name == "call_tool" and isinstance(_inner_id, str)
+            else None
+        )
+        audit_id = audit_target or name
         deps = deps_factory()
         principal = current_principal.get()
         api_token_id = current_api_token_id.get()
@@ -213,6 +234,14 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         )
         try:
             try:
+                if name not in META_TOOL_SCHEMAS:
+                    error_code = "not_exposed"
+                    # Fixed on purpose: echoing the requested name would
+                    # put unbounded client input back on the wire.
+                    raise MCPError(
+                        code=METHOD_NOT_FOUND,
+                        message="Tool is unavailable.",
+                    )
                 bad_input = await _input_validation_error(deps, name, arguments)
                 if bad_input is not None:
                     error_code = "invalid_arguments"
@@ -220,58 +249,51 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                         isError=True,
                         content=[TextContent(
                             type="text",
-                            text=f"Input validation error: {bad_input}",
+                            text=(f"Input validation error: {bad_input}")[:1000],
                         )],
                     )
-                result = await invoke_exposed(
-                    scoped_id=name,
-                    arguments=arguments,
-                    principal=principal,
-                    actor=actor,
-                    api_token_scopes=api_token_scopes,
-                    deps=deps,
-                )
-            except NotExposed as exc:
-                error_code = "not_exposed"
-                # Spec §13: surfaces as method-not-found to the client.
-                # The exc.reason is included for ops-only triage via the
-                # audit log; the wire-level message stays generic so we
-                # do not leak which tools exist behind the allowlist.
-                raise MCPError(
-                    code=METHOD_NOT_FOUND,
-                    message=f"tool {name!r} not exposed",
-                ) from exc
+                payload = await invoke_meta_tool(name, arguments, deps)
             except MCPError:
-                # Already protocol-shaped; let the SDK propagate.
-                error_code = "mcp_error"
+                # Already protocol-shaped; let the SDK propagate. Keep a
+                # more specific code assigned at the raise site (the
+                # unknown-name refusal is not_exposed, not mcp_error).
+                if error_code is None:
+                    error_code = "mcp_error"
                 raise
-            except Exception as exc:  # noqa: BLE001 -- surface as isError
+            except Exception:  # noqa: BLE001 -- surface as isError
                 error_code = "dispatch_failed"
+                # Fixed text on the wire; the exception detail stays
+                # server-side where the operator can read it.
+                logger.exception("mcp: dispatch raised")
                 return CallToolResult(
                     isError=True,
-                    content=[TextContent(type="text", text=redact_credentials(str(exc)))],
+                    content=[TextContent(
+                        type="text",
+                        text="Tool dispatch failed.",
+                    )],
                 )
-            ok = not result.is_error
-            # A failure's text is whatever the tool's exception printed (httpx prints the request URL whole, credentials included); a successful
-            # result is data and is returned as it was (01a11fbc-d6de).
-            text = result.output or ""
-            if result.is_error:
-                text = redact_credentials(text)
+            ok = bool(payload.get("ok", True))
+            if not ok:
+                error_code = str(payload.get("error", {}).get("code") or "tool_failed")
             return CallToolResult(
-                isError=result.is_error,
+                isError=not ok,
                 content=[
-                    TextContent(type="text", text=text),
+                    TextContent(type="text", text=result_text(payload)),
                 ],
             )
         finally:
             current_mcp_invocation.reset(invocation_token)
+            # The denial reason is audit-only: the wire keeps its fixed
+            # indistinguishable error text, the operators get the cause.
+            reason = call_tool_rejection.get() if audit_target else None
             log_invoke(
                 principal=principal,
                 api_token_id=api_token_id,
-                scoped_id=name,
+                scoped_id=audit_id,
                 ok=ok,
                 duration_ms=(time.monotonic() - t0) * 1000.0,
                 error_code=error_code,
+                reason=reason,
             )
             from primer.events.recorder import actor_of, recorder_for
 
@@ -280,8 +302,10 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                 actor=actor_of(actor),
                 payload={
                     "tool": name,
+                    "target": audit_target,
                     "ok": ok,
                     "error_code": error_code,
+                    "reason": reason,
                 },
             )
 

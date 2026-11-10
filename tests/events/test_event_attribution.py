@@ -167,11 +167,16 @@ async def test_mcp_tool_called_event_names_the_user(app, client, fake_storage_pr
     ))
     assert (await client.put("/v1/mcp_exposure", json={"enabled": True, "allowed_tools": ["misc__uuid_v4"]})).status_code == 200
 
-    result = await _mcp_call(app, headers={"Authorization": f"Bearer {plaintext}"}, tool_name="misc__uuid_v4")
+    result = await _mcp_call(
+        app, headers={"Authorization": f"Bearer {plaintext}"},
+        tool_name="call_tool", arguments={"scoped_id": "misc__uuid_v4"},
+    )
 
     assert result.is_error is False
     called = [e for e in await fake_storage_provider.get_event_store().read_after(0) if e.event_type == "mcp.tool_called"]
     assert [e.actor for e in called] == [f"user:{user.id}"]
+    assert all(e.payload.get("tool") == "call_tool" for e in called)
+    assert all(e.payload.get("target") == "misc__uuid_v4" for e in called)
 
 
 async def test_worker_internal_write_stays_system(sp):

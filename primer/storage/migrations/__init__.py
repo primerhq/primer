@@ -103,6 +103,7 @@ from primer.storage.migrations.m030_seeded_agents_v4 import M030SeededAgentsV4
 from primer.storage.migrations.m031_webhook_delivery_timestamps import (
     M031WebhookDeliveryTimestamps,
 )
+from primer.storage.migrations.m032_mcp_exposure_mode import M032McpExposureMode
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M029McpOAuthPerUser(),
     M030SeededAgentsV4(),
     M031WebhookDeliveryTimestamps(),
+    M032McpExposureMode(),
 )
 
 #: Highest version this build knows how to apply.
