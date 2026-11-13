@@ -41,6 +41,7 @@ from primer.api.registries import (
     SemanticSearchRegistry,
     WorkspaceRegistry,
 )
+from primer.api.route_tools import validate_curated_route_declarations
 from primer.api.version import APP_VERSION
 from primer.model.provider import SemanticSearchProvider
 from primer.model.scheduler import RuntimeMode, SchedulerProviderType
@@ -985,6 +986,11 @@ def _make_lifespan(config: AppConfig):
         )
         provider_registry._canvas_toolset_provider = canvas_toolset  # noqa: SLF001
         app.state.canvas_toolset = canvas_toolset
+
+        # M5: every reserved provider is on the registry by this point, so the
+        # curated-route liveness guard (each declared curated id must be a live
+        # tool) can fail the boot on drift before the first request.
+        await validate_curated_route_declarations(app)
 
         from primer.bootstrap.seed import builtin_toolset_providers, run_ensure_pass
         from primer.workspace.local_policy import validate_default_template

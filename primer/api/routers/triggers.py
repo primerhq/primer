@@ -216,6 +216,7 @@ def _raise_code(status: int, code: str, detail: str) -> None:
 
 
 @triggers_router.post("", status_code=201, summary="Create a trigger")
+@route_tool(mapping_state="curated", curated_tool_ids=("crud__create_trigger", "trigger__create"))
 async def create_trigger_endpoint(
     body: TriggerCreateBody,
     request: Request,
@@ -250,6 +251,7 @@ async def create_trigger_endpoint(
 
 
 @triggers_router.get("", summary="List triggers")
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__list",))
 async def list_triggers_endpoint(
     request: Request,
     kind: Annotated[
@@ -275,6 +277,7 @@ async def list_triggers_endpoint(
 
 
 @triggers_router.get("/{trigger_id}", summary="Get a trigger")
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__get",))
 async def get_trigger_endpoint(
     request: Request,
     trigger_id: str = Path(...),
@@ -294,6 +297,7 @@ async def get_trigger_endpoint(
 
 
 @triggers_router.put("/{trigger_id}", summary="Update a trigger")
+@route_tool(mapping_state="curated", curated_tool_ids=("crud__update_trigger", "trigger__update"))
 async def update_trigger_endpoint(
     body: TriggerUpdateBody,
     request: Request,
@@ -335,6 +339,7 @@ async def update_trigger_endpoint(
 
 
 @triggers_router.delete("/{trigger_id}", summary="Delete a trigger (cascade)")
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__delete",))
 async def delete_trigger_endpoint(
     request: Request,
     trigger_id: str = Path(...),
@@ -382,6 +387,7 @@ async def rotate_token_endpoint(
     "/{trigger_id}/fire_now",
     summary="Synchronously fire a trigger",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__fire_now",))
 async def fire_now_endpoint(
     request: Request,
     trigger_id: str = Path(...),
@@ -430,6 +436,7 @@ async def fire_now_endpoint(
     status_code=201,
     summary="Create a subscription",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__create_subscription",))
 async def create_subscription_endpoint(
     body: SubscriptionCreateBody,
     request: Request,
@@ -474,6 +481,7 @@ async def create_subscription_endpoint(
     "/{trigger_id}/subscriptions",
     summary="List subscriptions for a trigger",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__list_subscriptions",))
 async def list_subscriptions_endpoint(
     request: Request,
     trigger_id: str = Path(...),
@@ -501,6 +509,7 @@ async def list_subscriptions_endpoint(
     "/{trigger_id}/subscriptions/{subscription_id}",
     summary="Get a subscription",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__get_subscription",))
 async def get_subscription_endpoint(
     request: Request,
     trigger_id: str = Path(...),
@@ -532,6 +541,7 @@ async def get_subscription_endpoint(
     "/{trigger_id}/subscriptions/{subscription_id}",
     summary="Update a subscription",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__update_subscription",))
 async def update_subscription_endpoint(
     body: SubscriptionUpdateBody,
     request: Request,
@@ -588,6 +598,7 @@ async def update_subscription_endpoint(
     "/{trigger_id}/subscriptions/{subscription_id}",
     summary="Delete a subscription",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("trigger__delete_subscription",))
 async def delete_subscription_endpoint(
     request: Request,
     trigger_id: str = Path(...),

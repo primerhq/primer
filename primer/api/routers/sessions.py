@@ -159,6 +159,7 @@ class SessionCreateBody(BaseModel):
     summary="Create a new session attached to an agent or graph",
     responses=common_responses(404, 409, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__create_workspace_session",))
 async def create_session(
     body: SessionCreateBody,
     request: Request,
@@ -251,6 +252,7 @@ async def create_session(
     summary="Idempotent start-or-resume",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__resume_workspace_session",))
 async def resume_session(
     request: Request,
     workspace_id: str = Path(...),
@@ -297,6 +299,7 @@ async def resume_session(
     summary="Soft pause request",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__pause_workspace_session",))
 async def pause_session(
     request: Request,
     workspace_id: str = Path(...),
@@ -341,6 +344,7 @@ async def pause_session(
     summary="Hard cancel - transitions to ENDED/cancelled",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__cancel_workspace_session",))
 async def cancel_session(
     request: Request,
     workspace_id: str = Path(...),
@@ -1470,6 +1474,7 @@ async def _read_workspace_turn_log(
     summary="Read the session's recorded message log (paginated)",
     responses=common_responses(404, 500, 503),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__read_workspace_session_messages",))
 async def get_session_messages(
     request: Request,
     session_id: str = Path(..., description="Session id"),

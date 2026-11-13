@@ -382,6 +382,7 @@ def _file_urls(request: Request, session_id: str, row: SessionCanvas) -> dict[st
     summary="Read a session's canvas",
     responses=common_responses(404, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("canvas__canvas_get",))
 async def get_canvas(
     request: Request,
     workspace_id: str = Path(...),
@@ -430,6 +431,7 @@ async def get_canvas(
     summary="Apply an operator's batch to a session's canvas",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("canvas__canvas_apply",))
 async def apply_canvas_ops(
     request: Request,
     body: CanvasOpsBody,
@@ -629,6 +631,7 @@ async def post_canvas_event(
     summary="Read the canvas settings",
     responses=common_responses(500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__get_canvas_settings",))
 async def get_canvas_settings(storage_provider: Any = Depends(get_storage_provider)) -> CanvasSettings:
     """The stored canvas settings, or the defaults when an operator has saved none."""
     return await read_canvas_settings(storage_provider)

@@ -173,6 +173,7 @@ class PrimeInstructionsReset(BaseModel):
     # registry (ConfigError); 500: anything else the backend raises (a local workspace's RuntimeError for a symlink loop).
     responses=common_responses(400, 404, 409, 500, 503),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__reset_prime_instructions",))
 async def reset_prime_instructions(request: Request) -> PrimeInstructionsReset:
     """Overwrite ``agents.md`` in the default workspace (prime) with the instructions the platform ships.
 

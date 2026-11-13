@@ -531,6 +531,17 @@ class ProviderRegistry:
         self._builtin_toolset_providers.update(incoming)
         self._generated_api_toolset_ids = incoming_ids
 
+    def builtin_toolset_providers(self) -> Mapping[str, ToolsetProvider]:
+        """The fixed built-in and installed generated providers as one map (M5).
+
+        Read by the curated-route liveness guard, which needs the providers
+        AS INSTALLED: a toolset an operator switched off by design is still
+        the live source of its tools, so the guard does not go through
+        :meth:`get_toolset` (whose canvas off-switch raises ``NotFoundError``).
+        """
+
+        return dict(self._builtin_toolset_providers)
+
     def _set_fixed_toolset(self, provider_id: str, provider: ToolsetProvider | None) -> None:
         """Wire a late-built fixed provider into the canonical table."""
 

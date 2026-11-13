@@ -248,7 +248,17 @@ collection_router = make_crud_router(
     model_cls=Collection,
     storage_dep=get_collection_storage,
     plural="collections",
-    tool_declaration=CrudToolDeclaration(resource_id="collections_api", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="collections_api",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_collection",),
+            "get": ("system__get_collection",),
+            "list": ("system__list_collections",),
+            "update": ("system__update_collection",),
+            "delete": ("system__delete_collection",),
+        },
+    ),
     tag="collections",
     cdc_kind="collection",
     owned=True,
@@ -334,6 +344,7 @@ def _doc_json(document) -> dict:
     summary="Read one document by slug path, or list the tree under a parent",
     responses=common_responses(404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("collections__collection_tree", "collections__read_document"))
 async def get_or_list_docs(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -370,6 +381,7 @@ async def get_or_list_docs(
     summary="Create a document node under a parent",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("collections__create_document",))
 async def create_doc(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -391,6 +403,7 @@ async def create_doc(
     summary="Update a document's body and/or title",
     responses=common_responses(403, 404, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("collections__update_document",))
 async def patch_doc(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -413,6 +426,7 @@ async def patch_doc(
     summary="Move a document (and its subtree) to a new parent and/or slug",
     responses=common_responses(400, 403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("collections__move_document",))
 async def move_doc(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -434,6 +448,7 @@ async def move_doc(
     summary="Delete a document, optionally with its subtree",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("collections__delete_document",))
 async def delete_doc(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -476,6 +491,7 @@ async def grep_docs(
     summary="Read one document by path, or list documents under a prefix",
     responses=common_responses(404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__get_document_content", "system__list_documents"))
 async def get_or_list_collection_documents(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -526,6 +542,7 @@ async def get_or_list_collection_documents(
     summary="Create or replace a document at a path",
     responses=common_responses(403, 404, 413, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__put_document",))
 async def put_collection_document(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -581,6 +598,7 @@ async def delete_collection_document(
     status_code=204,
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__move_document",))
 async def move_collection_document(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -729,6 +747,7 @@ async def import_collection_zip(
     summary="Semantic search within a collection's documents",
     responses=common_responses(404, 422, 502, 503),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("collections__search", "system__search_collection"))
 async def search_collection(
     request: Request,
     collection_id: str = Path(..., description="Collection id"),
@@ -1200,6 +1219,11 @@ document_router = make_crud_router(
     tool_declaration=CrudToolDeclaration(
         resource_id="documents",
         generated_operations=frozenset({"list", "update", "find"}),
+        curated_tool_ids={
+            "create": ("system__create_document",),
+            "get": ("system__get_document",),
+            "delete": ("system__delete_document",),
+        },
     ),
     tag="documents",
     managed_by_field="harness_id",

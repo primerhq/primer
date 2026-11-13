@@ -152,6 +152,55 @@ Mutating routes are non-interruptible unless their declaration explicitly
 proves otherwise, and their generated tools join the same default
 approval-policy seed as curated writes; reads remain ungated.
 
+**The Tools Universal M5 coverage contract.** A route whose operation is
+owned by hand-written (curated) tools declares that ownership explicitly
+instead of it being inferred: `RouteToolMetadata` carries
+`curated_tool_ids` (a plural of scoped ids, valid only in the `curated`
+mapping state and `None` for every other state; the empty tuple is refused,
+unlike the zero-argument preview card convention) in the order the tools
+were declared, and `CrudToolDeclaration` carries the `curated_tool_ids` verb
+map (CRUD verb to plural scoped ids; the map and each id tuple are copied
+and frozen at declaration time, and the map's keys plus
+`generated_operations` must cover the six CRUD verbs exactly once, and a
+verb cannot be both). The declared order is never published: the production
+projection exposes only the canonically sorted ids, and the two publication
+sets stay apart by construction (a curated id naming a generated scoped id
+fails the build in `_compile_route_tool_blueprints`). The projection is the
+`coverage_projection` reader: one frozen `OperationCoverage` row per OpenAPI
+operation (identity, `generated` / `curated` / `skip` / `gap` state,
+canonical tool ids, `aggregation_id`, `skip_code`, and the `module:function`
+`route_source`), derived from route metadata plus the compiled generated
+snapshot alone, sorted by (operation id, method, path), deterministic, and
+cached on the app keyed by the snapshot's identity. A `gap` row (no
+generated declaration, no curated annotation and no reviewed skip) is the
+production analogue of the inventory script's strict mode and is pinned
+empty on the current app by the freeze tests: a route added later without an
+annotation fails the freeze instead of drifting silently. Liveness is a
+separate lifespan guard, `validate_curated_route_declarations`, run after
+`app.state.provider_registry` is set: every declared curated id must name a
+live tool of a built-in provider (a toolset an operator switched off by
+design still validates, because the registry's canonical provider map is
+read, not `get_toolset`), an unknown id raises `ConfigError` and fails boot,
+and an app without a registry fails closed. No production module imports the
+inventory script or reads the reviewed manifest JSON: the freeze digests
+(404 operation identities, 487 scoped tool ids, 261 generated declared ids,
+the 135 canonically sorted curated pairs, the 8 reviewed skips and the empty
+aggregation set) and the non-vacuous meta-tool and core-kit prompt budgets
+are pinned against the live inventory in
+`tests/tooling/test_tools_universal_m5_frozen_contract.py` and
+`tests/mcp/test_meta_prompt_budget.py`. The full-lifespan test
+`tests/tooling/test_tools_universal_m5_lifespan.py` checks fixed-provider
+liveness, including a deliberately disabled canvas, and renders reference
+pages from all boot descriptors. The REST / catalogue / MCP
+parity is pinned by the ten representative rows in
+`tests/api/test_tools_universal_m5_parity.py`. Parity preserves the distinct
+surface boundaries: the console catalogue is an authenticated, unfiltered
+picker for built-ins, whereas MCP discovery filters by exposure and role.
+The MCP argument schema may reject an invalid body before REST dispatch,
+and a live approval policy may refuse a tool write that the REST caller can
+perform directly. Neither catalogue presence nor a public REST route grants
+anonymous MCP access.
+
 ## 4. How to add a new implementation
 
 Most persisted entities get a router from `make_crud_router` (`primer/api/routers/_crud.py`) rather than hand-written handlers. To add a new entity surface:
@@ -165,8 +214,9 @@ Most persisted entities get a router from `make_crud_router` (`primer/api/router
    - `cdc_kind` registers the kind in the central `_CDC_KINDS` registry (`primer/api/routers/_cdc_hooks.py`) and auto-wires the CDC create/update/delete hooks ahead of any user hooks.
    - `tool_declaration=CrudToolDeclaration(...)` declares generated-tool
      ownership for all six CRUD operations. List every generated verb
-     explicitly. A verb omitted from `generated_operations` means a reviewed
-     curated tool owns it; it does not mean "not implemented". Reuse the
+     explicitly, and name every curated verb and its scoped ids in
+     `curated_tool_ids`; those two sets must cover all six verbs without
+     overlap. Reuse the
      resource's existing `CrudGuards` object where one exists. A bespoke route
      uses `@route_tool(...)` instead. Human sign-in routes use the explicit
      `mapping_state="skip"` form and a stable `skip_code`; do not leave an

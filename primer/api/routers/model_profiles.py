@@ -47,7 +47,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.api.routers._crud import make_crud_router
-from primer.api.route_tools import CrudToolDeclaration
+from primer.api.route_tools import CrudToolDeclaration, route_tool
 from primer.api.routers._references import ReferenceCheck
 from primer.storage.references import MODEL_PROFILE_GRAPH_REFERENCE
 from primer.api.routers.providers import _make_invalidator
@@ -241,7 +241,17 @@ model_profile_router = make_crud_router(
     grantable=True,
     storage_dep=get_model_profile_storage,
     plural="model_profiles",
-    tool_declaration=CrudToolDeclaration(resource_id="model_profiles", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="model_profiles",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_model_profile",),
+            "get": ("system__get_model_profile",),
+            "list": ("system__list_model_profiles",),
+            "update": ("system__update_model_profile",),
+            "delete": ("system__delete_model_profile",),
+        },
+    ),
     tag="model-profiles",
     managed_by_field="harness_id",
     search_fields=["id", "description", "model_name"],
@@ -282,6 +292,7 @@ model_profile_choices_router = APIRouter(tags=["model-profiles"])
     summary="List model profiles by id, description, kind and context length (any signed-in user)",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__list_model_profile_choices",))
 async def list_model_profile_choices_route(
     request: Request,
     page: PageRequest = Depends(parse_page),

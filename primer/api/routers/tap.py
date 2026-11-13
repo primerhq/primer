@@ -49,6 +49,7 @@ from starlette.responses import StreamingResponse
 
 from primer.access.person import person_from_request
 from primer.access.workspaces import WorkspaceAccessWatch, require_workspace
+from primer.api.route_tools import route_tool
 from primer.model.access import AccessLevel
 from primer.model.except_ import AccessDeniedError, BadRequestError, NotFoundError
 from primer.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
@@ -526,6 +527,7 @@ def usage_frame(usage) -> dict:
 
 
 @tap_router.get("/workspaces/{workspace_id}/tap")
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__workspace_tap",))
 async def workspace_tap(
     workspace_id: str,
     request: Request,

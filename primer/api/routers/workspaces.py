@@ -567,6 +567,12 @@ provider_router = make_crud_router(
     tool_declaration=CrudToolDeclaration(
         resource_id="workspace_providers",
         generated_operations=frozenset({"update", "find"}),
+        curated_tool_ids={
+            "create": ("workspaces__create_workspace_provider",),
+            "get": ("workspaces__get_workspace_provider",),
+            "list": ("workspaces__list_workspace_providers",),
+            "delete": ("workspaces__delete_workspace_provider",),
+        },
     ),
     tag="workspace-providers",
     on_delete=_invalidate_workspace_backend,
@@ -605,6 +611,7 @@ provider_choices_router = APIRouter(tags=["workspace-providers"])
     summary="List workspace providers by id, kind and label (any signed-in user)",
     responses=common_responses(500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__list_workspace_provider_choices",))
 async def list_workspace_provider_choices(
     request: Request,
     storage=Depends(get_workspace_provider_storage),
@@ -788,7 +795,17 @@ template_router = make_crud_router(
     model_cls=WorkspaceTemplate,
     storage_dep=get_workspace_template_storage,
     plural="workspace_templates",
-    tool_declaration=CrudToolDeclaration(resource_id="workspace_templates", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="workspace_templates",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("workspaces__create_workspace_template",),
+            "get": ("workspaces__get_workspace_template",),
+            "list": ("workspaces__list_workspace_templates",),
+            "update": ("workspaces__update_workspace_template",),
+            "delete": ("workspaces__delete_workspace_template",),
+        },
+    ),
     tag="workspace-templates",
     on_pre_create=_workspace_template_pre_create,
     on_pre_update=_workspace_template_pre_update,
@@ -939,6 +956,7 @@ def _empty_page(page: PageRequest) -> _PageResp:
     summary="List Workspaces",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__list_workspaces",))
 async def list_workspaces(
     request: Request,
     page: PageRequest = Depends(parse_page),
@@ -983,6 +1001,7 @@ async def find_workspaces(
     summary="Get Workspace by id",
     responses=common_responses(404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__get_workspace",))
 async def get_workspace(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -1067,6 +1086,7 @@ class WorkspaceTerminalAccessBody(BaseModel):
     summary="Create Workspace from template",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__create_workspace",))
 async def create_workspace(
     body: WorkspaceCreateBody,
     request: Request,
@@ -1259,6 +1279,7 @@ class _ReplyBindingBody(BaseModel):
     summary="Set the reply binding for a Workspace",
     responses=common_responses(404, 409, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__set_reply_binding",))
 async def set_workspace_reply_binding(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -1329,6 +1350,7 @@ async def set_workspace_reply_binding(
     summary="Clear the reply binding for a Workspace",
     responses=common_responses(404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__clear_reply_binding",))
 async def clear_workspace_reply_binding(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -1351,6 +1373,7 @@ async def clear_workspace_reply_binding(
     summary="Destroy Workspace",
     responses=common_responses(403, 404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__delete_workspace",))
 async def delete_workspace(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -1483,6 +1506,7 @@ sessions_router = APIRouter(tags=["workspace-sessions"])
     summary="List sessions on a workspace",
     responses=common_responses(404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__list_workspace_sessions",))
 async def list_sessions(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -1578,6 +1602,7 @@ async def ensure_main_session(
     summary="Get session state",
     responses=common_responses(404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__get_workspace_session",))
 async def get_session(
     request: Request,
     workspace_id: str = Path(..., description="Workspace id"),
@@ -2314,6 +2339,7 @@ class SteerSessionOut(WorkspaceSession):
     summary="Send a message - invoke / steer / resume (auto-wake)",
     responses=common_responses(403, 404, 409, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__steer_workspace_session",))
 async def steer_session(
     request: Request,
     body: SteerBody,
@@ -2673,6 +2699,7 @@ async def restart_session_route(
     summary="Stop the in-flight turn but keep the session alive",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__interrupt_workspace_session",))
 async def interrupt_session(
     request: Request,
     workspace_id: str = Path(...),
@@ -2953,6 +2980,7 @@ _MAX_RECURSIVE_WALK_ENTRIES = 10_000
     summary="List files at a workspace path",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__list_workspace_files",))
 async def list_files(
     request: Request,
     workspace_id: str = Path(...),
@@ -3017,6 +3045,7 @@ async def list_files(
     summary="Get info for a single file or directory",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__get_workspace_file_info",))
 async def file_info(
     request: Request,
     workspace_id: str = Path(...),
@@ -3045,6 +3074,7 @@ def _file_etag(entry) -> str:
     summary="Read a file's content",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__read_workspace_file",))
 async def read_file(
     request: Request,
     workspace_id: str = Path(...),
@@ -3149,6 +3179,7 @@ async def make_dir(
     summary="Delete a file or directory",
     responses=common_responses(400, 404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__delete_workspace_file",))
 async def delete_file(
     request: Request,
     workspace_id: str = Path(...),
@@ -3223,6 +3254,7 @@ async def move_file(
         },
     },
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("workspaces__write_workspace_file",))
 async def write_file(
     request: Request,
     workspace_id: str = Path(...),
