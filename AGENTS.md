@@ -140,11 +140,13 @@ reason rather than skipping it silently.
 
 ## 5. Running tests (read this - the e2e suite is CPU-exclusive)
 
-- **Narrowed unit sweep** (must stay green at every commit, parallel, ~90s):
+- **Narrowed unit sweep** (must stay green at every commit, parallel; the docs
+  hygiene suite runs separately and is excluded here to avoid executing it
+  twice):
 
   ```bash
   uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
-    --ignore=tests/e2e --ignore=tests/integration
+    --ignore=tests/e2e --ignore=tests/integration --ignore=tests/docs
   ```
 
   Add `-n0` to run a single module serially while debugging.
@@ -152,7 +154,8 @@ reason rather than skipping it silently.
 - **Live-Postgres suites** (`tests/claim`, `tests/scheduler`, `tests/storage`,
   `tests/coordinator`, `tests/vector`, plus the gated files that live with their
   subsystem: `LANE_FILES` in `tests/pg_gate.py`, currently one under `tests/bus`,
-  one under `tests/worker` and one under `tests/session`; a static test fails a gated file the CI lane
+  one under `tests/worker`, one under `tests/session` and one under
+  `tests/events`; a static test fails a gated file the CI lane
   does not run) skip unless a database is configured. The
   single gate is `PRIMER_TEST_POSTGRES_URL=postgresql://user:pw@host:port/db[?schema=name]`;
   `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are deprecated aliases that
@@ -168,7 +171,8 @@ reason rather than skipping it silently.
   `postgres` job (one pytest process per suite) against a
   `pgvector/pgvector:pg16` service (CI pulls it through `mirror.gcr.io`,
   Google's Docker Hub mirror, because Docker Hub rate-limits unauthenticated
-  pulls) with `PRIMER_REQUIRE_POSTGRES_TESTS=1`: in
+  pulls), selecting only `-m postgres` because the unit lane already executes
+  unmarked items, with `PRIMER_REQUIRE_POSTGRES_TESTS=1`: in
   that mode a Postgres-gated test that SKIPS fails, a module skipped at
   collection under those directories fails, the run refuses to start without the
   URL, and a suite in which no gated test passed fails. Locally, point at a

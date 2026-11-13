@@ -48,10 +48,16 @@ jobs:
         run: uv run ruff check .
       - name: Import contracts (import-linter)
         run: uv run lint-imports
+      # Run docs exactly once. This step seeds the coverage data; the unit
+      # sweep below excludes tests/docs and appends its own data, so docs tests
+      # still count toward the same coverage gate without being executed twice.
       - name: Docs hygiene
-        run: uv run pytest tests/docs/ -q --tb=short
-      # Narrowed unit sweep: excludes e2e / distributed / ui_e2e / integration
-      # (those need a live server, multi-process Postgres, or Playwright).
+        run: >-
+          uv run pytest tests/docs/ -q --tb=short
+          --cov=primer --cov-report= --cov-fail-under=0
+      # Narrowed unit sweep: excludes docs (already run above), e2e,
+      # distributed, ui_e2e and integration. The latter four need a live
+      # server, multi-process Postgres, or Playwright.
       # tests/llm is INCLUDED: it is adapter unit tests with every request
       # intercepted in-process, and tests/llm/conftest.py fails any test that
       # reaches the real network. It was once excluded as "needs a real LLM",
@@ -61,15 +67,17 @@ jobs:
       # skip, in the dedicated `postgres` job below. The release workflow
       # runs the Postgres-backed boot smoke before publishing.
       #
-      # Coverage is produced in this same run (pytest-cov -> coverage.xml) so
-      # the suite is not run twice. The in-job gate is 80% (--cov-fail-under=80,
-      # matching [tool.coverage.report] fail_under in pyproject.toml); Codecov's
-      # project/patch status checks (codecov.yml) track the same 80% target.
+      # Coverage is produced across the docs step and this sweep
+      # (pytest-cov --cov-append -> coverage.xml). The in-job gate is 80%
+      # (--cov-fail-under=80, matching [tool.coverage.report] fail_under in
+      # pyproject.toml); Codecov's project/patch status checks (codecov.yml)
+      # track the same 80% target.
       - name: Unit sweep (with coverage)
         run: >-
           uv run pytest tests/ -q
           --ignore=tests/distributed --ignore=tests/ui_e2e
-          --ignore=tests/e2e --ignore=tests/integration
+          --ignore=tests/e2e --ignore=tests/integration --ignore=tests/docs
+          --cov-append
           --cov=primer --cov-report=xml --cov-report=term-missing
           --cov-fail-under=80
       # Upload to Codecov so it posts the PR comment + project/patch status.
@@ -155,37 +163,39 @@ jobs:
       # not take the others down with it (their results, their "postgres lane: N"
       # line and their FAILED list would never be printed). It also makes the
       # guard's "at least one gated test passed" check per suite, which is
-      # stricter. -v so the last node id printed before a timeout dump names
-      # the test that hung; under -q the dump shows only fixture-finalizer frames.
+      # stricter. -m postgres selects only the live-database items; the unit
+      # lane already executes every unmarked item in these directories. -v so
+      # the last node id printed before a timeout dump names the test that hung;
+      # under -q the dump shows only fixture-finalizer frames.
       - name: Postgres-gated suite, claim engine (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/claim
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated suite, scheduler (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/scheduler
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated suite, storage (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/storage
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated suite, coordinator (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/coordinator
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated suite, pgvector / halfvec (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/vector
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       # Gated files that live with their subsystem, outside the suites above
       # (tests/pg_gate.py LANE_FILES). One process each, for the same reason.
@@ -193,25 +203,25 @@ jobs:
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/bus/test_postgres_listen_setup_live.py
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated test, worker cancel reconcile (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/worker/test_cancel_reconcile_live.py
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated test, session park flip leaves (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/session/test_park_flip_writes_leaves_live.py
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
       - name: Postgres-gated test, wait cursor below a late commit (skips are failures)
         if: ${{ !cancelled() }}
         run: >-
           uv run pytest tests/events/test_stable_head_live.py
-          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
 
   core-install:

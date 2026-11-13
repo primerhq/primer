@@ -10,7 +10,8 @@ PYTEST_IGNORES := \
 	--ignore=tests/distributed \
 	--ignore=tests/ui_e2e \
 	--ignore=tests/e2e \
-	--ignore=tests/integration
+	--ignore=tests/integration \
+	--ignore=tests/docs
 
 .PHONY: help setup test lint fmt cov docs-hygiene serve docker-build docker-build-slim docker-build-all
 
@@ -26,7 +27,7 @@ help: ## Show this help
 setup: ## Install dependencies (uv sync --all-extras)
 	uv sync --all-extras
 
-test: ## Run the narrowed unit sweep (excludes e2e/distributed/ui_e2e/integration)
+test: ## Run the narrowed unit sweep (docs/e2e/distributed/ui_e2e/integration excluded)
 	uv run pytest tests/ -q $(PYTEST_IGNORES) --tb=short
 
 lint: ## Lint with ruff (matches the CI lint job)
@@ -36,7 +37,12 @@ fmt: ## Auto-fix lint findings and sort/format what ruff can fix safely
 	uv run ruff check --fix .
 
 cov: ## Run the unit sweep with coverage and enforce the 90% threshold
+	uv run pytest tests/docs/ -q --tb=short \
+		--cov=primer \
+		--cov-report= \
+		--cov-fail-under=0
 	uv run pytest tests/ -q $(PYTEST_IGNORES) \
+		--cov-append \
 		--cov=primer \
 		--cov-report=term-missing:skip-covered \
 		--cov-report=xml:coverage.xml \
