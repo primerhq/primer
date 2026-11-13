@@ -1639,6 +1639,7 @@ function NV_MobilePlatform(props) {
         })}
         <PR_PagedNote list={res.data} noun={page.noun[1]} testid={"nv-mob-plat-note:" + nav} />
       </div>
+      {nav === "tools" ? <window.NV_ToolsCoverage data={res.data} /> : null}
       <NV_MobileFactSheet open={!!sheet} kind={sheet && sheet.kind}
         cardVM={sheet && sheet.cardVM} row={sheet && sheet.row}
         onClose={function () { setSheet(null); }}

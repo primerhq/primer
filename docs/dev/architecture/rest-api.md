@@ -201,6 +201,31 @@ and a live approval policy may refuse a tool write that the REST caller can
 perform directly. Neither catalogue presence nor a public REST route grants
 anonymous MCP access.
 
+**The console tool coverage catalogue (M6).** `GET /v1/tools/catalogue`
+keeps the existing ordered picker items and capability fields. It adds
+`origin` (`generated`, `curated`, or `user`), the canonical `reference_path`,
+the shipped `default_approval` (`required`, `policy`, or null), and
+`operation` (`operation_id`, `method`, `path`, or null). Curated aliases
+of one REST operation carry the same mapping; curated tools without a
+REST owner and user-defined tools carry null. The frozen 404-operation
+projection supplies the mapping, not a manifest or a UI table.
+
+The existing built-in item list remains unfiltered by role for picker
+compatibility. New operation mappings for admin REST operations are omitted
+from non-admin items. `admin_operation_keys(app)` derives that visibility
+from mounted dependencies, including nested guards and the harness write
+guard, independently of stricter curated tool roles; it is cached per
+generated snapshot. `skips` contains the visible reviewed skip rows
+(`operation_id`, `method`, `path`, `skip_code`, `reason`). Only admins get
+`coverage_counts` (operations, generated, curated, skip) and per-item
+`exposure` (exposable, reason, currently_allowed, mode); non-admin exposure
+is null. Exposure reads the MCP singleton once and uses the same
+`is_exposable` predicate as the existing availability endpoint, without
+enumerating providers twice. It describes configuration, not a promise
+that a caller can invoke the tool. The default approval is likewise shipped
+policy, not the live ApprovalResolver's decision. Provider concurrency,
+the ten-second enumeration bound and skip-broken-provider behavior remain.
+
 ## 4. How to add a new implementation
 
 Most persisted entities get a router from `make_crud_router` (`primer/api/routers/_crud.py`) rather than hand-written handlers. To add a new entity surface:

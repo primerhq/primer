@@ -60,6 +60,8 @@ async def _build_app(sp, registry: _Registry, oauth: Any = object()) -> FastAPI:
     app.add_middleware(_ActorMiddleware)
     app.include_router(tools.tools_router, prefix="/v1")
     app.include_router(providers.builtin_toolsets_router, prefix="/v1")
+    from primer.api.route_tools import build_generated_route_toolsets
+    build_generated_route_toolsets(app)
     return app
 
 

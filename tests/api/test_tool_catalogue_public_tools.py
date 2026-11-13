@@ -63,6 +63,8 @@ async def client(tmp_path: Path):
     app.add_middleware(_ActorMiddleware)
     app.include_router(tools.tools_router, prefix="/v1")
     app.include_router(providers.builtin_toolsets_router, prefix="/v1")
+    from primer.api.route_tools import build_generated_route_toolsets
+    build_generated_route_toolsets(app)
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     await sp.aclose()

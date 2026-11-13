@@ -16,10 +16,9 @@ existing UI consumers.
 
 from __future__ import annotations
 
-from primer.api.route_tools import route_tool
-
 import asyncio
 import logging
+from collections import Counter
 
 from fastapi import APIRouter, Depends, Request
 
@@ -32,9 +31,14 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.registries import ProviderRegistry
+from primer.api.route_tools import admin_operation_keys, coverage_projection, route_tool
 from primer.api.routers.providers import _CATALOGUE_CONCURRENCY, _all_builtin_toolsets
+from primer.knowledge.wiki.reference import reference_path
+from primer.mcp.exposure import ExposureDeps, get_exposure
+from primer.mcp.safety import is_exposable
 from primer.model.chat import tool_catalogue_flags
 from primer.model.storage import OffsetPage
+from primer.toolset.tool_catalog import default_gate
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +69,37 @@ async def list_tools(
     registry: ProviderRegistry = Depends(get_provider_registry),
     storage_provider=Depends(get_storage_provider),
 ) -> dict:
-    """Return ``{items: [{id, description, input_schema}, ...]}``.
+    """Return ordered picker items plus caller-visible coverage facts.
 
     Each ``id`` is scoped as ``<toolset_id>__<tool_name>``. Toolsets
     that fail to enumerate (unreachable MCP server, missing OAuth
     consent, search subsystem not bootstrapped) are skipped silently
     so one broken provider doesn't blank the whole picker. Failures
     are logged at WARNING for operator visibility.
+
+    New metadata is additive: admin REST mappings and reviewed skips are
+    role-filtered independently of the existing item list. Exposure and
+    operation totals are admin-only; approval describes the shipped default.
     """
     from primer.model.provider import Toolset
 
+    person = person_from_request(request)
+    projection = coverage_projection(request.app)
+    admin_keys = admin_operation_keys(request.app)
+    operations = {
+        scoped: {"operation_id": row.operation_id, "method": row.method, "path": row.path}
+        for row in projection
+        if person.is_admin or (row.method, row.path) not in admin_keys
+        for scoped in row.tool_ids
+    }
+    hidden_operations = {
+        scoped for row in projection
+        if not person.is_admin and (row.method, row.path) in admin_keys
+        for scoped in row.tool_ids
+    }
+    generated_ids = request.app.state.generated_route_toolsets.providers
+    exposure = await get_exposure(ExposureDeps(storage_provider, registry)) if person.is_admin else None
+    allowed = frozenset(exposure.allowed_tools) if exposure is not None else frozenset()
     items: list[dict] = []
     seen_ids: set[str] = set()
 
@@ -85,7 +110,9 @@ async def list_tools(
     # in page order), so the first row to expose a scoped id still wins.
     sem = asyncio.Semaphore(_CATALOGUE_CONCURRENCY)
 
-    async def _tools_for(toolset_id: str, only: frozenset[str] | None = None) -> list[dict]:
+    async def _tools_for(
+        toolset_id: str, only: frozenset[str] | None = None, *, builtin: bool = False,
+    ) -> list[dict]:
         own: list[dict] = []
         try:
             async with sem:
@@ -94,8 +121,9 @@ async def list_tools(
                     async for tool in provider.list_tools(principal=principal):
                         if only is not None and tool.id not in only:
                             continue  # a row the caller cannot read shows only its public tools
-                        own.append({
-                            "id": f"{toolset_id}__{tool.id}",
+                        scoped = f"{toolset_id}__{tool.id}"
+                        item = {
+                            "id": scoped,
                             "description": tool.description or "",
                             "input_schema": tool.args_schema or {},
                             # y/w/r/n capability badges, excluded from Tool's own
@@ -104,7 +132,20 @@ async def list_tools(
                             # tool_catalogue_flags() is the one seam every
                             # "list tools" route re-adds them from.
                             **tool_catalogue_flags(tool),
-                        })
+                            "origin": "generated" if toolset_id in generated_ids else "curated" if builtin else "user",
+                            "reference_path": reference_path(toolset_id, tool.id),
+                            "default_approval": default_gate(toolset_id, tool.id),
+                            "exposure": None,
+                        }
+                        if scoped not in hidden_operations:
+                            item["operation"] = operations.get(scoped)
+                        if exposure is not None:
+                            ok, reason = is_exposable(tool, provider=provider)
+                            item["exposure"] = {
+                                "exposable": ok, "reason": reason,
+                                "currently_allowed": scoped in allowed, "mode": exposure.mode,
+                            }
+                        own.append(item)
         except TimeoutError:
             # An unreachable MCP server accepts the connection and then
             # never answers; it does not raise. Without this bound one
@@ -140,14 +181,13 @@ async def list_tools(
         tid for tid in (spec["id"] for spec in _all_builtin_toolsets())
         if not (tid == "canvas" and not canvas_on)
     ]
-    for tools in await asyncio.gather(*(_tools_for(tid) for tid in builtin_ids)):
+    for tools in await asyncio.gather(*(_tools_for(tid, builtin=True) for tid in builtin_ids)):
         _merge(tools)
 
     # 2. User-defined Toolset rows. Page so the catalogue scales beyond
     # the default 200-row cap. Rows the caller may not read stay out (spec
     # anti-goal 4: filter in storage); admins get a None predicate and keep
     # the unfiltered list.
-    person = person_from_request(request)
     access_pred = catalogue_predicate(person)
     ts_storage = storage_provider.get_storage(Toolset)
     offset = 0
@@ -176,7 +216,21 @@ async def list_tools(
             type(exc).__name__, exc,
         )
 
-    return {"items": items}
+    result = {
+        "items": items,
+        "skips": [
+            {
+                "operation_id": row.operation_id, "method": row.method, "path": row.path,
+                "skip_code": row.skip_code, "reason": (row.skip_code or "").replace("_", " "),
+            }
+            for row in projection if row.state == "skip"
+            and (person.is_admin or (row.method, row.path) not in admin_keys)
+        ],
+    }
+    if person.is_admin:
+        counts = Counter(row.state for row in projection)
+        result["coverage_counts"] = {"operations": len(projection), **counts}
+    return result
 
 
 __all__ = ["tools_router"]

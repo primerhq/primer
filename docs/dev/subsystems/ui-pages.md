@@ -236,6 +236,27 @@ Supporting files not directly routed: `approvals.jsx` also exports the shared `A
 
 **The Profile page is laid out in the kit style (2026-10-18, D7).** The System > Profile view (`NV_SysProfile` in `nv-system.jsx`) uses the platform kit throughout: the title reads "Profile" (no username em-dash join), an identity card (`nv-sys-identity`) shows the user's initials, username, role, and the sign-in method or provider line (`NV_signInText`) derived from cached `GET /v1/auth/status` resource data, and the Password section uses `PK_Section` with a 3-column `PK_Grid` holding current, new, and confirm password fields. Client validation (`NV_passwordFormErrors`) refuses an empty current password, a new password shorter than 8 characters, and mismatched confirmations before submitting `POST /v1/auth/change-password`. Beneath Password, the page embeds `AT_ApiTokensPage` in personal mode for the user's own API keys and `LA_LinkedAccountsPage` for linked SSO identities, both adopting `PK_PageHeader` and `PK_usePagedFilter` (20 items per page). Tests include `tests/ui/test_profile_page_kit.py`, `tests/ui/test_linked_accounts_page.py`, and `tests/ui_e2e/test_profile_page_journey.py`.
 
+**Tools coverage uses the existing page and shared phone facts (M6).**
+The `tools` entry renders server-supplied origin, REST method/path,
+reference path, default approval policy and MCP exposure as facts below
+the scoped id. The toolset stays the badge and the card's Open action
+still opens its owning toolset. The existing card view model stays the
+same; `NV_platCardProps` requests six facts for Tools through the kit's
+optional `factLimit`, while other cards retain the default three.
+The phone fact sheet reads the same view model. Origin and operation
+join the existing name/description/scoped-id filter; absent facts drop.
+
+`NV_ToolsCoverage` renders the catalogue's reviewed skips as a static
+section with an h3 below the desktop grid or phone list. Admin responses
+also supply the operation totals. The server omits admin-operation
+mappings and admin skips from non-admin responses and withholds exposure
+and totals, while preserving the existing picker item list. The UI owns
+no operation mapping or role classification table. Approval says
+"default policy" and exposure describes configuration; neither guarantees
+a live call's authorization or approval outcome. The existing URL,
+palette verb, loading/error/empty states and Refresh behavior stay in use;
+`poll: false` keeps the live catalogue off the polling loop.
+
 ## 5. Data model
 
 The console's own data model is its URL grammar, which is the only thing it persists between loads:

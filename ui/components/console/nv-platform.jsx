@@ -331,6 +331,7 @@ function NV_platVerbSpecs() {
 function NV_platCardProps(nav, vm) {
   return {
     id: vm.id, title: vm.name, label: vm.label, subtitle: vm.sub, badge: vm.badge, status: vm.status, facts: vm.facts,
+    factLimit: nav === "tools" ? 6 : undefined,
     icon: vm.icon || { path: NV_PLAT_ICONS[nav] },
   };
 }
@@ -338,7 +339,10 @@ function NV_platCardProps(nav, vm) {
 // What the page's filter matches a card against: its name, its type line and its id. The id is what lets a tool be found by its toolset ("web" finds
 // web__search): a tool card is named by its bare name and its id is the scoped one.
 function NV_platFilterText(vm) {
-  return [vm.name, vm.sub, vm.id].filter(Boolean).join(" ");
+  var coverage = (vm.facts || []).filter(function (f) {
+    return Array.isArray(f) && (f[0] === "origin" || f[0] === "operation");
+  }).map(function (f) { return f[1]; });
+  return [vm.name, vm.sub, vm.id].concat(coverage).filter(Boolean).join(" ");
 }
 
 // Per-entity page config. list() returns a promise of {items}; card(row, con)
@@ -501,7 +505,16 @@ var NV_PLAT_PAGES = {
         // the scoped id is the card's id and the name of its controls ("Open web__search"): two toolsets may each have a "search" (audit G1-21)
         id: scoped, name: bare, label: scoped, sub: desc,
         badge: toolset || undefined,
-        facts: [NV_fact("scoped id", scoped)],
+        facts: [
+          NV_fact("scoped id", scoped), NV_fact("origin", row.origin),
+          NV_fact("operation", row.operation ? row.operation.method + " " + row.operation.path : null),
+          NV_fact("reference", row.reference_path),
+          NV_fact("approval", row.default_approval ? "default policy: " + row.default_approval : null),
+          NV_fact("MCP exposure", row.exposure ? (!row.exposure.exposable
+            ? "blocked: " + row.exposure.reason + " (" + row.exposure.mode + ")"
+            : row.exposure.mode === "rbac" ? "exposable (rbac)"
+            : (row.exposure.currently_allowed ? "allowlisted" : "not allowlisted") + " (allowlist)") : null),
+        ],
       };
     },
     open: function (con, row) {
@@ -1383,6 +1396,26 @@ function NV_PlatPage() {
   return <NV_PlatListPage key={nav} nav={nav} />;
 }
 
+// Static reviewed coverage from the same catalogue response on desktop and phone.
+// The API owns role filtering; no operation or policy mapping lives in JSX.
+function NV_ToolsCoverage(props) {
+  var data = props.data || {};
+  var counts = data.coverage_counts;
+  var skips = data.skips || [];
+  if (!counts && !skips.length) return null;
+  return (
+    <section className="pk-section" data-testid="nv-plat-coverage">
+      {counts ? <p data-testid="nv-plat-coverage-counts">{counts.operations + " operations: " + counts.generated + " generated / " + counts.curated + " curated / " + counts.skip + " reviewed skips"}</p> : null}
+      {skips.length ? <div data-testid="nv-plat-skips">
+        <h3>Reviewed skips</h3>
+        {skips.map(function (row) {
+          return <p key={row.operation_id} data-testid={"nv-plat-skip:" + row.operation_id}>{row.method + " " + row.path + " - " + row.reason}</p>;
+        })}
+      </div> : null}
+    </section>
+  );
+}
+
 function NV_PlatListPage(props) {
   var con = NV_useConsole();
   var nav = props.nav;
@@ -1540,6 +1573,7 @@ function NV_PlatListPage(props) {
             );
           })}
         </PK_CardGrid>
+        {nav === "tools" ? <NV_ToolsCoverage data={res.data} /> : null}
         {modal && modal.kind === "profile" ? (
           <NV_ProfileModalHost row={modal.row}
             onClose={function () { setModal(null); }}
@@ -1634,6 +1668,7 @@ function NV_Platform() {
 }
 
 window.NV_PLAT_PAGES = NV_PLAT_PAGES;
+window.NV_ToolsCoverage = NV_ToolsCoverage;
 window.NV_platFilterText = NV_platFilterText;
 window.NV_PLAT_POLL_MS = NV_PLAT_POLL_MS;
 window.NV_PROVIDER_TYPE_LABELS = NV_PROVIDER_TYPE_LABELS;

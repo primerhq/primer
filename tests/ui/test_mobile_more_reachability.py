@@ -151,7 +151,9 @@ def _platform_helpers() -> str:
 
 @pytest.fixture(scope="module")
 def code() -> str:
-    return transpile(CHROME) + "\n" + transpile(SHELL)
+    platform = transpile(PLATFORM)
+    coverage = platform[platform.index("function NV_ToolsCoverage("):platform.index("function NV_PlatListPage(")]
+    return transpile(CHROME) + "\n" + coverage + "\nwindow.NV_ToolsCoverage = NV_ToolsCoverage;\n" + transpile(SHELL)
 
 
 @pytest.fixture
@@ -948,6 +950,22 @@ function typeFilter(v) { MR.find("nv-mob-plat-filter").props.onChange({ target: 
 
 def _tools(app, *ids: str, first_load: bool = False) -> None:
     app.js(_TOOLS + f"ANSWER = {{ items: {json.dumps([{'id': i} for i in ids])} }}; FIRST_LOAD = {json.dumps(first_load)}; openTools();")
+
+
+def test_phone_coverage_uses_the_real_card_vm_and_shared_static_section(app):
+    from tests.ui.test_platform_tools_page import RICH_TOOL
+
+    app.js(_TOOLS)
+    _real_pages(app)
+    skips = [{"operation_id": f"login_{i}", "method": "POST", "path": f"/v1/auth/{i}", "reason": "human sign in"} for i in range(8)]
+    app.js(f"ANSWER = {{ items: {json.dumps([RICH_TOOL])}, skips: {json.dumps(skips)} }}; openTools();")
+    assert len(app.data("MR.findAll('nv-plat-skip:')")) == 8
+    assert not app.has("nv-plat-coverage-counts")
+    app.js('typeFilter("generated")')
+    assert app.data("rowIds()") == ["probe__config"]
+    app.click("nv-mob-plat-row:probe__config")
+    assert {"generated", "PUT /v1/internal_collections/config", "reference/tools/probe/config",
+            "default policy: required", "allowlisted (allowlist)"} <= set(app.texts())
 
 
 def test_the_phone_tools_filter_finds_a_toolsets_tools_by_its_id(app) -> None:

@@ -129,9 +129,10 @@ function PK_CardGrid(props) {
   return <div className="pk-grid" data-testid={props.testid}>{props.children}</div>;
 }
 
-// The facts a card draws: null and empty entries dropped (NV_fact answers null for a missing value), then at most three.
-function PK_cardFacts(facts) {
-  return (facts || []).filter(function (f) { return f != null && f !== ""; }).slice(0, 3);
+// Missing facts drop; ordinary cards show three. The Tools coverage card
+// explicitly requests six so its reference, default policy and exposure stay visible.
+function PK_cardFacts(facts, limit) {
+  return (facts || []).filter(function (f) { return f != null && f !== ""; }).slice(0, limit == null ? 3 : limit);
 }
 
 // The card's "⋯" menu (design 20 Q1): a button that opens a list of actions, Delete among them. The list is a layer of the Escape stack only
@@ -204,7 +205,7 @@ function PK_Card(props) {
   var id = props.id;
   var icon = props.icon || null;
   var status = props.status || null;
-  var facts = PK_cardFacts(props.facts);
+  var facts = PK_cardFacts(props.facts, props.factLimit);
   var menu = props.menu && props.menu.length ? props.menu : null;
   var statusId = (status && status.testid) || "pk-card-status:" + id;
   var name = props.label || props.title;
