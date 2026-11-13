@@ -97,7 +97,7 @@ async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(c
 
     ``canvas`` is enumerated while ``canvas.agent_tools_enabled`` is on - its default now that the canvas panel ships;
     switched off explicitly, it is never enumerated."""
-    from types import SimpleNamespace
+    from primer.model.chat import Tool
 
     from primer.canvas.settings import write_canvas_settings
     from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
@@ -108,12 +108,18 @@ async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(c
     asked: list[str] = []
 
     class _OneTool:
+        def __init__(self, toolset_id):
+            self.toolset_id = toolset_id
+
+        def is_yielding(self, tool_id):
+            return False
+
         async def list_tools(self, *, principal=None):
-            yield SimpleNamespace(id="probe", description="", args_schema={})
+            yield Tool(id="probe", toolset_id=self.toolset_id, description="", args_schema={})
 
     async def _spy(self, toolset_id, *args, **kwargs):
         asked.append(toolset_id)
-        return _OneTool()
+        return _OneTool(toolset_id)
 
     monkeypatch.setattr(ProviderRegistry, "get_toolset", _spy)
     if not canvas_on:

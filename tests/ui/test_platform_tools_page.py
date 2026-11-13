@@ -24,10 +24,15 @@ ROOT = Path(__file__).resolve().parents[2]
 MOBILE = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
 
 KEEP_FETCHERS = """
-var FETCHERS = {};
+var FETCHERS = {}, CATALOGUE_META = {};
 (function () {
   var inner = window.primerApi.useResource;
-  window.primerApi.useResource = function (key, fn, opts) { FETCHERS[key] = fn; return inner(key, fn, opts); };
+  window.primerApi.useResource = function (key, fn, opts) {
+    FETCHERS[key] = fn;
+    var res = inner(key, fn, opts);
+    if (key === "nv-plat:tools" && res.data) Object.assign(res.data, CATALOGUE_META);
+    return res;
+  };
 })();
 """
 
@@ -193,3 +198,56 @@ def test_two_tools_named_search_have_controls_a_screen_reader_can_tell_apart(pag
     _tools(page_ctx, "web__search", "docs__search")
     assert page_ctx.eval("MR.find('pk-card-open:web__search').props['aria-label']") == "Open web__search"
     assert page_ctx.eval("MR.find('pk-card-open:docs__search').props['aria-label']") == "Open docs__search"
+
+
+RICH_TOOL = {
+    "id": "probe__config", "description": "Configure", "origin": "generated",
+    "operation": {"operation_id": "probe_config", "method": "PUT", "path": "/v1/internal_collections/config"},
+    "reference_path": "reference/tools/probe/config", "default_approval": "required",
+    "exposure": {"exposable": True, "mode": "allowlist", "currently_allowed": True},
+}
+
+
+def _rich_tools(ctx, row=RICH_TOOL):
+    ctx.eval(f"ITEMS = {json.dumps([row])}; CON.view = {{ name: 'platform', nav: 'tools' }}; MR.mount(NV_PlatListPage, {{ nav: 'tools' }});")
+
+
+def test_desktop_displays_all_coverage_facts_including_reference_policy_and_exposure(page_ctx):
+    _rich_tools(page_ctx)
+    texts = js(page_ctx, "MR.texts()")
+    assert {"generated", "PUT /v1/internal_collections/config", "reference/tools/probe/config",
+            "default policy: required", "allowlisted (allowlist)"} <= set(texts)
+    assert page_ctx.eval("MR.find('pk-card-open:probe__config').props['aria-label']") == "Open probe__config"
+    assert js(page_ctx, "NV_PLAT_PAGES.tools.card(ITEMS[0], CON).badge") == "probe"
+
+
+@pytest.mark.parametrize("query", ["generated", "internal_collections", "PUT"])
+def test_tools_filter_includes_server_origin_and_operation(page_ctx, query):
+    _rich_tools(page_ctx)
+    page_ctx.eval(f"MR.find('nv-plat-filter').props.onChange({{ target: {{ value: {json.dumps(query)} }} }}); MR.rerender();")
+    assert _ids(page_ctx) == ["probe__config"]
+
+
+@pytest.mark.parametrize(("exposure", "label"), [
+    ({"exposable": True, "mode": "rbac", "currently_allowed": False}, "exposable (rbac)"),
+    ({"exposable": True, "mode": "allowlist", "currently_allowed": False}, "not allowlisted (allowlist)"),
+    ({"exposable": False, "mode": "rbac", "reason": "needs_workspace"}, "blocked: needs_workspace (rbac)"),
+])
+def test_exposure_facts_describe_configuration_without_promising_a_call(page_ctx, exposure, label):
+    _rich_tools(page_ctx, {**RICH_TOOL, "exposure": exposure})
+    assert label in js(page_ctx, "MR.texts()")
+
+
+def test_absent_metadata_drops_and_nonadmin_skips_are_only_server_supplied(page_ctx):
+    _rich_tools(page_ctx, {"id": "legacy__probe"})
+    assert js(page_ctx, "MR.texts().filter(function (s) { return ['origin', 'operation', 'reference', 'approval', 'MCP exposure'].indexOf(s) >= 0; })") == []
+    assert page_ctx.eval("MR.find('nv-plat-skips') === null && MR.find('nv-plat-coverage-counts') === null")
+    skips = [{"operation_id": f"sign_in_{i}", "method": "POST", "path": f"/v1/auth/{i}", "reason": "human sign in"} for i in range(8)]
+    page_ctx.eval(f"CATALOGUE_META = {{ skips: {json.dumps(skips)} }}; MR.rerender();")
+    assert len(js(page_ctx, "MR.findAll('nv-plat-skip:')")) == 8
+    assert "Reviewed skips" in js(page_ctx, "MR.texts()")
+    assert page_ctx.eval("MR.find('nv-plat-coverage-counts') === null")
+    assert not any("internal_collections" in text for text in js(page_ctx, "MR.texts()"))
+    page_ctx.eval("CATALOGUE_META.coverage_counts = { operations: 404, generated: 261, curated: 135, skip: 8 }; MR.rerender();")
+    assert page_ctx.eval("MR.find('nv-plat-coverage-counts').props.children") == "404 operations: 261 generated / 135 curated / 8 reviewed skips"
+    assert any(e["type"] == "h3" for e in js(page_ctx, "MR.subtree('nv-plat-skips')"))

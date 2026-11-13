@@ -29,6 +29,7 @@ from urllib.parse import quote
 import anyio
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.dependencies.utils import get_dependant
 from fastapi.routing import APIRoute, _IncludedRouter, request_response
 from starlette.responses import Response, StreamingResponse
 from starlette.types import Send
@@ -466,7 +467,7 @@ def derive_argument_schema(
     return schema, tuple(bindings)
 
 
-def _dependency_names(route: APIRoute) -> set[str]:
+def _dependant_names(dependant: Any) -> set[str]:
     names: set[str] = set()
 
     def walk(dependant: Any) -> None:
@@ -476,8 +477,12 @@ def _dependency_names(route: APIRoute) -> set[str]:
         for child in getattr(dependant, "dependencies", ()):
             walk(child)
 
-    walk(route.dependant)
+    walk(dependant)
     return names
+
+
+def _dependency_names(route: APIRoute) -> set[str]:
+    return _dependant_names(route.dependant)
 
 
 def _required_role(
@@ -1106,6 +1111,31 @@ def coverage_projection(app: FastAPI) -> tuple[OperationCoverage, ...]:
     rows.sort(key=lambda row: (row.operation_id, row.method, row.path))
     result = tuple(rows)
     app.state.tools_universal_coverage = (snapshot, result)
+    return result
+
+
+def admin_operation_keys(app: FastAPI) -> frozenset[tuple[str, str]]:
+    """REST operations mounted behind require_admin, independent of tool roles.
+
+    A curated tool can have a stricter role than its REST read. Catalogue
+    readers inspect the actual mounted dependencies using compilation's
+    router walk, without importing the inventory's classifications.
+    """
+    snapshot = app.state.generated_route_toolsets
+    cached = getattr(app.state, "tools_universal_admin_operations", None)
+    if cached is not None and cached[0] is snapshot:
+        return cached[1]
+    keys: set[tuple[str, str]] = set()
+    for path, route, inherited in _walk_api_routes(app.routes):
+        names = _dependency_names(route)
+        for dep in inherited:
+            names.update(_dependant_names(get_dependant(path=path, call=dep.dependency)))
+        # Harness writes use _require_admin_for_harness_write for a richer
+        # refusal. It is an admin guard too, with the same naming contract.
+        if any("require_admin" in name for name in names):
+            keys.update((method, _openapi_path(path)) for method in route.methods or ())
+    result = frozenset(keys)
+    app.state.tools_universal_admin_operations = (snapshot, result)
     return result
 
 
