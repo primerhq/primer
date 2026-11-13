@@ -166,6 +166,13 @@ agent_access_router = make_access_router(
 AGENT_ROUTE_TOOLS = CrudToolDeclaration(
     resource_id="agents",
     generated_operations=frozenset({"find"}),
+    curated_tool_ids={
+        "create": ("crud__create_agent", "system__create_agent"),
+        "get": ("system__get_agent",),
+        "list": ("system__list_agents",),
+        "update": ("crud__update_agent", "system__update_agent"),
+        "delete": ("system__delete_agent",),
+    },
     guards=AGENT_GUARDS,
 )
 
@@ -343,6 +350,13 @@ graph_access_router = make_access_router(
 GRAPH_ROUTE_TOOLS = CrudToolDeclaration(
     resource_id="graphs",
     generated_operations=frozenset({"find"}),
+    curated_tool_ids={
+        "create": ("crud__create_graph", "system__create_graph"),
+        "get": ("system__get_graph",),
+        "list": ("system__list_graphs",),
+        "update": ("crud__update_graph", "system__update_graph"),
+        "delete": ("system__delete_graph",),
+    },
     guards=GRAPH_GUARDS,
 )
 

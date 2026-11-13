@@ -711,7 +711,17 @@ llm_provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_llm_provider_storage,
     plural="llm_providers",
-    tool_declaration=CrudToolDeclaration(resource_id="llm_providers", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="llm_providers",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_llm_provider",),
+            "get": ("system__get_llm_provider",),
+            "list": ("system__list_llm_providers",),
+            "update": ("system__update_llm_provider",),
+            "delete": ("system__delete_llm_provider",),
+        },
+    ),
     tag="llm-providers",
     on_update=_invalidate_llm,
     on_delete=_invalidate_llm,
@@ -1042,7 +1052,17 @@ embedding_provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_embedding_provider_storage,
     plural="embedding_providers",
-    tool_declaration=CrudToolDeclaration(resource_id="embedding_providers", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="embedding_providers",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_embedding_provider",),
+            "get": ("system__get_embedding_provider",),
+            "list": ("system__list_embedding_providers",),
+            "update": ("system__update_embedding_provider",),
+            "delete": ("system__delete_embedding_provider",),
+        },
+    ),
     tag="embedding-providers",
     on_update=_invalidate_embedder,
     on_delete=_invalidate_embedder,
@@ -1305,7 +1325,17 @@ cross_encoder_provider_router = make_crud_router(
     grantable=True,
     storage_dep=get_cross_encoder_provider_storage,
     plural="cross_encoder_providers",
-    tool_declaration=CrudToolDeclaration(resource_id="cross_encoder_providers", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="cross_encoder_providers",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_cross_encoder_provider",),
+            "get": ("system__get_cross_encoder_provider",),
+            "list": ("system__list_cross_encoder_providers",),
+            "update": ("system__update_cross_encoder_provider",),
+            "delete": ("system__delete_cross_encoder_provider",),
+        },
+    ),
     tag="cross-encoder-providers",
     on_update=_invalidate_cross_encoder,
     on_delete=_invalidate_cross_encoder,
@@ -1817,7 +1847,17 @@ toolset_router = make_crud_router(
     model_cls=Toolset,
     storage_dep=get_toolset_storage,
     plural="toolsets",
-    tool_declaration=CrudToolDeclaration(resource_id="toolsets", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="toolsets",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_toolset",),
+            "get": ("system__get_toolset",),
+            "list": ("system__list_toolsets",),
+            "update": ("system__update_toolset",),
+            "delete": ("system__delete_toolset",),
+        },
+    ),
     tag="toolsets",
     on_update=_invalidate_toolset,
     on_delete=_toolset_on_delete,
@@ -1861,6 +1901,7 @@ async def invalidate_toolset_provider(
     summary="List tools currently exposed by a toolset",
     responses=common_responses(401, 404, 409, 500, 502, 504),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__list_toolset_tools",))
 async def list_toolset_tools(
     request: Request,
     toolset_id: str = Path(..., description="Toolset id"),

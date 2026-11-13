@@ -534,7 +534,17 @@ def make_tool_approval_router() -> APIRouter:
         model_cls=ToolApprovalPolicy,
         storage_dep=_get_tool_approval_policy_storage,
         plural=_PLURAL,
-        tool_declaration=CrudToolDeclaration(resource_id="tool_approval_policies", generated_operations=frozenset({"find"})),
+        tool_declaration=CrudToolDeclaration(
+            resource_id="tool_approval_policies",
+            generated_operations=frozenset({"find"}),
+            curated_tool_ids={
+                "create": ("system__create_tool_approval_policy",),
+                "get": ("system__get_tool_approval_policy",),
+                "list": ("system__list_tool_approval_policies",),
+                "update": ("system__update_tool_approval_policy",),
+                "delete": ("system__delete_tool_approval_policy",),
+            },
+        ),
         tag=_TAG,
         on_pre_create=on_pre_create,
         on_pre_update=on_pre_update,

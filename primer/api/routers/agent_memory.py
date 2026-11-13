@@ -190,6 +190,7 @@ async def _entry_or_404(store: Any, agent_id: str, name: str) -> Any:
     summary="The agent's memory entries",
     responses=common_responses(404, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__list_agent_memory",))
 async def list_memory_entries(
     request: Request,
     agent_id: str = Path(..., description="Agent id"),
@@ -252,6 +253,7 @@ async def patch_memory_entry(
     summary="Approve a candidate entry: it becomes active (owners only)",
     responses=common_responses(403, 404, 409, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__approve_agent_memory_entry",))
 async def approve_memory_entry(request: Request, agent_id: str = Path(..., description="Agent id"), name: str = Path(..., description="Entry name")) -> EntryView:
     _, person = await _require_owner(request, agent_id, "approves its memory entries")
     return _view(await _store(request).approve(agent_id, name, actor=actor_label(person)))
@@ -263,6 +265,7 @@ async def approve_memory_entry(request: Request, agent_id: str = Path(..., descr
     summary="Archive an entry (owners only)",
     responses=common_responses(403, 404, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__archive_agent_memory_entry",))
 async def archive_memory_entry(request: Request, agent_id: str = Path(..., description="Agent id"), name: str = Path(..., description="Entry name")) -> EntryView:
     _, person = await _require_owner(request, agent_id, "archives its memory entries")
     return _view(await _store(request).archive(agent_id, name, actor=actor_label(person), reason="archived by an owner"))

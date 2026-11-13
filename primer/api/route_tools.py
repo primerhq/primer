@@ -101,8 +101,15 @@ class RouteToolMetadata:
     #: card (a zero-argument write shows no value).
     preview_args: tuple[str, ...] | None = None
     preview_lead: tuple[str, ...] | None = None
+    #: The scoped tool ids (``<toolset>__<tool>``) a curated route publishes (M5): the
+    #: hand-written tools that win publication for the operation, in declared order.
+    #: ``None`` for every non-curated state; the coverage projection exposes the
+    #: canonically sorted form, never this order.
+    curated_tool_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
+        if self.curated_tool_ids is not None:
+            object.__setattr__(self, "curated_tool_ids", tuple(self.curated_tool_ids))
         if self.scoped_id is not None and self.scoped_id.count("__") != 1:
             raise ValueError("scoped_id must be '<toolset>__<tool>'")
         if self.mapping_state == "skip" and not self.skip_code:
@@ -111,6 +118,16 @@ class RouteToolMetadata:
             raise ValueError("skip_code is valid only for skipped routes")
         if self.methods and any(method not in _HTTP_METHODS for method in self.methods):
             raise ValueError(f"unsupported route-tool method set: {sorted(self.methods)}")
+        if self.mapping_state == "curated" and not self.curated_tool_ids:
+            raise ValueError("curated route metadata requires curated_tool_ids")
+        if self.mapping_state != "curated" and self.curated_tool_ids is not None:
+            raise ValueError("curated_tool_ids is valid only for curated routes")
+        if self.curated_tool_ids is not None and any(
+            item.count("__") != 1 for item in self.curated_tool_ids
+        ):
+            raise ValueError("curated_tool_ids entries must be '<toolset>__<tool>'")
+        if self.curated_tool_ids is not None and len(set(self.curated_tool_ids)) != len(self.curated_tool_ids):
+            raise ValueError("curated_tool_ids must not contain duplicate ids")
 
 
 def route_tool(
@@ -132,6 +149,7 @@ def route_tool(
     methods: Sequence[str] = (),
     preview_args: Sequence[str] | None = None,
     preview_lead: Sequence[str] | None = None,
+    curated_tool_ids: Sequence[str] | None = None,
 ) -> Callable[[_F], _F]:
     """Attach one immutable REST-to-tool declaration to an endpoint.
 
@@ -159,6 +177,9 @@ def route_tool(
         methods=frozenset(method.upper() for method in methods),
         preview_args=tuple(preview_args) if preview_args is not None else None,
         preview_lead=tuple(preview_lead) if preview_lead is not None else None,
+        curated_tool_ids=(
+            tuple(curated_tool_ids) if curated_tool_ids is not None else None
+        ),
     )
 
     def decorate(endpoint: _F) -> _F:
@@ -169,6 +190,11 @@ def route_tool(
     return decorate
 
 
+_CRUD_OPERATIONS: frozenset[str] = frozenset(
+    {"create", "get", "update", "delete", "list", "find"}
+)
+
+
 @dataclass(frozen=True)
 class CrudToolDeclaration:
     """One CRUD resource's generated-operation and shared-guard declaration."""
@@ -177,21 +203,52 @@ class CrudToolDeclaration:
     generated_operations: frozenset[str]
     guards: Any = None
     operation_ids: tuple[tuple[str, str], ...] = ()
+    #: The verb-to-scoped-id map for the verbs a hand-written tool wins (M5).
+    #: Its keys ARE the curated operations; the complement derivation is
+    #: retired. Omitted (``None``) when the factory generates every verb.
+    curated_tool_ids: Mapping[str, Sequence[str]] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "generated_operations", frozenset(self.generated_operations))
+        curated = {
+            verb: tuple(ids) for verb, ids in (self.curated_tool_ids or {}).items()
+        }
+        keys = set(curated)
+        if keys & self.generated_operations:
+            raise ValueError(
+                "curated verb map overlaps generated operations: "
+                f"{sorted(keys & self.generated_operations)}"
+            )
+        if keys | self.generated_operations != _CRUD_OPERATIONS:
+            raise ValueError(
+                "curated verb map keys plus generated_operations must cover "
+                "the CRUD verbs exactly once"
+            )
+        for ids in curated.values():
+            RouteToolMetadata(mapping_state="curated", curated_tool_ids=ids)
+        if self.curated_tool_ids is not None:
+            object.__setattr__(self, "curated_tool_ids", MappingProxyType(curated))
 
     @property
     def curated_operations(self) -> frozenset[str]:
         """CRUD verbs whose existing hand-written tool wins publication."""
 
-        return frozenset({"create", "get", "update", "delete", "list", "find"}) - self.generated_operations
+        return frozenset(self.curated_tool_ids or ())
 
     def metadata_for(self, operation: str) -> RouteToolMetadata:
+        if operation not in _CRUD_OPERATIONS:
+            raise ValueError(f"unknown CRUD operation: {operation!r}")
         state: MappingState = "generated" if operation in self.generated_operations else "curated"
         overrides = dict(self.operation_ids)
+        curated = self.curated_tool_ids
         return RouteToolMetadata(
             mapping_state=state,
             resource_id=self.resource_id,
             tool_id=overrides.get(operation, operation),
             read_only=operation in {"get", "list", "find"},
+            curated_tool_ids=(
+                tuple(curated[operation]) if curated and operation in curated else None
+            ),
         )
 
 
@@ -918,6 +975,175 @@ class GeneratedRouteToolSnapshot:
 _LATEST_SNAPSHOT: GeneratedRouteToolSnapshot | None = None
 
 
+@dataclass(frozen=True)
+class OperationCoverage:
+    """One OpenAPI operation's coverage row (M5): identity, state and ids.
+
+    ``tool_ids`` is canonically sorted; the declared order lives in the
+    route metadata. ``state`` is ``gap`` for an operation with no generated
+    declaration, no curated annotation and no reviewed skip: the production
+    analogue of the script's strict mode, pinned empty by the freeze tests.
+    """
+
+    operation_id: str
+    method: str
+    path: str
+    state: Literal["generated", "curated", "skip", "gap"]
+    tool_ids: tuple[str, ...]
+    aggregation_id: str | None
+    skip_code: str | None
+    route_source: str
+
+
+def _openapi_path(path: str) -> str:
+    """Normalize Starlette converters to their OpenAPI path spelling."""
+
+    return re.sub(r"\{([^}:]+):[^}]+\}", r"{\1}", path)
+
+
+def coverage_projection(app: FastAPI) -> tuple[OperationCoverage, ...]:
+    """Every OpenAPI operation classified from immutable route metadata (M5).
+
+    The production analogue of the M0 inventory walk with no scripts or
+    manifest side: generated rows read the compiled snapshot's declared id,
+    curated rows the route's ``curated_tool_ids`` (canonically sorted), skip
+    rows their ``skip_code``; anything else is a ``gap``. Deterministic
+    (sorted by operation identity) and read-only over the app build; the
+    result is cached with the snapshot's app state. M6's catalogue join
+    consumes this projection.
+    """
+
+    snapshot = getattr(app.state, "generated_route_toolsets", None)
+    if not isinstance(snapshot, GeneratedRouteToolSnapshot):
+        raise ConfigError(
+            "coverage_projection requires the built generated snapshot "
+            "(app.state.generated_route_toolsets)"
+        )
+    cached = getattr(app.state, "tools_universal_coverage", None)
+    if cached is not None and cached[0] is snapshot:
+        return cached[1]
+
+    declared_generated = {
+        item.operation_id: item
+        for item in snapshot.operations
+    }
+    metadata_by: dict[tuple[str, str], RouteToolMetadata | None] = {}
+    source_by: dict[tuple[str, str], str] = {}
+    for full_path, route, _deps in _walk_api_routes(app.routes):
+        for method in sorted((route.methods or set()) & _HTTP_METHODS):
+            key = (method, _openapi_path(full_path))
+            metadata_by.setdefault(key, _metadata_for(route, method))
+            source_by.setdefault(
+                key, f"{route.endpoint.__module__}:{route.endpoint.__name__}"
+            )
+
+    rows: list[OperationCoverage] = []
+    for path, item in app.openapi()["paths"].items():
+        for method, operation in item.items():
+            if method.upper() not in _HTTP_METHODS | frozenset({"OPTIONS"}):
+                continue
+            operation_id = operation.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ConfigError(
+                    f"operation lacks operationId: {method.upper()} {path}"
+                )
+            key = (method.upper(), path)
+            metadata = metadata_by.get(key)
+            source = source_by.get(key, "unknown")
+            generated = declared_generated.get(operation_id)
+            if generated is not None:
+                rows.append(
+                    OperationCoverage(
+                        operation_id,
+                        method.upper(),
+                        path,
+                        "generated",
+                        (f"{generated.tool.toolset_id}__{generated.tool.id}",),
+                        generated.metadata.aggregation_id,
+                        None,
+                        source,
+                    )
+                )
+            elif metadata is not None and metadata.mapping_state == "curated":
+                rows.append(
+                    OperationCoverage(
+                        operation_id,
+                        method.upper(),
+                        path,
+                        "curated",
+                        tuple(sorted(metadata.curated_tool_ids or ())),
+                        metadata.aggregation_id,
+                        None,
+                        source,
+                    )
+                )
+            elif metadata is not None and metadata.mapping_state == "skip":
+                rows.append(
+                    OperationCoverage(
+                        operation_id,
+                        method.upper(),
+                        path,
+                        "skip",
+                        (),
+                        metadata.aggregation_id,
+                        metadata.skip_code,
+                        source,
+                    )
+                )
+            else:
+                rows.append(
+                    OperationCoverage(
+                        operation_id,
+                        method.upper(),
+                        path,
+                        "gap",
+                        (),
+                        None,
+                        None,
+                        source,
+                    )
+                )
+    rows.sort(key=lambda row: (row.operation_id, row.method, row.path))
+    result = tuple(rows)
+    app.state.tools_universal_coverage = (snapshot, result)
+    return result
+
+
+async def validate_curated_route_declarations(app: FastAPI) -> None:
+    """Refuse a route whose curated id names no live tool (M5).
+
+    Full liveness needs the provider registry, which production builds in
+    the lifespan after the generated snapshot: call this after every fixed
+    built-in provider has been installed. The registry's canonical
+    provider map is read (not ``get_toolset``), so a toolset an operator
+    switched off by design still validates: its tools remain live sources.
+    Unknown ids raise :class:`ConfigError`, the same guard shape as the
+    preview-lead check.
+    """
+
+    registry = getattr(app.state, "provider_registry", None)
+    if registry is None:
+        raise ConfigError(
+            "curated route declarations cannot be validated: "
+            "app.state.provider_registry is not set"
+        )
+    declared: set[str] = set()
+    for _full_path, route, _deps in _walk_api_routes(app.routes):
+        for method in sorted((route.methods or set()) & _HTTP_METHODS):
+            metadata = _metadata_for(route, method)
+            if metadata is not None and metadata.mapping_state == "curated":
+                declared.update(metadata.curated_tool_ids or ())
+    live: set[str] = set()
+    for provider in registry.builtin_toolset_providers().values():
+        async for tool in provider.list_tools(principal=None):
+            live.add(f"{tool.toolset_id}__{tool.id}")
+    unknown = sorted(declared - live)
+    if unknown:
+        raise ConfigError(
+            f"route metadata declares unknown curated tools: {unknown}"
+        )
+
+
 def _walk_api_routes(
     routes: Sequence[Any],
     *,
@@ -1380,6 +1606,7 @@ def _compile_route_tool_blueprints(
         if method.upper() in _HTTP_METHODS
     }
     generated: list[_GeneratedRouteToolBlueprint] = []
+    curated_ids: set[str] = set()
     seen_operations: set[str] = set()
     seen_tools: dict[tuple[str, str], str] = {}
 
@@ -1396,6 +1623,10 @@ def _compile_route_tool_blueprints(
                 continue
             metadata = _metadata_for(route, method)
             if metadata is None or metadata.mapping_state != "generated":
+                # M5: collect the curated ids so the disjointness guard below
+                # can refuse a curated declaration naming a generated tool.
+                if metadata is not None and metadata.mapping_state == "curated":
+                    curated_ids.update(metadata.curated_tool_ids or ())
                 continue
             operation_id = operation.get("operationId")
             if not isinstance(operation_id, str) or not operation_id:
@@ -1500,6 +1731,16 @@ def _compile_route_tool_blueprints(
                 )
             generated.append(blueprint)
 
+    # M5: a curated declaration must never name a generated scoped id (the
+    # reviewed contract keeps the two sets disjoint); full liveness against
+    # the provider registry is the lifespan guard's job and the tests' pin.
+    overlap = curated_ids & {
+        f"{toolset}__{tool}" for toolset, tool in seen_tools
+    }
+    if overlap:
+        raise ConfigError(
+            f"curated route declarations name generated scoped ids: {sorted(overlap)}"
+        )
     return tuple(generated)
 
 
@@ -1823,14 +2064,17 @@ __all__ = [
     "CrudToolDeclaration",
     "GeneratedRouteTool",
     "GeneratedRouteToolSnapshot",
+    "OperationCoverage",
     "RouteToolMetadata",
     "attach_route_tool_metadata",
     "build_generated_route_toolsets",
     "canonical_tool_id",
+    "coverage_projection",
     "derive_argument_schema",
     "generated_route_toolset_providers",
     "is_trusted_route_tool_scope",
     "route_tool",
     "route_tool_metadata",
     "trusted_route_tool_person",
+    "validate_curated_route_declarations",
 ]

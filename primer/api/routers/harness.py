@@ -329,6 +329,7 @@ async def create_harness(
     summary="List harnesses",
     responses=common_responses(400, 422, 500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("harness__list",))
 async def list_harnesses(
     request: Request,
     slug: Annotated[str | None, Query(description="Filter by slug.")] = None,
@@ -398,6 +399,7 @@ async def get_harness(
     responses=common_responses(404, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("harness__update",))
 async def update_harness(
     body: HarnessUpdateBody,
     harness_id: str = Path(...),
@@ -598,6 +600,7 @@ async def put_harness_overrides(
     responses=common_responses(404, 409, 500),
     dependencies=_admin_write,
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("harness__fetch",))
 async def fetch_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
@@ -641,6 +644,7 @@ async def fetch_harness(
     responses=common_responses(404, 409, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("harness__install",))
 async def install_harness(
     request: Request,
     harness_id: str = Path(...),
@@ -714,6 +718,7 @@ async def install_harness(
     responses=common_responses(404, 409, 422, 500),
     dependencies=_admin_write,
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("harness__sync",))
 async def sync_harness(
     request: Request,
     harness_id: str = Path(...),

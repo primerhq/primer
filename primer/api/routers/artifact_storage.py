@@ -243,7 +243,17 @@ artifact_storage_router = make_crud_router(
     model_cls=ArtifactStorageProvider,
     storage_dep=get_artifact_storage_provider_storage,
     plural="artifact_storage_providers",
-    tool_declaration=CrudToolDeclaration(resource_id="artifact_storage_providers", generated_operations=frozenset({"find"})),
+    tool_declaration=CrudToolDeclaration(
+        resource_id="artifact_storage_providers",
+        generated_operations=frozenset({"find"}),
+        curated_tool_ids={
+            "create": ("system__create_artifact_storage_provider",),
+            "get": ("system__get_artifact_storage_provider",),
+            "list": ("system__list_artifact_storage_providers",),
+            "update": ("system__update_artifact_storage_provider",),
+            "delete": ("system__delete_artifact_storage_provider",),
+        },
+    ),
     tag="artifact-storage-providers",
     on_update=_on_update,
     on_delete=_on_update,
@@ -269,6 +279,7 @@ class _ActiveArtifactStoragePutBody(BaseModel):
     responses=common_responses(500),
     summary="Read the active artifact store.",
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__get_active_artifact_store",))
 async def get_active_artifact_storage_config(request: Request) -> ActiveArtifactStorageConfig:
     return await read_active_artifact_store(request.app.state.storage_provider)
 

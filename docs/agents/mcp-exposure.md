@@ -191,6 +191,9 @@ catalogue table scrolls horizontally rather than clipping its controls.
 - Generated REST tools use the same catalogue and access floors as curated
   tools. Their dispatch reaches the real FastAPI route through the trusted
   internal ASGI seam.
+- Scoped ids and their reference paths are checked against the reviewed
+  route-to-tool mappings. A declared mapping does not grant access: MCP
+  still checks the live exposure, role, toolset grant and approval policy.
 
 ## Related
 

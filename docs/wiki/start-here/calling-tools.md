@@ -58,6 +58,7 @@ The door, shown in its direct form around an inner call: the inner arguments are
 Reference: [`system__call_tool`](reference/tools/system/call_tool)
 
 ## Gotchas
+- A stable scoped id and its reference path identify a tool; they do not grant access. The caller's current role, grants and live approval policy still apply.
 - The arguments are the inner tool's arguments: no `principal`, no session id, nothing the inner schema does not name. An unknown key is ignored; a wrong type is a `validation-error`.
 - The door looks the tool up in its toolset first: a name the toolset does not list is a `not-found` that names its tools, for every run. Then it checks the run's principal against the inner tool's role: a run below the floor is a `forbidden` before any approval gate. The roles are on [roles and approvals](start-here/roles-and-approvals).
 - A gated inner tool parks the turn under the `call_tool` call, exactly as a direct gated call would.

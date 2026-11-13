@@ -14,6 +14,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from primer.api.errors import common_responses
+from primer.api.route_tools import route_tool
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, HfModelCheck, check_hf_models
 
 hf_hub_router = APIRouter(tags=["providers"])
@@ -45,5 +46,6 @@ class _HfCheckAnswer(BaseModel):
         "Stores nothing; a model the Hub refuses is a result in the 200 answer."
     ),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__check_huggingface_models",))
 async def check_huggingface_models_route(body: _HfCheckBody) -> _HfCheckAnswer:
     return _HfCheckAnswer(models=await check_hf_models(body.models, token=body.token))

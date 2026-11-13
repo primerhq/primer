@@ -300,6 +300,12 @@ semantic_search_router = make_crud_router(
     tool_declaration=CrudToolDeclaration(
         resource_id="semantic_search_providers",
         generated_operations=frozenset({"list", "find"}),
+        curated_tool_ids={
+            "create": ("system__create_semantic_search_provider",),
+            "get": ("system__get_semantic_search_provider",),
+            "update": ("system__update_semantic_search_provider",),
+            "delete": ("system__delete_semantic_search_provider",),
+        },
     ),
     tag="semantic-search-providers",
     on_create=_on_create,
@@ -317,6 +323,7 @@ semantic_search_router = make_crud_router(
     summary="Invalidate cached SemanticSearch adapter",
     responses=common_responses(500),
 )
+@route_tool(mapping_state="curated", curated_tool_ids=("system__invalidate_semantic_search_provider",))
 async def invalidate_semantic_search_provider(
     entity_id: str = Path(..., description="SemanticSearchProvider id"),
     registry=Depends(get_semantic_search_registry),

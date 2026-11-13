@@ -128,6 +128,18 @@ by whoever searches; grep and the document tree never need a grant. See [semanti
 
 ## 10. Testing patterns
 
+The Tools Universal M5 contract keeps route ownership separate from wiki
+rendering. `coverage_projection` in `primer/api/route_tools.py` derives the
+404 operation mappings from declarations and the compiled snapshot; it
+does not read the inventory manifest. Its 261 generated ids, 135 curated
+mappings and eight human-sign-in skips are frozen by the tooling tests.
+`tests/tooling/test_tools_universal_m5_frozen_contract.py` checks the 487
+reviewed inventory ids against live providers, and
+`tests/tooling/test_tools_universal_m5_lifespan.py` renders reference pages
+from the complete boot catalogue. That catalogue also includes the
+conditional download helper and the session/client tools outside the
+reviewed reserved-provider inventory.
+
 Tree behaviour is tested against a real sqlite provider rather than a fake, because the transactional pairing and the `UNIQUE` constraint are the things under test.
 
 `tests/knowledge/test_delete_unindexes.py` pins the three defects the v2 model was built to close: a delete removes its vectors, a delete removes its content row, and only one chunk-id shape exists. They pass against the implementation, which is the point: they fail loudly if a refactor reintroduces the orphaning.
