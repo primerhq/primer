@@ -1,12 +1,12 @@
-"""Migration 33: give the internal-collections writes the shipped admin-tier gate (the Tools Universal M4 recut of the wiki-first M2 ruling).
+"""Migration 33: give the internal_collections writes the shipped admin-tier gate (the Tools Universal M4 recut of the wiki-first M2 ruling).
 
-The three internal-collections writes (``put_config``, ``delete_config``, ``bootstrap``) are generated route tools, so the generated-mutator half of the
+The three internal_collections writes (``put_config``, ``delete_config``, ``bootstrap``) are generated route tools, so the generated-mutator half of the
 seed (``primer.api.route_tools._publish_generated_default_gates``) registered them in ``crud.DEFAULT_GATED_TOOLS`` from the first app build: an install
 that booted after that build has a policy row per write, seeded by ``primer.bootstrap.seed.ensure_crud_approval_policies`` as a required gate with NO
 approver spec, because the writes were not yet in the admin-tier table (``primer.toolset.admin_gates.ADMIN_GATES``). M4 moves them into that table, so
 the shipped gate is a required gate decided by an admin only; this step brings an upgraded install to the same rows:
 
-* a tool with no policy row at all gets the shipped default (the id ``tool-approval-policy-internal-collections-<tool>``, enabled, required, the
+* a tool with no policy row at all gets the shipped default (the id ``tool-approval-policy-internal_collections-<tool>``, enabled, required, the
   admin-only approver spec);
 * a row under the seeded id still exactly as the pre-admin-tier seed wrote it (enabled, a required gate, no timeout, no approvers, no preview paths) is
   re-stamped to the shipped default;
