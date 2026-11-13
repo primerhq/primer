@@ -202,7 +202,7 @@ async def test_m4_internal_collections_flow_over_the_mcp_meta_tools(
                     )
 
                     # Deactivation through the same door, and the durable state it leaves.
-                    await _call_output(await session.call_tool(
+                    _call_output(await session.call_tool(
                         "call_tool",
                         arguments={"scoped_id": "internal_collections__delete_config", "arguments": {}},
                     ))
