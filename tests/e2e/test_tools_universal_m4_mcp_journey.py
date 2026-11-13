@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from primer.bootstrap.seed import default_policy_id
@@ -44,7 +44,7 @@ _POLICY_IDS = {
 _EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 # The bootstrap runs a real embedding pass over the system collection inline; the call is slow on a cold runner.
 # The bound stays under 180s: the CI job's step budget must outlive the slowest expected call, not equal it.
-_MCP_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+_MCP_TIMEOUT = httpx2.Timeout(120.0, connect=10.0)
 
 
 def _text(result) -> str:
