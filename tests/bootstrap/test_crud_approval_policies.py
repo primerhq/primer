@@ -28,7 +28,7 @@ async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
     created = await ensure_crud_approval_policies(fake_storage_provider)
     assert set(created) == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
     assert len(generated_mutators) == 126
-    assert len(curated_gates) == 25
+    assert len(curated_gates) == 28
     assert set(DEFAULT_GATED_TOOLS) == generated_mutators | curated_gates
     assert {crud_policy_id(n) for n in CRUD_GATED_TOOL_NAMES} <= set(created), "the crud rows keep their ids"
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)
@@ -36,7 +36,7 @@ async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
     assert (twin.toolset_id, twin.tool_name, twin.enabled, twin.approval.type.value) == ("system", "update_agent", True, "required")
     assert len(CRUD_GATED_TOOL_NAMES) == 8
     assert len(CRUD_TWINS) == 9
-    assert len(ADMIN_GATES) == 8
+    assert len(ADMIN_GATES) == 11
     assert len(DEFAULT_GATED_TOOLS) == len(set(created)) == 151
     for (toolset_id, tool_name), shipped in ADMIN_GATES.items():
         row = await store.get(default_policy_id(toolset_id, tool_name))

@@ -1674,3 +1674,53 @@ async def test_dispatch_cancellation_propagates() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# ---- the approval-preview card of a generated tool (M4) -------------------------------------------------------
+
+
+def test_internal_collections_writes_carry_their_approval_cards() -> None:
+    """The three mutators declare their cards through the route metadata, passed through the one descriptor seam."""
+    app = create_app(AppConfig())
+    tools = {
+        item.tool.id: item.tool
+        for item in app.state.generated_route_toolsets.operations
+        if item.tool.toolset_id == "internal_collections"
+    }
+    put = tools["put_config"]
+    assert put.preview_args == (
+        "body.embedding_provider_id",
+        "body.embedding_model",
+        "body.search_provider_id",
+        "body.cross_encoder",
+    )
+    assert put.preview_lead == (
+        "body.embedding_provider_id",
+        "body.embedding_model",
+        "body.search_provider_id",
+    )
+    for bare in ("delete_config", "bootstrap"):
+        assert tools[bare].preview_args == (), "a zero-argument write carries an intentional bounded card"
+        assert tools[bare].preview_lead is None
+    for bare in ("get_config", "bootstrap_status"):
+        assert tools[bare].preview_args is None
+        assert tools[bare].preview_lead is None
+
+
+def test_a_generated_route_with_a_bad_preview_lead_path_fails_the_build() -> None:
+    """A declared lead path that names nothing in the live argument schema is refused when the tool is built, like a make_tool example."""
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+    app.state.config = AppConfig(auth={"enabled": True})
+
+    @app.post("/v1/preview-probes", dependencies=[Depends(require_user)])
+    @route_tool(
+        scoped_id="preview_probe__write",
+        preview_args=("body.value",),
+        preview_lead=("body.missing",),
+    )
+    async def probe(request: Request, body: _Body) -> dict[str, object]:
+        return {"value": body.value}
+
+    with pytest.raises(ConfigError, match="preview lead paths"):
+        build_generated_route_toolsets(app)

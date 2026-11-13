@@ -14,7 +14,7 @@ The platform is configured through the operator (an admin tells the operator to 
 |---|---|
 | configure an LLM provider (register, fetch its models, make a model profile) | [runbooks/configure-provider](runbooks/configure-provider) |
 | change the semantic search engine (the vector store the semantic search uses) | [runbooks/change-search-engine](runbooks/change-search-engine) |
-| enable the internal collections subsystem (the platform's own wiki store: embedding provider, config, bootstrap) | pending: runbooks/configure-internal-collections (M2) |
+| enable the internal collections subsystem (the platform's own wiki store: embedding provider, config, bootstrap) | [runbooks/configure-internal-collections](runbooks/configure-internal-collections) |
 | change the access policy on an entity (who an agent, graph, toolset, collection, profile or provider is shared with) | [runbooks/access-policy](runbooks/access-policy) |
 | change the approval policy on a tool (the gate a tool ships with, live: required or policy, who approves) | [runbooks/approval-policy](runbooks/approval-policy) |
 | add a new capability (a free open-source API or MCP server, or built python code) | [runbooks/new-functionality](runbooks/new-functionality) |

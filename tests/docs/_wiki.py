@@ -26,11 +26,13 @@ WIKI_DIR = REPO / "docs" / "wiki"
 
 @lru_cache(maxsize=1)
 def tool_entries() -> tuple[ToolEntry, ...]:
-    """Every agent-callable tool, sorted by scoped id, built once and shared."""
+    """Every agent-callable tool, sorted by scoped id, built once and shared: the whole live catalogue the boot build
+    feeds the wiki (M3: the ten curated toolsets and every generated REST-backed provider, plus the session and client
+    scopes)."""
     from primer.toolset.tool_catalog import collect_tool_entries
-    from tests.docs._live_toolsets import built_in_providers
+    from tests.docs._live_toolsets import live_providers
 
-    return tuple(asyncio.run(collect_tool_entries(built_in_providers())))
+    return tuple(asyncio.run(collect_tool_entries(live_providers())))
 
 
 @lru_cache(maxsize=1)
