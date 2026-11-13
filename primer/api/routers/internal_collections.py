@@ -121,7 +121,22 @@ class InternalCollectionsConfigBody(BaseModel):
     response_model=InternalCollectionsConfig,
     responses=common_responses(404, 422, 500),
 )
-@route_tool(scoped_id="internal_collections__put_config")
+@route_tool(
+    scoped_id="internal_collections__put_config",
+    purpose="Activate or re-configure the internal collections subsystem with the embedding provider and model that vectorise the platform's own corpus, and the semantic search provider that backs the four reserved internal collections.",
+    use_when="Use when the operator turns the internal collections subsystem on or changes its config; the vector-space fields (embedding provider, model, search provider) freeze once the subsystem is activated, so a change needs a deactivation first.",
+    preview_args=(
+        "body.embedding_provider_id",
+        "body.embedding_model",
+        "body.search_provider_id",
+        "body.cross_encoder",
+    ),
+    preview_lead=(
+        "body.embedding_provider_id",
+        "body.embedding_model",
+        "body.search_provider_id",
+    ),
+)
 async def put_config(
     request: Request,
     body: InternalCollectionsConfigBody,
@@ -204,7 +219,11 @@ class InternalCollectionsNotConfigured(BaseModel):
     response_model=InternalCollectionsConfig | InternalCollectionsNotConfigured,
     responses=common_responses(404, 500),
 )
-@route_tool(scoped_id="internal_collections__get_config")
+@route_tool(
+    scoped_id="internal_collections__get_config",
+    purpose="Read the internal collections subsystem's activation config.",
+    use_when="Use to read the subsystem's current state (a 404 when it is not configured, or an unconfigured marker with allow_missing) and to verify a config write.",
+)
 async def get_config(
     allow_missing: bool = Query(
         default=False,
@@ -233,7 +252,13 @@ async def get_config(
     status_code=status.HTTP_204_NO_CONTENT,
     responses=common_responses(404, 500),
 )
-@route_tool(scoped_id="internal_collections__delete_config")
+@route_tool(
+    scoped_id="internal_collections__delete_config",
+    purpose="Clear the internal collections subsystem config: deactivate the subsystem, disable semantic search on the system collection and drop the four reserved collections from the backing search provider.",
+    use_when="Use when the operator turns the internal collections subsystem off, or to change its vector space once it is active; the optional reranker stays editable without a deactivation.",
+    # A zero-argument write: the card is an intentional bounded card - it names the call and shows no value.
+    preview_args=(),
+)
 async def delete_config(
     request: Request,
     storage=Depends(get_internal_collections_config_storage),
@@ -336,7 +361,13 @@ async def _upsert_status(
     summary="Start (or restart) the bootstrap pipeline",
     responses=common_responses(404, 409, 500),
 )
-@route_tool(scoped_id="internal_collections__bootstrap")
+@route_tool(
+    scoped_id="internal_collections__bootstrap",
+    purpose="Enable semantic search on the system collection and run the embedding pass over its documents, inline.",
+    use_when="Use after the config is written, to activate the subsystem and index the platform's own corpus; the pass runs inline before the call answers, so it can take from tens of seconds to minutes.",
+    # A zero-argument write: the card is an intentional bounded card - it names the call and shows no value.
+    preview_args=(),
+)
 async def bootstrap(
     request: Request,
     config_storage=Depends(get_internal_collections_config_storage),
@@ -399,7 +430,11 @@ async def bootstrap(
     summary="Current bootstrap progress / lifecycle state",
     responses=common_responses(500),
 )
-@route_tool(scoped_id="internal_collections__bootstrap_status")
+@route_tool(
+    scoped_id="internal_collections__bootstrap_status",
+    purpose="Read the system collection's search state in the console's polling vocabulary (idle, succeeded or failed) with the indexed document counts.",
+    use_when="Use to verify the bootstrap's durable outcome after the bootstrap call, or to poll the subsystem's state.",
+)
 async def bootstrap_status(
     request: Request,
     status_storage=Depends(get_internal_collections_bootstrap_status_storage),

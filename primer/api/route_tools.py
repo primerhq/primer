@@ -34,6 +34,7 @@ from starlette.responses import Response, StreamingResponse
 from starlette.types import Send
 
 from primer.access.person import Person, person_for_tool
+from primer.common.preview_paths import missing_paths
 from primer.common.shielded import run_in_background
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import ConfigError
@@ -93,6 +94,13 @@ class RouteToolMetadata:
     aggregation_id: str | None = None
     skip_code: str | None = None
     methods: frozenset[str] = frozenset()
+    #: The dotted argument paths the tool's approval card may show (``Tool.preview_args``) and what it
+    #: draws first (``Tool.preview_lead``): the generated analogue of the curated preview tables
+    #: (``primer.toolset.admin_gates``), validated against the live argument schema at build and
+    #: carried through the blueprint. ``None`` declares nothing; ``()`` is an intentional bounded
+    #: card (a zero-argument write shows no value).
+    preview_args: tuple[str, ...] | None = None
+    preview_lead: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.scoped_id is not None and self.scoped_id.count("__") != 1:
@@ -122,8 +130,16 @@ def route_tool(
     aggregation_id: str | None = None,
     skip_code: str | None = None,
     methods: Sequence[str] = (),
+    preview_args: Sequence[str] | None = None,
+    preview_lead: Sequence[str] | None = None,
 ) -> Callable[[_F], _F]:
-    """Attach one immutable REST-to-tool declaration to an endpoint."""
+    """Attach one immutable REST-to-tool declaration to an endpoint.
+
+    ``preview_args`` / ``preview_lead`` declare the tool's approval card (the generated analogue of
+    ``primer.toolset.admin_gates``' preview tables): the dotted argument paths the card may show,
+    and the paths it draws first. A path is checked against the route's argument schema when the
+    tool is built, like ``make_tool`` checks its examples.
+    """
 
     metadata = RouteToolMetadata(
         mapping_state=mapping_state,
@@ -141,6 +157,8 @@ def route_tool(
         aggregation_id=aggregation_id,
         skip_code=skip_code,
         methods=frozenset(method.upper() for method in methods),
+        preview_args=tuple(preview_args) if preview_args is not None else None,
+        preview_lead=tuple(preview_lead) if preview_lead is not None else None,
     )
 
     def decorate(endpoint: _F) -> _F:
@@ -1424,7 +1442,17 @@ def _compile_route_tool_blueprints(
                     else read_only
                 ),
                 read_only=read_only,
+                # The tool's approval card (M4): make_tool validates the declared paths against the
+                # live argument schema, like its examples.
+                preview_args=metadata.preview_args,
             )
+            if metadata.preview_lead:
+                gone = missing_paths(tool.args_schema, metadata.preview_lead)
+                if gone:
+                    raise ConfigError(
+                        f"generated route tool {toolset_id}__{tool_id}: preview "
+                        f"lead paths {gone} name no argument of its schema"
+                    )
             # M3: the structured documentation fields the generated reference page renders.
             # The prose purpose/when above become the description; these are derived from the
             # route (never parsed from prose), so the blueprint round-trips the tool below.
@@ -1508,8 +1536,9 @@ def _compiled_route_tool_blueprints(
 
 def _generated_descriptor_fields(
     method: str, path: str, operation_id: str, metadata: RouteToolMetadata,
-) -> dict[str, str | None]:
-    """The six documentation fields a generated tool carries (M3), derived from the route.
+) -> dict[str, str | tuple[str, ...] | None]:
+    """The six documentation fields a generated tool carries (M3) plus the two approval-card
+    preview fields (M4, the generated analogue of the curated preview tables), derived from the route.
 
     ``purpose`` and ``use_when`` are the route's declaration; ``origin``/``operation`` are the
     route's coordinates; the two contract sentences mirror the handler's fixed response
@@ -1527,14 +1556,16 @@ def _generated_descriptor_fields(
             "a 4xx/5xx answer is an error result carrying the route's body "
             "(RFC 7807 problem+json where the route maps errors)"
         ),
+        "preview_args": metadata.preview_args,
+        "preview_lead": metadata.preview_lead,
     }
 
 
 def _tool_from_blueprint(blueprint: _GeneratedRouteToolBlueprint) -> Tool:
     """Create the fresh mutable Tool owned by one application snapshot.
 
-    The six documentation fields are the descriptor's own (M3): every value is derived from
-    the blueprint by :func:`_generated_descriptor_fields`, so the round-trip check at the
+    The documentation fields (M3) and the approval-card fields (M4) are the descriptor's own: every value is
+    derived from the blueprint by :func:`_generated_descriptor_fields`, so the round-trip check at the
     cache holds.
     """
 
@@ -1550,8 +1581,6 @@ def _tool_from_blueprint(blueprint: _GeneratedRouteToolBlueprint) -> Tool:
         tool_class=blueprint.tool_class,
         interruptible=blueprint.interruptible,
         read_only=blueprint.read_only,
-        preview_args=blueprint.preview_args,
-        preview_lead=blueprint.preview_lead,
         **_generated_descriptor_fields(
             blueprint.method,
             blueprint.path,

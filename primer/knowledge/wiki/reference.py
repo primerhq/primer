@@ -77,13 +77,160 @@ def reference_path(toolset_id: str, tool_name: str) -> str:
 def call_example(entry: ToolEntryView) -> dict[str, Any]:
     """A call an agent can send as it stands: through ``call_tool``, or direct for a session tool.
 
-    The arguments are the tool's first example, else ``{}``.
+    The arguments are the tool's first example; a tool with no examples (the generated route tools
+    carry none today) gets the minimal arguments its argument schema requires, so the example always
+    validates against the tool's own ``args_schema`` (the docs coverage test checks every example on
+    every page against the live schemas).
     """
     examples = entry.tool.examples
-    arguments = copy.deepcopy(examples[0].args) if examples else {}
+    arguments = copy.deepcopy(examples[0].args) if examples else _minimal_arguments(entry.tool.args_schema)
     if entry.via_call_tool:
         return {"toolset_id": entry.toolset_id, "tool_name": entry.tool.id, "arguments": arguments}
     return {"name": entry.scoped_id, "arguments": arguments}
+
+
+def _resolve_ref(ref: str, root: dict[str, Any]) -> dict[str, Any] | None:
+    """The node a JSON-pointer ``$ref`` names inside ``root`` (``#/$defs/<name>`` and friends)."""
+    node: Any = root
+    for part in ref.lstrip("#").strip("/").split("/"):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, dict) else None
+
+
+def _passes(value: Any, branch: dict[str, Any], root: dict[str, Any]) -> bool:
+    """Whether ``value`` validates against ``branch``, with the root's ``$defs`` in scope for the branch's refs."""
+    import jsonschema
+
+    defs = root.get("$defs", root.get("definitions", {}))
+    if isinstance(branch.get("$defs"), dict):
+        defs = {**defs, **branch["$defs"]}
+    schema = {**branch}
+    if defs:
+        schema["$defs"] = defs
+    try:
+        jsonschema.validate(value, schema)
+        return True
+    except jsonschema.ValidationError:
+        return False
+
+
+def _placeholder(prop: Any, root: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:
+    """A value that validates against the property schema ``prop``.
+
+    A ``$ref`` resolves inside ``root``; a composition takes the first branch whose generated value
+    passes its own branch (and, for ``oneOf``, no other branch); a required sub-property of an
+    object gets its own placeholder. A cyclic ``$ref`` yields ``None`` (JSON null), which the
+    generated schemas accept nowhere on a required property today.
+    """
+    if not isinstance(prop, dict):
+        return None
+    if "$ref" in prop:
+        if prop["$ref"] in seen:
+            return None
+        node = _resolve_ref(prop["$ref"], root)
+        if node is None:
+            return None
+        return _placeholder(node, root, seen | {prop["$ref"]})
+    if "const" in prop:
+        return prop["const"]
+    if "enum" in prop:
+        return prop["enum"][0] if prop["enum"] else None
+    if "oneOf" in prop or "anyOf" in prop:
+        branches = [branch for branch in (prop.get("oneOf") or prop.get("anyOf") or ()) if isinstance(branch, dict)]
+        disc = prop.get("discriminator")
+        disc_name = disc.get("propertyName") if isinstance(disc, dict) else None
+        for branch in branches:
+            candidate = _placeholder(branch, root, seen)
+            # A discriminated oneOf (pydantic unions): name the branch in the discriminator field,
+            # whose literal is a const/enum the placeholder takes as-is.
+            branch_node = _resolve_ref(branch["$ref"], root) if "$ref" in branch else branch
+            if (
+                isinstance(candidate, dict)
+                and isinstance(disc_name, str)
+                and disc_name not in candidate
+                and isinstance(branch_node, dict)
+                and disc_name in (branch_node.get("properties") or {})
+            ):
+                disc_value = _placeholder(branch_node["properties"][disc_name], root, seen)
+                if disc_value is not None:
+                    candidate = {**candidate, disc_name: disc_value}
+            if candidate is None or not _passes(candidate, branch, root):
+                continue
+            if "oneOf" in prop and any(_passes(candidate, other, root) for other in branches if other is not branch):
+                continue
+            return candidate
+        return None
+    if "allOf" in prop:
+        merged: dict[str, Any] = {}
+        for branch in prop["allOf"]:
+            if isinstance(branch, dict):
+                merged.update(branch)
+        return _placeholder(merged, root, seen)
+    if "type" not in prop:
+        if "properties" not in prop:
+            return None
+        prop = {**prop, "type": "object"}
+    typ = prop["type"] if isinstance(prop["type"], str) else next(iter(prop["type"]), None)
+    if typ == "object":
+        required = prop.get("required", ())
+        properties = prop.get("properties") or {}
+        return {key: _placeholder(properties.get(key), root, seen) for key in required}
+    if typ == "array":
+        min_items = int(prop.get("minItems", 0))
+        items = prop.get("items")
+        if min_items and isinstance(items, dict):
+            return [_placeholder(items, root, seen) for _ in range(min_items)]
+        return []
+    if typ == "string":
+        min_length = int(prop.get("minLength", 0))
+        pattern = prop.get("pattern")
+        if isinstance(pattern, str):
+            derived = _pattern_value(pattern, min_length)
+            if derived is not None:
+                return derived
+        return "x" * max(min_length, 1) if min_length else ""
+    if typ in ("integer", "number"):
+        minimum = 0
+        for bound in (prop.get("minimum"), prop.get("exclusiveMinimum")):
+            if isinstance(bound, (int, float)):
+                minimum = max(minimum, bound)
+        value = int(minimum) if typ == "integer" else minimum
+        # shortcut: no generated schema pairs exclusiveMinimum with a value that is its own floor; re-pin if one lands
+        return value + 1 if isinstance(prop.get("exclusiveMinimum"), (int, float)) else value
+    if typ == "boolean":
+        return False
+    return None
+
+
+def _first_of_class(class_body: str) -> str | None:
+    """The first character a ``[...]`` class admits (a range starts with its lower bound)."""
+    if class_body.startswith("\\"):
+        return class_body[1] if len(class_body) > 1 else None
+    return class_body[0] or None
+
+
+def _pattern_value(pattern: str, min_length: int) -> str | None:
+    """A value for a string constrained to one character-class repetition (the shape of ``^[0-9a-fA-F]{7,64}$``).
+
+    shortcut: only that shape is read (the one the generated schemas use today); a pattern the helper does not
+    read falls back to the plain string placeholder and the coverage test re-pins the gap.
+    """
+    body = pattern.strip("^$")
+    match = re.fullmatch(r"(\[[^\]]+\])\{(\d+)(?:,\d+)?\}", body)
+    if match is None:
+        return None
+    char = _first_of_class(match.group(1)[1:-1])
+    if char is None:
+        return None
+    return char * max(int(match.group(2)), min_length, 1)
+
+
+def _minimal_arguments(schema: dict[str, Any]) -> dict[str, Any]:
+    """The minimal arguments object that validates against ``schema``: a typed placeholder per required property."""
+    properties = schema.get("properties") or {}
+    return {key: _placeholder(properties.get(key), schema) for key in schema.get("required", ())}
 
 
 _SENTENCE_RE = re.compile(rf"(.{{20,{SUMMARY_MAX - 1}}}?[.!?])(?:\s|$)")

@@ -186,7 +186,8 @@ PLANNED_PATHS = frozenset({
     "channels", "channels/providers", "channels/channels", "channels/bindings", "channels/reply-binding",
     "human-in-the-loop", "human-in-the-loop/ask-user", "human-in-the-loop/inform-user", "human-in-the-loop/open-file", "human-in-the-loop/canvas",
     "toolsets", "toolsets/builtin-toolsets", "toolsets/mcp-toolsets", "toolsets/python-toolsets", "toolsets/list-and-describe-tools",
-    "providers", "providers/llm", "providers/model-profiles", "providers/embedding", "providers/cross-encoder", "providers/semantic-search", "providers/artifact-storage", "providers/web-search-and-fetch",
+    "providers", "providers/llm", "providers/model-profiles", "providers/embedding", "providers/embedding-model-options", "providers/cross-encoder", "providers/semantic-search", "providers/artifact-storage", "providers/web-search-and-fetch",
+    "runbooks/configure-internal-collections",
     "approvals", "approvals/policies",
     "harnesses", "harnesses/what-a-harness-is", "harnesses/install-and-sync",
     "web", "web/search-and-fetch", "web/http-and-downloads",
@@ -195,7 +196,7 @@ PLANNED_PATHS = frozenset({
     "cookbook", "cookbook/create-and-run-a-session", "cookbook/monitor-and-resume-a-parked-session", "cookbook/run-a-graph-and-collect-results", "cookbook/workspace-as-build-env", "cookbook/scheduled-summariser", "cookbook/daily-incident-digest", "cookbook/pr-reviewer-on-cron", "cookbook/event-driven-data-pipeline", "cookbook/slack-question-answerer", "cookbook/telegram-personal-assistant", "cookbook/discord-moderation-helper", "cookbook/approval-gated-deploy-bot", "cookbook/multi-agent-graph-research", "cookbook/discover-a-capability", "cookbook/internal-tool-via-mcp", "cookbook/run-a-task-through-prime",
     "start-here", "start-here/reading-this-wiki", "start-here/calling-tools", "start-here/roles-and-approvals", "start-here/errors", "start-here/the-core-kit",
 })
-"""The closed set of the paths the wiki may hold: ``index`` and the 103 hand-written paths.
+"""The closed set of the paths the wiki may hold: ``index`` and the 105 hand-written paths.
 
 A page for a path outside it is a bug, and a spec whose path is not here fails
 ``test_planned_paths_are_slugs_and_cover_every_spec``.

@@ -13,9 +13,12 @@ creator's) walked around the approval system:
 :data:`ADMIN_GATES` maps each to the gate a fresh install ships: ``required``, except the two toolset writes, whose gate is the Rego policy
 :data:`HOST_CODE_TOOLSET_POLICY`. Each is decided by an admin only (``approvers`` = ``primer.session.approvers.ADMIN_ONLY_SPEC``, through
 ``crud.shipped_approvers``): a person who may not make the write, or a chat-platform user primer cannot identify, cannot approve it. ``bootstrap/seed.py`` seeds them with the crud gates (``crud.DEFAULT_GATED_TOOLS`` lists every default gate);
-migration 16 gives an existing install the same rows, and migration 20 re-keys the harness lifecycle ones to the bare tool ids. Like every policy they gate
+migration 16 gives an existing install the same rows, and migration 20 re-keys the harness lifecycle ones to the bare tool ids. The internal-collections
+writes are generated route tools: the generated half of the seed carries them at app build, and migration 33 re-stamps an install whose rows still carry
+the pre-admin-tier shape. Like every policy they gate
 model-initiated calls: the tool manager (the harness tools now mount on an agent's own surface), ``system__call_tool`` and the MCP endpoint, which has no
-park and refuses a gated call as ``approval_required``. A person acting over REST is not gated.
+park and refuses a gated call - the wire carries the fixed ``tool_unavailable`` error, and the ``approval_required`` refusal reason is the audit and event
+detail, never on the wire. A person acting over REST is not gated.
 
 The toolset gate: a Rego policy that is an allowlist
 -----------------------------------------------------
@@ -50,6 +53,7 @@ if TYPE_CHECKING:
 # The toolsets' ids, spelled out: this module is imported by the toolsets it names (the completeness test pins them against the live builds).
 _SYSTEM = "system"
 _HARNESS = "harness"
+_INTERNAL_COLLECTIONS = "internal_collections"
 
 #: The tool approval policy writes. A gate an admin-run model can delete is no gate.
 POLICY_WRITES: tuple[tuple[str, str], ...] = (
@@ -70,6 +74,16 @@ HARNESS_LIFECYCLE: tuple[tuple[str, str], ...] = (
     (_HARNESS, "install"),
     (_HARNESS, "sync"),
     (_HARNESS, "uninstall"),
+)
+
+#: The internal-collections subsystem writes (Tools Universal M4, carried as generated route tools): the config write, the deactivation
+#: and the bootstrap. Each vectorises or rewrites the platform's own document corpus - platform administration a run at an admin's rank must not make ungated.
+#: They are generated mutators (the generated half of ``crud.DEFAULT_GATED_TOOLS`` joins the seed at app build); the migration 33 step re-stamps an
+#: install whose rows still carry the pre-admin-tier shape (a required gate without the admin-only approvers).
+INTERNAL_COLLECTIONS_WRITES: tuple[tuple[str, str], ...] = (
+    (_INTERNAL_COLLECTIONS, "put_config"),
+    (_INTERNAL_COLLECTIONS, "delete_config"),
+    (_INTERNAL_COLLECTIONS, "bootstrap"),
 )
 
 #: The shipped gate on ``system::create_toolset`` and ``system::update_toolset`` (see the module docstring). Migration 16 keeps its own copy of
@@ -100,6 +114,7 @@ ADMIN_GATES: Mapping[tuple[str, str], RequiredApprovalConfig | PolicyApprovalCon
     **{key: RequiredApprovalConfig() for key in POLICY_WRITES},
     **{key: PolicyApprovalConfig(policy=HOST_CODE_TOOLSET_POLICY) for key in HOST_CODE_TOOLSET_WRITES},
     **{key: RequiredApprovalConfig() for key in HARNESS_LIFECYCLE},
+    **{key: RequiredApprovalConfig() for key in INTERNAL_COLLECTIONS_WRITES},
 })
 
 
@@ -163,6 +178,7 @@ __all__ = [
     "HARNESS_LIFECYCLE",
     "HOST_CODE_TOOLSET_POLICY",
     "HOST_CODE_TOOLSET_WRITES",
+    "INTERNAL_COLLECTIONS_WRITES",
     "POLICY_WRITES",
     "PREVIEW_ARGS",
     "PREVIEW_LEAD",

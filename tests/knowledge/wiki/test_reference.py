@@ -85,6 +85,87 @@ def test_a_tool_without_examples_is_called_with_empty_arguments():
     assert call_example(entry)["arguments"] == {}
 
 
+def test_a_tool_without_examples_gets_the_minimal_arguments_its_schema_requires():
+    """A generated route tool carries no examples: its page shows the minimal call its schema accepts (a typed
+    placeholder per required property), so the example always validates against the tool's own schema."""
+    import jsonschema
+
+    entry = make_entry(
+        "misc", "t",
+        schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "count": {"type": "integer", "minimum": 1},
+                "kind": {"const": "predicate"},
+                "body": {"$ref": "#/$defs/body"},
+            },
+            "required": ["name", "count", "kind", "body"],
+            "$defs": {"body": {"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]}},
+        },
+        examples=[],
+    )
+    example = call_example(entry)
+    assert example["arguments"] == {"name": "x", "count": 1, "kind": "predicate", "body": {"model": ""}}
+    jsonschema.validate(example["arguments"], entry.tool.args_schema)
+
+
+def test_a_one_of_union_without_examples_is_named_in_its_discriminator():
+    """A discriminated ``oneOf`` the tool gives no example for: the placeholder names the branch in the
+    discriminator field (the branch literal), so the value passes exactly one branch."""
+    import jsonschema
+
+    entry = make_entry(
+        "misc", "t",
+        schema={
+            "type": "object",
+            "properties": {
+                "page": {
+                    "oneOf": [{"$ref": "#/$defs/offset"}, {"$ref": "#/$defs/cursor"}],
+                    "discriminator": {"propertyName": "kind"},
+                },
+            },
+            "required": ["page"],
+            "$defs": {
+                "offset": {
+                    "type": "object",
+                    "properties": {"kind": {"const": "offset"}, "length": {"type": "integer"}},
+                    "required": ["length"],
+                },
+                "cursor": {
+                    "type": "object",
+                    "properties": {"kind": {"const": "cursor"}, "cursor": {"type": "string"}},
+                    "required": ["cursor"],
+                },
+            },
+        },
+        examples=[],
+    )
+    example = call_example(entry)
+    assert example["arguments"] == {"page": {"length": 0, "kind": "offset"}}
+    jsonschema.validate(example["arguments"], entry.tool.args_schema)
+
+
+def test_every_live_tool_reference_call_example_validates_against_its_own_schema():
+    """The corpus check that pins the minimal-arguments fallback against the whole live catalogue: the call
+    example rendered for every tool (curated or generated) validates against that tool's own ``args_schema``.
+    Before the ``_minimal_arguments`` fix this red on 206 of the 496 pages - the generated route tools carry
+    no curated examples, so their pages emitted ``{}`` against schemas with required arguments."""
+    import jsonschema
+
+    from tests.docs._wiki import tool_entries
+
+    entries = tool_entries()
+    assert entries, "the live catalogue must not be empty"
+    bad = []
+    for entry in entries:
+        try:
+            jsonschema.validate(call_example(entry)["arguments"], entry.tool.args_schema)
+        except jsonschema.ValidationError as exc:
+            bad.append(f"{entry.scoped_id}: {exc.message}")
+    assert bad == [], "call examples that do not validate against their own schema: " + "; ".join(bad[:10])
+
+
 def test_call_example_hands_out_a_copy_of_the_arguments():
     entry = make_entry(
         "misc", "t", schema={"type": "object"}, examples=[ToolExample(args={"a": {"b": 1}})],
