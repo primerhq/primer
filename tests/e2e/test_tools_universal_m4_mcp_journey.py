@@ -21,6 +21,8 @@ import json
 import httpx
 import pytest
 
+from primer.bootstrap.seed import default_policy_id
+
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,8 +35,10 @@ _IC_TOOLS = {
     "internal_collections__bootstrap_status",
 }
 _ALLOWED = sorted(_IC_TOOLS | {"collections__search"})
+# The ids come from the canonical seed helper, never hand-rolled: the toolset part of the
+# id keeps its underscore, and a drifted spelling 404s against the shipped row.
 _POLICY_IDS = {
-    tool: f"tool-approval-policy-internal-collections-{tool.replace('_', '-')}"
+    tool: default_policy_id("internal_collections", tool)
     for tool in ("put_config", "delete_config", "bootstrap")
 }
 _EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
