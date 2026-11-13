@@ -21,7 +21,7 @@ from primer.session.approvers import ADMIN_ONLY_SPEC
 from primer.storage.migrations import MIGRATIONS
 from primer.storage.migrations.m016_admin_run_gates import M016AdminRunGates
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.toolset.admin_gates import ADMIN_GATES, HOST_CODE_TOOLSET_POLICY, HOST_CODE_TOOLSET_WRITES
+from primer.toolset.admin_gates import ADMIN_GATES, HOST_CODE_TOOLSET_POLICY, HOST_CODE_TOOLSET_WRITES, INTERNAL_COLLECTIONS_WRITES
 
 _REGO = "package primer.tool_approval\ndefault required := false\n"
 
@@ -52,16 +52,20 @@ async def test_an_untouched_install_gets_the_shipped_gate_on_every_admin_tier_wr
 
     rows = await _rows(sp)
     # The step writes what it shipped: the harness lifecycle rows are stored under the scoped tool name; migration 20
-    # strips that prefix. Undoing that move, the row set is the live gate set under the live shipped gates.
+    # strips that prefix. Undoing that move, the row set is the legacy (pre-M4) gate set under the live shipped gates:
+    # the three M4 internal-collections writes are M033's on the forward chain, not M016's.
     def frozen(toolset_id: str, tool_name: str) -> str:
         return m020._PREFIX + tool_name if toolset_id == "harness" else tool_name
 
+    legacy = {key: shipped for key, shipped in ADMIN_GATES.items() if key not in INTERNAL_COLLECTIONS_WRITES}
     expected = {
         default_policy_id(toolset_id, frozen(toolset_id, tool_name)): (
             toolset_id, frozen(toolset_id, tool_name), shipped,
         )
-        for (toolset_id, tool_name), shipped in ADMIN_GATES.items()
+        for (toolset_id, tool_name), shipped in legacy.items()
     }
+    # The only live gates beyond M016's legacy subset are the three M033 internal-collections writes.
+    assert set(ADMIN_GATES) - set(legacy) == set(INTERNAL_COLLECTIONS_WRITES)
     assert set(rows) == set(expected)
     for policy_id, (toolset_id, tool_name, shipped) in expected.items():
         row = rows[policy_id]
@@ -117,18 +121,24 @@ async def test_a_second_run_writes_nothing(sp):
 
 def test_the_frozen_table_is_the_live_one_today():
     """The step carries its own copy of the table, the Rego text and the policy ids (a later change to the live code must not change what it did);
-    when it shipped they agreed with the live ones."""
+    when it shipped it agreed with the live legacy subset - the live table's M4 addition (the three internal-collections
+    writes) is carried by the forward migration M033, not M016.
+    """
     from primer.storage.migrations import m016_admin_run_gates as m016
     from primer.storage.migrations import m020_harness_policy_rekey as m020
 
     # Migration 20 re-keys the harness names to the bare tool ids (stripping the prefix m016 stored them under); undoing
-    # that move, the step's frozen table is still the live one (the chain m016 + m020 reproduces the live gate set).
+    # that move, the step's frozen table is still the live legacy one (the chain m016 + m020 reproduces the live gate set
+    # minus the three M4 internal-collections writes, which M033 carries).
     def frozen_name(toolset_id: str, tool_name: str) -> str:
         return m020._PREFIX + tool_name if toolset_id == "harness" else tool_name
 
+    legacy = {key: shipped for key, shipped in ADMIN_GATES.items() if key not in INTERNAL_COLLECTIONS_WRITES}
     frozen = {(t, n): approval for t, n, approval in m016._GATES}
-    live = {(t, frozen_name(t, n)): shipped for (t, n), shipped in ADMIN_GATES.items()}
+    live = {(t, frozen_name(t, n)): shipped for (t, n), shipped in legacy.items()}
     assert set(frozen) == set(live)
+    # The only live gates beyond the frozen table are the three M033 internal-collections writes.
+    assert set(ADMIN_GATES) - set(legacy) == set(INTERNAL_COLLECTIONS_WRITES)
     assert all(frozen[key] == shipped.model_dump(mode="json") for key, shipped in live.items())
     assert m016._HOST_CODE_TOOLSET_POLICY == HOST_CODE_TOOLSET_POLICY
     assert m016._ADMIN_ONLY == ADMIN_ONLY_SPEC
