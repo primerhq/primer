@@ -106,14 +106,17 @@ a one-line reason; it may not simply be omitted.
 - The narrowed sweep stays green:
 
   ```bash
-  uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration
+  uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration --ignore=tests/docs
   ```
 
+  `tests/docs/` runs once through `make docs-hygiene` (and in CI's dedicated
+  docs step), so the narrowed sweep excludes it instead of executing the same
+  assertions twice. CI seeds coverage in the docs step and uses
+  `--cov-append` in the narrowed sweep, preserving one combined coverage gate.
   The suite runs in parallel by default (`-n auto --dist loadscope` is baked
-  into `addopts`), which takes the full unit sweep from roughly 7 minutes to
-  about 90 seconds. `loadscope` keeps each module's tests on one worker
-  because a few `tests/api` modules use module/class-scoped fixtures that do
-  not survive being split across workers. To debug a single test serially,
+  into `addopts`). `loadscope` keeps each module's tests on one worker because
+  a few `tests/api` modules use module/class-scoped fixtures that do not
+  survive being split across workers. To debug a single test serially,
   override with `-n0`.
 
 - The live-Postgres suites run in their own CI lane. `tests/claim`,
@@ -124,10 +127,11 @@ a one-line reason; it may not simply be omitted.
   (CI pulls it through `mirror.gcr.io`, Google's Docker Hub mirror, because
   Docker Hub rate-limits unauthenticated pulls),
   running each suite as its own pytest process (a hang kills only its own
-  process, so one suite cannot erase the others' results). Gated files that
+  process, so one suite cannot erase the others' results) with `-m postgres`,
+  so unmarked unit items are not executed again. Gated files that
   live with their subsystem instead (`LANE_FILES` in `tests/pg_gate.py`:
   today one under `tests/bus`, one under `tests/worker` and one under
-  `tests/session`) each get their own
+  `tests/session`, plus one under `tests/events`) each get their own
   step too, so a file that vanishes fails its own process; a static test fails
   any gated file that is in neither `LANE_DIRS` nor `LANE_FILES`. The one gate is
   `PRIMER_TEST_POSTGRES_URL` (`postgresql://user:pw@host:port/db`, optional

@@ -94,6 +94,9 @@ def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
         # ...and one suite failing or hanging must not stop the next from running.
         assert "!cancelled()" in st.get("if", ""), st["name"]
         assert "--timeout=" in run and "--timeout-method=thread" in run, st["name"]
+        # The default unit lane already executes every unmarked item in these
+        # directories. This lane owns only the live-database cases.
+        assert re.search(r"(?:^|\s)-m\s+postgres(?:\s|$)", run), st["name"]
         # -v so the last node id before a timeout dump names the hung test.
         assert re.search(r"\s-v\b", run), st["name"]
     assert sorted(covered) == sorted(targets), (
