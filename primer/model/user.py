@@ -94,3 +94,8 @@ class User(Identifiable):
         "ends every session of the account at once. Rows written before the "
         "field existed load as 0, matching legacy cookies without an epoch.",
     )
+    welcome_acked_roles: frozenset[Literal["admin", "user"]] = Field(
+        default_factory=frozenset,
+        description="Roles whose welcome this person has seen. Older rows default to an empty set. "
+        "Independent of session creation, setup completion and the authentication epoch.",
+    )

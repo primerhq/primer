@@ -130,10 +130,10 @@ by whoever searches; grep and the document tree never need a grant. See [semanti
 
 The Tools Universal M5 contract keeps route ownership separate from wiki
 rendering. `coverage_projection` in `primer/api/route_tools.py` derives the
-404 operation mappings from declarations and the compiled snapshot; it
-does not read the inventory manifest. Its 261 generated ids, 135 curated
+406 operation mappings from declarations and the compiled snapshot; it
+does not read the inventory manifest. Its 263 generated ids, 135 curated
 mappings and eight human-sign-in skips are frozen by the tooling tests.
-`tests/tooling/test_tools_universal_m5_frozen_contract.py` checks the 487
+`tests/tooling/test_tools_universal_m5_frozen_contract.py` checks the 489
 reviewed inventory ids against live providers, and
 `tests/tooling/test_tools_universal_m5_lifespan.py` renders reference pages
 from the complete boot catalogue. That catalogue also includes the

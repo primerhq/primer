@@ -2182,6 +2182,126 @@ var NV_DRAFTS = {};
 // wid/refetchAll.
 var NV_SESSION_CON_REF = { current: null };
 var NV_SESSION_INSTANCES = {};
+var NV_WELCOME_INSTANCES = {};
+
+function NV_welcomeEligible(con, session) {
+  var state = con && con.welcomeState;
+  return !!(state && con.viewer && (con.viewer.user_id || con.viewer.id)
+    && (con.role === "admin" || con.role === "user") && state.variant === con.role
+    && con.wid === con.defaultWorkspaceId && session && session.workspace_id === con.wid
+    && session.binding && session.binding.kind === "agent" && session.binding.agent_id === "operator");
+}
+
+function NV_focusedWelcome() {
+  var con = NV_SESSION_CON_REF.current;
+  return con && con.doc && con.doc.kind === "session" && NV_WELCOME_INSTANCES[con.doc.ref];
+}
+window.NV_canReopenWelcome = function () { return !!NV_focusedWelcome(); };
+window.NV_reopenWelcome = function () { var reopen = NV_focusedWelcome(); return reopen && reopen(); };
+
+function NV_welcomeChips(role) {
+  var explore = { label: "Explore my workspace", text: "Explore my workspace with me. Follow runbooks/workspace-status in the platform wiki and report live workspace status." };
+  return role === "admin" ? [explore,
+    { label: "Enable internal collections", text: "Help me enable internal collections. Read the platform wiki runbook for configuring internal collections, explain the current configuration and ask before making changes." },
+    { label: "Configure an embedding provider", text: "Help me configure an embedding provider using the platform wiki. Check the live providers and explain the options before making changes." },
+  ] : [explore,
+    { label: "Start a new project", text: "Help me start a new project. Follow runbooks/moderate-a-request in the platform wiki: clarify my request, plan with the planner, create a separate workspace, then launch the plan's agents and sessions with my approval." },
+    { label: "What can you do for me?", text: "Show me what you can do for me using the platform wiki and the tools available to my role. Include the live moderator and workspace-status flows." },
+  ];
+}
+
+// A mounted welcome stays visible after its durable acknowledgement succeeds.
+// Only that presentation latch is local; subsequent visits read server state.
+function NV_SessionWelcome(props) {
+  var con = NV_useConsole();
+  var person = con.viewer.user_id || con.viewer.id;
+  var role = con.role;
+  var visibleState = React.useState(!!con.welcomeState.show);
+  var visible = visibleState[0], setVisible = visibleState[1];
+  var mutation = window.primerApi.useMutation(function (input) {
+    return window.primerApi.apiFetch("POST", "/auth/welcome/" + input.action, { role: input.role });
+  }, {
+    invalidates: ["nv-shell:auth-status"],
+    onError: function (err) {
+      if (alive.current && con.toast) con.toast((err && (err.detail || err.message)) || "Could not save welcome state");
+    },
+  });
+  var pending = mutation.loading;
+  var errorState = React.useState(null), error = errorState[0], setError = errorState[1];
+  var ackState = React.useState(!!con.welcomeState.show), needsAck = ackState[0], setNeedsAck = ackState[1];
+  var attemptState = React.useState(0), attempt = attemptState[0], setAttempt = attemptState[1];
+  var heading = React.useRef(null), focusNext = React.useRef(false), alive = React.useRef(true);
+  var wasRunning = React.useRef(!!props.running);
+  React.useEffect(function () { alive.current = true; return function () { alive.current = false; }; }, []);
+  React.useEffect(function () {
+    // An operator can reopen via the generated tool. Re-read after its turn
+    // finishes, using the existing resource, without a welcome poll.
+    if (wasRunning.current && !props.running && window.primerApi._resource) {
+      window.primerApi._resource.refetchKey("nv-shell:auth-status");
+    }
+    wasRunning.current = !!props.running;
+  }, [props.running]);
+  React.useEffect(function () {
+    if (con.welcomeState.show) {
+      if (!visible) focusNext.current = true;
+      setVisible(true); setNeedsAck(true);
+    }
+  }, [con.welcomeState.show]);
+  function changed(state) { if (typeof con.welcomeChanged === "function") con.welcomeChanged(person, state); }
+  function failed(err) {
+    if (!alive.current) return;
+    setError((err && (err.detail || err.message)) || "Could not save welcome state. Try again.");
+  }
+  React.useEffect(function () {
+    if (!needsAck) return;
+    var live = true;
+    setError(null);
+    mutation.mutate({ action: "acknowledge", role: role }).then(function (state) {
+      if (!live || !alive.current) return;
+      changed(state); setNeedsAck(false);
+    }, function (err) { if (live) failed(err); });
+    return function () { live = false; };
+  }, [needsAck, attempt]);
+  function reopen() {
+    if (pending) return;
+    setError(null);
+    return mutation.mutate({ action: "reopen", role: role }).then(function (state) {
+      if (!alive.current) return;
+      changed(state); focusNext.current = true; setVisible(true); setNeedsAck(true);
+      if (heading.current) { focusNext.current = false; heading.current.focus(); }
+    }, failed);
+  }
+  var reopenRef = React.useRef(reopen); reopenRef.current = reopen;
+  React.useEffect(function () {
+    var handler = function () { return reopenRef.current(); };
+    NV_WELCOME_INSTANCES[props.sid] = handler;
+    return function () { if (NV_WELCOME_INSTANCES[props.sid] === handler) delete NV_WELCOME_INSTANCES[props.sid]; };
+  }, [props.sid]);
+  React.useEffect(function () {
+    if (visible && focusNext.current && heading.current) { focusNext.current = false; heading.current.focus(); }
+  }, [visible]);
+  function dismiss() {
+    setVisible(false);
+    if (props.composer.current) props.composer.current.focus();
+  }
+  if (!visible) return <div className="nv-welcome-reopen">
+    <button type="button" data-verb="welcome.reopen" data-testid="nv-welcome-reopen" disabled={pending} onClick={reopen}>Show me what you can do</button>
+    {error ? <p role="alert">{error}</p> : null}
+  </div>;
+  return <section className="nv-welcome" aria-labelledby={"nv-welcome-title-" + props.sid} data-testid="nv-welcome" data-variant={role} aria-busy={pending}>
+    <h2 id={"nv-welcome-title-" + props.sid} ref={heading} tabIndex={-1}>Welcome, {con.username || "there"}</h2>
+    <p>Ask your operator to help you get started. Each choice sends a message in this chat.</p>
+    <div className="nv-welcome-chips">{NV_welcomeChips(role).map(function (chip) {
+      return <button type="button" key={chip.label} disabled={pending || needsAck || con.wsReadonly} onClick={function () {
+        var composer = props.composer.current;
+        if (composer) composer.send(chip.text).then(function (sent) { if (sent && alive.current) dismiss(); });
+      }}>{chip.label}</button>;
+    })}</div>
+    {pending ? <p role="status">Saving welcome state…</p> : null}
+    {error ? <p role="alert">{error} <button type="button" onClick={function () { setAttempt(attempt + 1); }}>Retry saving</button></p> : null}
+    <button type="button" disabled={pending || needsAck} onClick={dismiss}>Dismiss welcome</button>
+  </section>;
+}
 
 // props.queueLabel (US-014 M3): the mid-run send button's label,
 // default "Queue" - NV_MobileChatScreen passes "+Q" for the mockup's
@@ -2295,13 +2415,15 @@ function NV_Composer(props) {
     el.style.height = Math.min(el.scrollHeight, 176) + "px";
   }
 
-  function send() {
-    var text = String(val || "").trim();
-    var readyAttachments = attachments.filter(function (a) {
+  function send(offeredText) {
+    // Welcome suggestions share the send path but leave the person's draft and uploads alone.
+    var offered = typeof offeredText === "string";
+    var text = String(offered ? offeredText : val || "").trim();
+    var readyAttachments = (offered ? [] : attachments).filter(function (a) {
       return a.status === "done";
     });
-    if ((!text && !readyAttachments.length) || sending || attachmentsPending) {
-      return;
+    if (wsRo || (!text && !readyAttachments.length) || sending || attachmentsPending) {
+      return Promise.resolve(false);
     }
     // Fold-split (01a052d9): vision/document-eligible files ride as true
     // multimodal input (steerAttachments, below); everything else keeps the
@@ -2329,41 +2451,50 @@ function NV_Composer(props) {
     var promise = typeof props.onSend === "function"
       ? props.onSend(fullText, clientId, steerAttachments)
       : SH_api.steer(con.wid, props.sid, fullText, steerAttachments);
-    promise.then(function (res) {
-      setVal("");
-      // Clear only on success - a failed send restores the typed text
-      // (P0 behaviour, untouched below) and the draft must restore with
-      // it, so a retry after a tab switch still has what was typed. The
-      // same restore-on-failure now applies to attachments for free -
-      // they are only cleared in this success branch.
-      delete NV_DRAFTS[props.sid];
-      // G12-09: the response names the vision attachments the server could
-      // not resolve to artifact-backed parts (no artifact store, over the
-      // media cap, unreadable) - the send succeeded and the model got the
-      // text, but those files are not in its multimodal input. Keep those
-      // chips in a dropped state instead of clearing them like a delivered
-      // one; a dropped chip is not "done", so the next send does not
-      // re-send it into the same persistent condition.
-      var droppedPaths = {};
-      ((res && res.dropped_attachments) || []).forEach(function (d) {
-        droppedPaths[d.path] = d.reason || "";
-      });
-      setAttachments(readyAttachments.filter(function (a) {
-        return Object.prototype.hasOwnProperty.call(droppedPaths, a.path);
-      }).map(function (a) {
-        return Object.assign({}, a, { status: "dropped", reason: droppedPaths[a.path] });
-      }));
+    return promise.then(function (res) {
+      if (!offered) {
+        setVal("");
+        // Clear only on success - a failed send restores the typed text
+        // (P0 behaviour, untouched below) and the draft must restore with
+        // it, so a retry after a tab switch still has what was typed. The
+        // same restore-on-failure now applies to attachments for free -
+        // they are only cleared in this success branch.
+        delete NV_DRAFTS[props.sid];
+        // G12-09: the response names the vision attachments the server could
+        // not resolve to artifact-backed parts (no artifact store, over the
+        // media cap, unreadable) - the send succeeded and the model got the
+        // text, but those files are not in its multimodal input. Keep those
+        // chips in a dropped state instead of clearing them like a delivered
+        // one; a dropped chip is not "done", so the next send does not
+        // re-send it into the same persistent condition.
+        var droppedPaths = {};
+        ((res && res.dropped_attachments) || []).forEach(function (d) {
+          droppedPaths[d.path] = d.reason || "";
+        });
+        setAttachments(readyAttachments.filter(function (a) {
+          return Object.prototype.hasOwnProperty.call(droppedPaths, a.path);
+        }).map(function (a) {
+          return Object.assign({}, a, { status: "dropped", reason: droppedPaths[a.path] });
+        }));
+      }
       setSending(false);
       grow();
       props.onSendStarted();
+      return true;
     }, function (err) {
       setSending(false);
       var msg = (err && (err.detail || err.message)) || "Steer failed";
       var rid = (err && err.requestId) ? " (" + err.requestId + ")" : "";
       setSendErr(msg + rid);
       con.toast("Steer failed: " + msg);
+      return false;
     });
   }
+
+  if (props.welcomeComposer) props.welcomeComposer.current = {
+    send: send,
+    focus: function () { if (inputRef.current) inputRef.current.focus(); },
+  };
 
   React.useEffect(function () { grow(); }, [val]);
 
@@ -2736,6 +2867,7 @@ var NV_Markdown = React.memo(function NV_Markdown(p) {
 function NV_SessionDoc(props) {
   var con = NV_useConsole();
   var sid = props.sid;
+  var welcomeComposer = React.useRef(null);
   // UI-M1: the tap is read through the listener below, which renders this document only when THIS session's live status
   // changed; the render hook re-rendered it (and re-parsed every row) on every frame of every session in the workspace.
   var setLiveTick = React.useState(0)[1];
@@ -3710,6 +3842,9 @@ function NV_SessionDoc(props) {
           NV_doCompact(con.wid, sid, refetchAll, con.toast);
         }}
         onOpenCanvasSettings={function () { setCanvasSettingsOpen(true); }} />
+      {NV_welcomeEligible(con, session) ? <NV_SessionWelcome
+        key={(con.viewer.user_id || con.viewer.id) + ":" + con.role}
+        sid={sid} composer={welcomeComposer} running={!!shown} /> : null}
       {canvasSettingsOpen && typeof window.NV_CanvasSettingsDialog === "function" ? (
         <window.NV_CanvasSettingsDialog onClose={function () { setCanvasSettingsOpen(false); }} />
       ) : null}
@@ -3887,6 +4022,7 @@ function NV_SessionDoc(props) {
         ) : null}
       </div>
       <NV_Composer sid={sid}
+        welcomeComposer={welcomeComposer}
         running={!!shown}
         statusShown={shown}
         degraded={degraded}

@@ -31,6 +31,19 @@ On the mobile band the console root swaps the desktop frame for a dedicated mobi
 
 ## 3. Architecture patterns implemented
 
+The role welcome reuses the shell's `nv-shell:auth-status` resource and the
+shared `NV_SessionDoc` on desktop and phone. It introduces no polling stream.
+Acknowledgement/reopen writes use `useMutation`; successful responses replace
+only the matching person's current-role welcome in that resource. A delayed
+response for a prior principal/role is ignored. A mounted card stays visible
+after acknowledgement until dismissed or a suggested message is accepted;
+subsequent mounts use the server's durable state. When an operator turn
+finishes, the existing status resource is refreshed once so a generated
+reopen tool call can show the welcome in the active chat. Tokens cause no
+extra status reads. See the welcome behavior in
+[ui-pages.md](ui-pages.md) and the persistence contract in
+[access-control.md](../architecture/access-control.md#65-the-per-user-default-workspace).
+
 - **Same-origin REST client with the ProblemDetails contract.** `apiFetch` (`ui/foundation/api.js`) resolves bare or `/v1`-prefixed paths to `/v1/*`, sets `credentials: "same-origin"`, and parses every error response as an RFC 7807 envelope into an `ApiError` (`type`, `status`, `title`, `detail`, `requestId`, `fieldErrors`). This is the consumer side of the contract documented in [architecture/rest-api.md](../architecture/rest-api.md): the backend emits `application/problem+json` with `extensions.request_id` and `extensions.errors`, and `ApiError` reads exactly those fields. The console's "Copy request id" affordance depends on `requestId` being threaded through on both success and failure.
 
 - **Polling-only reactivity.** There is no SSE or push for read state (the one exception is the workspace tap: a single shared SSE `EventSource` per workspace, `use-workspace-tap.js`). `useResource` is a module-level cache that polls on an interval, dedupes concurrent subscribers behind one fetch, retains stale data on error (stale-while-error), and suppresses re-renders when a poll returns structurally-identical data.

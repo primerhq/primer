@@ -51,7 +51,7 @@ async def test_admin_fields_match_projection_and_all_nine_curated_pairs(client, 
         assert item["reference_path"] == f"reference/tools/{toolset}/{bare}"
         assert "operation" in item and "default_approval" in item
     generated = [row for row in rows if row.state == "generated"]
-    assert len(generated) == 261
+    assert len(generated) == 263
     for row in generated:
         assert items[row.tool_ids[0]]["operation"] == {
             "operation_id": row.operation_id, "method": row.method, "path": row.path,
@@ -102,7 +102,7 @@ async def test_reviewed_skips_counts_and_shipped_approval(client, user):
             for r in body["skips"]} == expected
     assert all(row["reason"] == "human sign in" for row in body["skips"])
     assert (await _catalogue(user))["skips"] == body["skips"]
-    assert body["coverage_counts"] == {"operations": 404, "generated": 261, "curated": 135, "skip": 8}
+    assert body["coverage_counts"] == {"operations": 406, "generated": 263, "curated": 135, "skip": 8}
     items = {i["id"]: i for i in body["items"]}
     assert items["internal_collections__put_config"]["default_approval"] == "required"
     assert items["internal_collections__get_config"]["default_approval"] is None
@@ -198,7 +198,7 @@ async def test_full_lifespan_catalogue_covers_the_reviewed_tool_inventory(tmp_pa
     ))
     manifest = json.loads(Path("scripts/data/tools_universal_m0_manifest.json").read_text())
     reviewed = {tool["scoped_id"] for tool in manifest["tool_catalogue"]}
-    assert len(reviewed) == 487
+    assert len(reviewed) == 489
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             body = await _catalogue(client)

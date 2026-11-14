@@ -12,6 +12,34 @@ The backend REST contract these pages consume (the `/v1/*` CRUD surface, the `ma
 
 ## 2. Conceptual model
 
+**Role welcome (Wiki First W3).** The default workspace's operator session
+shows `NV_SessionWelcome` once per real user and role, using the additive
+`welcome` field on the shell's existing auth-status read. Admin chips are
+"Explore my workspace", "Enable internal collections" and "Configure an
+embedding provider". User chips are "Explore my workspace", "Start a new
+project" and "What can you do for me?". The project prompt invokes the live
+W6 moderator runbook; exploration invokes its workspace-status runbook.
+Chips send ordinary text through the existing composer/store, retain any
+unfinished draft and attachments, and dismiss the card only after acceptance.
+
+Acknowledgement is saved when the card mounts, without closing the current
+card; a revisit hides it. Dismiss returns focus to the composer. A failed
+save stays visible, announces the error, and offers retry before dismissal
+or chip send. The inline "Show me what you can do" button and the
+`welcome.reopen` palette verb reopen it for either full role, focus its
+heading, and preserve the URL, workspace, tabs and history. The same component
+runs in the phone chat; buttons wrap and retain 44px touch targets. Signed-out,
+restricted and auth-disabled callers get no welcome. First-login tab opening
+still depends exclusively on `MainSessionOut.created`, independently of the
+welcome state. There is no browser persistence or separate onboarding router.
+
+`tests/ui/test_welcome.py` executes state/error/composer behavior. The CI-owned
+`tests/ui_e2e/test_wiki_w3_welcome_journey.py` checks both variants on desktop
+and phone, with a declared auth fixture boundary because that lane disables
+auth; its chip send is recorded rather than running a model. The live
+`tests/e2e/test_wiki_w3_welcome_journey.py` checks real-user independence,
+role transitions and persistence across a bringup-managed server restart.
+
 The console is three views over one URL (the 2026-08-23 designer handoff): STUDIO (the default - a rail of session bands and files, a centre of document tabs, the composer, an optional terminal panel and events sidebar), PLATFORM (grouped nav over per-entity card pages), and SYSTEM (dashboard, users, API keys, SSO, MCP, internal collections, activity, profile - reached from the profile menu). Overlays open above whichever view is active, and a command palette reaches every verb. `ui/app.jsx` is one mount, `AuthGate` wrapping `NV_Shell`, and nothing else.
 
 **The verb registry is the routing table.** Every action a user can take is registered once, with an id, a label, the contexts it applies to and the surfaces it renders on (rail, tab menu, palette, overlay button). A surface renders the verbs the registry gives it rather than hard-coding buttons, which is what makes the dual-render rule checkable: a verb declared for a surface but never rendered from the registry, or a doc kind the URL can address that no verb opens, is an orphan, and a static guard fails on it.
