@@ -1,10 +1,11 @@
 # Codecov configuration for primer.
 #
 # Coverage is produced by the `test` job in .github/workflows/ci.yml
-# (pytest-cov -> coverage.xml, in the same run as the unit sweep) and uploaded
-# via codecov/codecov-action. The 80% target (mirroring
+# (raw docs plus four unit-shard databases -> coverage.xml) and uploaded
+# via codecov/codecov-action, after collection completeness and producer
+# success are verified. The 80% target (mirroring
 # [tool.coverage.report] fail_under in pyproject.toml) is enforced in-job by
-# pytest-cov and tracked by the project/patch status checks below; add them to
+# the combined coverage report and tracked by the project/patch checks below; add them to
 # branch protection's required checks to also gate on the Codecov side.
 
 coverage:
