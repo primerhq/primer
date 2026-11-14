@@ -30,11 +30,11 @@ def test_baseline_pins_the_complete_reviewed_operation_universe(
 ) -> None:
     manifest, operations, path_count, tools, rows = current_inventory
 
-    assert path_count == inventory.EXPECTED_PATH_COUNT == 273
-    assert len(operations) == len(rows) == inventory.EXPECTED_OPERATION_COUNT == 404
-    assert len({row["operation_id"] for row in rows}) == 404
-    assert len({inventory._identity(row) for row in rows}) == 404
-    assert len(tools) == len({tool.scoped_id for tool in tools}) == 487
+    assert path_count == inventory.EXPECTED_PATH_COUNT == 275
+    assert len(operations) == len(rows) == inventory.EXPECTED_OPERATION_COUNT == 406
+    assert len({row["operation_id"] for row in rows}) == 406
+    assert len({inventory._identity(row) for row in rows}) == 406
+    assert len(tools) == len({tool.scoped_id for tool in tools}) == 489
     assert {row["state"] for row in rows} == {"curated", "generated", "skip"}
     assert manifest["base_commit"] == inventory.BASE_COMMIT
 
@@ -46,7 +46,7 @@ def test_generated_and_skip_sets_are_exactly_reviewed(current_inventory) -> None
     skips = [row for row in rows if row["state"] == "skip"]
 
     assert gaps == []
-    assert len(generated) == 261
+    assert len(generated) == 263
     assert len(skips) == 8
     assert inventory._digest_identities(gaps) == manifest["reviewed_gap_sha256"]
     assert inventory._digest_identities(skips) == manifest["reviewed_skip_sha256"]
@@ -127,7 +127,7 @@ def test_full_app_generated_build_is_stable_across_runtime_modes(current_invento
     api_app = create_app(AppConfig(runtime_mode=RuntimeMode.API))
     second_ids = set(api_app.state.generated_route_toolsets.providers)
     assert first_ids == second_ids
-    assert len(api_app.state.generated_route_toolsets.operations) == 261
+    assert len(api_app.state.generated_route_toolsets.operations) == 263
     assert all(
         operation.metadata.scoped_id is not None
         or (

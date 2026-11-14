@@ -248,6 +248,6 @@ def test_absent_metadata_drops_and_nonadmin_skips_are_only_server_supplied(page_
     assert "Reviewed skips" in js(page_ctx, "MR.texts()")
     assert page_ctx.eval("MR.find('nv-plat-coverage-counts') === null")
     assert not any("internal_collections" in text for text in js(page_ctx, "MR.texts()"))
-    page_ctx.eval("CATALOGUE_META.coverage_counts = { operations: 404, generated: 261, curated: 135, skip: 8 }; MR.rerender();")
-    assert page_ctx.eval("MR.find('nv-plat-coverage-counts').props.children") == "404 operations: 261 generated / 135 curated / 8 reviewed skips"
+    page_ctx.eval("CATALOGUE_META.coverage_counts = { operations: 406, generated: 263, curated: 135, skip: 8 }; MR.rerender();")
+    assert page_ctx.eval("MR.find('nv-plat-coverage-counts').props.children") == "406 operations: 263 generated / 135 curated / 8 reviewed skips"
     assert any(e["type"] == "h3" for e in js(page_ctx, "MR.subtree('nv-plat-skips')"))

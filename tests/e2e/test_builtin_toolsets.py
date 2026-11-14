@@ -600,7 +600,7 @@ async def test_the_builtin_catalogue_lists_every_wired_toolset_with_its_tools(cl
     reviewed_generated = _reviewed_generated_tools()
     generated_ids = sorted(reviewed_generated)
     assert len(generated_ids) == 59
-    assert sum(map(len, reviewed_generated.values())) == 261
+    assert sum(map(len, reviewed_generated.values())) == 263
     assert ids == [*_FIXED_BUILTIN_IDS, *generated_ids]
     assert len(ids) == len(set(ids)) == 69
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}

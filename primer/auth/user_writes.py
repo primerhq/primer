@@ -54,10 +54,11 @@ async def stamp_login(storage: Storage[User], user: User, *, at: datetime) -> Us
 async def write_user_fields(
     storage: Storage[User],
     user_id: str,
-    fields: Mapping[str, Any],
+    fields: Mapping[str, Any] | Callable[[User], Mapping[str, Any]],
     *,
     bump_epoch: bool,
     check: Callable[[User], None] | None = None,
+    conn: Any | None = None,
 ) -> User:
     """Write ``fields`` (and, with ``bump_epoch``, ``session_epoch + 1``) and nothing else.
 
@@ -65,14 +66,17 @@ async def write_user_fields(
     epoch first, the row is re-read and the write retried, so a bump is never lost and never undone.
     ``check`` runs on every fresh read and may raise to abandon the write (for example, the password
     the caller verified is no longer the stored one).
+    A field factory derives its patch from that same fresh read on each retry.
+    ``conn`` keeps the read, guarded write and drift probe in the caller's
+    transaction when it already holds a row lock.
     """
     for _ in range(_EPOCH_ATTEMPTS):
-        current = await storage.get(user_id)
+        current = await storage.get(user_id, conn=conn)
         if current is None:
             raise NotFoundError(f"User {user_id!r} does not exist")
         if check is not None:
             check(current)
-        update = dict(fields)
+        update = dict(fields(current) if callable(fields) else fields)
         if bump_epoch:
             update["session_epoch"] = current.session_epoch + 1
         if not update:
@@ -80,6 +84,7 @@ async def write_user_fields(
         written = await patch_if_checked(
             storage, user_id, _stored(current, update),
             where={"session_epoch": [raw_generation(current, "session_epoch")]},
+            conn=conn,
         )
         if written is not None:
             return written

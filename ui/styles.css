@@ -6689,6 +6689,12 @@ button.nv-mob-fact-status { cursor: pointer; }
 }
 .pc-radio-row + .pc-radio-row { border-top: 1px solid var(--border); }
 .pc-radio-row input { margin: 0; flex-shrink: 0; accent-color: var(--accent); }
+.nv-welcome, .nv-welcome-reopen { margin: 12px 16px; flex: 0 0 auto; }
+.nv-welcome { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-1); overflow-wrap: anywhere; }
+.nv-welcome h2 { margin: 0 0 8px; font-size: 17px; }
+.nv-welcome p { margin: 8px 0; }
+.nv-welcome-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.nv-welcome button, .nv-welcome-reopen button { min-height: 44px; max-width: 100%; white-space: normal; text-align: start; }
 @media (max-width: 639px) {
   .pc-radio-row { min-height: var(--tap-min); }
 }

@@ -24,8 +24,10 @@ from typing import Any
 
 
 HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put"})
-EXPECTED_OPERATION_COUNT = 404
-EXPECTED_PATH_COUNT = 273
+# W3 adds exactly two authenticated welcome writes to the M5 frozen surface.
+EXPECTED_OPERATION_COUNT = 406
+EXPECTED_PATH_COUNT = 275
+REVIEWED_SURFACE_REVISION = "wiki-first-w3-welcome"
 MANIFEST_SCHEMA_VERSION = 1
 BASE_COMMIT = "fb18c24b92bec57131bc5e49959344a4d7d97960"
 ALLOWED_STATES = frozenset({"curated", "generated", "gap", "skip"})
@@ -376,6 +378,7 @@ def bootstrap_manifest(
         rows.append({**operation, **coverage})
     return {
         "base_commit": BASE_COMMIT,
+        "reviewed_surface_revision": REVIEWED_SURFACE_REVISION,
         "expected_operation_count": EXPECTED_OPERATION_COUNT,
         "expected_path_count": EXPECTED_PATH_COUNT,
         "reviewed_gap_sha256": _digest_identities(
@@ -406,6 +409,8 @@ def validate_manifest(
         errors.append(f"schema_version must be {MANIFEST_SCHEMA_VERSION}")
     if manifest.get("base_commit") != BASE_COMMIT:
         errors.append(f"base_commit must be {BASE_COMMIT}")
+    if manifest.get("reviewed_surface_revision") != REVIEWED_SURFACE_REVISION:
+        errors.append("reviewed surface revision drift")
     if not isinstance(rows, list) or not rows:
         raise InventoryError("manifest rows are missing or vacuous")
     if len(operations) != EXPECTED_OPERATION_COUNT or path_count != EXPECTED_PATH_COUNT:

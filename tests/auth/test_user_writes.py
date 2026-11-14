@@ -77,3 +77,36 @@ async def test_a_writer_that_never_wins_gives_up_with_a_conflict(users, monkeypa
     with pytest.raises(ConflictError):
         await write_user_fields(users, "u1", {}, bump_epoch=True)
     assert (await users.get("u1")).session_epoch == 8  # the eight injected bumps, none of ours
+
+
+async def test_a_derived_welcome_write_recomputes_after_an_epoch_race(users, monkeypatch):
+    real = users.patch_if
+    injected = False
+    reads = []
+
+    async def race(id, patch=None, *, where, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            await real(id, {"session_epoch": 1, "welcome_acked_roles": ["admin"], "email": "changed@example.com"},
+                       where={"session_epoch": [0]})
+        return await real(id, patch, where=where, **kwargs)
+
+    def fields(current):
+        reads.append(current.session_epoch)
+        return {"welcome_acked_roles": current.welcome_acked_roles | {"user"}}
+
+    monkeypatch.setattr(users, "patch_if", race)
+    saved = await write_user_fields(users, "u1", fields, bump_epoch=False)
+    assert reads == [0, 1]
+    assert saved.welcome_acked_roles == {"admin", "user"}
+    assert saved.session_epoch == 1 and saved.email == "changed@example.com"
+    assert saved.password_hash == "$argon2id$old"
+
+
+async def test_reopening_one_welcome_role_keeps_the_other_and_does_not_bump_epoch(users):
+    await write_user_fields(users, "u1", {"welcome_acked_roles": frozenset({"admin", "user"})}, bump_epoch=False)
+    saved = await write_user_fields(users, "u1", lambda current: {
+        "welcome_acked_roles": current.welcome_acked_roles - {"user"},
+    }, bump_epoch=False)
+    assert saved.welcome_acked_roles == {"admin"} and saved.session_epoch == 0

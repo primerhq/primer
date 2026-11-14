@@ -59,7 +59,7 @@ async def test_full_lifespan_validates_fixed_tools_and_builds_their_reference_pa
             page = pages[reference_path(entry.toolset_id, entry.tool.id)]
             assert page.meta["toolset"] == entry.toolset_id
             assert page.meta["tool"] == entry.tool.id
-        assert sum(entry.tool.operation is not None for entry in entries) == 261
+        assert sum(entry.tool.operation is not None for entry in entries) == 263
         assert sum(row.state == "curated" for row in coverage_projection(app)) == 135
 
         # Disabling an optional toolset is an exposure decision, not a missing

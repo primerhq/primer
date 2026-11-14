@@ -191,7 +191,7 @@ design still validates, because the registry's canonical provider map is
 read, not `get_toolset`), an unknown id raises `ConfigError` and fails boot,
 and an app without a registry fails closed. No production module imports the
 inventory script or reads the reviewed manifest JSON: the freeze digests
-(404 operation identities, 487 scoped tool ids, 261 generated declared ids,
+(406 operation identities, 489 scoped tool ids, 263 generated declared ids,
 the 135 canonically sorted curated pairs, the 8 reviewed skips and the empty
 aggregation set) and the non-vacuous meta-tool and core-kit prompt budgets
 are pinned against the live inventory in
@@ -215,8 +215,16 @@ keeps the existing ordered picker items and capability fields. It adds
 the shipped `default_approval` (`required`, `policy`, or null), and
 `operation` (`operation_id`, `method`, `path`, or null). Curated aliases
 of one REST operation carry the same mapping; curated tools without a
-REST owner and user-defined tools carry null. The frozen 404-operation
+REST owner and user-defined tools carry null. The frozen 406-operation
 projection supplies the mapping, not a manifest or a UI table.
+
+W3 restamps the M5 surface with exactly two generated authenticated welcome
+writes, `auth__acknowledge_welcome` and `auth__reopen_welcome`: 406 operations,
+275 paths, 489 reviewed tools, 263 generated mappings, 135 curated mappings,
+eight skips and zero gaps. The manifest keeps its original M0 `base_commit`
+and adds `reviewed_surface_revision: wiki-first-w3-welcome`; the operation,
+tool and generated-id digests are restamped. Curated/skip digests, the empty
+aggregation set and both fixed prompt byte caps are unchanged.
 
 The existing built-in item list remains unfiltered by role for picker
 compatibility. New operation mappings for admin REST operations are omitted

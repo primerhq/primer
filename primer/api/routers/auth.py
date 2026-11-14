@@ -39,18 +39,20 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_storage_provider, require_auth
+from primer.api.deps import get_storage_provider, require_auth, require_user
 from primer.api.errors import common_responses
 from primer.api.user_default import ensure_default_for_request
 from primer.auth.passwords import HashBusy, HashGate, hash_password, verify_password
 from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
 from primer.auth.user_writes import stamp_login, write_user_fields
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.oidc import OidcProvider
 from primer.model.principal import PrincipalRef
 from primer.model.user import User
 from primer.storage._predicate import FieldRef, Op, Predicate, Value
+from primer.storage._patch import raw_generation
+from primer.storage.cas import patch_if_checked
 from primer.model.storage import OffsetPage
 
 
@@ -90,11 +92,26 @@ class LoginBody(BaseModel):
     )
 
 
+class WelcomeState(BaseModel):
+    variant: Literal["admin", "user"]
+    show: bool
+
+
+class WelcomeRoleBody(BaseModel):
+    role: Literal["admin", "user"] = Field(
+        ..., description="The currently displayed role; a stale role is refused rather than acknowledging another variant.",
+    )
+
+
 class AuthStatus(BaseModel):
     has_user: bool = Field(..., description="True if at least one user exists.")
     authenticated: bool = Field(
         ...,
         description="True if the current request carries a valid session cookie.",
+    )
+    welcome: WelcomeState | None = Field(
+        default=None,
+        description="The real user's current role welcome; absent for signed-out, restricted and auth-disabled callers.",
     )
     username: str | None = Field(
         default=None,
@@ -390,6 +407,7 @@ async def auth_status(request: Request) -> AuthStatus:
         default_workspace_id=default_workspace_id,
         has_user=has_user,
         authenticated=user is not None,
+        welcome=_welcome_state(user) if request.app.state.config.auth.enabled else None,
         username=user.username if user is not None else None,
         role=user.role if user is not None else None,
         principal=(PrincipalRef.from_principal(actor) if actor is not None else None),
@@ -401,6 +419,83 @@ async def auth_status(request: Request) -> AuthStatus:
         sign_in_method=sign_in_method,
         sign_in_provider=sign_in_provider,
     )
+
+
+def _welcome_state(user: User | None) -> WelcomeState | None:
+    if user is None or user.disabled or user.role not in ("admin", "user"):
+        return None
+    return WelcomeState(variant=user.role, show=user.role not in user.welcome_acked_roles)
+
+
+async def _write_welcome(request: Request, user: User, role: Literal["admin", "user"], *, acknowledged: bool) -> WelcomeState:
+    _require_auth_enabled(request)
+
+    def check(current: User) -> None:
+        if current.disabled or current.role not in ("admin", "user"):
+            raise HTTPException(403, detail={"error": "forbidden_role", "message": "Your role does not allow this."})
+        if current.role != role:
+            raise HTTPException(409, detail={
+                "error": "welcome_role_changed", "message": "Your role changed; refresh the welcome before trying again.",
+            })
+
+    def fields(current: User) -> dict:
+        roles = current.welcome_acked_roles
+        return {"welcome_acked_roles": roles | {role} if acknowledged else roles - {role}}
+
+    provider = get_storage_provider(request)
+    storage = provider.get_storage(User)
+    for _ in range(8):
+        current = await storage.get(user.id)
+        if current is None:
+            raise NotFoundError(f"User {user.id!r} does not exist")
+        async with provider.transaction() as conn:
+            # Ordinary role/disabled edits do not bump session_epoch. Obtain
+            # the row lock with a value-preserving guarded write, then check
+            # the CURRENT returned row and derive membership under that lock.
+            # This also protects a role ABA without comparing JSON arrays.
+            locked = await patch_if_checked(
+                storage, user.id, {"session_epoch": current.session_epoch},
+                where={"session_epoch": [raw_generation(current, "session_epoch")]}, conn=conn,
+            )
+            if locked is None:
+                continue
+            check(locked)
+            saved = await write_user_fields(
+                storage, user.id, fields, bump_epoch=False, check=check, conn=conn,
+            )
+        break
+    else:
+        raise ConflictError(f"User {user.id!r} kept changing; retry the welcome request")
+    logger.info("auth.welcome %s username=%s role=%s", "acknowledged" if acknowledged else "reopened", saved.username, role)
+    return WelcomeState(variant=role, show=role not in saved.welcome_acked_roles)
+
+
+@auth_router.post(
+    "/welcome/acknowledge", response_model=WelcomeState, responses=common_responses(400, 401, 403, 404, 409),
+)
+@route_tool(
+    scoped_id="auth__acknowledge_welcome", required_role="user", read_only=False,
+    purpose="Remember that you have seen the welcome for your current role.",
+    use_when="After the welcome is shown. Only your current role is acknowledged; other roles and sign-in sessions are preserved.",
+    preview_args=("body.role",),
+)
+async def acknowledge_welcome(body: WelcomeRoleBody, request: Request, user: User = Depends(require_user)) -> WelcomeState:
+    """Acknowledge the authenticated person's current welcome without ending any sign-in session."""
+    return await _write_welcome(request, user, body.role, acknowledged=True)
+
+
+@auth_router.post(
+    "/welcome/reopen", response_model=WelcomeState, responses=common_responses(400, 401, 403, 404, 409),
+)
+@route_tool(
+    scoped_id="auth__reopen_welcome", required_role="user", read_only=False,
+    purpose="Show your role's welcome and suggested prompts again.",
+    use_when="When you want the welcome again. Clears only your current role's acknowledgement and changes no workspace or session.",
+    preview_args=("body.role",),
+)
+async def reopen_welcome(body: WelcomeRoleBody, request: Request, user: User = Depends(require_user)) -> WelcomeState:
+    """Reopen only the authenticated person's current role variant."""
+    return await _write_welcome(request, user, body.role, acknowledged=False)
 
 
 @auth_router.post(

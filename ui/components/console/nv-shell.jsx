@@ -681,6 +681,12 @@ function NV_Shell() {
       run: function () { goView("system", "profile"); },
     });
     reg({
+      id: "welcome.reopen", label: "Show Me What You Can Do",
+      contexts: ["session"], surfaces: ["composer-slash", "palette"],
+      available: function () { return !!(window.NV_canReopenWelcome && window.NV_canReopenWelcome()); },
+      run: function () { if (window.NV_reopenWelcome) return window.NV_reopenWelcome(); },
+    });
+    reg({
       id: "theme.light", label: "Switch To Light Theme", surfaces: ["topbar", "palette"],
       run: function () { window.NV_applyThemeChoice(themeEnvRef.current, "light"); },
     });
@@ -886,6 +892,15 @@ function NV_Shell() {
       // gap in the status read, see NV_sysNavFor).
       roleKnown: !!(status.data && status.data.role),
       viewer: status.data && status.data.principal,
+      welcomeState: status.data && status.data.welcome,
+      defaultWorkspaceId: status.data && status.data.default_workspace_id,
+      welcomeChanged: function (identity, welcome) {
+        var resource = window.primerApi._resource;
+        var latest = resource && resource.peekData("nv-shell:auth-status");
+        var person = latest && latest.principal;
+        if (!person || (person.user_id || person.id) !== identity || latest.role !== welcome.variant) return;
+        resource.replaceData("nv-shell:auth-status", Object.assign({}, latest, { welcome: welcome }));
+      },
       // ACL-P2-T10: the read-only mode of the studio (a "read" level on the open workspace): the composer,
       // the file writes, the terminal and the session controls stay drawn, disabled, with wsRoNote as their
       // reason - never hidden. The level is the access view's your_level (null until read).

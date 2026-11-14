@@ -286,6 +286,25 @@ one), so `is_default` on REST rows and tool rows is per caller; the console pick
 default (`ReservedWorkspaceError`). A default workspace can be shared or made public like any other. Deleting a user hands their default workspace to the
 heir and renames it (7.1).
 
+The role welcome is independent of provisioning and authentication: `User.welcome_acked_roles` records the real person's
+acknowledged `admin` and `user` variants. Older JSON rows default to an empty set; no numbered migration is needed.
+`GET /v1/auth/status` adds `welcome: {variant, show}` for an enabled full user and null for signed-out, restricted and
+auth-disabled callers. `POST /v1/auth/welcome/acknowledge` and `/reopen` accept the displayed `role`. An epoch guard alone
+is insufficient: ordinary admin role/disabled edits do not bump it, and a role can change away and back while another
+variant is acknowledged. Each welcome operation therefore opens a provider transaction and acquires the row/write lock
+with a guarded, value-preserving epoch write. It checks the returned current role/disabled state, then derives and patches
+the role membership through `write_user_fields` on that same connection before releasing the lock. There is no JSON array
+equality guard or epoch increment. A changed epoch before locking is retried at most eight times; continued contention
+returns 409. A stale role returns 409 and a newly disabled/restricted account returns 403; the transaction rolls back the
+locking write too. Actual storage failures also roll back the acknowledgement. Neither write changes a password, setup
+completion, default workspace or main-session creation. The generated MCP tools
+`auth__acknowledge_welcome` and `auth__reopen_welcome` are user-tier writes with the standard required default approval
+policy; a human REST click uses the same route without a tool approval ceremony.
+
+`tests/storage/test_welcome_atomic.py` runs the same real admin-HTTP interleavings and independent-connection lock/rollback
+scenarios on SQLite and gated PostgreSQL. Its PostgreSQL parameters belong to the existing mandatory storage CI suite;
+the gate and skip-as-failure guard ensure they execute there.
+
 ### 6.6 Migrations
 
 - Migration 21 (`m021_entity_ownership.py`) stamps the first admin as owner of agents, graphs, toolsets, templates and

@@ -101,7 +101,7 @@ def test_generated_route_tools_never_enter_the_core_kit(kit_entries) -> None:
         scoped_id for scoped_id, entry in kit_entries.items()
         if entry.tool.operation is not None
     }
-    assert len(generated_ids) == 261
+    assert len(generated_ids) == 263
     assert set(CORE_KIT_TOOLS).isdisjoint(generated_ids)
     for factory in SEEDED_AGENT_FACTORIES.values():
         assert set(factory("p").tools).isdisjoint(generated_ids)

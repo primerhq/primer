@@ -118,7 +118,7 @@ def test_error_surfaces_prefer_the_rfc7807_detail_over_the_bare_title():
     # The send-failure path feeds BOTH the inline banner (nv-composer-
     # error) and the toast - the SEV's own report was exactly this path
     # (a rewind's 409 on a busy session).
-    send_fn = DOC[DOC.index("function send() {"):]
+    send_fn = DOC[DOC.index("function send(offeredText) {"):]
     send_fn = send_fn[:send_fn.index("\n  function micStart")]
     assert '(err && (err.detail || err.message)) || "Steer failed"' in send_fn
 

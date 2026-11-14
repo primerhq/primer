@@ -1,9 +1,10 @@
 {
   "base_commit": "fb18c24b92bec57131bc5e49959344a4d7d97960",
-  "expected_operation_count": 404,
-  "expected_path_count": 273,
+  "expected_operation_count": 406,
+  "expected_path_count": 275,
   "reviewed_gap_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
   "reviewed_skip_sha256": "1db0ea6f6f63eb30bd781f84e212dd9c3829fe48af05fbecde59ad80f288ffe1",
+  "reviewed_surface_revision": "wiki-first-w3-welcome",
   "rows": [
     {
       "aggregation_id": null,
@@ -3604,6 +3605,27 @@
       ],
       "tool_ids": [
         "workspaces__update_workspace_template"
+      ]
+    },
+    {
+      "aggregation_id": null,
+      "declared_generated_tool_id": "auth__acknowledge_welcome",
+      "method": "POST",
+      "mount_auth": "user",
+      "operation_id": "acknowledge_welcome_v1_auth_welcome_acknowledge_post",
+      "path": "/v1/auth/welcome/acknowledge",
+      "rbac_class": "authenticated-account",
+      "reason": "generated from immutable route metadata and dispatched through the REST operation",
+      "resource": "auth",
+      "route_source": "primer.api.routers.auth:acknowledge_welcome",
+      "skip_code": null,
+      "source": "PLAN.md#M1-route-metadata-generator-catalogue-join-and-trusted-ASGI-dispatch",
+      "state": "generated",
+      "tags": [
+        "auth"
+      ],
+      "tool_ids": [
+        "auth__acknowledge_welcome"
       ]
     },
     {
@@ -7487,6 +7509,27 @@
     },
     {
       "aggregation_id": null,
+      "declared_generated_tool_id": "auth__reopen_welcome",
+      "method": "POST",
+      "mount_auth": "user",
+      "operation_id": "reopen_welcome_v1_auth_welcome_reopen_post",
+      "path": "/v1/auth/welcome/reopen",
+      "rbac_class": "authenticated-account",
+      "reason": "generated from immutable route metadata and dispatched through the REST operation",
+      "resource": "auth",
+      "route_source": "primer.api.routers.auth:reopen_welcome",
+      "skip_code": null,
+      "source": "PLAN.md#M1-route-metadata-generator-catalogue-join-and-trusted-ASGI-dispatch",
+      "state": "generated",
+      "tags": [
+        "auth"
+      ],
+      "tool_ids": [
+        "auth__reopen_welcome"
+      ]
+    },
+    {
+      "aggregation_id": null,
       "declared_generated_tool_id": "setup__reset_agents",
       "method": "POST",
       "mount_auth": "admin",
@@ -8706,6 +8749,14 @@
       "toolset_id": "audio"
     },
     {
+      "bare_id": "acknowledge_welcome",
+      "exposable": true,
+      "exposure_reason": null,
+      "required_role": "user",
+      "scoped_id": "auth__acknowledge_welcome",
+      "toolset_id": "auth"
+    },
+    {
       "bare_id": "auth_status",
       "exposable": true,
       "exposure_reason": null,
@@ -8751,6 +8802,14 @@
       "exposure_reason": null,
       "required_role": "user",
       "scoped_id": "auth__rename_api_token",
+      "toolset_id": "auth"
+    },
+    {
+      "bare_id": "reopen_welcome",
+      "exposable": true,
+      "exposure_reason": null,
+      "required_role": "user",
+      "scoped_id": "auth__reopen_welcome",
       "toolset_id": "auth"
     },
     {
