@@ -16,6 +16,7 @@ from tests.e2e.test_wiki_w7_t1_lifecycle import (
     assistant_text,
     isolated_config,
     mcp_http_client,
+    prepare_wiki,
 )
 
 
@@ -74,3 +75,21 @@ async def test_mcp_client_uses_numeric_sdk_native_timeouts_before_network_io():
         assert request.headers["Cookie"] == "fixture-cookie"
         assert request.extensions["timeout"] == {name: 15.0 for name in ("connect", "read", "write", "pool")}
         assert all(isinstance(value, (int, float)) for value in request.extensions["timeout"].values())
+
+
+def test_scoped_fixture_is_accepted_by_the_real_wiki_loader_and_builder(tmp_path):
+    from primer.knowledge.wiki.build import build_wiki
+    from primer.knowledge.wiki.pages import load_source_pages
+    from tests.docs._wiki import WIKI_DIR, tool_entries
+
+    wiki = prepare_wiki(tmp_path)
+    assert wiki == tmp_path / "wiki"
+    assert {path.relative_to(wiki).as_posix() for path in wiki.rglob("*.md")} == {
+        "index.md", "runbooks/index.md", "runbooks/manage-a-workspace.md",
+    }
+    source = load_source_pages(wiki)
+    assert set(source) == {"index", "runbooks", "runbooks/manage-a-workspace"}
+    assert (wiki / "runbooks/manage-a-workspace.md").read_bytes() == (WIKI_DIR / "runbooks/manage-a-workspace.md").read_bytes()
+    built = build_wiki(wiki, tool_entries(), legacy_pages={})
+    page = built.pages["runbooks/manage-a-workspace"]
+    assert page.kind == "guide" and source["runbooks/manage-a-workspace"].body in page.body

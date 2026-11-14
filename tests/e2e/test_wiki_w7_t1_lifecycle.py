@@ -97,10 +97,24 @@ async def _share(admin: httpx.AsyncClient, plural: str, entity_id: str) -> None:
     assert response.status_code == 200, response.text
 
 
-async def _start_server(root: Path, port: int, log):
+def prepare_wiki(root: Path) -> Path:
+    """The real loader requires an index for the root and every subfolder."""
     wiki = root / "wiki" / "runbooks"
     wiki.mkdir(parents=True)
+    (wiki.parent / "index.md").write_text(
+        "---\ntitle: W7 acceptance wiki\nsummary: The scoped workspace lifecycle acceptance wiki.\n---\n"
+        "[Runbooks](runbooks)\n"
+    )
+    (wiki / "index.md").write_text(
+        "---\ntitle: W7 acceptance runbooks\nsummary: The workspace lifecycle acceptance runbook.\n---\n"
+        "[Manage a workspace](runbooks/manage-a-workspace)\n"
+    )
     shutil.copyfile(REPO / "docs/wiki/runbooks/manage-a-workspace.md", wiki / "manage-a-workspace.md")
+    return wiki.parent
+
+
+async def _start_server(root: Path, port: int, log):
+    wiki = prepare_wiki(root)
     legacy = root / "legacy-empty"
     legacy.mkdir()
     config = root / "config.json"
@@ -108,7 +122,7 @@ async def _start_server(root: Path, port: int, log):
     # Child-only environment: no inherited database/auth/wiki overrides, no
     # changes to HOME or the parent process's configuration.
     env = {key: value for key, value in os.environ.items() if not key.startswith("PRIMER_")}
-    env.update(PRIMER_WIKI_DIR=str(wiki.parent), PRIMER_AI_DOCS_DIR=str(legacy))
+    env.update(PRIMER_WIKI_DIR=str(wiki), PRIMER_AI_DOCS_DIR=str(legacy))
     return subprocess.Popen(
         [sys.executable, "-m", "primer", "api", "--config", str(config)],
         cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT,
