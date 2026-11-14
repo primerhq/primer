@@ -139,6 +139,26 @@ jobs:
           python3 scripts/e2e/capture_failure_state.py
           --pytest-output tests/.e2e/pytest-output.txt
           --output tests/.e2e/failure-state.json
+      - name: Require executed W7 workspace lifecycle evidence
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          trace = json.loads(Path("tests/.e2e/w7-t1/trace.json").read_text())
+          assert trace["case"] == "test_real_user_executes_workspace_runbook_through_tools"
+          assert trace["outcome"] == "passed" and trace["role"] == "user" and trace["user_id"]
+          assert trace["source_sha"] == os.environ["GITHUB_SHA"]
+          assert trace["runbook_sha256"] == hashlib.sha256(Path("docs/wiki/runbooks/manage-a-workspace.md").read_bytes()).hexdigest()
+          assert trace["deleted"]["deleted"] and trace["default_preserved"]
+          PY
+      - name: Upload W7 workspace lifecycle transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w7-t1-workspace-lifecycle-${{ github.run_attempt }}
+          path: tests/.e2e/w7-t1/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Tear down
         if: always()
         run: bash scripts/e2e/teardown.sh
