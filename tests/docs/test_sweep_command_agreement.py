@@ -6,8 +6,8 @@ copies is how 692 adapter tests ended up excluded from CI on the stale
 premise that they "need a real LLM" while every doc and workflow repeated
 it. The exclusion list is compared across all five, and ``tests/llm`` is
 pinned as included. ``tests/docs`` is pinned as excluded because it runs in a
-dedicated step; CI appends the remaining suite's coverage to the docs coverage
-so the exclusion removes only duplicate execution, not assertions or coverage.
+dedicated step; CI combines the unit shards' raw coverage with docs coverage.
+The local Make coverage recipe still uses seed/append in one environment.
 """
 
 from __future__ import annotations
@@ -63,10 +63,10 @@ def test_docs_are_not_executed_again_by_the_sweep():
 
 def test_ci_combines_docs_and_unit_coverage():
     ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-    steps = ci["jobs"]["test"]["steps"]
-    docs_run = next(step["run"] for step in steps if step.get("name") == "Docs hygiene")
+    jobs = ci["jobs"]
+    docs_run = next(step["run"] for step in jobs["checks"]["steps"] if step.get("name") == "Docs hygiene")
     unit_run = next(
-        step["run"] for step in steps
+        step["run"] for step in jobs["unit"]["steps"]
         if step.get("name") == "Unit sweep (with coverage)"
     )
 
@@ -75,7 +75,11 @@ def test_ci_combines_docs_and_unit_coverage():
     assert "--cov-report=" in docs_run
     assert "--cov-fail-under=0" in docs_run
     assert "--ignore=tests/docs" in unit_run
-    assert "--cov-append" in unit_run
+    assert "--cov=primer" in unit_run and "--cov-fail-under=0" in unit_run
+    assert "--ci-shard=${{ matrix.shard }}" in unit_run
+    assert jobs["test"]["if"] == "always()"
+    assert jobs["test"]["needs"] == ["checks", "unit"]
+    assert any("scripts.tests.ci_coverage" in step.get("run", "") for step in jobs["test"]["steps"])
 
 
 def test_make_coverage_runs_docs_once_and_combines_coverage():

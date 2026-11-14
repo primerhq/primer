@@ -19,19 +19,12 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  checks:
+    name: lint and docs
     runs-on: ubuntu-latest
-    # Backstop against a wedged test: the sweep is ~20,220 tests and takes
-    # 22-39 min depending on the runner (measured 2026-10-09: 22:33 on a fast
-    # runner, 38:25 on main 0ad04780), but a test blocked in a
-    # native/uninterruptible call (a socket, a subprocess, or a Docker-backend
-    # op) is NOT killed by the pytest --timeout-method=thread, so without this
-    # the job runs to GitHub's 6-hour default. 40 min cancelled a healthy run
-    # (PR #673, run 37988241353, 40m15s); 60 min then cancelled a healthy run
-    # at 95% (PR #983, run 41212475045, 1h0m21s: the sweep is now ~34,000
-    # tests and 57-60 min with coverage). 90 min leaves room for a slow runner
-    # and still fails a real hang well before that default.
     timeout-minutes: 90
+    env:
+      COVERAGE_FILE: ci-results/docs/coverage
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -48,56 +41,92 @@ jobs:
         run: uv run ruff check .
       - name: Import contracts (import-linter)
         run: uv run lint-imports
-      # Run docs exactly once. This step seeds the coverage data; the unit
-      # sweep below excludes tests/docs and appends its own data, so docs tests
-      # still count toward the same coverage gate without being executed twice.
+      # Docs run exactly once. Their raw coverage joins all unit shards.
       - name: Docs hygiene
         run: >-
           uv run pytest tests/docs/ -q --tb=short
           --cov=primer --cov-report= --cov-fail-under=0
-      # Narrowed unit sweep: excludes docs (already run above), e2e,
-      # distributed, ui_e2e and integration. The latter four need a live
-      # server, multi-process Postgres, or Playwright.
-      # tests/llm is INCLUDED: it is adapter unit tests with every request
-      # intercepted in-process, and tests/llm/conftest.py fails any test that
-      # reaches the real network. It was once excluded as "needs a real LLM",
-      # which was false, and an SDK upgrade broke its mocks unnoticed. The
-      # Postgres-gated tests skip without PRIMER_TEST_POSTGRES_URL, so this
-      # job needs no database service: they run, and are required not to
-      # skip, in the dedicated `postgres` job below. The release workflow
-      # runs the Postgres-backed boot smoke before publishing.
-      #
-      # Coverage is produced across the docs step and this sweep
-      # (pytest-cov --cov-append -> coverage.xml). The in-job gate is 80%
-      # (--cov-fail-under=80, matching [tool.coverage.report] fail_under in
-      # pyproject.toml); Codecov's project/patch status checks (codecov.yml)
-      # track the same 80% target.
+      - name: Upload docs coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-coverage-docs
+          overwrite: true
+          path: ci-results/docs/
+          if-no-files-found: error
+          retention-days: 7
+
+  unit:
+    name: unit shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    # Retain the former sweep's 90-minute backstop and per-test thread timeout.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      COVERAGE_FILE: ci-results/unit/coverage
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - name: Sync
+        run: |
+          uv sync --all-extras --dev --group docs
+          uv pip install --no-deps ./runtime
+      # Same narrowed selection, including offline tests/llm. Each worker
+      # collects normally, then partitions whole modules by measured cost.
+      # New modules participate automatically; loadscope and fixture scope stay.
       - name: Unit sweep (with coverage)
         run: >-
           uv run pytest tests/ -q
           --ignore=tests/distributed --ignore=tests/ui_e2e
           --ignore=tests/e2e --ignore=tests/integration --ignore=tests/docs
-          --cov-append
-          --cov=primer --cov-report=xml --cov-report=term-missing
-          --cov-fail-under=80
-          --junitxml=test-results/unit.xml -o junit_duration_report=total
+          -p scripts.tests.ci_shards --ci-shard=${{ matrix.shard }} --ci-shards=4
+          --cov=primer --cov-report= --cov-fail-under=0
+          --junitxml=ci-results/unit/unit.xml -o junit_duration_report=total
           --durations=100
-      # Keep per-test setup/call/teardown totals for evidence-based module
-      # sharding. Reporting does not change selection or the coverage gate.
-      # A hard timeout may prevent pytest from writing the XML at all.
-      - name: Upload unit timings
+      # Missing raw data or a shard report is fatal at the aggregate gate,
+      # even if the remaining data would exceed the coverage threshold.
+      - name: Upload unit coverage and timings
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: unit-timings-${{ github.run_attempt }}
-          path: test-results/unit.xml
-          if-no-files-found: warn
+          name: ci-coverage-unit-${{ matrix.shard }}
+          overwrite: true
+          path: ci-results/unit/
+          if-no-files-found: error
           retention-days: 7
-      # Upload to Codecov so it posts the PR comment + project/patch status.
-      # if: always() so coverage still uploads when a later step fails; the
-      # upload is best-effort (needs CODECOV_TOKEN + the Codecov GitHub app on
-      # the org) and never fails the job.
+
+  test:
+    # Preserve the required check name. Failed, cancelled or missing producers
+    # must fail this job; GitHub's default dependency skip would not suffice.
+    if: always()
+    needs: [checks, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - name: Sync coverage tools
+        run: uv sync --dev
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ci-coverage-*
+          path: ci-artifacts
+      - name: Verify complete selection and combined coverage
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          uv run python -m scripts.tests.ci_coverage
+          --artifacts ci-artifacts
+          --source-sha "$GITHUB_SHA" --needs "$CI_NEEDS"
+      # Existing best-effort Codecov project/patch reporting uses the single
+      # combined XML. The local test gate independently enforces 80%.
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v7

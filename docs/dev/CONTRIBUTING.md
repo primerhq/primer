@@ -111,14 +111,43 @@ a one-line reason; it may not simply be omitted.
 
   `tests/docs/` runs once through `make docs-hygiene` (and in CI's dedicated
   docs step), so the narrowed sweep excludes it instead of executing the same
-  assertions twice. CI seeds coverage in the docs step and uses
-  `--cov-append` in the narrowed sweep, preserving one combined coverage gate.
-  CI also logs the 100 slowest test phases and uploads a `unit-timings` artifact
-  (suffixed with the run attempt) containing JUnit XML for seven days. Its
-  testcase durations include setup, call and teardown; use them to measure
-  module costs before planning shards. Upload is best-effort, and a hard
-  timeout can prevent XML from being written. Test selection and gates are
-  unchanged.
+  assertions twice. Local `make cov` seeds coverage in docs and appends the
+  narrowed sweep. CI runs docs once alongside four independent unit shards,
+  then combines all five raw coverage databases before enforcing the same
+  80% gate in the required `test` job. `postgres` and `core-install` remain
+  separate, as do both live/browser jobs.
+
+  [The shard plugin](../../scripts/tests/ci_shards.py) runs after normal
+  pytest marker/keyword selection. Each worker collects the same narrowed
+  suite, then selects whole modules using measured duration, longest first,
+  with stable module-path and shard-index tie breaks. New modules always
+  participate (a ten-second minimum estimate); growing measured modules scale
+  their cost by item count. Tests and parameter IDs are never listed by hand.
+  The four shard reports must agree on the complete collection's count and
+  digest, and their selected node IDs must form a disjoint, complete union
+  with no module split across shards. Coverage is combined only after those
+  checks, successful producer jobs, the exact five artifacts and all raw
+  databases have been verified. Failed, skipped, cancelled or missing inputs
+  cannot produce a green `test` check.
+
+  Each run retains `ci-coverage-docs` and `ci-coverage-unit-0` through `-3`
+  artifacts for seven days. Unit artifacts include JUnit setup/call/teardown
+  totals, raw coverage and the collection report; logs show the 100 slowest
+  phases. A hard timeout may prevent reports from being written and fails
+  the aggregate. Uploads are required. Rerunning failed jobs replaces only
+  their own artifacts; successful siblings from the same immutable source
+  in the same workflow run remain usable. Reports must match the aggregate's
+  source SHA and timing-baseline hash.
+
+  The initial baseline is the successful #1031 report (36,191 collected
+  outcomes, 2,481 modules, about 14,271 worker-seconds). API tests account for
+  about 71% of duration, so subsystem-only shards would be imbalanced. The
+  expected 20-30 minute unit lane is an estimate, not a demonstrated speedup;
+  compare same-source CI runs, including setup, collection, aggregate latency
+  and runner-minutes. Refresh measured costs with
+  `python scripts/tests/ci_weights.py <all-four-unit.xml-paths> --source <run-url>`
+  from the repository root; it writes the committed timing baseline. A future
+  refresh must cover the complete unit collection, not one shard's report.
   The suite runs in parallel by default (`-n auto --dist loadscope` is baked
   into `addopts`). `loadscope` keeps each module's tests on one worker because
   a few `tests/api` modules use module/class-scoped fixtures that do not

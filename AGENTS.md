@@ -151,6 +151,15 @@ reason rather than skipping it silently.
 
   Add `-n0` to run a single module serially while debugging.
 
+  CI runs this same selection across four measured whole-module shards via
+  `scripts/tests/ci_shards.py`; every new module participates automatically.
+  Docs run once separately. The required `test` job verifies successful
+  producers, exact artifacts and a disjoint complete collection union, then
+  combines raw docs/unit coverage and enforces 80%. A failed or missing shard
+  cannot pass the aggregate. See CONTRIBUTING for timing-baseline refresh and
+  the seven-day `ci-coverage-*` artifacts. Local sweep/coverage commands and
+  the separate Postgres/core/live/browser gates keep their existing scope.
+
 - **Live-Postgres suites** (`tests/claim`, `tests/scheduler`, `tests/storage`,
   `tests/coordinator`, `tests/vector`, plus the gated files that live with their
   subsystem: `LANE_FILES` in `tests/pg_gate.py`, currently one under `tests/bus`,

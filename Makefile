@@ -1,7 +1,7 @@
 # Developer task runner for primer.
 #
-# These targets call the SAME commands the CI workflow runs
-# (.github/workflows/ci.yml), so green locally means green in CI. The repo
+# These targets use the same selection as CI (.github/workflows/ci.yml),
+# which distributes unit modules and combines raw coverage. The repo
 # standardizes on uv (see README / CONTRIBUTING.md).
 
 # The narrowed unit sweep shared by `test` and `cov`, kept in one place so
