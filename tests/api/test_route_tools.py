@@ -1460,10 +1460,24 @@ async def test_aborted_dispatch_awaits_iterator_close(termination, body_kind, mo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("oversize", [False, True])
-async def test_pathological_iterator_close_is_bounded(oversize, monkeypatch) -> None:
+@pytest.mark.parametrize("expire_producer_wait", [False, True])
+async def test_pathological_iterator_close_is_bounded(oversize, expire_producer_wait, monkeypatch) -> None:
     app = FastAPI()
     close_started = asyncio.Event()
     close_cancelled = asyncio.Event()
+    if expire_producer_wait:
+        original_wait = route_tools_module.run_in_background
+
+        async def expire_outer_wait(work, *, what, verb, wait_s):
+            if verb == "producer shutdown":
+                # The producer deadline wins while its inner close is active.
+                # Force this ordering without relying on machine load/timing.
+                await original_wait(work, what=what, verb=verb, wait_s=0)
+                await asyncio.wait_for(close_started.wait(), timeout=1)
+            else:
+                await original_wait(work, what=what, verb=verb, wait_s=wait_s)
+
+        monkeypatch.setattr(route_tools_module, "run_in_background", expire_outer_wait)
 
     class Body:
         sent = False
@@ -1503,8 +1517,98 @@ async def test_pathological_iterator_close_is_bounded(oversize, monkeypatch) -> 
         result = await invocation
         assert result.is_error
         assert json.loads(result.output)["type"] == "route-tool-stream-failed"
-    assert close_started.is_set()
-    assert close_cancelled.is_set(), "cleanup was abandoned without cancelling its await"
+    try:
+        assert close_started.is_set()
+        assert close_cancelled.is_set(), "cleanup was abandoned without cancelling its await"
+    finally:
+        # A failing regression still lets the independent cleanup finish.
+        await asyncio.wait_for(close_cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oversize", [False, True])
+async def test_cancel_resistant_iterator_close_cannot_hold_dispatch_forever(oversize, monkeypatch) -> None:
+    app = FastAPI()
+    release, cancelled, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Body:
+        sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return b"x" * (1_048_577 if oversize else 1)
+
+        async def aclose(self):
+            try:
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        cancelled.set()
+            finally:
+                finished.set()
+
+    @app.get("/v1/stream")
+    @route_tool(scoped_id="stream_probe__stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(Body())
+
+    snapshot = build_generated_route_toolsets(app)
+    monkeypatch.setattr(route_tools_module, "_STREAM_CLEANUP_TIMEOUT_S", 0.01)
+    try:
+        result = await asyncio.wait_for(
+            _call(snapshot.providers["stream_probe"], "stream", {}, Person(None, "system")), timeout=1,
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == ("route-tool-response-too-large" if oversize else "route-tool-stream-failed")
+        assert cancelled.is_set() and not finished.is_set()
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_repeated_caller_cancel_during_active_iterator_close_is_preserved(monkeypatch) -> None:
+    app = FastAPI()
+    started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Body:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return b"x" * 1_048_577
+
+        async def aclose(self):
+            started.set()
+            await release.wait()
+            finished.set()
+
+    @app.get("/v1/stream")
+    @route_tool(scoped_id="stream_probe__stream")
+    async def stream() -> StreamingResponse:
+        return StreamingResponse(Body())
+
+    snapshot = build_generated_route_toolsets(app)
+    monkeypatch.setattr(route_tools_module, "_STREAM_CLEANUP_TIMEOUT_S", 0.2)
+    task = asyncio.create_task(_call(snapshot.providers["stream_probe"], "stream", {}, Person(None, "system")))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        assert finished.is_set()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
