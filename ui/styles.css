@@ -6695,6 +6695,7 @@ button.nv-mob-fact-status { cursor: pointer; }
 .nv-welcome p { margin: 8px 0; }
 .nv-welcome-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .nv-welcome button, .nv-welcome-reopen button { min-height: 44px; max-width: 100%; white-space: normal; text-align: start; }
+.nv-welcome button[aria-disabled="true"], .nv-welcome-reopen button[aria-disabled="true"] { opacity: .6; cursor: default; }
 @media (max-width: 639px) {
   .pc-radio-row { min-height: var(--tap-min); }
 }

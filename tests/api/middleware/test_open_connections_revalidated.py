@@ -818,7 +818,7 @@ async def test_the_tap_stream_ends_when_the_session_epoch_moves(probed, workspac
 async def test_with_auth_off_nothing_is_watched(probed) -> None:
     probed.state.config.auth.enabled = False
     async with _Http(probed, "/v1/_probe/stream", []) as conn:
-        assert conn.status == 200
+        assert conn.status == 200, {"error": repr(conn.error), "task_done": conn.task.done(), "messages": conn.messages}
         await asyncio.sleep(INTERVAL * 6)
         assert not conn.task.done()
 

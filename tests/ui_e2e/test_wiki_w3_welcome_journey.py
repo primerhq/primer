@@ -27,6 +27,7 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
         sid = main.json()["id"]
     state = {"show": True, "acks": 0, "reopens": 0, "main_calls": 0}
     sends = []
+    held_reopens = []
 
     def status(route):
         response = route.fetch()
@@ -41,7 +42,11 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
         reopen = route.request.url.endswith("/reopen")
         state["show"] = reopen
         state["reopens" if reopen else "acks"] += 1
-        route.fulfill(status=200, json={"variant": role, "show": reopen})
+        if reopen and mobile:
+            held_reopens.append(route)
+            page.evaluate("window.__w3ReopenHeld = true")
+        else:
+            route.fulfill(status=200, json={"variant": role, "show": reopen})
 
     def first_login(route):
         response = route.fetch()
@@ -85,7 +90,17 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
     expect(card).to_have_count(0)
     assert state["acks"] == 1
     if mobile:
-        page.get_by_test_id("nv-welcome-reopen").click()
+        reopen_button = page.get_by_test_id("nv-welcome-reopen")
+        reopen_button.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function("window.__w3ReopenHeld === true")
+        expect(reopen_button).to_have_attribute("aria-busy", "true")
+        expect(reopen_button).to_have_attribute("aria-disabled", "true")
+        expect(reopen_button).to_be_focused()
+        assert reopen_button.evaluate("el => el.disabled") is False
+        page.keyboard.press("Enter")
+        assert len(held_reopens) == state["reopens"] == 1
+        held_reopens[0].fulfill(status=200, json={"variant": role, "show": True})
     else:
         run_verb(page, "Show Me What You Can Do", row_key="v:welcome.reopen")
     expect(card).to_be_visible()

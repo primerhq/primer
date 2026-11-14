@@ -2281,25 +2281,30 @@ function NV_SessionWelcome(props) {
     if (visible && focusNext.current && heading.current) { focusNext.current = false; heading.current.focus(); }
   }, [visible]);
   function dismiss() {
+    if (pending || needsAck) return;
     setVisible(false);
     if (props.composer.current) props.composer.current.focus();
   }
   if (!visible) return <div className="nv-welcome-reopen">
-    <button type="button" data-verb="welcome.reopen" data-testid="nv-welcome-reopen" disabled={pending} onClick={reopen}>Show me what you can do</button>
+    <button type="button" data-verb="welcome.reopen" data-testid="nv-welcome-reopen"
+      aria-busy={pending ? "true" : undefined} aria-disabled={pending ? "true" : undefined}
+      onClick={reopen}>Show me what you can do</button>
     {error ? <p role="alert">{error}</p> : null}
   </div>;
   return <section className="nv-welcome" aria-labelledby={"nv-welcome-title-" + props.sid} data-testid="nv-welcome" data-variant={role} aria-busy={pending}>
     <h2 id={"nv-welcome-title-" + props.sid} ref={heading} tabIndex={-1}>Welcome, {con.username || "there"}</h2>
     <p>Ask your operator to help you get started. Each choice sends a message in this chat.</p>
     <div className="nv-welcome-chips">{NV_welcomeChips(role).map(function (chip) {
-      return <button type="button" key={chip.label} disabled={pending || needsAck || con.wsReadonly} onClick={function () {
+      return <button type="button" key={chip.label}
+        aria-disabled={pending || needsAck || con.wsReadonly ? "true" : undefined} onClick={function () {
+        if (pending || needsAck || con.wsReadonly) return;
         var composer = props.composer.current;
         if (composer) composer.send(chip.text).then(function (sent) { if (sent && alive.current) dismiss(); });
       }}>{chip.label}</button>;
     })}</div>
     {pending ? <p role="status">Saving welcome state…</p> : null}
     {error ? <p role="alert">{error} <button type="button" onClick={function () { setAttempt(attempt + 1); }}>Retry saving</button></p> : null}
-    <button type="button" disabled={pending || needsAck} onClick={dismiss}>Dismiss welcome</button>
+    <button type="button" aria-disabled={pending || needsAck ? "true" : undefined} onClick={dismiss}>Dismiss welcome</button>
   </section>;
 }
 
