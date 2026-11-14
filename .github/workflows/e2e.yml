@@ -159,6 +159,23 @@ jobs:
           path: tests/.e2e/w7-t1/
           if-no-files-found: warn
           retention-days: 7
+      - name: Require executed W7 agent and graph evidence
+        run: |
+          uv run --no-sync python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from tests.e2e.test_wiki_w7_t2_lifecycle import PAGES, require_evidence
+          hashes = {path: hashlib.sha256(Path("docs/wiki", path + ".md").read_bytes()).hexdigest() for path in PAGES}
+          require_evidence(json.loads(Path("tests/.e2e/w7-t2/trace.json").read_text()), os.environ["GITHUB_SHA"], hashes)
+          PY
+      - name: Upload W7 agent and graph transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w7-t2-agent-graph-${{ github.run_attempt }}
+          path: tests/.e2e/w7-t2/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Tear down
         if: always()
         run: bash scripts/e2e/teardown.sh
