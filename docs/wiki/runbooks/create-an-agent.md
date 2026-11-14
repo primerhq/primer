@@ -12,7 +12,7 @@ Create or edit an agent with a usable model profile, explicit tool grants and bo
 ## Preconditions
 
 - Run as a known authenticated user. A creator is stamped as the owner in `access.owners`; reading or invoking an existing agent needs read, editing needs full, and deletion needs owner. An administrator can also act within the platform's access rules.
-- Read [`system__list_model_profile_choices`](reference/tools/system/list_model_profile_choices) and select a profile you can use. The worked calls below use `team-chat` only if that id is returned; otherwise carry the returned id into `model.profile_id`. An empty list is a stop: ask an admin to follow [configure a provider](runbooks/configure-provider), rather than creating provider configuration as a user.
+- Read [`system__list_model_profile_choices`](reference/tools/system/list_model_profile_choices) and select a profile you can use. The worked calls below use `team-profile` only if that id is returned; otherwise carry the returned id into `model.profile_id`. An empty list is a stop: ask an admin to follow [configure a provider](runbooks/configure-provider), rather than creating provider configuration as a user.
 
 ```json
 {"toolset_id": "system", "tool_name": "list_model_profile_choices", "arguments": {"limit": 200}}
@@ -83,7 +83,7 @@ The default preview withholds prompt text and description. A permitted approver 
 1. Create the definition through [`system__create_agent`](reference/tools/system/create_agent). The turn parks until a person approves; do not retry. After approval, the stored row must carry your user id as owner. `harness_id` must be unset; managed rows are changed through their harness.
 
 ```json
-{"toolset_id": "system", "tool_name": "create_agent", "arguments": {"entity": {"id": "w7-agent", "description": "Answer a bounded review task", "model": {"profile_id": "team-chat"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1024}}}
+{"toolset_id": "system", "tool_name": "create_agent", "arguments": {"entity": {"id": "w7-agent", "description": "Answer a bounded review task", "model": {"profile_id": "team-profile"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1024}}}
 ```
 
 2. Reread with [`system__get_agent`](reference/tools/system/get_agent) and compare the profile, tools, prompt and caps with the intended definition. A successful write alone does not prove the intended fields persisted.
@@ -95,17 +95,17 @@ The default preview withholds prompt text and description. A permitted approver 
 3. For an edit, start with that readback and preserve every unchanged field. [`system__update_agent`](reference/tools/system/update_agent) replaces the whole entity; omitting a field resets it to its default. Keep the id fixed and use the live gate read above. This complete worked body changes the description and output cap; the turn parks again until approved.
 
 ```json
-{"toolset_id": "system", "tool_name": "update_agent", "arguments": {"id": "w7-agent", "entity": {"id": "w7-agent", "description": "Answer a bounded review task with a short conclusion", "model": {"profile_id": "team-chat"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1536}}}
+{"toolset_id": "system", "tool_name": "update_agent", "arguments": {"id": "w7-agent", "entity": {"id": "w7-agent", "description": "Answer a bounded review task with a short conclusion", "model": {"profile_id": "team-profile"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1536}}}
 ```
 
 4. The builder alternatives are [`crud__create_agent`](reference/tools/crud/create_agent) and [`crud__update_agent`](reference/tools/crud/update_agent). They perform the same checked writes and ship the same required gate. Choose one surface; these are alternatives to steps 1 and 3, not extra writes or a fallback after a refusal.
 
 ```json
-{"toolset_id": "crud", "tool_name": "create_agent", "arguments": {"entity": {"id": "w7-agent", "description": "Answer a bounded review task", "model": {"profile_id": "team-chat"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1024}}}
+{"toolset_id": "crud", "tool_name": "create_agent", "arguments": {"entity": {"id": "w7-agent", "description": "Answer a bounded review task", "model": {"profile_id": "team-profile"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1024}}}
 ```
 
 ```json
-{"toolset_id": "crud", "tool_name": "update_agent", "arguments": {"id": "w7-agent", "entity": {"id": "w7-agent", "description": "Answer a bounded review task with a short conclusion", "model": {"profile_id": "team-chat"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1536}}}
+{"toolset_id": "crud", "tool_name": "update_agent", "arguments": {"id": "w7-agent", "entity": {"id": "w7-agent", "description": "Answer a bounded review task with a short conclusion", "model": {"profile_id": "team-profile"}, "tools": ["system__wiki_read"], "system_prompt": ["Answer the supplied task concisely. Read the wiki before using platform capabilities."], "max_tool_turns": 8, "max_output_tokens": 1536}}}
 ```
 
 5. Invoke the stored agent with [`system__invoke_agent`](reference/tools/system/invoke_agent). It runs a stateless subagent on the supplied prompt, with its own grants and the caller's identity, and returns `output`. It does not create a new durable agent-bound session. Wait for the actual output; a failed call or empty provider failure is not acceptance.
