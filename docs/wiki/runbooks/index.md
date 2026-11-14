@@ -20,6 +20,8 @@ One row per runbook as it lands; the purpose-mapped index ([purpose-map](purpose
 | [runbooks/moderate-a-request](runbooks/moderate-a-request) | the operator's moderator flow: plan with the planner, create a separate workspace, launch the agents and sessions in it |
 | [runbooks/workspace-status](runbooks/workspace-status) | the operator's bookkeeper flow: status across all visible workspaces and sessions, with the park reasons |
 | [runbooks/manage-a-workspace](runbooks/manage-a-workspace) | create from a template, verify files and a session, then deliberately destroy the workspace |
+| [runbooks/create-an-agent](runbooks/create-an-agent) | select a usable profile, approve a full agent definition and verify invocation |
+| [runbooks/create-and-run-a-graph](runbooks/create-and-run-a-graph) | approve a graph definition, run its nodes and verify the session output |
 
 The how-to set grows as documented flows land; every runbook listed here has a matching purpose-mapped index row.
 
