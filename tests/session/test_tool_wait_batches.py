@@ -21,6 +21,7 @@ batches; the hand-built shapes are given in their stored (JSON) form.
 from __future__ import annotations
 
 import copy
+import asyncio
 import dataclasses
 import json
 from datetime import datetime, timezone
@@ -122,10 +123,28 @@ async def _stored_park(
     return in_memory if live else stored
 
 
-async def _real_graph_park(monkeypatch, behavior: dict) -> BaseException:
+async def _real_graph_park(monkeypatch, behavior: dict, *, first_agent: str | None = None) -> BaseException:
     """The park the real GraphExecutor raises when its two parallel nodes A and B behave as ``behavior`` says."""
     executor = await _mk_parallel_executor()
     _patch_run_agent_turn(monkeypatch, behavior)
+    if first_agent is not None:
+        import primer.graph._agent_node as agent_node_mod
+
+        run = agent_node_mod.run_agent_turn
+        first_parked = asyncio.Event()
+
+        async def ordered(**kwargs):
+            if kwargs["agent"].id != first_agent:
+                await first_parked.wait()
+            try:
+                async for event in run(**kwargs):
+                    yield event
+            except (ToolWaitPark, YieldToWorker):
+                if kwargs["agent"].id == first_agent:
+                    first_parked.set()
+                raise
+
+        monkeypatch.setattr(agent_node_mod, "run_agent_turn", ordered)
     with pytest.raises((ToolWaitPark, YieldToWorker)) as excinfo:
         async for _ev in executor.invoke([]):
             pass
@@ -145,12 +164,12 @@ def _node_park(outstanding: list[str], notifying: list[str] = (), *, graph_node:
     )
 
 
-async def _pure_graph_blob(monkeypatch, session_id: str, *, live: bool = False) -> dict:
+async def _pure_graph_blob(monkeypatch, session_id: str, *, live: bool = False, first_agent: str | None = None) -> dict:
     """Node A parks two claimable calls, node B one claimable call and one notifying call, in ONE superstep."""
     park = await _real_graph_park(monkeypatch, {
         "agent-a": _node_park(["A:tool:0:1", "A:tool:0:2"]),
         "agent-b": _node_park(["B:tool:0:1"], ["B:tool:0:2"]),
-    })
+    }, first_agent=first_agent)
     assert isinstance(park, ToolWaitPark)
     calls = [("A", "call_a1"), ("A", "call_a2"), ("B", "call_b1"), ("B", "call_b2")]
     return await _stored_park(session_id, calls, park, live=live)
@@ -183,17 +202,21 @@ def _agent_blob(session_id: str, outstanding: list[str], notifying: list[str]) -
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("first_agent", ["agent-a", "agent-b"])
 async def test_a_pure_graph_tool_wait_park_has_one_batch_per_node_and_its_flattened_lists_are_not_one(
-    monkeypatch,
+    monkeypatch, first_agent,
 ) -> None:
     sid = "s-pure"
-    blob = await _pure_graph_blob(monkeypatch, sid)
+    blob = await _pure_graph_blob(monkeypatch, sid, first_agent=first_agent)
     a1, a2, b1, b2 = (f"{sid}/{i}" for i in ("A:tool:0:1", "A:tool:0:2", "B:tool:0:1", "B:tool:0:2"))
     # The stored blob really carries the cross-node projection the helper must ignore.
     assert blob["kind"] == "tool_wait"
-    assert blob["outstanding_task_ids"] == [a1, a2, b1]
+    # Parallel siblings park in arrival order, not by node name. Exercise
+    # both schedules explicitly, retaining exact order within each batch.
+    assert blob["outstanding_task_ids"] == ([a1, a2, b1] if first_agent == "agent-a" else [b1, a1, a2])
     assert blob["notifying_task_ids"] == [b2]
     entries = blob["graph_checkpoint"]["pending_tool_waits"]
+    assert [entry["node_id"] for entry in entries] == (["A", "B"] if first_agent == "agent-a" else ["B", "A"])
 
     batches = batches_referenced_by_park(blob)
 

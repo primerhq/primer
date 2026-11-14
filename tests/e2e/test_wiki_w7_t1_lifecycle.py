@@ -77,6 +77,28 @@ def assistant_text(records: list[dict]) -> str:
     return "".join(row["payload"]["text"] for row in records if row.get("kind") == "assistant_token")
 
 
+def transcript_records(items: list[dict]) -> list[dict]:
+    """Validate the supported dual-write shapes; retain every event record.
+
+    The transcript reader also serves raw model Messages alongside event
+    records. They are not events, and must not be indexed as such. Unknown
+    or malformed rows and failed raw tool results still fail acceptance.
+    """
+    from primer.model.chat import Message, ToolResultPart
+    from primer.model.workspace_session import SessionMessageRecord
+
+    records = []
+    for row in items:
+        assert isinstance(row, dict), row
+        if "kind" in row:
+            SessionMessageRecord.model_validate(row)
+            records.append(row)
+        else:
+            message = Message.model_validate(row)
+            assert all(not part.error for part in message.parts if isinstance(part, ToolResultPart)), row
+    return records
+
+
 def mcp_http_client(cookie: str):
     # The SDK's transport is httpx2; httpx.Timeout is a foreign object that
     # httpx2 treats as a scalar, failing before its first connection.
@@ -264,13 +286,14 @@ async def test_real_user_executes_workspace_runbook_through_tools(mock_llm, uniq
                                 while asyncio.get_running_loop().time() < deadline:
                                     observed = await call("workspaces__get_workspace_session", {"workspace_id": target, "session_id": sid})
                                     messages = await call("workspaces__read_workspace_session_messages", {"workspace_id": target, "session_id": sid, "limit": 200})
-                                    if assistant_text(messages["items"]) == expected_answer and any(row["kind"] == "done" for row in messages["items"]):
+                                    records = transcript_records(messages["items"])
+                                    if assistant_text(records) == expected_answer and any(row["kind"] == "done" for row in records):
                                         break
                                     await asyncio.sleep(0.2)
                                 else:
                                     pytest.fail(f"real session never answered from its file read: {observed}")
                                 assert observed["info"]["binding"]["agent_id"] == agent_id
-                                assert not any(row["kind"] in {"error", "cancelled"} for row in messages["items"]), messages
+                                assert not any(row["kind"] in {"error", "cancelled"} for row in records), messages
                                 durable = await person.get(f"/v1/sessions/{sid}")
                                 assert durable.status_code == 200 and durable.json()["initiated_by"]["user_id"] == uid, durable.text
                                 settled_by = asyncio.get_running_loop().time() + 10
@@ -305,7 +328,7 @@ async def test_real_user_executes_workspace_runbook_through_tools(mock_llm, uniq
                                 default_row = next(row for row in after["items"] if row["id"] == default)
                                 assert default_row["is_default"] is True and default_row["access"] == before_default.json()["access"]
                                 assert (tmp_path / "workspaces" / default).is_dir()
-                                trace.update(outcome="passed", session_id=sid, file_content=payload, worker_tool_results=actual_results, session_records=messages["items"],
+                                trace.update(outcome="passed", session_id=sid, file_content=payload, worker_tool_results=actual_results, session_records=records,
                                              session_answer=expected_answer, deleted=deleted, default_preserved=True)
     finally:
         if process is not None:
