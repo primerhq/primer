@@ -154,6 +154,17 @@ def valid_evidence():
     return trace
 
 
+def write_junit(evidence):
+    from xml.etree import ElementTree as ET
+
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite")
+    ET.SubElement(suite, "testcase", classname=journey.__name__, name=valid_evidence()["case"])
+    target = evidence.with_name("junit.xml")
+    ET.ElementTree(root).write(target, encoding="unicode")
+    return target
+
+
 def test_ci_evidence_accepts_only_a_complete_source_bound_control():
     trace = valid_evidence()
     journey.require_evidence(trace, "source", trace["runbook_hashes"])
@@ -161,6 +172,7 @@ def test_ci_evidence_accepts_only_a_complete_source_bound_control():
 
 def test_exact_workflow_step_executes_the_guard_and_rejects_missing_or_partial_evidence(tmp_path, monkeypatch):
     import hashlib
+    from xml.etree import ElementTree as ET
     import yaml
 
     workflow = yaml.safe_load((journey.REPO / ".github/workflows/e2e.yml").read_text())
@@ -177,6 +189,7 @@ def test_exact_workflow_step_executes_the_guard_and_rejects_missing_or_partial_e
         trace["runbook_hashes"][path] = hashlib.sha256(page.read_bytes()).hexdigest()
     evidence = tmp_path / "tests/.e2e/w7-t2/trace.json"
     evidence.parent.mkdir(parents=True)
+    junit = write_junit(evidence)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_SHA", "source")
     with pytest.raises(FileNotFoundError):
@@ -187,6 +200,30 @@ def test_exact_workflow_step_executes_the_guard_and_rejects_missing_or_partial_e
     evidence.write_text(json.dumps(trace))
     with pytest.raises(AssertionError):
         exec(compile(script, "<actual-ci-evidence-step>", "exec"), {})
+    trace["outcome"] = "passed"
+    evidence.write_text(json.dumps(trace))
+    passed = junit.read_text()
+    for damage in ("missing-case", "duplicate", "failure", "error", "skipped"):
+        root = ET.fromstring(passed)
+        case = root.find(".//testcase")
+        suite = root.find("testsuite")
+        if damage == "missing-case":
+            suite.remove(case)
+        elif damage == "duplicate":
+            suite.append(copy.deepcopy(case))
+        else:
+            ET.SubElement(case, damage)
+        junit.write_text(ET.tostring(root, encoding="unicode"))
+        with pytest.raises(AssertionError):
+            exec(compile(script, "<actual-ci-evidence-step>", "exec"), {})
+    junit.write_text("<broken")
+    with pytest.raises(ET.ParseError):
+        exec(compile(script, "<actual-ci-evidence-step>", "exec"), {})
+    junit.unlink()
+    with pytest.raises(FileNotFoundError):
+        exec(compile(script, "<actual-ci-evidence-step>", "exec"), {})
+    producer = next(s for s in steps if "uv run pytest tests/e2e" in s.get("run", ""))
+    assert "--junitxml=tests/.e2e/w7-t2/junit.xml" in producer["run"]
     upload = next(s for s in steps if s.get("name") == "Upload W7 agent and graph transcript")
     assert upload["if"] == "always()" and upload["with"]["path"] == "tests/.e2e/w7-t2/"
 
@@ -227,6 +264,7 @@ def test_actual_workflow_launcher_uses_project_dependencies_in_a_clean_shell(tmp
     evidence = tmp_path / "tests/.e2e/w7-t2/trace.json"
     evidence.parent.mkdir(parents=True)
     evidence.write_text(json.dumps(trace))
+    junit = write_junit(evidence)
     bare = tmp_path / "clean-python"
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(bare)], check=True, timeout=30)
     uv = shutil.which("uv")
@@ -258,6 +296,19 @@ def test_actual_workflow_launcher_uses_project_dependencies_in_a_clean_shell(tmp
     evidence.write_text(json.dumps(trace))
     partial = shell(command)
     assert partial.returncode != 0 and "AssertionError" in partial.stderr
+    trace["outcome"] = "passed"
+    evidence.write_text(json.dumps(trace))
+    junit.unlink()
+    missing_junit = shell(command)
+    assert missing_junit.returncode != 0 and "FileNotFoundError" in missing_junit.stderr
+    from xml.etree import ElementTree as ET
+
+    write_junit(evidence)
+    root = ET.parse(junit)
+    ET.SubElement(root.find(".//testcase"), "skipped")
+    root.write(junit, encoding="unicode")
+    skipped = shell(command)
+    assert skipped.returncode != 0 and "AssertionError" in skipped.stderr
 
 
 @pytest.mark.parametrize("damage", ["missing", "precondition", "source", "hash", "role", "approver", "operation", "approval", "premature_effect", "wrong_session", "incomplete", "invented_answer", "graph", "delete", "default"])

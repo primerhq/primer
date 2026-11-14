@@ -78,7 +78,7 @@ def test_worked_definitions_validate_as_real_models_and_graphs_are_runnable(path
     for call in calls(path):
         if call["tool_name"] in {"create_agent", "update_agent"}:
             entity = Agent.model_validate(call["arguments"]["entity"])
-            assert entity.model.profile_id == "team-chat"
+            assert entity.model.profile_id == "team-profile"
             assert entity.tools == ["system__wiki_read"]
             assert entity.max_tool_turns == 8 and entity.harness_id is None
         if call["tool_name"] in {"create_graph", "update_graph"}:

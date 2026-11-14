@@ -128,6 +128,7 @@ jobs:
           set +e
           PYTHONUNBUFFERED=1 PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/e2e \
             -q --tb=short -n0 --timeout=180 --timeout-method=thread \
+            --junitxml=tests/.e2e/w7-t2/junit.xml \
             -m "not distributed and not requires_llm and not requires_cluster and not requires_channel" \
             2>&1 | tee tests/.e2e/pytest-output.txt
           pytest_status=${PIPESTATUS[0]}
@@ -164,9 +165,15 @@ jobs:
           uv run --no-sync python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
+          from xml.etree import ElementTree as ET
           from tests.e2e.test_wiki_w7_t2_lifecycle import PAGES, require_evidence
           hashes = {path: hashlib.sha256(Path("docs/wiki", path + ".md").read_bytes()).hexdigest() for path in PAGES}
-          require_evidence(json.loads(Path("tests/.e2e/w7-t2/trace.json").read_text()), os.environ["GITHUB_SHA"], hashes)
+          trace = json.loads(Path("tests/.e2e/w7-t2/trace.json").read_text())
+          require_evidence(trace, os.environ["GITHUB_SHA"], hashes)
+          cases = [case for case in ET.parse("tests/.e2e/w7-t2/junit.xml").iter("testcase")
+                   if case.get("classname") == "tests.e2e.test_wiki_w7_t2_lifecycle" and case.get("name") == trace["case"]]
+          assert len(cases) == 1
+          assert all(cases[0].find(tag) is None for tag in ("failure", "error", "skipped"))
           PY
       - name: Upload W7 agent and graph transcript
         if: always()
