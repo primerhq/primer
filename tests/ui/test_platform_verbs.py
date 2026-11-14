@@ -215,6 +215,8 @@ def _run_shell_effect(ctx) -> None:
         "window.SHR_shareLive = function () { return true; };"
         # The Memory verb's gate reads the same kind of seam: model a live agent editor.
         "window.AG_memoryLive = function () { return true; };"
+        # The welcome verb requires an eligible operator session.
+        "window.NV_canReopenWelcome = function () { return true; };"
         "(function (registry, goView, isMobile) {" + effect + "\n})(registry, function () {}, false);"
     )
 
@@ -249,7 +251,7 @@ def test_a_title_the_registry_accepts_registers_without_a_warning(palette) -> No
 # The context the palette ranks with for an admin (nv-palette.jsx passes the signed-in role): every registered verb is offered to an admin, while an
 # admin-only verb (Reset Prime Instructions, pivot P2 Task 15) is hidden from any other role (tests/ui/test_reset_prime_instructions_action.py).
 def _ranked(ctx, query: str) -> list[str]:
-    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ', { role: "admin" }).map(function (v) { return v.id; })')
+    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ', { role: "admin", docKind: "session" }).map(function (v) { return v.id; })')
 
 
 def test_the_palette_is_the_core_verbs_then_the_platform_verbs(palette) -> None:
@@ -315,6 +317,13 @@ def test_an_empty_query_has_no_tier_and_keeps_registration_order(palette) -> Non
     assert destructive == {"setup.reset_prime_instructions"}
     assert ranked == [i for i in ids if i not in destructive] + [i for i in ids if i in destructive]
     assert not set(IDS) & set(ranked[:8]), "the Platform verbs are registered after the core verbs, so they do not push them off the list"
+
+
+@pytest.mark.parametrize("doc_kind,eligible", [("session", True), ("session", False), ("file", True)])
+def test_welcome_verb_is_ranked_only_for_an_eligible_operator_session(palette, doc_kind, eligible) -> None:
+    palette.eval("window.NV_canReopenWelcome = function () { return " + json.dumps(eligible) + "; };")
+    ids = js(palette, "SH_rankVerbs(registry, 'Show Me What You Can Do', " + json.dumps({"role": "admin", "docKind": doc_kind}) + ").map(function (v) { return v.id; })")
+    assert ("welcome.reopen" in ids) is (doc_kind == "session" and eligible)
 
 
 # ---- the pointer affordance: the sidebar rows ----------------------------------------------------------------------------------------------

@@ -47,6 +47,8 @@ def _run_effect(ctx) -> None:
         "window.SHR_shareLive = function () { return true; };"
         # The Memory verb's gate reads the same kind of seam: model a live agent editor.
         "window.AG_memoryLive = function () { return true; };"
+        # The welcome verb requires an eligible operator session.
+        "window.NV_canReopenWelcome = function () { return true; };"
         "(function (registry, goView, isMobile) {" + _effect_source() + "\n})(registry, function () { VIEWS.push([].slice.call(arguments)); }, false);"
     )
 
@@ -69,7 +71,7 @@ def make():
 # The context the palette ranks with for an admin (nv-palette.jsx passes the signed-in role): every registered verb is offered to an admin, while an
 # admin-only verb (Reset Prime Instructions, pivot P2 Task 15) is hidden from any other role (tests/ui/test_reset_prime_instructions_action.py).
 def _ranked(ctx, query: str) -> list[str]:
-    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ', { role: "admin" }).map(function (v) { return v.id; })')
+    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ', { role: "admin", docKind: "session" }).map(function (v) { return v.id; })')
 
 
 def test_the_shell_registers_open_web_settings() -> None:

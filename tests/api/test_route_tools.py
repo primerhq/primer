@@ -669,8 +669,8 @@ def test_independent_app_factories_compile_one_route_contract_without_sharing(
     assert openapi_calls == 1
     assert blueprint_compiles == 1
     assert openapi_calls * 3 <= factory_count
-    assert cold_route_parts == 404
-    # The 380 module-level declarations hit the identity cache. Only the 24
+    assert cold_route_parts == 406
+    # The 382 module-level declarations hit the identity cache. Only the 24
     # fresh CRUD/access closure routes derive their structural parts again.
     assert test_factory_route_parts == second_factory_route_parts == 24
     assert first_snapshot.operations == second_snapshot.operations

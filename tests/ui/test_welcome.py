@@ -59,14 +59,39 @@ def test_failed_ack_stays_visible_and_retryable_without_false_success(welcome):
     welcome.eval("MR.settle();")
     assert "Storage unavailable" in value(welcome, "MR.texts().join(' ')")
     assert value(welcome, "CHANGES") == []
-    assert value(welcome, "button('Start a new project').props.disabled") is True
+    assert value(welcome, "button('Start a new project').props['aria-disabled']") == "true"
+    assert value(welcome, "!!button('Start a new project').props.disabled") is False
     welcome.eval("button('Retry saving').props.onClick(); MR.settle();")
     resolve(welcome, 1)
-    assert value(welcome, "!!button('Start a new project').props.disabled") is False
+    assert value(welcome, "!!button('Start a new project').props['aria-disabled']") is False
     welcome.eval("button('Start a new project').props.onClick();")
     welcome.eval("MR.settle();")
     assert "runbooks/moderate-a-request" in value(welcome, "SENT[0]")
     assert value(welcome, "!!MR.find('nv-welcome')") is False
+
+
+def test_saving_ack_keeps_controls_focusable_and_refuses_actions(welcome):
+    welcome.eval("mountWelcome();")
+    for label in ("Start a new project", "Dismiss welcome"):
+        assert value(welcome, f"!!button({json.dumps(label)}).props.disabled") is False
+        assert value(welcome, f"button({json.dumps(label)}).props['aria-disabled']") == "true"
+        welcome.eval(f"button({json.dumps(label)}).props.onClick(); MR.settle();")
+    assert value(welcome, "SENT") == []
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+    assert value(welcome, "FOCUSED") == 0
+
+
+def test_reopen_keeps_focusable_busy_control_and_refuses_duplicate_click(welcome):
+    welcome.eval("CON.welcomeState.show=false; mountWelcome(); MR.click('nv-welcome-reopen');")
+    assert value(welcome, "MR.find('nv-welcome-reopen').props['aria-busy']") == "true"
+    assert value(welcome, "MR.find('nv-welcome-reopen').props['aria-disabled']") == "true"
+    assert value(welcome, "!!MR.find('nv-welcome-reopen').props.disabled") is False
+    welcome.eval("MR.click('nv-welcome-reopen');")
+    assert value(welcome, "REQUESTS.length") == 1
+    resolve(welcome, 0, show=True)
+    assert value(welcome, "REQUESTS[1].path") == "/auth/welcome/acknowledge"
+    resolve(welcome, 1)
+    assert value(welcome, "!!button('Dismiss welcome').props['aria-disabled']") is False
 
 
 @pytest.mark.parametrize("role,own,other", [

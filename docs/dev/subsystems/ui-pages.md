@@ -25,7 +25,9 @@ unfinished draft and attachments, and dismiss the card only after acceptance.
 Acknowledgement is saved when the card mounts, without closing the current
 card; a revisit hides it. Dismiss returns focus to the composer. A failed
 save stays visible, announces the error, and offers retry before dismissal
-or chip send. The inline "Show me what you can do" button and the
+or chip send. While saving, controls stay focusable, expose `aria-disabled`,
+and refuse clicks; the reopening button also exposes its own `aria-busy`.
+The inline "Show me what you can do" button and the
 `welcome.reopen` palette verb reopen it for either full role, focus its
 heading, and preserve the URL, workspace, tabs and history. The same component
 runs in the phone session; buttons wrap and retain 44px touch targets. Signed-out,

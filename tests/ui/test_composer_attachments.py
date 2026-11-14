@@ -128,7 +128,7 @@ def test_attachments_clear_only_on_successful_send():
     (dropped_attachments) are NOT cleared - they stay in their dropped
     state - while every delivered one clears as before."""
     composer = _composer()
-    send_fn = composer[composer.index("function send() {"):]
+    send_fn = composer[composer.index("function send(offeredText) {"):]
     send_fn = send_fn[:send_fn.index("\n  function micStart")]
     success_branch = send_fn[:send_fn.index("}, function (err) {")]
     failure_branch = send_fn[send_fn.index("}, function (err) {"):]
@@ -147,12 +147,12 @@ def _send_fold_context():
 
     Returns ``fold(val, attachments, sending=False, pending=False)``,
     which gives back ``{"fullText": ..., "steerAttachments": ...}`` (both
-    ``None`` when absent) or bare ``None`` when the guard's own early
-    ``return;`` fired (nothing to send).
+    ``None`` when absent) or bare ``None`` when the guard resolves false
+    (nothing to send).
     """
     import json
 
-    from py_mini_racer import MiniRacer
+    from py_mini_racer import JSPromise, MiniRacer
 
     from primer.api._jsx_bundle import JSXBundler
 
@@ -160,12 +160,12 @@ def _send_fold_context():
         ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text(encoding="utf-8"),
     )
     composer = _composer()
-    start = composer.index("function send() {") + len("function send() {")
+    start = composer.index("function send(offeredText) {") + len("function send(offeredText) {")
     end = composer.index("setSending(true);", start)
     body = composer[start:end]
     wrapped = (
         _vision_doc_helper() + "\n"
-        "function SEND_FOLD(val, attachments, sending, attachmentsPending) {\n"
+        "function SEND_FOLD(val, attachments, sending, attachmentsPending, offeredText, wsRo) {\n"
         + body
         + "\n  return JSON.stringify({"
         "fullText: (typeof fullText === \"undefined\" ? null : fullText), "
@@ -178,20 +178,31 @@ def _send_fold_context():
     ctx = MiniRacer()
     ctx.eval(transpiled)
 
-    def fold(val, attachments, sending=False, pending=False):
-        # A guard hit returns bare `undefined` for the whole function
-        # (SEND_FOLD's inlined `return;` never reaches the JSON.stringify
-        # tail below it) - coerce to None before crossing back into
-        # Python, same as the pre-fold-split version of this test did.
+    def fold(val, attachments, sending=False, pending=False, offered_text=None, readonly=False):
+        # A guarded send resolves false instead of reaching the fold result.
+        # Execute that real Promise and normalize its false result to None.
         ctx.eval(
             "var __r = SEND_FOLD(" + json.dumps(val) + ", "
             + json.dumps(attachments) + ", " + json.dumps(sending) + ", "
-            + json.dumps(pending) + ");"
+            + json.dumps(pending) + ", " + json.dumps(offered_text) + ", " + json.dumps(readonly) + ");"
         )
         raw = ctx.eval("__r === undefined ? null : __r")
+        if isinstance(raw, JSPromise):
+            assert raw.get() is False, "a guarded send resolves false without starting a request"
+            return None
         return json.loads(raw) if raw is not None else None
 
     return fold
+
+
+def test_suggestion_fold_preserves_uploads_and_respects_readonly_guard():
+    fold = _send_fold_context()
+    uploads = [{"path": "uploads/draft.txt", "status": "done", "type": "text/plain"}]
+    assert fold("Unfinished draft", uploads, offered_text="A suggestion") == {
+        "fullText": "A suggestion", "steerAttachments": None,
+    }
+    assert fold("Unfinished draft", uploads, offered_text="A suggestion", readonly=True) is None
+    assert fold("Unfinished draft", uploads, readonly=True) is None
 
 
 def test_send_folding_logic_via_mini_racer():
