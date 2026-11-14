@@ -114,6 +114,18 @@ def check_pending(pending: dict, operation: str, arguments: dict, policy_id: str
     assert pending["arguments"] == arguments, pending
 
 
+def stage_answer(records: list[dict]) -> tuple[str, dict]:
+    """Read the parent reply while retaining failures from every child run."""
+    from primer.session.terminals import closes_turn, is_delegated
+
+    assert not any(row["kind"] in {"error", "cancelled"} for row in records), records
+    parent = [row for row in records if not is_delegated(row) and row.get("node_id") is None]
+    assert any(row["kind"] == "done" and closes_turn(row) for row in parent), records
+    answer = assistant_text(parent)
+    assert answer.startswith("RESULT:"), answer
+    return answer, json.loads(answer.removeprefix("RESULT:"))
+
+
 def require_evidence(trace: dict, source_sha: str, runbook_hashes: dict) -> None:
     """The CI step fails on absence, collection, precondition stop or a partial run."""
     assert trace["case"] == "test_user_authors_and_runs_agent_and_graph_with_real_approvals"
@@ -304,11 +316,7 @@ async def test_user_authors_and_runs_agent_and_graph_with_real_approvals(mock_ll
                                     await completed(sid)
                                     messages = await call("workspaces__read_workspace_session_messages", {"workspace_id": workspace, "session_id": sid, "limit": 200})
                                     records = transcript_records(messages["items"])
-                                    assert not any(r["kind"] in {"error", "cancelled"} for r in records), records
-                                    assert any(r["kind"] == "done" for r in records), records
-                                    answer = assistant_text(records)
-                                    assert answer.startswith("RESULT:"), answer
-                                    result = json.loads(answer.removeprefix("RESULT:"))
+                                    answer, result = stage_answer(records)
                                     # Both the mock's next request and durable tokens must carry the actual tool result.
                                     results = [json.loads(m["content"]) for req in registry.requests if req.get("model") == builder_model for m in req.get("messages", []) if m.get("role") == "tool" and m.get("tool_call_id") == name]
                                     assert results and results[-1] == result
