@@ -247,6 +247,17 @@ grant therefore stops the next turn and every resume, however it was queued or p
 | `ask_user` answer (`POST /v1/sessions/{id}/ask_user/respond`), external `tool_results` (on the steer route) | the sender: the park flip writes `turn_person` in its own guarded write (`by` of `durably_mark_session_resumable`), so the resume-time workspace check judges the sender |
 | Approval decision, yield cancel, any other park resume | unchanged: the parked turn keeps its person (`by=None`) |
 
+An authenticated classic approval still stores its decider in the durable
+approval record and typed responder reservation. That reservation is audit-only:
+the wake leaves the execution person and projection metadata untouched, and
+generic reservation projection refuses it. An admin's approval permits the
+specific call; it lends no admin role or private-resource access to the caller
+or subsequent work. The worker rechecks the parked person's account, current
+role and access when rebuilding the continuation. This also preserves a peer's
+existing turn rather than reverting to the session creator. Historical execution
+projections are not automatically rewritten from `initiated_by`, since that
+would discard legitimate peer attribution.
+
 Why: a full-access peer who steers someone else's session, answers its `ask_user` or feeds it tool results must never
 borrow the creator's private toolsets, collections or OAuth tokens: each of those is model input. The trigger fire rank floor (`refuse_steer_above_fire`, `may_drive`) is the one rank rule left on a
 session; the steer, approval and canvas routes no longer rank the caller against the creator.

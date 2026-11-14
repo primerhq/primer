@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from primer.model.external_tool import ExternalToolCall, ExternalToolResultIn
+from primer.model.except_ import ConflictError
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -14,7 +15,12 @@ from primer.model.workspace_session import (
 )
 from primer.model.yield_ import with_wake_gate
 from primer.session.external_tools import apply_tool_results
-from primer.session.responder_attribution import classic_gate_responder_decision
+from primer.session.responder_attribution import (
+    ReservationFences,
+    classic_gate_responder_decision,
+    project_reservation,
+    responder_source,
+)
 from primer.session.yields import durably_wake_session
 from tests.conftest import _FakeStorageProvider
 
@@ -28,6 +34,15 @@ OTHER = PrincipalRef(
     type="user", id="u2", display="two", role="user", source="local",
     user_id="u2",
 )
+ADMIN = OTHER.model_copy(update={"id": "admin", "user_id": "admin", "role": "admin"})
+PROJECTION_FIELDS = (
+    "turn_person", "turn_person_seq", "turn_person_at",
+    "turn_person_epoch", "turn_person_source_key",
+)
+
+
+def _projection(row):
+    return tuple(getattr(row, field) for field in PROJECTION_FIELDS)
 
 
 def _park(*, tool: str = "ask_user", gate_id: str = "1" * 32) -> WorkspaceSession:
@@ -110,9 +125,12 @@ async def test_authenticated_decision_is_reserved_and_projected_atomically(tool,
     reservation = after.responder_reservations[decision.source.key]
     assert after.parked_status == "resumable"
     assert (after.responder_seq, after.responder_reservation_version) == (1, 2)
-    assert (after.turn_person, after.turn_person_seq) == (CREATOR, 1)
-    assert after.turn_person_epoch == after.responder_epoch
-    assert after.turn_person_source_key == decision.source.key
+    if domain == "ask_user":
+        assert (after.turn_person, after.turn_person_seq) == (CREATOR, 1)
+        assert after.turn_person_epoch == after.responder_epoch
+        assert after.turn_person_source_key == decision.source.key
+    else:
+        assert _projection(after) == _projection(row)
     assert reservation.accepted_at == ACCEPTED
     assert reservation.person == CREATOR
     assert "secret" not in reservation.source_identity
@@ -350,3 +368,145 @@ async def test_ineligible_wake_does_not_create_a_reservation(by, expected_person
     assert (after.responder_seq, after.responder_reservation_version) == (0, 1)
     assert after.responder_reservations == {}
     assert after.turn_person == expected_person
+
+
+@pytest.mark.parametrize("outcome", ["approved", "rejected"])
+@pytest.mark.parametrize("baseline", ["legacy", "unprojected", "peer"])
+async def test_approval_audits_admin_without_lending_execution_authority(outcome, baseline):
+    row = _park(tool="_approval")
+    row.initiated_by = CREATOR
+    if baseline == "legacy":
+        for field in ("responder_epoch", "responder_seq", "responder_reservation_version", "responder_reservations"):
+            setattr(row, field, None)
+        row.turn_person = None
+    elif baseline == "peer":
+        from primer.model.workspace_session import ResponderReservation
+        peer = responder_source("ask_user", {"peer": "input"})
+        row.responder_seq = 1
+        row.responder_reservations = {peer.key: ResponderReservation(
+            domain=peer.domain, source_identity=peer.identity, person=OTHER,
+            seq=1, accepted_at=NOW,
+        )}
+        row.turn_person = OTHER
+        row.turn_person_seq = 1
+        row.turn_person_at = NOW
+        row.turn_person_epoch = row.responder_epoch
+        row.turn_person_source_key = peer.key
+    storage = await _store(row)
+    payload = with_wake_gate({"decision": outcome}, "1" * 32)
+    decision = _decision(row, domain="tool_approval", payload=payload, person=ADMIN)
+    # The first CAS commits even if lease re-arm fails. Exact redelivery repairs
+    # that lease without replacing the current person or the first audit stamp.
+    with pytest.raises(RuntimeError, match="lease unavailable"):
+        await durably_wake_session(
+            row, event_key=row.parked_event_key, payload=payload,
+            session_storage=storage, engine=_Engine(fail=True), responder_decision=decision,
+        )
+    after = await storage.get("s")
+    assert _projection(after) == _projection(row)
+    reservation = after.responder_reservations[decision.source.key]
+    assert reservation.person == ADMIN
+    assert reservation.accepted_at == ACCEPTED
+    assert reservation.seq == (row.responder_seq or 0) + 1
+    repaired = _Engine()
+    assert await durably_wake_session(
+        row, event_key=row.parked_event_key, payload=payload,
+        session_storage=storage, engine=repaired,
+        responder_decision=_decision(
+            row, domain="tool_approval", payload=payload, person=ADMIN,
+            accepted_at=ACCEPTED + timedelta(minutes=1),
+        ),
+    )
+    assert repaired.calls == 1
+    assert (await storage.get("s")).model_dump() == after.model_dump()
+    with pytest.raises(ConflictError, match="audit-only"):
+        await project_reservation(
+            storage, "s", responder_epoch=after.responder_epoch,
+            source_key=decision.source.key,
+            fences=ReservationFences.from_session(after),
+        )
+    assert (await storage.get("s")).model_dump() == after.model_dump()
+
+
+@pytest.mark.parametrize("approval_first", [True, False])
+async def test_mixed_gate_arrivals_keep_answer_person_and_both_audits(approval_first):
+    gate_a, gate_b = "1" * 32, "2" * 32
+    key_a, key_b = "ask_user:s:n1:call_0", "tool_approval:s:n2:call_0"
+    row = _park()
+    row.parked_event_key = key_a
+    row.parked_event_keys = [key_a, key_b]
+    row.parked_state = {
+        "tool_call_id": "call_0",
+        "yielded": {"tool_name": "ask_user", "event_key": key_a,
+                    "resume_metadata": {"gate_id": gate_a}, "event_keys": [key_a, key_b]},
+        "graph_checkpoint": {"pending_toolcalls": [], "pending_dispatch": [], "pending_agent_yields": [
+            {"node_id": "n1", "tool_call_id": "call_0", "event_key": key_a,
+             "tool_name": "ask_user", "resume_metadata": {"gate_id": gate_a}},
+            {"node_id": "n2", "tool_call_id": "call_0", "event_key": key_b,
+             "tool_name": "_approval", "resume_metadata": {"gate_id": gate_b}},
+        ]},
+    }
+    storage = await _store(row)
+    payload_a = with_wake_gate({"response": "answer"}, gate_a)
+    payload_b = with_wake_gate({"decision": "approved"}, gate_b)
+    decisions = [
+        (key_a, payload_a, _decision(row, domain="ask_user", event_key=key_a,
+                                   gate_id=gate_a, payload=payload_a, person=OTHER)),
+        (key_b, payload_b, _decision(row, domain="tool_approval", event_key=key_b,
+                                   gate_id=gate_b, payload=payload_b, person=ADMIN)),
+    ]
+    if approval_first:
+        decisions.reverse()
+    # Both callers read the same pre-decision snapshot. The second must retry
+    # the ledger CAS without dropping the first wake or its projection.
+    for key, payload, decision in decisions:
+        assert await durably_wake_session(
+            row, event_key=key, payload=payload, session_storage=storage,
+            engine=None, responder_decision=decision,
+        )
+    after = await storage.get("s")
+    assert (after.responder_seq, after.responder_reservation_version) == (2, 3)
+    assert after.turn_person == OTHER
+    answer = next(r for r in after.responder_reservations.values() if r.domain == "ask_user")
+    approval_key = next(k for k, r in after.responder_reservations.items() if r.domain == "tool_approval")
+    assert after.turn_person_seq == answer.seq == (2 if approval_first else 1)
+    assert after.turn_person_at == answer.accepted_at
+    assert after.turn_person_epoch == after.responder_epoch
+    assert after.responder_reservations[approval_key].person == ADMIN
+    assert {v["event_key"] for v in after.parked_state["resume_event_payloads"].values()} == {key_a, key_b}
+    with pytest.raises(ConflictError, match="audit-only"):
+        await project_reservation(storage, "s", responder_epoch=after.responder_epoch,
+                                  source_key=approval_key, fences=ReservationFences.from_session(after))
+    assert (await storage.get("s")).model_dump() == after.model_dump()
+
+
+@pytest.mark.parametrize("conflict", ["person", "payload", "park", "generation"])
+async def test_approval_retry_conflicts_preserve_audit_and_execution(conflict):
+    row = _park(tool="_approval")
+    storage = await _store(row)
+    payload = with_wake_gate({"decision": "approved"}, "1" * 32)
+    decision = _decision(row, domain="tool_approval", payload=payload, person=ADMIN)
+    assert await durably_wake_session(
+        row, event_key=row.parked_event_key, payload=payload,
+        session_storage=storage, engine=None, responder_decision=decision,
+    )
+    if conflict in {"park", "generation"}:
+        field = "parked_at" if conflict == "park" else "last_seq"
+        value = (NOW + timedelta(minutes=1)).isoformat() if conflict == "park" else 1
+        current = await storage.get("s")
+        from primer.storage import raw_generation
+        assert await storage.patch_if("s", {field: value}, where={field: [raw_generation(current, field)]})
+    before = await storage.get("s")
+    retry_payload = with_wake_gate({"decision": "rejected"}, "1" * 32) if conflict == "payload" else payload
+    accepted = await durably_wake_session(
+        row, event_key=row.parked_event_key, payload=retry_payload,
+        session_storage=storage, engine=None,
+        responder_decision=_decision(
+            row, domain="tool_approval", payload=retry_payload,
+            person=OTHER if conflict == "person" else ADMIN,
+        ),
+    )
+    # A log append after the decision committed does not invalidate exact
+    # lease repair. Conflicting decisions and replacement parks still refuse.
+    assert accepted is (conflict == "generation")
+    assert (await storage.get("s")).model_dump() == before.model_dump()

@@ -48,6 +48,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.responder_attribution import (
+    AUDIT_ONLY_RESPONDER_DOMAINS,
     ReservationFences,
     ResponderDecision,
 )
@@ -138,30 +139,25 @@ def _responder_decision_patch(
         seq=next_seq,
         accepted_at=decision.accepted_at,
     )
-    candidate = row.model_copy(update={
+    updates = {
         "responder_epoch": epoch,
         "responder_seq": next_seq,
         "responder_reservation_version": version + 1,
         "responder_reservations": reservations,
-        "turn_person": decision.person,
-        "turn_person_seq": next_seq,
-        "turn_person_at": decision.accepted_at,
-        "turn_person_epoch": epoch,
-        "turn_person_source_key": decision.source.key,
-    })
+    }
+    if decision.source.domain not in AUDIT_ONLY_RESPONDER_DOMAINS:
+        updates.update({
+            "turn_person": decision.person,
+            "turn_person_seq": next_seq,
+            "turn_person_at": decision.accepted_at,
+            "turn_person_epoch": epoch,
+            "turn_person_source_key": decision.source.key,
+        })
+    # Approval records who permitted the call, while the parked turn keeps
+    # its existing person (including a peer steer or a legacy null baseline).
+    candidate = row.model_copy(update=updates)
     stored = dump_for_storage(candidate)
-    fields = (
-        "responder_epoch",
-        "responder_seq",
-        "responder_reservation_version",
-        "responder_reservations",
-        "turn_person",
-        "turn_person_seq",
-        "turn_person_at",
-        "turn_person_epoch",
-        "turn_person_source_key",
-    )
-    patch = {field: stored[field] for field in fields}
+    patch = {field: stored[field] for field in updates}
     where = ReservationFences.from_session(row).where()
     # A rolling-upgrade or raw-SQL park can hold the same UTC deadline in
     # datetime.isoformat()'s ``+00:00`` spelling instead of pydantic's

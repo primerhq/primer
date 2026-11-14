@@ -51,6 +51,10 @@ _FENCE_FIELDS = (
     "last_seq",
 )
 _JSON_SCALARS = (str, int, float, bool, type(None))
+# Permission to execute a parked call does not transfer the approver's
+# authority to that call or its continuation. Keep this guard shared with
+# classic wakes so generic reservation projection cannot undo that boundary.
+AUDIT_ONLY_RESPONDER_DOMAINS = frozenset({"tool_approval"})
 
 
 @dataclass(frozen=True)
@@ -563,6 +567,8 @@ async def project_reservation(
         reservation = current.responder_reservations.get(source_key)
         if reservation is None:
             raise ConflictError("responder reservation does not exist in this epoch")
+        if reservation.domain in AUDIT_ONLY_RESPONDER_DOMAINS:
+            raise ConflictError("tool approval reservations are audit-only")
 
         projected_seq = current.turn_person_seq
         if projected_seq is not None and projected_seq > reservation.seq:
