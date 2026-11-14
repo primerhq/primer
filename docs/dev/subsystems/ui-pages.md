@@ -28,7 +28,7 @@ save stays visible, announces the error, and offers retry before dismissal
 or chip send. The inline "Show me what you can do" button and the
 `welcome.reopen` palette verb reopen it for either full role, focus its
 heading, and preserve the URL, workspace, tabs and history. The same component
-runs in the phone chat; buttons wrap and retain 44px touch targets. Signed-out,
+runs in the phone session; buttons wrap and retain 44px touch targets. Signed-out,
 restricted and auth-disabled callers get no welcome. First-login tab opening
 still depends exclusively on `MainSessionOut.created`, independently of the
 welcome state. There is no browser persistence or separate onboarding router.
