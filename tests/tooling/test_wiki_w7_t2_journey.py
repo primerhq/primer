@@ -372,3 +372,70 @@ def test_scoped_wiki_and_child_process_are_isolated_without_starting_a_server(tm
     for path in journey.PAGES:
         assert source[path].body in built.pages[path].body
         assert (tmp_path / "wiki" / (path + ".md")).read_bytes() == (journey.REPO / "docs/wiki" / (path + ".md")).read_bytes()
+
+
+def _event(kind, payload, *, node_id=None):
+    from primer.model.workspace_session import SessionMessageRecord
+
+    return SessionMessageRecord(
+        seq=1, kind=kind, payload=payload,
+        created_at=datetime(2026, 11, 14, tzinfo=UTC), node_id=node_id,
+    ).model_dump(mode="json")
+
+
+@pytest.mark.parametrize("child_scope", ["agent", "graph-node", "nested-graph"])
+def test_stage_answer_uses_only_parent_tokens_and_keeps_the_actual_child_result(child_scope):
+    payload = {"text": "AGENT-ANSWER:café"}
+    node_id = "answer" if child_scope != "agent" else None
+    if child_scope != "graph-node":
+        payload.update(delegated=True, delegate_run_id="child", delegate_depth=2)
+    child = _event("assistant_token", payload, node_id=node_id)
+    value = {"output": "AGENT-ANSWER:café"}
+    records = [
+        _event("done", {"stop_reason": "tool_use"}), child,
+        _event("done", {**payload, "stop_reason": "stop"}, node_id=node_id),
+        _event("tool_result", {"call_id": "invoke", "output": json.dumps(value), "error": False}),
+        _event("assistant_token", {"text": "RESULT:"}),
+        child,
+        _event("assistant_token", {"text": json.dumps(value)}),
+        _event("done", {"stop_reason": "stop"}),
+    ]
+    before = json.dumps(records)
+    answer, result = journey.stage_answer(journey.transcript_records(records))
+    assert answer == "RESULT:" + json.dumps(value)
+    assert result == value
+    assert json.dumps(records) == before
+    assert child in records
+
+
+@pytest.mark.parametrize("failure", ["error", "cancelled"])
+@pytest.mark.parametrize("scope", ["parent", "delegated", "node"])
+def test_stage_answer_still_refuses_failure_records_in_every_scope(failure, scope):
+    records = [
+        _event("assistant_token", {"text": 'RESULT:{"output":"ok"}'}),
+        _event("done", {"stop_reason": "stop"}),
+        _event(failure, {"message": "child failure", "delegated": scope == "delegated"}, node_id="answer" if scope == "node" else None),
+    ]
+    with pytest.raises(AssertionError):
+        journey.stage_answer(journey.transcript_records(records))
+
+
+@pytest.mark.parametrize("missing", ["parent-answer", "parent-terminal", "final-round"])
+def test_child_reply_or_terminal_cannot_substitute_for_parent_acceptance(missing):
+    records = [
+        _event("assistant_token", {"text": 'RESULT:{"output":"child"}', "delegated": True}),
+        _event("done", {"stop_reason": "stop", "delegated": True}),
+    ]
+    if missing != "parent-answer":
+        records.append(_event("assistant_token", {"text": 'RESULT:{"output":"parent"}'}))
+    if missing != "parent-terminal":
+        records.append(_event("done", {"stop_reason": "tool_use" if missing == "final-round" else "stop"}))
+    with pytest.raises(AssertionError):
+        journey.stage_answer(journey.transcript_records(records))
+
+
+@pytest.mark.parametrize("text", ["unexpected parent output", "RESULT:broken-json"])
+def test_stage_answer_keeps_strict_parent_prefix_and_json_checks(text):
+    records = [_event("assistant_token", {"text": text}), _event("done", {"stop_reason": "stop"})]
+    with pytest.raises((AssertionError, json.JSONDecodeError)):
+        journey.stage_answer(journey.transcript_records(records))
