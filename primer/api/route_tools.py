@@ -54,6 +54,9 @@ _TRUST_SCOPE_KEY = "primer.route_tool_dispatch"
 _TRUST_PERSON_SCOPE_KEY = "primer.route_tool_person"
 _TRUST_OBJECT = object()
 _DISPATCH_DEPTH: ContextVar[int] = ContextVar("primer_route_tool_dispatch_depth", default=0)
+_STREAM_CLEANUP_OWNERS: ContextVar[list[asyncio.Task[BaseException | None]] | None] = ContextVar(
+    "primer_route_tool_stream_cleanup_owners", default=None,
+)
 _DISPATCH_TIMEOUT_S = 30.0
 _STREAM_CLEANUP_TIMEOUT_S = 1.0
 _MAX_RESPONSE_BYTES = 1_048_576
@@ -628,7 +631,7 @@ class _RouteStreamFailed(Exception):
         self.status_code = status_code
 
 
-async def _wait_cleanup_owner(task: asyncio.Task[None]) -> asyncio.CancelledError | None:
+async def _wait_cleanup_owner(task: asyncio.Task[Any]) -> asyncio.CancelledError | None:
     """Drain a bounded cleanup owner without forwarding caller cancellation."""
 
     cancelled = None
@@ -640,6 +643,34 @@ async def _wait_cleanup_owner(task: asyncio.Task[None]) -> asyncio.CancelledErro
                 cancelled = cancelled or exc
     task.result()
     return cancelled
+
+
+async def _finish_iterator_close(aclose: Callable[[], Awaitable[None]]) -> BaseException | None:
+    """Bound closure and cancellation settlement, returning its private failure.
+
+    The owner always completes normally so a caller's recorded cancellation
+    cannot be lost behind a close exception in _wait_cleanup_owner.
+    """
+    async def close() -> None:
+        with anyio.fail_after(_STREAM_CLEANUP_TIMEOUT_S, shield=True):
+            await aclose()
+
+    close_task = asyncio.create_task(close())
+    try:
+        await run_in_background(
+            close_task, what="generated route tool", verb="iterator close",
+            wait_s=_STREAM_CLEANUP_TIMEOUT_S,
+        )
+        if not close_task.done():
+            close_task.cancel()
+            # Give cooperative cancellation its own bounded settlement. A
+            # hostile iterator may suppress it; the shared helper retains it.
+            await asyncio.wait({close_task}, timeout=_STREAM_CLEANUP_TIMEOUT_S)
+            return TimeoutError("generated iterator close timed out")
+        close_task.result()
+    except BaseException as exc:
+        return exc
+    return None
 
 
 def _contains_response_limit(exc: BaseException) -> bool:
@@ -770,7 +801,14 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
             if not message.get("more_body", False):
                 response_complete.set()
 
-        app_task = asyncio.create_task(self._app(scope, receive, send))
+        # The app task inherits this per-dispatch list; restoring the parent
+        # context immediately keeps concurrent dispatches and REST separate.
+        cleanup_owners: list[asyncio.Task[BaseException | None]] = []
+        token = _STREAM_CLEANUP_OWNERS.set(cleanup_owners)
+        try:
+            app_task = asyncio.create_task(self._app(scope, receive, send))
+        finally:
+            _STREAM_CLEANUP_OWNERS.reset(token)
         drain_owner: asyncio.Task[None] | None = None
 
         async def cancel_app_task() -> None:
@@ -785,10 +823,18 @@ class _BoundedAsgiTransport(httpx.AsyncBaseTransport):
                     if not app_task.cancelled():
                         app_task.exception()
 
-                drain_owner = asyncio.create_task(run_in_background(
-                    drain(), what="generated route tool", verb="producer shutdown",
-                    wait_s=_STREAM_CLEANUP_TIMEOUT_S,
-                ))
+                async def finish_shutdown() -> None:
+                    await run_in_background(
+                        drain(), what="generated route tool", verb="producer shutdown",
+                        wait_s=_STREAM_CLEANUP_TIMEOUT_S,
+                    )
+                    # Its deadline can precede the inner close's deadline.
+                    # Await active bounded owners, rather than returning while
+                    # their iterator awaits have not even been cancelled yet.
+                    for owner in cleanup_owners:
+                        await _wait_cleanup_owner(owner)
+
+                drain_owner = asyncio.create_task(finish_shutdown())
             cancelled = await _wait_cleanup_owner(drain_owner)
             if cancelled is not None:
                 raise cancelled
@@ -884,27 +930,14 @@ def _install_stream_cleanup(route: APIRoute) -> bool:
                     primary = exc
                 aclose = getattr(body_iterator, "aclose", None)
                 if aclose is not None:
-                    async def close() -> None:
-                        with anyio.fail_after(_STREAM_CLEANUP_TIMEOUT_S, shield=True):
-                            await aclose()
-
                     # An own task protects closure from raw repeated Task.cancel
                     # as well as AnyIO level cancellation in surrounding scopes.
-                    close_task = asyncio.create_task(close())
-                    owner = asyncio.create_task(run_in_background(
-                        close_task, what="generated route tool", verb="iterator close",
-                        wait_s=_STREAM_CLEANUP_TIMEOUT_S,
-                    ))
+                    owner = asyncio.create_task(_finish_iterator_close(aclose))
+                    owners = _STREAM_CLEANUP_OWNERS.get()
+                    if owners is not None:
+                        owners.append(owner)
                     cancelled = await _wait_cleanup_owner(owner)
-                    primary = primary or cancelled
-                    try:
-                        if close_task.done():
-                            close_task.result()
-                        else:
-                            close_task.cancel()
-                            raise TimeoutError("generated iterator close timed out")
-                    except BaseException as exc:
-                        primary = primary or exc
+                    primary = primary or cancelled or owner.result()
                 if primary is not None:
                     raise primary
 

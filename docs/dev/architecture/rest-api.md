@@ -136,7 +136,15 @@ streaming producer without a legacy disconnect task group's repeated
 cancellation of the producer's own async finalizer. Explicit iterator closure
 and producer shutdown run on their own tasks using the shared shielded-cleanup
 pattern, with a separate one-second wait bound. The transport owns one cancel
-request per dispatch, independent of the producer's historical cancellation
+request per dispatch. A per-dispatch context shares the active bounded iterator
+cleanup owners with the transport: if the producer wait expires first, dispatch
+still drains those owners instead of returning before iterator cancellation.
+An iterator that exceeds its close bound is cancelled and receives one further
+bounded settlement interval; one that suppresses cancellation remains referenced
+by the shared background helper, without holding dispatch indefinitely. This
+context is inherited only by that app task and is restored in the caller before
+waiting, so concurrent dispatches do not share cleanup owners. The transport's
+cancel request is independent of the producer's historical cancellation
 counter. Repeated caller cancellation is recorded while waiting with
 `asyncio.wait`, then propagated without cancelling the cleanup task. A primary
 producer/caller failure takes precedence over closure failure; an otherwise
