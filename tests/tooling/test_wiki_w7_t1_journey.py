@@ -17,6 +17,7 @@ from tests.e2e.test_wiki_w7_t1_lifecycle import (
     isolated_config,
     mcp_http_client,
     prepare_wiki,
+    transcript_records,
 )
 
 
@@ -93,3 +94,35 @@ def test_scoped_fixture_is_accepted_by_the_real_wiki_loader_and_builder(tmp_path
     built = build_wiki(wiki, tool_entries(), legacy_pages={})
     page = built.pages["runbooks/manage-a-workspace"]
     assert page.kind == "guide" and source["runbooks/manage-a-workspace"].body in page.body
+
+
+def _event(kind, payload):
+    from datetime import UTC, datetime
+
+    from primer.model.workspace_session import SessionMessageRecord
+
+    return SessionMessageRecord(seq=1, kind=kind, payload=payload, created_at=datetime.now(UTC)).model_dump(mode="json")
+
+
+def test_real_event_and_raw_message_shapes_do_not_hide_error_or_cancel_records():
+    from primer.model.chat import Message, TextPart, ToolResultPart
+
+    answer = _event("assistant_token", {"text": "FILE-ANSWER:café\n"})
+    raw = Message(role="assistant", parts=[TextPart(text="duplicate raw answer")]).model_dump(mode="json")
+    tool = Message(role="tool", parts=[ToolResultPart(id="read", output="ok", error=False)]).model_dump(mode="json")
+    for kind in ("error", "cancelled", "done"):
+        event = _event(kind, {})
+        records = transcript_records([answer, raw, tool, event])
+        assert records == [answer, event]
+        assert assistant_text(records) == "FILE-ANSWER:café\n"
+        assert any(row["kind"] in {"error", "cancelled"} for row in records) == (kind != "done")
+
+
+@pytest.mark.parametrize("row", [
+    {}, {"role": "assistant", "parts": []}, {"kind": "unknown", "payload": {}},
+    {"kind": "done", "payload": {}}, "not a row",
+    {"role": "tool", "parts": [{"type": "tool_result", "id": "read", "output": "failed", "error": True}]},
+])
+def test_malformed_transcript_or_failed_raw_tool_result_fails_closed(row):
+    with pytest.raises((AssertionError, ValueError)):
+        transcript_records([row])
