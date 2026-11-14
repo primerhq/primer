@@ -21,6 +21,7 @@ The platform is configured through the operator (an admin tells the operator to 
 | register an MCP server as a toolset and grant its tools | [runbooks/new-functionality](runbooks/new-functionality) (branch A) + [toolsets/mcp-toolsets](toolsets/mcp-toolsets) |
 | write python code as a toolset and register it | [runbooks/new-functionality](runbooks/new-functionality) (branch B) + [toolsets/python-toolsets](toolsets/python-toolsets) |
 | work with workspaces, sessions and agents (create, files, start a session, manage) | [workspaces/](workspaces) + [sessions/](sessions) + [agents/](agents) |
+| create or manage a workspace (from a template; its files; starting a session; what deletion destroys) | [runbooks/manage-a-workspace](runbooks/manage-a-workspace) |
 | coordinate multiple agents in one workspace (the coordinator and sub-agents file pattern, the other coordination surfaces) | [collaboration/coordinator-pattern](collaboration/coordinator-pattern) + [collaboration/other-patterns](collaboration/other-patterns) |
 | build a wiki-driven agent (the prompt that teaches the wiki loop, the smallest grant, the characterization probe) | [agents/wiki-driven-agent](agents/wiki-driven-agent) |
 | understand what the access model allows (the roles, the grants, what "admin" means) | [start-here/roles-and-approvals](start-here/roles-and-approvals) |
@@ -40,6 +41,7 @@ One row per runbook as it lands (the authoring rule and the citation rule: [runb
 | change the search engine (semantic search provider) | [runbooks/change-search-engine](runbooks/change-search-engine) |
 | moderate a request (plan it, create a separate workspace, launch the agents and sessions in it) | [runbooks/moderate-a-request](runbooks/moderate-a-request) |
 | read the status of every visible workspace and session (which are running, which are parked and why) | [runbooks/workspace-status](runbooks/workspace-status) |
+| manage a workspace (create from a template, files, sessions, deletion) | [runbooks/manage-a-workspace](runbooks/manage-a-workspace) |
 | the authoring rule for a new runbook (structure, citation, index row) | [runbooks/conventions](runbooks/conventions) |
 
 ## The operator's own roles
