@@ -113,6 +113,12 @@ a one-line reason; it may not simply be omitted.
   docs step), so the narrowed sweep excludes it instead of executing the same
   assertions twice. CI seeds coverage in the docs step and uses
   `--cov-append` in the narrowed sweep, preserving one combined coverage gate.
+  CI also logs the 100 slowest test phases and uploads a `unit-timings` artifact
+  (suffixed with the run attempt) containing JUnit XML for seven days. Its
+  testcase durations include setup, call and teardown; use them to measure
+  module costs before planning shards. Upload is best-effort, and a hard
+  timeout can prevent XML from being written. Test selection and gates are
+  unchanged.
   The suite runs in parallel by default (`-n auto --dist loadscope` is baked
   into `addopts`). `loadscope` keeps each module's tests on one worker because
   a few `tests/api` modules use module/class-scoped fixtures that do not

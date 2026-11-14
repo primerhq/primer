@@ -80,6 +80,20 @@ jobs:
           --cov-append
           --cov=primer --cov-report=xml --cov-report=term-missing
           --cov-fail-under=80
+          --junitxml=test-results/unit.xml -o junit_duration_report=total
+          --durations=100
+      # Keep per-test setup/call/teardown totals for evidence-based module
+      # sharding. Reporting does not change selection or the coverage gate.
+      # A hard timeout may prevent pytest from writing the XML at all.
+      - name: Upload unit timings
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-timings-${{ github.run_attempt }}
+          path: test-results/unit.xml
+          if-no-files-found: warn
+          retention-days: 7
       # Upload to Codecov so it posts the PR comment + project/patch status.
       # if: always() so coverage still uploads when a later step fails; the
       # upload is best-effort (needs CODECOV_TOKEN + the Codecov GitHub app on
