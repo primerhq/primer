@@ -29,7 +29,7 @@ Derived state: `path` mirrors the parent chain and chunk metadata mirrors `path`
 
 Explicit lifecycle over ambient work: indexing happens when an operator enables search, not on every boot. A failure leaves a partial index and an error state rather than retrying invisibly.
 
-Degrade with a pointer: a surface that cannot serve a request says what will. Semantic search on a grep-only collection returns a conflict naming `grep_collection`; a document read that misses names the siblings it did find.
+Degrade with a pointer: a surface that cannot serve a request says what will. An explicit semantic query on a grep-only collection returns a conflict naming the available fulltext, literal and regex modes; a document read that misses names the siblings it did find.
 
 ## 4. Code layout
 
@@ -173,3 +173,5 @@ app lifespan calls it at shutdown. Called without `coalesce` (the default) `conv
 event drops it, and every full pass reads it fresh. `DocumentTreeService.read(..., with_children=False)` skips the child listing
 (`_converge` and the live-map compares only look at the page), `has_children` is one `parent_id IN (...)` query per read, and
 `tree()` walks one query per level, so the boot pass and the prune walks are O(pages) reads.
+
+The agent-facing [ingestion runbook](../../wiki/runbooks/ingest-a-knowledge-base.md) and [collection-search runbook](../../wiki/runbooks/enable-collection-search.md) pin the generated route-backed tools: enable/disable require owner, ZIP import requires full, and all three ship required approval gates. Import uses base64 bytes in the generated multipart body and reports partial conflicts; a metadata row alone is not stored document content.

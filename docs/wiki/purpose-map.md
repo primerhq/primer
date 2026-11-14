@@ -24,6 +24,8 @@ The platform is configured through the operator (an admin tells the operator to 
 | create or manage a workspace (from a template; its files; starting a session; what deletion destroys) | [runbooks/manage-a-workspace](runbooks/manage-a-workspace) |
 | create or edit an agent (profile, tool grants as scoped ids, prompt, caps; prove it runs) | [runbooks/create-an-agent](runbooks/create-an-agent) |
 | create a graph and run it (validate, run in a session, read the output, clean up) | [runbooks/create-and-run-a-graph](runbooks/create-and-run-a-graph) |
+| enable semantic search on a collection (provider use, inline backfill, verify hits) | [runbooks/enable-collection-search](runbooks/enable-collection-search) |
+| ingest a knowledge base into a collection and search its actual text | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) |
 | coordinate multiple agents in one workspace (the coordinator and sub-agents file pattern, the other coordination surfaces) | [collaboration/coordinator-pattern](collaboration/coordinator-pattern) + [collaboration/other-patterns](collaboration/other-patterns) |
 | build a wiki-driven agent (the prompt that teaches the wiki loop, the smallest grant, the characterization probe) | [agents/wiki-driven-agent](agents/wiki-driven-agent) |
 | understand what the access model allows (the roles, the grants, what "admin" means) | [start-here/roles-and-approvals](start-here/roles-and-approvals) |
@@ -46,6 +48,8 @@ One row per runbook as it lands (the authoring rule and the citation rule: [runb
 | manage a workspace (create from a template, files, sessions, deletion) | [runbooks/manage-a-workspace](runbooks/manage-a-workspace) |
 | create or edit an agent and verify its answer | [runbooks/create-an-agent](runbooks/create-an-agent) |
 | create and run a graph, collect its actual output | [runbooks/create-and-run-a-graph](runbooks/create-and-run-a-graph) |
+| enable or disable collection search and prove retrieval | [runbooks/enable-collection-search](runbooks/enable-collection-search) |
+| ingest text and a ZIP knowledge base, then verify stored bodies and hits | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) |
 | the authoring rule for a new runbook (structure, citation, index row) | [runbooks/conventions](runbooks/conventions) |
 
 ## The operator's own roles
