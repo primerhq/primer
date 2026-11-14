@@ -77,8 +77,15 @@ A session has two persisted faces that are reconciled at turn boundaries:
   Compaction, rewind and ordinary terminal writes remain preservation paths.
 - S4.3 wires authenticated decisions for classic session `ask_user` and tool
   approval gates only. The existing park-to-resumable CAS now also reserves a
-  typed, payload-digest-only responder source and projects its server-derived
-  person. Its scalar responder-version fence makes exact retries idempotent and
+  typed, payload-digest-only responder source. An `ask_user` answer projects its
+  server-derived person. An approval reservation records the approver for audit
+  only: approval or rejection preserves the parked turn's person and every
+  projection field, including a peer-steered or legacy unprojected baseline.
+  `ToolApprovalRecord.decided_by` still identifies the approver. The generic
+  reservation projector refuses approval reservations, so replay cannot lend
+  that approver's role or private access to the continuation. Worker builds
+  still recheck the parked person's current role, account and resource access.
+  Its scalar responder-version fence makes exact retries idempotent and
   lets a retry repair a missing lease without restamping acceptance; competing
   gate leaves merge through a bounded fresh-row CAS retry. Automated timeouts,
   machine rejects, cancels and ChannelInbox replies create no reservation and

@@ -211,7 +211,13 @@ async def test_tool_approval_respond_flips_row_without_listener(app, client):
     assert reservation.domain == "tool_approval"
     assert reservation.person.display == "testuser"
     assert reservation.person.user_id == reservation.person.id
-    assert row.turn_person_source_key in row.responder_reservations
+    assert (
+        row.turn_person, row.turn_person_seq, row.turn_person_at,
+        row.turn_person_epoch, row.turn_person_source_key,
+    ) == (
+        sess.turn_person, sess.turn_person_seq, sess.turn_person_at,
+        sess.turn_person_epoch, sess.turn_person_source_key,
+    )
 
 
 @pytest.mark.asyncio
