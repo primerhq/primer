@@ -143,6 +143,16 @@ A commit message is one record the parsers can read back (ticket 01a11fbc-ffea).
 - **Local** (`LocalWorkspace.get_session`): on an in-memory miss it reloads `session.json` + `agent.json` from `<root>/.state/sessions/<sid>/` and rebuilds the `AgentSession`; `None` only when no slot exists on disk.
 - **Container / k8s** (`SandboxWorkspace.get_session` / `list_sessions`): identical contract, but the `.state/` tree is a runtime-managed git repo reached over the WebSocket, so the slot is reloaded via `SandboxStateRepo.load_session_info` / `load_agent_binding` (the `STATE_READ` op). `list_sessions` first enumerates every persisted session via `SandboxStateRepo.list_session_ids`, which collects the distinct, non-empty `Session:` trailers from the `state_history` (`STATE_HISTORY`) commit log (the transport-agnostic parallel to the local backend's on-disk `sessions/` scan) and rebuilds any handle not already cached. `remove_session` unbinds the in-memory handle (the on-disk slot is reaped by the DELETE handler), matching the local backend so a rehydrating `list_sessions` does not re-surface a deleted session. The in-memory fast path is always tried first; rehydration runs only on a miss.
 
+The REST and curated-tool session get/list readers overlay the durable row
+through `primer.session.slot_view`. Alongside lifecycle and last-turn
+failure fields, `SessionInfo.binding` carries the row's current kind,
+agent/graph id, profile id and binding epoch; frozen agent/graph snapshots
+are omitted. A missing or stale on-disk binding never overrides the row.
+The legacy display `agent_id` and other slot display fields stay as stored,
+and serving the view does not rewrite the slot. A missing row, a row from
+another workspace or an unavailable row store keeps the existing slot
+fallback.
+
 Workspace-handle re-attach (rebuilding the whole `SandboxWorkspace` after a restart, not just one session) needs the live runtime connection back, which means recovering the per-workspace bearer token the platform does not keep in process memory:
 
 - **Container** (`DockerRuntimeAdapter.get_sandbox`): looks the container up by name (`workspace-<id>`) and reads `Config.Env`, `Config.WorkingDir` and the live `Mounts` inventory from `docker inspect`. A new container re-attaches only when one canonical, non-root `WORKSPACE_ROOT` matches the canonical WorkingDir and a real `Type=volume` mount at that path. A legacy container with no `WORKSPACE_ROOT` may recover only when both its WorkingDir and volume mount are the old `/workspace` default. An explicitly invalid or mismatched root, a custom WorkingDir with no root, or a missing/malformed/non-matching mount inventory raises `ConfigError` before the runtime connection is opened. The token still comes from `PRIMER_RUNTIME_TOKEN`, falling back to `RUNTIME_TOKEN`; an absent token returns `None`. The recovered token and proven root are used to rebuild the live `WSSandbox` and `SandboxWorkspace`.

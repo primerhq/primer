@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from primer.model.workspace_session import AgentSessionBinding, SessionInfo, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionInfo, SessionStatus, WorkspaceSession
 from primer.session.slot_view import overlay_row_on_info, overlay_row_on_slot_info, overlay_rows_on_infos
 
 NOW = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
@@ -99,13 +99,15 @@ def test_a_pause_shows_through_a_slot_that_says_running_or_waiting(slot_status):
         (SessionStatus.RUNNING, SessionStatus.CREATED),
     ],
 )
-def test_the_other_live_combinations_are_left_alone(slot_status, row_status):
+def test_the_other_live_lifecycle_combinations_are_left_alone(slot_status, row_status):
     slot = _slot(status=slot_status)
 
-    assert overlay_row_on_info(slot, _row(status=row_status), workspace_id="ws-1") == slot
+    assert overlay_row_on_info(slot, _row(status=row_status), workspace_id="ws-1") == slot.model_copy(update={
+        "binding": {"kind": "agent", "agent_id": "ag-row", "profile_id": None, "binding_epoch": 0},
+    })
 
 
-def test_only_the_lifecycle_fields_are_derived():
+def test_the_overlay_preserves_the_slots_display_fields():
     slot = _slot(status=SessionStatus.RUNNING)
     row = _row(ended_reason="failed", ended_detail="never_started", ended_at=ROW_ENDED_AT)
 
@@ -114,6 +116,24 @@ def test_only_the_lifecycle_fields_are_derived():
     assert (got.name, got.agent_id, got.session_id, got.started_at, got.last_activity_at) == (
         "friendly", "ag-slot", "s1", NOW, NOW,
     )
+
+
+@pytest.mark.parametrize("status", [*LIVE, SessionStatus.ENDED])
+@pytest.mark.parametrize("binding", [
+    AgentSessionBinding(agent_id="current-agent", profile_id="current-profile"),
+    GraphSessionBinding(graph_id="current-graph", profile_id="current-profile"),
+])
+@pytest.mark.parametrize("slot_binding", [None, {"kind": "agent", "agent_id": "stale-agent"}])
+def test_durable_binding_is_served_for_every_lifecycle_state(status, binding, slot_binding):
+    slot = _slot(binding=slot_binding)
+    row = _row(status=status).model_copy(update={"binding": binding, "binding_epoch": 7})
+
+    got = overlay_row_on_info(slot, row, workspace_id="ws-1")
+
+    target = {"agent_id": "current-agent"} if binding.kind == "agent" else {"graph_id": "current-graph"}
+    assert got.binding == {"kind": binding.kind, "profile_id": "current-profile", "binding_epoch": 7, **target}
+    assert got.agent_id == "ag-slot"  # the legacy display value is not the current binding
+    assert slot.binding == slot_binding  # serving a view does not rewrite the runtime slot
 
 
 # ---- reading the rows ---------------------------------------------------------------------------------------------------

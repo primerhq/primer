@@ -11,17 +11,65 @@ alive (a handle closed under a parked session). The row wins in every case: a sl
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
 
-from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionStatus, WorkspaceSession
 
 # Re-export so pytest can resolve the fixtures (fake workspace backend, seeded workspace and agent, client).
 from tests.api.test_sessions import app, seeded_agent, seeded_workspace, sessions_client  # noqa: F401
 
 SLOT_ENDED_AT = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
 ROW_ENDED_AT = datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("binding", [
+    AgentSessionBinding(agent_id="current-agent", profile_id="current-profile"),
+    GraphSessionBinding(graph_id="current-graph", profile_id="current-profile"),
+])
+@pytest.mark.parametrize("slot_binding", [None, {"kind": "agent", "agent_id": "stale-agent"}])
+async def test_durable_binding_reaches_rest_and_curated_tool_get_and_list(
+    sessions_client, seeded_workspace, seeded_agent, app, binding, slot_binding,
+):
+    from primer.model.principal import PrincipalRef
+    from primer.model.yield_ import ToolContext
+    from primer.toolset.workspaces import build_workspaces_toolset
+
+    sid = await _new_session(sessions_client, seeded_workspace, seeded_agent)
+    wid = seeded_workspace.id
+    await _row_says(app, sid, binding=binding, binding_epoch=7)
+    await _slot_says(app, wid, sid, binding=slot_binding)
+    slot = await (await app.state.workspace_registry.get_workspace(wid)).get_session(sid)
+    legacy_agent = (await slot.info()).agent_id
+    target = {"agent_id": "current-agent"} if binding.kind == "agent" else {"graph_id": "current-graph"}
+    expected = {"kind": binding.kind, "profile_id": "current-profile", "binding_epoch": 7, **target}
+
+    got = await sessions_client.get(f"/v1/workspaces/{wid}/sessions/{sid}")
+    assert got.status_code == 200, got.text
+    listed = await sessions_client.get(f"/v1/workspaces/{wid}/sessions")
+    assert listed.status_code == 200, listed.text
+    views = [got.json()["info"], next(item for item in listed.json()["items"] if item["session_id"] == sid)]
+    toolset = build_workspaces_toolset(
+        storage_provider=app.state.storage_provider, workspace_registry=app.state.workspace_registry,
+    )
+    ctx = ToolContext(tool_call_id="binding-view", session_id=None, workspace_id=None, initiated_by=PrincipalRef(
+        type="user", id="admin", display="admin", role="admin", source="local",
+    ))
+    for name in ("get_workspace_session", "list_workspace_sessions"):
+        arguments = {"workspace_id": wid}
+        if name == "get_workspace_session":
+            arguments["session_id"] = sid
+        result = await toolset.call(tool_name=name, arguments=arguments, ctx=ctx)
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        views.append(body["info"] if "info" in body else next(item for item in body["items"] if item["session_id"] == sid))
+    for view in views:
+        assert view["binding"] == expected  # exact keys exclude frozen agent/graph snapshots
+        assert view["agent_id"] == legacy_agent
+    assert (await slot.info()).binding == slot_binding
 
 
 async def _new_session(sessions_client, seeded_workspace, seeded_agent) -> str:
