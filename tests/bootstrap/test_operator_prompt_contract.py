@@ -110,6 +110,24 @@ def test_operator_coordinates_sessions() -> None:
     assert "list_my_sessions" in text and "message_session" in text
 
 
+def test_operator_moderates_separate_workspaces() -> None:
+    """W6: the moderator role - plan it, create a separate workspace, launch the sessions in it,
+    walking the named runbook and stopping at its gates."""
+    text = _operator_text()
+    assert "moderator" in text
+    assert "separate workspace" in text
+    assert "runbooks/moderate-a-request" in text
+
+
+def test_operator_surveys_all_visible_workspaces_as_bookkeeper() -> None:
+    """W6: the bookkeeper role moves past the own-workspace view: list_workspaces + find_sessions
+    across every workspace the user may read, with the named runbook."""
+    text = _operator_text()
+    assert "bookkeeper" in text
+    assert "list_workspaces" in text and "find_sessions" in text
+    assert "runbooks/workspace-status" in text
+
+
 def test_builder_reads_before_it_writes_and_expects_the_gate() -> None:
     text = _builder_text()
     assert all(w in text for w in ("wiki", "call_tool", "approval"))

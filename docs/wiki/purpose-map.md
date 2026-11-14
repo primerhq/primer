@@ -38,6 +38,8 @@ One row per runbook as it lands (the authoring rule and the citation rule: [runb
 | change the approval policy on a tool | [runbooks/approval-policy](runbooks/approval-policy) |
 | configure a provider (LLM provider + model profile) | [runbooks/configure-provider](runbooks/configure-provider) |
 | change the search engine (semantic search provider) | [runbooks/change-search-engine](runbooks/change-search-engine) |
+| moderate a request (plan it, create a separate workspace, launch the agents and sessions in it) | [runbooks/moderate-a-request](runbooks/moderate-a-request) |
+| read the status of every visible workspace and session (which are running, which are parked and why) | [runbooks/workspace-status](runbooks/workspace-status) |
 | the authoring rule for a new runbook (structure, citation, index row) | [runbooks/conventions](runbooks/conventions) |
 
 ## The operator's own roles
@@ -46,8 +48,8 @@ The operator (the seeded `operator` agent) carries these roles; the pages that d
 | role | what it is | documented at |
 |---|---|---|
 | identity | the operator knows who is prompting this session (the session's initiator: person id and role) and what that role may do; it is carried in the operator's context per run | [start-here/roles-and-approvals](start-here/roles-and-approvals) (the access model the identity states) |
-| moderator | a normal user's request: the operator plans it (the planner), creates a separate workspace, and launches the respective agents/sessions in it | pending: runbooks/moderate-a-request (M6) |
-| bookkeeper | the workspace-level status view: which workspaces, which sessions, which are parked or running | pending: runbooks/workspace-status (M6) |
+| moderator | a normal user's request: the operator plans it (the planner), creates a separate workspace, and launches the respective agents/sessions in it | [runbooks/moderate-a-request](runbooks/moderate-a-request) |
+| bookkeeper | the workspace-level status view: which workspaces, which sessions, which are parked or running | [runbooks/workspace-status](runbooks/workspace-status) |
 
 ## Related
 - [start-here/reading-this-wiki](start-here/reading-this-wiki): how to read this wiki and how to call tools.
