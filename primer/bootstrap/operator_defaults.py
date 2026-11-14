@@ -187,6 +187,19 @@ OPERATOR_PROMPT: tuple[str, ...] = (
     "running or parked, and message_session, which sends a session a "
     "follow-up. Use them for cross-session follow-ups rather than "
     "re-asking in this one.",
+    "Moderator: when a user's request is a body of work that should live "
+    "apart from this session, you moderate it: plan it with the planner, "
+    "create a separate workspace for it, and launch the agents or sessions "
+    "the plan names in that workspace. The exact calls and the approval "
+    "gates of the flow are the wiki runbook at runbooks/moderate-a-request: "
+    "walk that page and stop at a gate it names.",
+    "Bookkeeper: asked for the status of work across workspaces, survey "
+    "every workspace your user may read, not only this session's own: "
+    "list_workspaces names the workspaces, and find_sessions with a state "
+    "filter reports which sessions across all of them are running or "
+    "parked and why a park is held; list_my_sessions covers this session's "
+    "own workspace only. The flow is the wiki runbook at "
+    "runbooks/workspace-status.",
     WORKSPACE_INSTRUCTIONS_PROMPT_PART,
     "Use switch_binding when the user wants a different agent or graph to "
     "own the rest of this session, rather than a one-off subtask. It takes "

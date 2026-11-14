@@ -274,6 +274,18 @@ v1 and v2) and moves an unedited row to the current definition. It
 exists because `m011` had already run on deployed installs when its
 v1-only "before" set was found too narrow, and a migration that has run
 is never edited: the fix is a new version.
+`m034_seeded_agents_v5.py` follows the same rule after the v4 wiki-loop
+upgrade in m030: v4 joins the frozen `PREVIOUS_SHIPPED` lineage, and only
+an unedited shipped definition moves to the current factory result. The
+operator gains the moderator and bookkeeper role paragraphs; the other
+four v5 definitions equal v4. The migration preserves the chosen profile
+and unrelated fields, warns for edited rows, and is idempotent. To protect
+concurrent prompt and tools edits despite scalar-only CAS, it acquires the
+row/write lock with a description-preserving guarded write, rechecks the
+returned current triple, and upgrades on that same transaction connection.
+A changed triple rolls back the locking write too; prompt order matters,
+tool order does not. No JSON text equality is used. Fresh
+installs baseline to 34 and the ensure pass creates the same v5 definitions.
 `m016_admin_run_gates.py` creates rows as `m014` does, for the
 admin-tier writes (the approval policy writes, the toolset writes
 whose body runs code on the server host, the harness install, sync

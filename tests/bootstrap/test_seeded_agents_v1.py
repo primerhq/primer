@@ -20,14 +20,25 @@ from primer.bootstrap.seeded_agents_v1 import (
     SEEDED_AGENTS_V1,
     SEEDED_AGENTS_V2,
     SEEDED_AGENTS_V3,
+    SEEDED_AGENTS_V4,
     SeededDefinition,
     definition_digest,
 )
 
-#: The sha256 of each definition the current factories build (v4: wiki-first
-#: M1 - the prompts rebuilt around the wiki loop, the operator's guarded
-#: identity block).
+#: The sha256 of each definition the current factories build (v5: wiki-first
+#: W6 - v4 with the operator's moderator and bookkeeper role text; the other
+#: four agents are v4 unchanged).
 CURRENT_DIGESTS = {
+    "operator": "8fbae26627078ac161ebcbe81f8d7fbac22bc8029f51a0cb631a1d435b706494",
+    "builder": "b6fc3fe467e62801e6892ce55eab103532d70f7cfb18593cb5a070de8a4bdabf",
+    "planner": "40f5bf20f0a6cc4e815ff50b626f5b465312ca5fdfa075f69daf3dabdb04b10b",
+    "explorer": "50f932123849c0e47f83139fe7c8aeebdb5b7038606ac5954b1e5f1068f6413e",
+    "tool-runner": "09faecd91c39b521838833c10a8be9256f0ddea0904e14c600e9fa5bd96b7d3b",
+}
+
+#: The v4 freeze (wiki-first M1's current shapes; migration 34 moves an
+#: unedited row from here to v5).
+_V4_DIGESTS = {
     "operator": "cc159f97a6d55488666189b366b063bccc28b0f1a1301fd47b64313cdd69975d",
     "builder": "b6fc3fe467e62801e6892ce55eab103532d70f7cfb18593cb5a070de8a4bdabf",
     "planner": "40f5bf20f0a6cc4e815ff50b626f5b465312ca5fdfa075f69daf3dabdb04b10b",
@@ -123,7 +134,7 @@ def test_v2_is_the_core_kit_definition_migration_11_wrote():
 
 
 def test_previous_shipped_holds_every_shipped_definition_once_in_shipping_order():
-    builds = (*SEEDED_AGENTS_AUGUST.values(), SEEDED_AGENTS_V1, SEEDED_AGENTS_V2, SEEDED_AGENTS_V3)
+    builds = (*SEEDED_AGENTS_AUGUST.values(), SEEDED_AGENTS_V1, SEEDED_AGENTS_V2, SEEDED_AGENTS_V3, SEEDED_AGENTS_V4)
     assert set(PREVIOUS_SHIPPED) == set(SEEDED_AGENT_FACTORIES)
     for agent_id, lineage in PREVIOUS_SHIPPED.items():
         expected: list[str] = []
@@ -136,6 +147,11 @@ def test_previous_shipped_holds_every_shipped_definition_once_in_shipping_order(
 def test_v3_is_frozen_as_the_v4_base():
     """The v3 definitions (migration 30's before half) are pinned verbatim."""
     assert {k: definition_digest(v) for k, v in SEEDED_AGENTS_V3.items()} == _V3_DIGESTS
+
+
+def test_v4_is_frozen_as_the_v5_base():
+    """The v4 definitions (migration 34's before half) are pinned verbatim."""
+    assert {k: definition_digest(v) for k, v in SEEDED_AGENTS_V4.items()} == _V4_DIGESTS
 
 
 def test_v4_carries_the_wiki_loop_and_keeps_the_agents_md_part():
@@ -161,6 +177,22 @@ def test_v4_carries_the_wiki_loop_and_keeps_the_agents_md_part():
     for agent_id in ("builder", "planner", "explorer", "tool-runner"):
         assert current[agent_id].description == SEEDED_AGENTS_V3[agent_id].description
         assert current[agent_id].tools == SEEDED_AGENTS_V3[agent_id].tools
+
+
+def test_v5_adds_only_the_moderator_and_bookkeeper_role_text():
+    """W6: the operator's v4->v5 diff is exactly the two role paragraphs,
+    each naming its wiki runbook; the bookkeeper moves past the
+    own-workspace view."""
+    v4 = SEEDED_AGENTS_V4["operator"]
+    v5 = _current()["operator"]
+    assert v5.description == v4.description
+    assert v5.tools == v4.tools
+    added = [p for p in v5.system_prompt if p not in v4.system_prompt]
+    assert len(added) == 2
+    joined = "\n\n".join(added)
+    assert "runbooks/moderate-a-request" in joined
+    assert "runbooks/workspace-status" in joined
+    assert "list_workspaces" in joined and "find_sessions" in joined
 
 
 def test_the_current_definitions_are_pinned():

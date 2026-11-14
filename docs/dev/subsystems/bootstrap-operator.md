@@ -93,6 +93,21 @@ The five seeded agents are ordinary `Agent` rows. Their `model.profile_id` is re
 
 The system collection is a `Collection` with `system=True` at id `system`, holding a document tree: `index` (the platform wiki's table of contents), `reference/` (one generated page per tool, under `reference/tools/<toolset>/<tool>`), `this-install/` (the live install map: agents, graphs, collections, workspaces and providers) and the legacy `docs/` and `how-to/` layers, kept verbatim until their replacements are written.
 
+The operator's v5 prompt adds two wiki-backed roles. The moderator plans
+with the planner, creates a separate workspace and launches the plan's
+sessions through the existing tool surfaces (`runbooks/moderate-a-request`).
+The bookkeeper reads all visible workspaces with `list_workspaces` and
+`find_sessions`, reporting running work and the recorded park reasons
+(`runbooks/workspace-status`); `list_my_sessions` remains the own-workspace
+view. Migration 34 freezes v4 and upgrades only recognized unedited shipped
+rows; edited operator prompts, grants and unrelated fields stay in place.
+The migration acquires the database row/write lock with a guarded
+description-preserving write, rechecks the returned current triple, then
+upgrades on the same transaction connection. A changed prompt or tools
+list is preserved; a rejection rolls back the locking write as well.
+The ensure pass seeds v5 on fresh installs, and explicit setup reset still
+restores the current shipped definition.
+
 ## 6. Lifecycle
 
 Startup order: storage init, migrations, `run_first_boot_bootstrap`, `ensure_admin_exists`, the reserved toolset construction (the ensure pass needs the built toolsets to describe them), then `run_ensure_pass`, then serving. The pass is best-effort per step: a step that raises is recorded in `EnsureResult.errors` and logged, and the next boot retries it, because a half-seeded install that still serves is better than one that refuses to start.
@@ -129,8 +144,8 @@ Nothing here writes a marker of its own. Re-running the pass is the repair mecha
 - `reset_agents` overwrites exactly three fields (`description`, `system_prompt`, `tools`) on the five seeded rows. `model.profile_id` is preserved when the row exists, and resolved from the default profile only when the row is being created. Nothing else in storage is touched.
 - Agent seeding requires a default model profile; without one it skips and repairs on the next pass.
 - No seeded agent holds the crud toolset directly. Every agent reaches construction through `call_tool`, and the per-tool approval gate runs on the crud tools whatever the path (the meta-dispatch enforces the same gate a direct grant would), so the agent a human talks to cannot mutate the platform without approval. That holds at an admin's rank too: the gates do not read the run's role, and the writes an admin-only tool makes (approval policies, harness installs) and the toolset writes that run code on the host are gated as well.
-- Migrations 11 (`m011_seeded_agents_core_kit.py`) and 15 (`m015_seeded_agents_v3.py`) are the only paths that rewrite a stored seeded row in place: each upgrades a row to the current definition only while it still equals a previously shipped one (`PREVIOUS_SHIPPED` in `primer/bootstrap/seeded_agents_v1.py`: same description, same prompt list, tools as a set), writes only `description`, `system_prompt` and `tools` through a `patch_if` guarded on the stored description, and leaves an edited row exactly as it is, naming it in one boot warning. Both read the live `PREVIOUS_SHIPPED` and the live factories, so on an install that has not yet run 11 it moves every unedited row (an August one included) straight to the current definition and 15 finds nothing to do; on an install that ran 11 when `PREVIOUS_SHIPPED` held only v1 (dogfood, k3s), 15 moves the August rows 11 left. The guard compares the description only (a `where` takes JSON scalars), so an edit of only the prompt or the tools landing between the read and the write is not detected. `POST /v1/setup/reset_agents` is the explicit way back.
-- The seed (`ensure_seeded_agents`), the setup reset and both migrations iterate `SEEDED_AGENT_FACTORIES`; none keeps a roster of its own (audit G7-11).
+- The seeded-row migrations 11 (`m011_seeded_agents_core_kit.py`), 15 (`m015_seeded_agents_v3.py`), 30 (`m030_seeded_agents_v4.py`) and 34 (`m034_seeded_agents_v5.py`) rewrite a stored seeded row in place: each upgrades a row to the current definition only while it still equals a previously shipped one (`PREVIOUS_SHIPPED` in `primer/bootstrap/seeded_agents_v1.py`: same description, same prompt list, tools as a set), writes only `description`, `system_prompt` and `tools`, and leaves an already edited row exactly as it is, naming it in one boot warning. These migrations read the live `PREVIOUS_SHIPPED` and the live factories, so on an install that has not yet run 11 it moves every unedited row (an August one included) straight to the current definition and 15 finds nothing to do; on an install that ran 11 when `PREVIOUS_SHIPPED` held only v1 (dogfood, k3s), 15 moves the August rows 11 left. Historical migrations 11, 15 and 30 guard the description only (a `where` takes JSON scalars), so a concurrent prompt-only or tools-only edit in those steps is not detected. Migration 34 adds the transaction/lock/recheck protocol described above, protecting its full shipped triple; prompt order matters, while tool order does not count as an edit. `POST /v1/setup/reset_agents` is the explicit way back.
+- The seed (`ensure_seeded_agents`), the setup reset and these migrations iterate `SEEDED_AGENT_FACTORIES`; none keeps a roster of its own (audit G7-11).
 - The system collection is regenerated at every pass: the live map under `this-install/` is rebuilt from live state whatever the wiki stamp says and pruned (a deleted workspace or provider disappears from the map on the next boot), while the platform wiki is written only when the version stamp lets this build replace the stored one - a build with no hand-written pages or a skipped toolset never claims the stamp and never deletes stored pages. See the [knowledge](knowledge.md) subsystem's platform-wiki-build paragraph.
 
 ### Access (access-control)
