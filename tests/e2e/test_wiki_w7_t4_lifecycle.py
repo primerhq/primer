@@ -20,6 +20,7 @@ import sys
 import httpx
 import pytest
 
+from primer.model.workspace_session import SessionInfo
 from tests._support.mock_llm import Rule
 from tests._support.mock_slack_wire import SlackWire, slack_server
 from tests._support.model_profiles import profile_id_for
@@ -116,6 +117,13 @@ def read_gate(items: list[dict], name: str):
     raw = [p for row in items if "kind" not in row for p in Message.model_validate(row).parts if isinstance(p, ToolResultPart)]
     assert any(p.id == name and p.error is expected_error and json.loads(p.output) == result for p in raw)
     return records, answer, result
+
+
+def read_session_info(value: dict, workspace_id: str, agent_id: str) -> SessionInfo:
+    """Workspace tools serve SessionInfo, whose identifier is session_id."""
+    info = SessionInfo.model_validate(value)
+    assert info.workspace_id == workspace_id and info.agent_id == agent_id
+    return info
 
 
 def start_server(root: Path, port: int, slack_url: str, log):
@@ -345,7 +353,8 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                     trace["manual_fire"] = diagnostic
 
                     async def session_list():
-                        return (await call("workspaces__list_workspace_sessions", {"workspace_id": workspace, "limit": 200}))["items"]
+                        page = await call("workspaces__list_workspace_sessions", {"workspace_id": workspace, "limit": 200})
+                        return [read_session_info(item, workspace, responder) for item in page["items"]]
 
                     assert await session_list() == []
                     raw = {"channel": external, "user": "UHUMAN", "ts": "1731600001.000002", "thread_ts": "1731600001.000001",
@@ -368,7 +377,7 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                     trace["inbound"] = raw
                     spawned = await session_list()
                     assert len(spawned) == 1
-                    inbound_sid = spawned[0]["id"]
+                    inbound_sid = spawned[0].session_id
 
                     async def finished(sid, text, *, anchor=None):
                         while asyncio.get_running_loop().time() < deadline:
@@ -391,7 +400,9 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                         answer, value = stage_answer(records)
                         assert value == {"received": text, "answer": "CHANNEL:" + text}
                         native = await call("workspaces__get_workspace_session", {"workspace_id": workspace, "session_id": sid})
-                        assert native["info"]["id"] == sid and native["info"]["ended_reason"] == "completed"
+                        info = read_session_info(native["info"], workspace, responder)
+                        assert info.session_id == sid and info.ended_reason == "completed"
+                        assert native["status"] == info.status.value == "ended"
                         return {"id": sid, "row": row, "items": items, "records": records, "answer": answer, "value": value, "posts": posts, "native_view": native}
 
                     inbound = await finished(inbound_sid, raw["text"], anchor=raw["thread_ts"])
@@ -486,7 +497,9 @@ def require_evidence(trace: dict, source: str, page_hash: str) -> None:
     assert trace["manual_fire"]["results"] and all(r["skipped"] and r["error_code"] == "skipped_no_match" for r in trace["manual_fire"]["results"])
     for key, prefix in (("inbound_session", "help:"), ("manual_session", "manual:")):
         session = trace[key]
-        assert session["native_view"]["info"]["id"] == session["id"] and session["native_view"]["info"]["ended_reason"] == "completed"
+        info = read_session_info(session["native_view"]["info"], trace["workspace"], binding["config"]["agent_id"])
+        assert info.session_id == session["id"] and info.ended_reason == "completed"
+        assert session["native_view"]["status"] == info.status.value == "ended"
         assert session["row"]["workspace_id"] == trace["workspace"]
         assert session["row"]["binding"]["agent_id"] == binding["config"]["agent_id"]
         assert session["row"]["initiated_by"]["user_id"] == ids["owner"] and session["row"]["initiated_by"]["role"] == "user"

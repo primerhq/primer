@@ -71,6 +71,66 @@ def test_private_transport_keeps_native_slack_sdk_with_a_local_five_second_bound
     assert conn.app.client.proxy is None and conn.app.client.timeout == 5
 
 
+async def test_journey_consumes_actual_workspace_list_and_get_session_info():
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from primer.mcp.server import current_actor
+    from primer.model.principal import Principal
+    from primer.model.workspace_session import AgentSessionBinding, SessionInfo, SessionStatus
+    from primer.toolset.workspaces import build_workspaces_toolset
+    from tests.e2e.test_wiki_w7_t4_lifecycle import read_session_info
+    from tests.session._peer_fakes import make_world, seed_session, seed_workspace
+
+    now = datetime(2026, 11, 15, tzinfo=UTC)
+    world = make_world()
+    await seed_workspace(world, "w", owners=["owner"])
+    await seed_session(world, sid="actual-session", workspace_id="w", binding=AgentSessionBinding(agent_id="ag"),
+                       status=SessionStatus.ENDED, ended_reason="completed", ended_at=now)
+    # The real tools overlay the durable completion on a stale running slot.
+    slot = SessionInfo(session_id="actual-session", agent_id="ag", workspace_id="w", status="running",
+                       started_at=now, last_activity_at=now)
+    session = SimpleNamespace(info=AsyncMock(return_value=slot))
+    workspace = SimpleNamespace(list_sessions=AsyncMock(return_value=[slot]), get_session=AsyncMock(return_value=session))
+    registry = SimpleNamespace(get_workspace=AsyncMock(return_value=workspace))
+    tools = build_workspaces_toolset(storage_provider=world.sp, workspace_registry=registry)
+    token = current_actor.set(Principal(type="user", id="owner", user_id="owner", display="owner", role="user", source="local"))
+    try:
+        listed = await tools.call(tool_name="list_workspace_sessions", arguments={"workspace_id": "w"})
+        got = await tools.call(tool_name="get_workspace_session", arguments={"workspace_id": "w", "session_id": "actual-session"})
+    finally:
+        current_actor.reset(token)
+    assert not listed.is_error and not got.is_error
+    page, detail = json.loads(listed.output), json.loads(got.output)
+    assert len(page["items"]) == page["total"] == 1
+    assert "id" not in page["items"][0] and "id" not in detail["info"]
+    first = read_session_info(page["items"][0], "w", "ag")
+    second = read_session_info(detail["info"], "w", "ag")
+    assert first == second and first.session_id == "actual-session"
+    assert first.ended_reason == "completed" and detail["status"] == first.status.value == "ended"
+    workspace.get_session.assert_awaited_once_with("actual-session")
+
+
+@pytest.mark.parametrize("mutation", ["id-only", "workspace", "agent"])
+def test_session_info_consumer_refuses_invented_or_unrelated_identity(mutation):
+    from datetime import UTC, datetime
+    from pydantic import ValidationError
+
+    from primer.model.workspace_session import SessionInfo
+    from tests.e2e.test_wiki_w7_t4_lifecycle import read_session_info
+
+    now = datetime(2026, 11, 15, tzinfo=UTC)
+    value = SessionInfo(session_id="s", agent_id="ag", workspace_id="w", status="running",
+                        started_at=now, last_activity_at=now).model_dump(mode="json")
+    if mutation == "id-only":
+        value["id"] = value.pop("session_id")
+    else:
+        value["workspace_id" if mutation == "workspace" else "agent_id"] = "other"
+    with pytest.raises((ValidationError, AssertionError)):
+        read_session_info(value, "w", "ag")
+
+
 def message_items(value, *, gate=None, arguments=None):
     from datetime import UTC, datetime
     from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart
@@ -99,7 +159,9 @@ def message_items(value, *, gate=None, arguments=None):
 
 def valid_evidence():
     import copy
+    from datetime import UTC, datetime
     from primer.bootstrap.seed import default_policy_id
+    from primer.model.workspace_session import SessionInfo
     from tests.e2e import test_wiki_w7_t4_lifecycle as journey
     from tests.e2e.test_wiki_w7_t1_lifecycle import transcript_records
     from tests.e2e.test_wiki_w7_t2_lifecycle import stage_answer
@@ -148,7 +210,10 @@ def valid_evidence():
         trace[key] = {"id": key, "row": {"initiated_by": owner, "workspace_id": "w", "binding": {"agent_id": "ag"},
                                         "metadata": metadata, "turn_status": "idle", "ended_reason": "completed"},
                       "items": items, "records": records, "answer": answer, "value": result, "posts": [post],
-                      "native_view": {"info": {"id": key, "ended_reason": "completed"}}}
+                      "native_view": {"info": SessionInfo(session_id=key, agent_id="ag", workspace_id="w", status="ended",
+                                                         ended_reason="completed", started_at=datetime(2026, 11, 15, tzinfo=UTC),
+                                                         last_activity_at=datetime(2026, 11, 15, tzinfo=UTC)).model_dump(mode="json"),
+                                      "status": "ended"}}
         trace["wire"].append({"method": "chat.postMessage", "payload": post})
     trace["inbound"] = {"text": "help: Cedar marker", "thread_ts": "incoming"}
     return copy.deepcopy(trace)
@@ -161,6 +226,10 @@ def valid_evidence():
     (("binding", "owner", "user_id"), "a"), (("binding", "payload_template"), "invented"),
     (("manual_fire", "results", 0, "skipped"), False), (("activation", "pre_http"), 200),
     (("inbound_session", "posts", 0, "thread_ts"), "wrong"), (("inbound_session", "row", "workspace_id"), "other"),
+    (("inbound_session", "native_view", "info", "session_id"), "other"),
+    (("inbound_session", "native_view", "info", "workspace_id"), "other"),
+    (("inbound_session", "native_view", "info", "agent_id"), "other"),
+    (("inbound_session", "native_view", "status"), "running"),
     (("inbound_session", "row", "ended_reason"), "failed"), (("standing", "channel_id"), "other"),
     (("default", "after", "access"), {"owners": ["a"]}), (("cleanup", 0, "get_http"), 200),
     (("wire",), []), (("checks", "trigger_deleted"), False),
