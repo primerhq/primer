@@ -14,33 +14,17 @@ import httpx
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import default_wid, open_view
+from tests.ui_e2e._platform_tools_helpers import SLOW, open_tools_page
 
 pytestmark = smk("SMK-UI-03", status="partial")
 
 CATALOGUE = "/v1/tools/catalogue"
-SLOW = 90_000      # the catalogue is built by asking every toolset, so the first load can take a while on a busy install
-
-
-def _open_tools_page(page: Page, console_url: str) -> None:
-    """The shell must be mounted before the view hash is assigned (a hash set while it mounts can be replaced by the shell's own normalisation to the Studio view), so wait for it and
-    navigate once more if the page is not the Platform one after a short wait."""
-    expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
-    marker = page.get_by_test_id("nv-plat-page:tools")
-    for attempt in (1, 2):
-        open_view(page, console_url, default_wid(console_url), "platform:tools")
-        try:
-            expect(marker).to_be_visible(timeout=10_000 if attempt == 1 else 20_000)
-            return
-        except AssertionError:
-            if attempt == 2:
-                raise
 
 
 def test_the_catalogue_is_asked_for_once_on_open_and_again_only_on_refresh(page: Page, console_url: str) -> None:
     catalogue_gets: list[str] = []
     page.on("request", lambda r: catalogue_gets.append(r.url) if r.method == "GET" and CATALOGUE in r.url else None)
-    _open_tools_page(page, console_url)
+    open_tools_page(page, console_url)
     expect(page.locator("[data-testid^='pk-card:']").first).to_be_visible(timeout=SLOW)
     refresh = page.get_by_test_id("nv-plat-refresh")
     expect(refresh).to_have_text("Refresh", timeout=SLOW)
@@ -78,7 +62,7 @@ def test_filtering_by_a_toolset_id_keeps_that_toolsets_tools_and_drops_the_other
 
     others = [t["id"] for t in items if t["id"].split("__", 1)[0] != chosen and not says_needle(t)]
 
-    _open_tools_page(page, console_url)
+    open_tools_page(page, console_url)
     expect(page.locator("[data-testid^='pk-card:']").first).to_be_visible(timeout=SLOW)
     page.get_by_test_id("nv-plat-filter").fill(f"{chosen}__")
     for scoped in mine:

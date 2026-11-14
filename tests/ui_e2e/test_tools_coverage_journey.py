@@ -14,8 +14,8 @@ from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
 from tests.ui_e2e._a11y import unnamed_controls
+from tests.ui_e2e._platform_tools_helpers import SLOW, open_tools_page
 from tests.ui_e2e._shell_helpers import default_wid, open_view
-from tests.ui_e2e.test_platform_tools_page_journey import SLOW, _open_tools_page
 
 pytestmark = smk("SMK-UI-03", status="partial")
 
@@ -28,7 +28,7 @@ def _find(page: Page, scoped: str):
 
 
 def test_admin_tools_show_mapping_reference_default_policy_and_reviewed_skips(page: Page, console_url: str):
-    _open_tools_page(page, console_url)
+    open_tools_page(page, console_url)
     card = _find(page, "internal_collections__put_config")
     expect(card).to_contain_text("generated")
     expect(card).to_contain_text("PUT /v1/internal_collections/config")
@@ -57,7 +57,7 @@ def test_nonadmin_response_fixture_renders_existing_item_without_hidden_operatio
     page.route("**/v1/tools/catalogue", lambda route: route.fulfill(
         status=200, content_type="application/json", body=json.dumps(body),
     ))
-    _open_tools_page(page, console_url)
+    open_tools_page(page, console_url)
     card = _find(page, "internal_collections__put_config")
     expect(card).to_contain_text("generated")
     expect(card).not_to_contain_text("PUT /v1/internal_collections/config")
