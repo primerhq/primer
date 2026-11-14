@@ -28,24 +28,26 @@ embedders but does not define them.
 
 ## 2. Conceptual model
 
-A `SemanticSearchProvider` row describes one backend. Every `Collection` binds to
-exactly one SSP through a required, immutable `search_provider_id`; the
-collection's embedded chunks live in that SSP's vector store. A search resolves
-the collection, embeds the query with the collection's configured embedder,
-retrieves candidates from the SSP's `VectorStore`, and optionally reranks
-them. Internal search reuses the same machinery: it enables search
-on the `system` collection (a `Collection` row with `system=True`) with the
-embedder and the SSP that `InternalCollectionsConfig` names.
+A `SemanticSearchProvider` row describes one backend. A collection defaults to
+`search=None` and needs no vector provider for text storage or lexical search.
+When enabled, its `CollectionSearchConfig` names `embedder.provider_id` and
+`vector_store_provider_id`, with optional cross-encoder reranking. The owner can
+replace or disable this block through the search lifecycle routes; the provider
+binding is not an immutable top-level `search_provider_id`. Enabling performs an
+inline backfill and can return a collection in `error` state even with HTTP 200.
+The explicit semantic query must succeed with `mode_used=semantic`; an `auto`
+fulltext fallback is not vector-retrieval acceptance. Internal search reuses the
+same machinery for the reserved `system` collection.
 
 ```mermaid
 erDiagram
-    SemanticSearchProvider ||--o{ Collection : "backs (search_provider_id)"
+    Collection }o--o| SemanticSearchProvider : "search.vector_store_provider_id"
     SemanticSearchProvider ||--|| VectorStore : "constructs"
-    Collection }o--|| EmbeddingProvider : "embedder.provider_id"
-    Collection ||--o| CrossEncoderProvider : "search.cer.provider_id"
+    Collection }o--o| EmbeddingProvider : "search.embedder.provider_id"
+    Collection ||--o| CrossEncoderProvider : "search.cross_encoder.provider_id"
     Collection ||--o{ EmbeddingRecord : "indexed chunks"
     InternalCollectionsConfig ||--|| SemanticSearchProvider : "search_provider_id"
-    InternalCollectionsConfig ||--o{ Collection : "5 reserved system rows"
+    InternalCollectionsConfig ||--o| Collection : "reserved system collection"
     VectorStore ||--o{ EmbeddingRecord : "stores + ranks"
 ```
 
@@ -401,3 +403,5 @@ See [access control](../architecture/access-control.md).
 - **The `InternalCollectionsSubsystem` and `primer/catalog` were deleted (D18).** Why: nothing wrote to the per-entity indexes any more, so the four `/search` routes answered `[]`; the system collection and its search lifecycle replaced them. The config row stays as the system collection's search toggle.
 - **The five reserved `_internal_*` collections were replaced by one system collection.** Why: indexing the platform's own entities no longer needs a separate subsystem with its own namespaces and toolset. The system collection is a normal wiki that agents read and grep through the ordinary collections tools, and it needs no embedder to be useful.
 - **MMR was removed.** Why: the v2 collection model has no field that can express it, and an unreachable-but-tested code path is worse than a deleted one. Cross-encoder reranking survives because the search block still carries it.
+
+The [collection-search runbook](../../wiki/runbooks/enable-collection-search.md) records current provider-use preconditions, owner-only enable/disable, their required generated-tool gates and durable semantic verification. The [ingestion runbook](../../wiki/runbooks/ingest-a-knowledge-base.md) covers the separate full-access ZIP import gate and real body readbacks.

@@ -22,6 +22,8 @@ One row per runbook as it lands; the purpose-mapped index ([purpose-map](purpose
 | [runbooks/manage-a-workspace](runbooks/manage-a-workspace) | create from a template, verify files and a session, then deliberately destroy the workspace |
 | [runbooks/create-an-agent](runbooks/create-an-agent) | select a usable profile, approve a full agent definition and verify invocation |
 | [runbooks/create-and-run-a-graph](runbooks/create-and-run-a-graph) | approve a graph definition, run its nodes and verify the session output |
+| [runbooks/enable-collection-search](runbooks/enable-collection-search) | approve inline vector backfill, prove semantic hits and deliberately disable |
+| [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) | store and import text, reread bodies and verify real retrieval |
 
 The how-to set grows as documented flows land; every runbook listed here has a matching purpose-mapped index row.
 
