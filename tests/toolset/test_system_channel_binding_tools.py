@@ -234,6 +234,16 @@ async def _seed_channel_trigger(sp: _SP, trigger_id: str = "trg-ch-1") -> Trigge
     return trigger
 
 
+async def _seed_mcp_session_target(sp: _SP) -> None:
+    # A direct MCP save now records its authenticated owner. Like the
+    # explicit-context saves below, it must name a real accessible target.
+    await sp.get_storage(Workspace).create(_make_workspace("ws-1", owner="admin-mcp"))
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="sess-1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING, created_at=datetime.now(timezone.utc),
+    ))
+
+
 # ===========================================================================
 # create_channel_binding
 # ===========================================================================
@@ -244,6 +254,7 @@ async def test_create_channel_binding_creates_subscription_on_channel_trigger(
     sp: _SP, system_toolset
 ):
     await _seed_channel_trigger(sp)
+    await _seed_mcp_session_target(sp)
 
     result = await system_toolset.call(
         tool_name="create_channel_binding",
@@ -298,6 +309,7 @@ async def test_create_channel_binding_explicit_target_validates_the_channel(sp: 
     from primer.model.channel import ChannelProviderType
 
     await _seed_channel_trigger(sp)
+    await _seed_mcp_session_target(sp)
     await sp.get_storage(Channel).create(_make_channel("chan-x"))
     discord = Channel(access=Access(public=True), 
         id="chan-dc",
@@ -487,6 +499,7 @@ async def test_create_channel_binding_refuses_a_bad_parallelism(
 @pytest.mark.asyncio
 async def test_list_channel_bindings_returns_subscriptions(sp: _SP, system_toolset):
     await _seed_channel_trigger(sp)
+    await _seed_mcp_session_target(sp)
     await system_toolset.call(
         tool_name="create_channel_binding",
         arguments={
@@ -619,6 +632,7 @@ async def test_list_channel_bindings_admin_sees_the_full_owner(
 @pytest.mark.asyncio
 async def test_delete_channel_binding_removes_subscription(sp: _SP, system_toolset):
     await _seed_channel_trigger(sp)
+    await _seed_mcp_session_target(sp)
     create_result = await system_toolset.call(
         tool_name="create_channel_binding",
         arguments={

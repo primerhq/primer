@@ -212,6 +212,35 @@ jobs:
           path: tests/.e2e/w7-t3/
           if-no-files-found: warn
           retention-days: 7
+      - name: Copy live JUnit for W7 channel evidence
+        if: always()
+        run: |
+          mkdir -p tests/.e2e/w7-t4
+          rm -f tests/.e2e/w7-t4/junit.xml
+          cp tests/.e2e/w7-t2/junit.xml tests/.e2e/w7-t4/junit.xml
+      - name: Require executed W7 channel onboarding evidence
+        run: |
+          uv run --no-sync python - <<'PYGATE'
+          import hashlib, json, os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          from tests.e2e.test_wiki_w7_t4_lifecycle import CASE, PAGE, require_evidence
+          trace = json.loads(Path("tests/.e2e/w7-t4/trace.json").read_text())
+          page_hash = hashlib.sha256(Path("docs/wiki", PAGE + ".md").read_bytes()).hexdigest()
+          require_evidence(trace, os.environ["GITHUB_SHA"], page_hash)
+          cases = [case for case in ET.parse("tests/.e2e/w7-t4/junit.xml").iter("testcase")
+                   if case.get("classname") == "tests.e2e.test_wiki_w7_t4_lifecycle" and case.get("name") == CASE]
+          assert len(cases) == 1
+          assert all(cases[0].find(tag) is None for tag in ("failure", "error", "skipped"))
+          PYGATE
+      - name: Upload W7 channel onboarding transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w7-t4-channel-onboarding-${{ github.run_attempt }}
+          path: tests/.e2e/w7-t4/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Tear down
         if: always()
         run: bash scripts/e2e/teardown.sh
