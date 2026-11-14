@@ -1122,12 +1122,12 @@ def build_system_toolset(
                 parallelism=args.parallelism,
                 description=args.description,
                 enabled=args.enabled,
-                # The calling run owns the binding; its fresh-session runs
-                # are ranked no higher (security review A-20). No ctx (the
-                # MCP endpoint) records no owner: fails closed.
-                owner=ctx.initiated_by if ctx is not None else None,
-                # A session outside prime binds only to its own workspace or a session in it, and the row records that reach for every
-                # fire (review of #870, F1).
+                # Same identity rule as trigger subscriptions: the explicit
+                # run owns it, or the direct MCP actor when no run exists.
+                # Delegated/unattributed calls still record no owner.
+                owner=_caller(ctx),
+                # The saving person's full target access is checked here
+                # and the saved owner's access is checked again on fire.
                 reach=caller_scope(ctx),
                 person=person_for_tool(ctx),
                 deps=_binding_deps(),
@@ -1169,11 +1169,10 @@ def build_system_toolset(
                 "The trigger must already exist as a channel-kind trigger; "
                 "unknown trigger returns ``type=trigger_not_found``, and a "
                 "trigger of another kind answers ``type=validation-error``. "
-                "From a "
-                "session outside the default workspace (prime) the config may "
-                "name only your own workspace or a session in it: another one "
-                "answers type=not-found, as an unknown id does, and every "
-                "fire checks it again."
+                "The saving person needs full access on the target workspace "
+                "or the target session's workspace; an inaccessible target "
+                "answers type=not-found, as an unknown id does. Every fire "
+                "checks the saved owner's access again."
             ),
             args_schema=_CreateChannelBindingArgs.model_json_schema(),
             examples=[
@@ -1218,7 +1217,7 @@ def build_system_toolset(
             await get_trigger(trigger_id=args.trigger_id, person=person_for_tool(ctx), deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
-        # From a session outside prime, a binding whose action targets another workspace is left out (ticket 01a16c22).
+        # A binding targeting a workspace the caller cannot fully access is left out (ticket 01a16c22).
         items = await list_subscriptions(
             trigger_id=args.trigger_id, person=person_for_tool(ctx), reach=caller_scope(ctx), deps=deps,
         )

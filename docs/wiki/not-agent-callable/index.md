@@ -20,4 +20,6 @@ Some features have no agent tools yet. Each entry says what the feature is, how 
 - **Secrets:** Secret values are write-only fields inside provider, toolset and template rows. A GET serves them masked, and a PUT that sends the mask back keeps the stored value. There is no secrets tool, and an agent cannot read a secret back.
 - **MCP sign-in:** Signing an OAuth MCP toolset in is an interactive browser flow. A person does it from the console at [MCP toolsets](toolsets/mcp-toolsets). An agent can read the state with `system__get_toolset_auth_status`; it cannot sign in.
 
+- **Channel listener activation after tool writes:** Saving channel/provider rows through system tools does not refresh or warm the API process's live adapter. An owner saves the channel through the Channels console or its existing REST update; an operator may instead restart the API process that owns inbound. Then verify an actual message and answer. See [onboard a channel](runbooks/onboard-a-channel).
+
 How to ask a person: say what you need and which console page (or REST route) it lives in, and use `system__ask_user` at [ask the user](human-in-the-loop/ask-user).

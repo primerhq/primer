@@ -24,6 +24,7 @@ One row per runbook as it lands; the purpose-mapped index ([purpose-map](purpose
 | [runbooks/create-and-run-a-graph](runbooks/create-and-run-a-graph) | approve a graph definition, run its nodes and verify the session output |
 | [runbooks/enable-collection-search](runbooks/enable-collection-search) | approve inline vector backfill, prove semantic hits and deliberately disable |
 | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) | store and import text, reread bodies and verify real retrieval |
+| [runbooks/onboard-a-channel](runbooks/onboard-a-channel) | approve its source, bind incoming work and replies, prove real message delivery |
 
 The how-to set grows as documented flows land; every runbook listed here has a matching purpose-mapped index row.
 
