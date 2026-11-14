@@ -15,6 +15,7 @@ from tests.e2e.test_wiki_w7_t1_lifecycle import (
     FileAnswerRule,
     assistant_text,
     isolated_config,
+    mcp_http_client,
 )
 
 
@@ -61,3 +62,15 @@ def test_isolated_instance_has_real_auth_temp_storage_and_bounded_workers(tmp_pa
     assert config.worker.concurrency == 2 and config.worker.drain_timeout_seconds == 3
     assert config.default_workspace_template == "w7-template"
     assert {"workspaces__" + name for name in WRITES} <= ALLOWED
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_uses_numeric_sdk_native_timeouts_before_network_io():
+    # Construct the exact client used by the journey and build a request;
+    # neither operation opens a socket. A foreign httpx.Timeout poisons all
+    # four request values and fails these assertions before TCP/anyio.
+    async with mcp_http_client("fixture-cookie") as client:
+        request = client.build_request("POST", "http://127.0.0.1:1/v1/mcp/", json={})
+        assert request.headers["Cookie"] == "fixture-cookie"
+        assert request.extensions["timeout"] == {name: 15.0 for name in ("connect", "read", "write", "pool")}
+        assert all(isinstance(value, (int, float)) for value in request.extensions["timeout"].values())

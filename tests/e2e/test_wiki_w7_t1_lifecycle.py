@@ -77,6 +77,15 @@ def assistant_text(records: list[dict]) -> str:
     return "".join(row["payload"]["text"] for row in records if row.get("kind") == "assistant_token")
 
 
+def mcp_http_client(cookie: str):
+    # The SDK's transport is httpx2; httpx.Timeout is a foreign object that
+    # httpx2 treats as a scalar, failing before its first connection.
+    import httpx2
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    return create_mcp_http_client(headers={"Cookie": cookie}, timeout=httpx2.Timeout(15))
+
+
 async def _share(admin: httpx.AsyncClient, plural: str, entity_id: str) -> None:
     response = await admin.get(f"/v1/{plural}/{entity_id}/access")
     assert response.status_code == 200, response.text
@@ -110,7 +119,6 @@ async def _start_server(root: Path, port: int, log):
 async def test_real_user_executes_workspace_runbook_through_tools(mock_llm, unique_suffix, tmp_path, unused_tcp_port):
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
-    from mcp.shared._httpx_utils import create_mcp_http_client
 
     registry, mock_url = mock_llm
     target = f"w7-workspace-{unique_suffix}"
@@ -187,7 +195,7 @@ async def test_real_user_executes_workspace_runbook_through_tools(mock_llm, uniq
                                  source_sha=os.environ.get("GITHUB_SHA", "local"),
                                  runbook_sha256=hashlib.sha256((REPO / "docs/wiki/runbooks/manage-a-workspace.md").read_bytes()).hexdigest())
                     cookie = "; ".join(f"{item.name}={item.value}" for item in person.cookies.jar)
-                    async with create_mcp_http_client(headers={"Cookie": cookie}, timeout=httpx.Timeout(15)) as mcp_http:
+                    async with mcp_http_client(cookie) as mcp_http:
                         async with streamable_http_client(f"{base}/v1/mcp/", http_client=mcp_http) as (read, write):
                             async with ClientSession(read, write) as session:
                                 await session.initialize()
