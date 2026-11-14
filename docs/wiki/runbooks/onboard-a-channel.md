@@ -21,7 +21,7 @@ Connect an authorized messaging room to an agent in a separate workspace, and ve
 {"toolset_id": "system", "tool_name": "get_channel_provider", "arguments": {"id": "team-slack"}}
 ```
 
-- The worked provider is Slack only after the admin confirms its actual id, installed app, room access and your provider-use grant. The app needs Socket Mode, chat:write, channels:read and channels:history, message.channels/app_mention subscriptions, and invitation to the chosen room. Confirm the real room id, not its display name. Telegram/Discord use different configs and prerequisites; do not send Slack fields to them. With no usable provider, stop rather than creating guessed rows.
+- The worked provider is Slack only after the admin confirms its actual id, installed app, room access and your provider-use grant. The app needs Socket Mode, `chat:write`, `channels:read` and `channels:history`, message.channels/app_mention subscriptions, and invitation to the chosen room. Confirm the real room id, not its display name. Telegram/Discord use different configs and prerequisites; do not send Slack fields to them. With no usable provider, stop rather than creating guessed rows.
 - Read the prepared non-default workspace and responder agent using [`workspaces__get_workspace`](reference/tools/workspaces/get_workspace) and [`system__get_agent`](reference/tools/system/get_agent). You need full workspace access and use of the responder's model/tools. Create a missing workspace through [manage a workspace](runbooks/manage-a-workspace) or a missing responder through [create an agent](runbooks/create-an-agent). Use the returned ids throughout; the example ids and Slack room C042TEAM must be confirmed before any write.
 
 ```json
