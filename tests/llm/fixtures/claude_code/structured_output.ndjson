@@ -1,0 +1,10 @@
+{"type": "system", "subtype": "init", "session_id": "s-struct", "tools": ["StructuredOutput"], "model": "claude-sonnet-5-5", "permissionMode": "default", "apiKeySource": "none", "claude_code_version": "2.1.322"}
+{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 5, "output_tokens": 0}}}}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "struct_1", "name": "StructuredOutput", "input": {}}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"pri"}}}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "me\": true}"}}}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "struct_1", "content": "Structured output provided successfully"}]}}
+{"type": "stream_event", "event": {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 9}}}
+{"type": "stream_event", "event": {"type": "message_stop"}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "{\"prime\": true}", "structured_output": {"prime": true}, "session_id": "s-struct", "total_cost_usd": 0.001}

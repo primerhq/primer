@@ -310,6 +310,30 @@ _OPENROUTER_EFFORT: dict[ReasoningLevel, str] = {
 _LOGGED_ONCE: set[tuple[str, ...]] = set()
 
 
+# The claude CLI's --effort takes low/medium/high; OFF, MINIMAL and LOW all
+# send "low" (the CLI has no off switch: low is its floor).
+_CLAUDE_CODE_EFFORT: dict[ReasoningLevel, str] = {
+    ReasoningLevel.OFF: "low",
+    ReasoningLevel.MINIMAL: "low",
+    ReasoningLevel.LOW: "low",
+    ReasoningLevel.MEDIUM: "medium",
+    ReasoningLevel.HIGH: "high",
+}
+
+
+def claude_code_extended(config: ModelProfileConfig) -> dict[str, Any]:
+    """Reasoning knobs for the claude_code runtime: the CLI's ``--effort`` level.
+
+    The adapter reads ``effort`` from ``extended`` and passes it to
+    ``build_argv``; a profile without a reasoning level sends none, and the
+    CLI's default applies.
+    """
+    level = config.reasoning
+    if level is None:
+        return dict(config.extended or {})
+    return _merge(config, {"effort": _CLAUDE_CODE_EFFORT[level]})
+
+
 def debug_once(
     key: tuple[str, ...],
     message: str,
@@ -808,6 +832,7 @@ async def _stream_with_fallback(
 __all__ = [
     "ClaudeTraits",
     "anthropic_extended",
+    "claude_code_extended",
     "claude_traits",
     "debug_once",
     "gemini_extended",

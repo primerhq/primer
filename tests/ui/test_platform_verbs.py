@@ -30,12 +30,12 @@ SHELL_VERBS = (ROOT / "ui" / "foundation" / "shell-verbs.js").read_text(encoding
 SHELL = (ROOT / "ui" / "components" / "console" / "nv-shell.jsx").read_text(encoding="utf-8")
 PLATFORM = (ROOT / "ui" / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
 
-TYPES = ["llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
+TYPES = ["llm", "agent_runtime", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
 NON_CUSTOM = ("profiles", "agents", "graphs", "toolsets", "tools", "collections", "triggers", "channels", "harnesses", "services", "approvals")
 IDS = ["platform.open.providers"] + ["platform.open.providers." + t for t in TYPES] + ["platform.open." + nav for nav in NON_CUSTOM]
 LABELS = [
     "Open Providers",
-    "Open Providers: LLM", "Open Providers: Embedding", "Open Providers: Semantic Search Storage", "Open Providers: Cross Encoding",
+    "Open Providers: LLM", "Open Providers: Agent Runtimes", "Open Providers: Embedding", "Open Providers: Semantic Search Storage", "Open Providers: Cross Encoding",
     "Open Providers: Workspace", "Open Providers: Web Search", "Open Providers: Channels", "Open Providers: Artifact Store",
     "Open Providers: TTS", "Open Providers: ASR",
     "Open LLM Profiles", "Open Agents", "Open Graphs", "Open Toolsets", "Open Tools", "Open Collections", "Open Triggers", "Open Channels",

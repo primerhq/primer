@@ -67,6 +67,7 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "knowledge/collections": [Form("New collection", MODAL)],
     "subsystems/internal-collections": [Form("Configure", MODAL)],
     "providers/llm": [_register()],
+    "providers/agent_runtime": [_register()],
     "providers/embedding": [_register()],
     "providers/cross_encoder": [_register()],
     "providers/stt": [_register()],
@@ -92,6 +93,7 @@ LEGACY_TITLES: dict[str, str] = {
     "knowledge/collections": "Collections",
     "subsystems/internal-collections": "Internal collections",
     "providers/llm": "Providers",
+    "providers/agent_runtime": "Providers",
     "providers/embedding": "Providers",
     "providers/cross_encoder": "Providers",
     "providers/stt": "Providers",
@@ -257,6 +259,8 @@ FLOORS: dict[str, int] = {
     "overlay-page subsystems/internal-collections / Configure": 2,
     "overlay-page providers/llm": 4,
     "overlay-page providers/llm / + Register": 5,
+    "overlay-page providers/agent_runtime": 0,              # a fresh install has no agent runtime row: the empty kit card grid has no body controls
+    "overlay-page providers/agent_runtime / + Register": 4, # the floor stays the estimate (the type select, the binary path, max_concurrency and the Public switch); the sweep measured examined 14, body 11 on 2026-11-15
     "overlay-page providers/embedding": 0,             # an empty kit card grid has no body controls; its loaded empty state is the page proof
     "overlay-page providers/embedding / + Register": 5,
     "overlay-page providers/cross_encoder": 0,         # an empty kit card grid has no body controls; its loaded empty state is the page proof

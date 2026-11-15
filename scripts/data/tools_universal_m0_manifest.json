@@ -1,7 +1,7 @@
 {
   "base_commit": "fb18c24b92bec57131bc5e49959344a4d7d97960",
-  "expected_operation_count": 406,
-  "expected_path_count": 275,
+  "expected_operation_count": 407,
+  "expected_path_count": 276,
   "reviewed_gap_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
   "reviewed_skip_sha256": "1db0ea6f6f63eb30bd781f84e212dd9c3829fe48af05fbecde59ad80f288ffe1",
   "reviewed_surface_revision": "wiki-first-w3-welcome",
@@ -5291,6 +5291,27 @@
     },
     {
       "aggregation_id": null,
+      "declared_generated_tool_id": "llm_providers__get_llm_provider_runtime_status",
+      "method": "GET",
+      "mount_auth": "admin",
+      "operation_id": "get_llm_provider_runtime_status_v1_llm_providers__provider_id__runtime_status_get",
+      "path": "/v1/llm_providers/{provider_id}/runtime_status",
+      "rbac_class": "administrator",
+      "reason": "generated from immutable route metadata and dispatched through the REST operation",
+      "resource": "llm-providers",
+      "route_source": "primer.api.routers.providers:get_llm_provider_runtime_status",
+      "skip_code": null,
+      "source": "PLAN.md#M1-route-metadata-generator-catalogue-join-and-trusted-ASGI-dispatch",
+      "state": "generated",
+      "tags": [
+        "llm-providers"
+      ],
+      "tool_ids": [
+        "llm_providers__get_llm_provider_runtime_status"
+      ]
+    },
+    {
+      "aggregation_id": null,
       "declared_generated_tool_id": "agent_memory__get_memory_entry",
       "method": "GET",
       "mount_auth": "user",
@@ -9642,6 +9663,14 @@
       "exposure_reason": null,
       "required_role": "admin",
       "scoped_id": "llm_providers__get_llm_provider_models",
+      "toolset_id": "llm_providers"
+    },
+    {
+      "bare_id": "get_llm_provider_runtime_status",
+      "exposable": true,
+      "exposure_reason": null,
+      "required_role": "admin",
+      "scoped_id": "llm_providers__get_llm_provider_runtime_status",
       "toolset_id": "llm_providers"
     },
     {

@@ -66,7 +66,9 @@ from primer.model.providers.embedding import (  # noqa: F401
     OpenAIEmbeddingFlavor,
 )
 from primer.model.providers.llm import (  # noqa: F401
+    AGENT_RUNTIME_TYPES,
     AnthropicConfig,
+    ClaudeCodeConfig,
     GoogleConfig,
     LLMProvider,
     LLMProviderType,
@@ -121,9 +123,11 @@ from primer.model.providers.vector import (  # noqa: F401
 )
 
 __all__ = [
+    "AGENT_RUNTIME_TYPES",
     "AnthropicConfig",
     "ArtifactStorageProvider",
     "ArtifactStorageProviderType",
+    "ClaudeCodeConfig",
     "CrossEncoderModel",
     "CrossEncoderProvider",
     "CrossEncoderProviderType",

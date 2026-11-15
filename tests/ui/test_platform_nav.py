@@ -24,8 +24,8 @@ from tests.ui._platform_page_harness import PLATFORM, platform_navs, platform_pa
 ROOT = Path(__file__).resolve().parents[2]
 SHELL_URL = (ROOT / "ui" / "foundation" / "shell-url.js").read_text(encoding="utf-8")
 
-TYPES = ["llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
-LABELS = ["LLM", "Embedding", "Semantic Search Storage", "Cross Encoding", "Workspace", "Web Search", "Channels", "Artifact Store", "TTS", "ASR"]
+TYPES = ["llm", "agent_runtime", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
+LABELS = ["LLM", "Agent runtimes", "Embedding", "Semantic Search Storage", "Cross Encoding", "Workspace", "Web Search", "Channels", "Artifact Store", "TTS", "ASR"]
 
 # A recording stand-in where window.ProviderCatalog mounts: what it was asked to open is what the page decided, and MOUNTS / UNMOUNTS count how often an instance of it
 # came and went (the real catalog keeps its class and its open instance in state, which a new instance starts empty).

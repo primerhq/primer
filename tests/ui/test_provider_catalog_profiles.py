@@ -20,10 +20,11 @@ def _read(rel: str) -> str:
     return (UI / rel).read_text(encoding="utf-8")
 
 
-def test_only_the_llm_class_is_marked_as_carrying_profiles() -> None:
+def test_the_profile_carrying_classes_are_marked_as_carrying_profiles() -> None:
+    """The llm and agent runtimes classes read the one plural (llm_providers) and register model profiles, so both carry the flag; nothing else does."""
     src = _read("components/providers/register-common.jsx")
     marked = re.findall(r'key:\s*"(\w+)"[^}]*profiles:\s*true', src)
-    assert marked == ["llm"], f"profiles wired to non-LLM classes: {marked}"
+    assert marked == ["llm", "agent_runtime"], f"profiles wired to a class that serves no profiles: {marked}"
 
 
 def test_the_catalog_has_no_profiles_panel() -> None:

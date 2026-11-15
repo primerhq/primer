@@ -5,7 +5,7 @@ Now it lists every nav the desktop sidebar draws:
 
 * ``test_the_sections_are_the_sidebars_entries`` - ``nv-mob-plat-nav:profiles`` reads "LLM Profiles", there is no Workspaces section (it left the Platform view)
   and Providers is a section.
-* ``test_providers_lists_its_types_and_a_type_shows_its_catalog`` - Providers opens a second-level list (All providers, then the ten types in the sidebar's
+* ``test_providers_lists_its_types_and_a_type_shows_its_catalog`` - Providers opens a second-level list (All providers, then the eleven types in the sidebar's
   order); a type shows the catalogue at that type (``provider-body-tts``); Back returns to the types, then to the sections.
 * ``test_a_provider_type_link_opens_that_type`` - ``view=platform:providers:tts`` lands on the More tab with the TTS catalogue open, and the link is consumed.
 * ``test_a_custom_page_is_a_section_only_while_its_component_is_loaded`` - with a stand-in ``window.WEB_SettingsPage`` installed before the bundle runs, Web is
@@ -27,8 +27,8 @@ from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_mobile_shell
 pytestmark = smk("SMK-UI-01", status="partial")
 
 PHONE = {"width": 390, "height": 844}
-TYPES = ["llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
-LABELS = ["LLM", "Embedding", "Semantic Search Storage", "Cross Encoding", "Workspace", "Web Search", "Channels", "Artifact Store", "TTS", "ASR"]
+TYPES = ["llm", "agent_runtime", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
+LABELS = ["LLM", "Agent runtimes", "Embedding", "Semantic Search Storage", "Cross Encoding", "Workspace", "Web Search", "Channels", "Artifact Store", "TTS", "ASR"]
 
 # What Plan 04's Web page will be: a function on ``window`` that draws something. React is global by the time it is called (the bundle has loaded), not when this script runs.
 WEB_PAGE_STAND_IN = """
@@ -73,7 +73,7 @@ def test_providers_lists_its_types_and_a_type_shows_its_catalog(page: Page, cons
     page.get_by_test_id("nv-mob-plat-nav:providers").click()
     expect(page.get_by_test_id("nv-mob-plat-page:providers")).to_be_visible(timeout=10_000)
     expect(page.get_by_test_id("nv-mob-plat-sub:all")).to_have_text("All providers")
-    assert _ids(page, "nv-mob-plat-sub:") == ["all"] + TYPES, "All providers first, then the ten types in the sidebar's order"
+    assert _ids(page, "nv-mob-plat-sub:") == ["all"] + TYPES, "All providers first, then the eleven types in the sidebar's order"
     for t, label in zip(TYPES, LABELS):
         expect(page.get_by_test_id(f"nv-mob-plat-sub:{t}")).to_have_text(label)
     expect(page.get_by_test_id("nv-mob-profile")).to_have_count(0)   # the section fills the tab

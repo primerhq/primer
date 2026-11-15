@@ -15,6 +15,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
@@ -36,6 +37,15 @@ class LLMProviderType(str, Enum):
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
     OPENROUTER = "openrouter"
+    CLAUDE_CODE = "claude_code"
+
+
+# Provider types that run an external, logged-in agent CLI as the model
+# backend (the claude_code plan, task 1). The child runs with the
+# operator's own CLI login, so a profile resolving to one of these must
+# stay private: publishing it would let any session spend the operator's
+# own credentials. bootstrap/seed.py checks this before publishing.
+AGENT_RUNTIME_TYPES: frozenset[LLMProviderType] = frozenset({LLMProviderType.CLAUDE_CODE})
 
 
 class OpenResponsesFlavor(str, Enum):
@@ -236,6 +246,63 @@ class OpenRouterConfig(BaseModel):
     )
 
 
+# Environment names a claude_code child must never be handed from the
+# worker: PRIMER_* is primer's own plumbing, the rest read like
+# credentials. Screened case-insensitively (task 1's global constraint).
+_PASS_ENV_DENY_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "DATABASE")
+
+
+def _denied_pass_env_name(name: str) -> bool:
+    upper = name.upper()
+    return upper.startswith("PRIMER_") or any(token in upper for token in _PASS_ENV_DENY_TOKENS)
+
+
+class ClaudeCodeConfig(BaseModel):
+    """Connection settings for the ``claude_code`` LLM provider.
+
+    Drives the operator's logged-in ``claude`` CLI as a model backend, so
+    the row carries no credential of its own: just where the CLI lives on
+    each worker host and which environment variables the adapter may pass
+    through to the child. ``pass_env`` arrives from the console form as a
+    comma-separated string; the before-validator splits it and refuses a
+    name that looks like a credential or primer-internal plumbing.
+    """
+
+    binary_path: str = Field(
+        default="claude",
+        description="Path or name of the claude CLI on every worker host.",
+    )
+    pass_env: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra environment variable names the adapter passes through "
+            "to the child, only when set in the worker. A name that starts "
+            "with PRIMER_ or contains KEY, TOKEN, SECRET, PASSWORD or "
+            "DATABASE (case-insensitive) is refused."
+        ),
+    )
+
+    @field_validator("pass_env", mode="before")
+    @classmethod
+    def _split_and_screen_pass_env(cls, value: object) -> object:
+        """Split the form's comma-separated string and refuse denied names.
+
+        The error names the offending variable so the operator knows which
+        entry to fix.
+        """
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, (list, tuple)):
+            for name in value:
+                if isinstance(name, str) and _denied_pass_env_name(name):
+                    raise ValueError(
+                        f"pass_env name {name!r} is refused: a name must not "
+                        "start with PRIMER_ or contain KEY, TOKEN, SECRET, "
+                        "PASSWORD or DATABASE (case-insensitive)"
+                    )
+        return value
+
+
 class LLMProvider(Grantable, Identifiable):
     """A configured LLM provider entry.
 
@@ -265,6 +332,7 @@ class LLMProvider(Grantable, Identifiable):
         | AnthropicConfig
         | OllamaConfig
         | OpenRouterConfig
+        | ClaudeCodeConfig
     ) = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
@@ -350,6 +418,7 @@ class LLMProvider(Grantable, Identifiable):
             LLMProviderType.ANTHROPIC: AnthropicConfig,
             LLMProviderType.OLLAMA: OllamaConfig,
             LLMProviderType.OPENROUTER: OpenRouterConfig,
+            LLMProviderType.CLAUDE_CODE: ClaudeCodeConfig,
         }.get(provider_enum)
         if config_cls is None:
             return data

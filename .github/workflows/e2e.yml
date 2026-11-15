@@ -52,6 +52,18 @@ jobs:
       # restart must keep the same wiki-less collection. bringup.sh creates
       # the directory.
       PRIMER_WIKI_DIR: tests/.e2e/wiki-empty
+      # The claude_code provider journey (tests/e2e/test_claude_code_provider_journey.py)
+      # drives a real server step against a fake CLI wrapper that replays the fixtures
+      # named by FAKE_CLAUDE_FIXTURE / FAKE_CLAUDE_FIXTURE_SEQ and records argv in
+      # FAKE_CLAUDE_RECORD. Job-level, like PRIMER_WIKI_DIR, because the server's env is
+      # frozen at bring-up (bringup.sh starts the host-process server and inherits it),
+      # and the journey's guard compares against repo-root absolute paths (in CI the
+      # checkout is github.workspace). The journey's provider pass_env names these, so
+      # the adapter's scrubbed child env passes them to the wrapper and nothing else in
+      # the suite sees them.
+      FAKE_CLAUDE_FIXTURE: ${{ github.workspace }}/tests/.e2e/claude_code/step1.ndjson
+      FAKE_CLAUDE_FIXTURE_SEQ: ${{ github.workspace }}/tests/.e2e/claude_code/step1.ndjson,${{ github.workspace }}/tests/.e2e/claude_code/step2.ndjson
+      FAKE_CLAUDE_RECORD: ${{ github.workspace }}/tests/.e2e/claude_code/record.json
     # The e2e suite runs serially (-n0, shared live server + DB) and has grown
     # past the old 30-min budget (already borderline on main); --timeout=300
     # (pyproject addopts) still fails any genuinely-hung test, so a job-level

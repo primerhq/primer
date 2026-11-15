@@ -2,7 +2,7 @@
 
 ``coverage_projection`` derives every operation's state and tool ids from
 route metadata plus the compiled generated snapshot. This module pins that
-the projection equals the reviewed M0 manifest row-for-row (406/406), that
+the projection equals the reviewed M0 manifest row-for-row (407/407), that
 the build is deterministic, that no ``gap`` row exists, and that no
 production module may import the inventory script or read the manifest.
 """
@@ -43,10 +43,10 @@ def projection(default_app) -> tuple:
 
 
 def test_projection_equals_the_manifest_row_for_row(projection, manifest) -> None:
-    """406/406 on identity, state, canonical ids, aggregation, skip and source."""
+    """407/407 on identity, state, canonical ids, aggregation, skip and source."""
     rows = list(projection)
-    assert len(rows) == 406
-    assert len({row.operation_id for row in rows}) == 406
+    assert len(rows) == 407
+    assert len({row.operation_id for row in rows}) == 407
     by_op = {row.operation_id: row for row in rows}
     for man in manifest["rows"]:
         row = by_op[man["operation_id"]]
@@ -73,10 +73,10 @@ def test_the_script_side_classification_fields_are_pinned(manifest) -> None:
     """
     rows = manifest["rows"]
     assert Counter(row["mount_auth"] for row in rows) == Counter(
-        {"admin": 154, "user": 213, "settings-read": 21, "public": 16, "authenticated": 2}
+        {"admin": 155, "user": 213, "settings-read": 21, "public": 16, "authenticated": 2}
     )
     assert Counter(row["rbac_class"] for row in rows) == Counter(
-        {"administrator": 154, "user": 204, "global-settings-read": 21, "human-auth": 7, "authenticated-account": 11, "public": 9}
+        {"administrator": 155, "user": 204, "global-settings-read": 21, "human-auth": 7, "authenticated-account": 11, "public": 9}
     )
     generated = [row for row in rows if row["state"] == "generated"]
     assert all(row["declared_generated_tool_id"] for row in generated)
@@ -99,7 +99,7 @@ def test_the_projection_is_deterministic_across_builds(default_app, manifest, pr
         (row.operation_id, row.method, row.path, row.state, row.tool_ids, row.skip_code, row.route_source)
         for row in projection
     ]
-    assert len(first) == 406
+    assert len(first) == 407
 
 
 def test_zero_gap_rows(projection) -> None:
@@ -115,7 +115,7 @@ def test_projection_rows_are_immutable_and_cached_per_app(default_app, projectio
     with pytest.raises(FrozenInstanceError):
         projection[0].state = "gap"
     assert Counter(row.state for row in projection) == {
-        "generated": 263, "curated": 135, "skip": 8,
+        "generated": 264, "curated": 135, "skip": 8,
     }
 
 

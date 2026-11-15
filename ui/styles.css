@@ -5503,7 +5503,7 @@ button.nv-trace-line { cursor: pointer; }
   top: calc(100% + 6px);
   left: 0;
   min-width: 100%;
-  max-height: min(70vh, 460px);
+  max-height: min(70vh, 500px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;

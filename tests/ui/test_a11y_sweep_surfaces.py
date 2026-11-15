@@ -126,7 +126,7 @@ def test_a_provider_form_opens_directly_in_the_register_overlay() -> None:
     assert 'testid: "pc-register-type"' in (ROOT / "ui" / "components" / "providers" / "register-overlay.jsx").read_text(encoding="utf-8")
     registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "+ Register"]
     registers += [(nav, form) for nav, forms in surfaces.PLATFORM_FORMS.items() for form in forms if form.button == "+ Register"]
-    assert len(registers) == 11, [route for route, _ in registers]   # ten provider type pages and the Platform page
+    assert len(registers) == 12, [route for route, _ in registers]   # eleven provider type pages and the Platform page
     for route, form in registers:
         assert form.root == surfaces.MODAL, (route, form)
         assert form.then is None, (route, form)
@@ -145,7 +145,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_
     # 100, then the Web page and its "+ Fetcher" form (Plan 04), the Workspace templates page and its "+ Template" form (Plan 08), less the Workspaces
     # page and its "New workspace" form, which Plan 08 Task 14 removed (the dialog is swept as the new-workspace overlay), and less the old template list
     # and its "New template" form, which Task 15 removed (the templates are swept on their Platform page)
-    assert len(surfaces.expected_surfaces(7)) == 100
+    assert len(surfaces.expected_surfaces(7)) == 102
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
@@ -202,7 +202,7 @@ def test_the_overlay_grammar_is_swept_section_by_section() -> None:
     """N5: every provider class with a Providers entry is an overlay section."""
     class_source = COMMON_JSX[COMMON_JSX.index("const PC_CLASSES"):COMMON_JSX.index("function PC_classByKey")]
     classes = re.findall(r'\{ key: "(\w+)",[^}]*\bnav: true\b', class_source, re.S)
-    assert len(classes) == 10, classes
+    assert len(classes) == 11, classes
     swept = {overlay_target(route) for route in surfaces.LEGACY_FORMS}
     for key in classes:
         assert f"providers:{key}" in swept, f"the provider class {key!r} is not swept"

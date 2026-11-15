@@ -1630,8 +1630,16 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">LLM provider</span>
           <span className="val">
             <a
-              onClick={() => providerId && navigate("/providers", { class: "llm", id: providerId })}
+              onClick={() => {
+                if (!providerId || !provider.data) return;
+                // The providers overlay's own grammar is the path (nv-overlays.jsx: the class off the section
+                // segment, the instance off the record segment), and navigate() options carry only tab and
+                // workspace_id, so { class, id } would open nothing. No class while the row is still loading:
+                // a guessed one (llm) would open a page a claude_code row is not on.
+                navigate("/providers/" + window.PC_classOf("llm_providers", provider.data) + "/" + providerId);
+              }}
               style={{ cursor: providerId ? "pointer" : "default" }}
+              data-testid="ag-ref-provider-link"
             >{providerId || "—"}</a>
           </span>
           {provider.loading ? (

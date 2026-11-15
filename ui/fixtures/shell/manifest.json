@@ -129,6 +129,7 @@
   "view_subs": {
     "platform:providers": [
       "llm",
+      "agent_runtime",
       "embedding",
       "ssp",
       "cross_encoder",

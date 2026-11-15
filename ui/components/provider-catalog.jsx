@@ -21,14 +21,14 @@ function PC_cardFor(klass, row, ctx) {
   }
 
   let status = null;
-  if (klass.key === "llm" && row.last_probe_at != null) {
+  if (klass.profiles && row.last_probe_at != null) {
     status = row.last_probe_ok
       ? { label: "reachable", tone: "ok" }
       : { label: "unreachable", tone: "error" };
   }
 
   const rawFacts = [];
-  if (klass.key === "llm") {
+  if (klass.profiles) {
     const url = (row.config && (row.config.url || row.config.base_url)) || row.url;
     if (url) {
       try {
@@ -95,10 +95,10 @@ function PC_cardFor(klass, row, ctx) {
 
   // ACL-P4-T7: who can use a grantable provider (Public / N people /
   // Admins only), from the row's access. The catalog's grantable classes are
-  // the six a user-owned entity references; the global-settings classes
+  // the seven a user-owned entity references; the global-settings classes
   // (web search / fetch, TTS / ASR, artifact store) carry no grant. Rides the
-  // badge slot (the reachability status chip stays llm's own).
-  const GRANTABLE = { llm: 1, embedding: 1, cross_encoder: 1, ssp: 1, workspace: 1, channel: 1 };
+  // badge slot (the reachability status chip is the profile-carrying classes' own).
+  const GRANTABLE = { llm: 1, agent_runtime: 1, embedding: 1, cross_encoder: 1, ssp: 1, workspace: 1, channel: 1 };
   let badge = isBuiltin ? "built in" : null;
   if (GRANTABLE[klass.key]) {
     const useBadge = typeof window.SHR_useBadge === "function" ? window.SHR_useBadge(row.access) : null;
@@ -191,16 +191,17 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     const fetches = classesToFetch.map(async (c) => {
       try {
         const res = await PR_fetchAllPages(`/${c.plural}`, { apiFetch, signal });
-        return { key: c.key, items: (res && res.items) || [], list: res, error: null };
+        // Two classes read one plural (LLM and Agent runtimes, the claude_code plan task 8): each draws only the rows its class accepts.
+        return { key: c.key, items: ((res && res.items) || []).filter((row) => window.PC_classAccepts(c, row)), list: res, error: null };
       } catch (err) {
         return { key: c.key, items: [], list: null, error: err };
       }
     });
 
-    const hasLlm = classesToFetch.some((c) => c.key === "llm");
+    const hasProfilesClass = classesToFetch.some((c) => c.profiles);
     // G10-2: a FAILED profiles read keeps its error (the class reads' PR_partialFailure shape), so
-    // every LLM provider card does not silently read 0 profiles with the note silent.
-    const profilesPromise = hasLlm
+    // every card of a profile-carrying class does not silently read 0 profiles with the note silent.
+    const profilesPromise = hasProfilesClass
       ? PR_fetchAllPages("/model_profiles", { apiFetch, signal }).catch((err) => ({ items: [], error: err }))
       : Promise.resolve({ items: [] });
 
@@ -474,7 +475,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
         {classesToFetch.map((c) => (
           <PR_PagedNote key={`trunc-${c.key}`} list={classLists[c.key]} noun={`${c.label} providers`} testid={`pc-truncated:${c.key}`} />
         ))}
-        {classesToFetch.some((c) => c.key === "llm") ? (
+        {classesToFetch.some((c) => c.profiles) ? (
           <PR_PagedNote list={profilesList} error={profilesError} noun="LLM profiles" testid="pc-truncated:profiles" />
         ) : null}
 

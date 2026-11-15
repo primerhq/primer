@@ -224,7 +224,7 @@ function NV_addChannelProvider(con) {
 // NV_PROVIDER_TYPE_LABELS names each one; a type the grammar adds without a label here is drawn under its key. Plain JS on purpose (see the
 // note at NV_fact): tests/ui/test_platform_nav.py runs these.
 var NV_PROVIDER_TYPE_LABELS = {
-  llm: "LLM", embedding: "Embedding", ssp: "Semantic Search Storage",
+  llm: "LLM", agent_runtime: "Agent runtimes", embedding: "Embedding", ssp: "Semantic Search Storage",
   cross_encoder: "Cross Encoding", workspace: "Workspace",
   web_search: "Web Search", channel: "Channels",
   artifact_storage: "Artifact Store", tts: "TTS", stt: "ASR",

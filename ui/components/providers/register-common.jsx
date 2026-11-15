@@ -55,7 +55,12 @@ window.PC_profileIdFor = PC_profileIdFor;
 // The keys and plurals are written as literal properties: source pins read them.
 const PC_CLASSES = [
   { key: "llm", label: "LLM", noun: "LLM", plural: "llm_providers", form: "wizard", nav: true,
-    iconPath: "M2 2.5h10v9H2Z M4 5h1.5 M4 7.2h4 M4 9.4h2.5", invalidate: true, profiles: true },
+    iconPath: "M2 2.5h10v9H2Z M4 5h1.5 M4 7.2h4 M4 9.4h2.5", invalidate: true, profiles: true,
+    excludeKinds: ["claude_code"] },
+  // Agent runtimes (the claude_code plan, task 8): the LLM plural's wizard narrowed to the agent runtime kind; its rows are the claude_code rows the LLM class excludes above
+  // (the catalog keeps the two classes' rows apart with PC_classAccepts).
+  { key: "agent_runtime", label: "Agent runtimes", noun: "Agent runtime", plural: "llm_providers", form: "wizard", nav: true,
+    iconPath: "M7 2 11.5 8H9v5H5V8H2.5Z", invalidate: true, profiles: true, kinds: ["claude_code"] },
   { key: "embedding", label: "Embedding", noun: "Embedding", plural: "embedding_providers", form: "wizard", nav: true,
     iconPath: "M2 7a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0 M5.5 3.5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0 M9 10.5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0 "
       + "M4.6 6.1 6 4.4 M7.9 4.8l2 4.5",
@@ -125,7 +130,8 @@ const PC_BUILTIN_KINDS = { web_search: ["duckduckgo"], web_fetch: ["local"] };
 // A served kind with no name here keeps the served label, then its raw value (PC_kindLabel), and is offered after the named ones (PC_servedKinds).
 const PC_KIND_LABELS = {
   llm: { openchat: "OpenAI (completions)", openresponses: "OpenAI (responses)", anthropic: "Anthropic", gemini: "Gemini", ollama: "Ollama",
-    openrouter: "OpenRouter" },
+    openrouter: "OpenRouter", claude_code: "Claude Code" },
+  agent_runtime: { claude_code: "Claude Code" },
   embedding: { openai: "OpenAI", gemini: "Gemini", huggingface: "Hugging Face" },
   cross_encoder: { huggingface: "Hugging Face" },
   tts: { openai: "OpenAI-compatible" },
@@ -148,24 +154,50 @@ function PC_kindLabel(classKey, kind, served) {
   return String(kind == null ? "" : kind);
 }
 
-// The kinds a class offers as types to create: the served kinds, minus the built-in kinds and `excludeKinds`, in PC_KIND_LABELS order, unknown kinds last.
-function PC_servedKinds(classKey, types, excludeKinds) {
+// The kinds a class offers as types to create: the served kinds, minus the built-in kinds, `excludeKinds` and, for a class that names its own kinds, every kind outside `kinds`;
+// in PC_KIND_LABELS order, unknown kinds last.
+function PC_servedKinds(classKey, types, excludeKinds, kinds) {
   const served = Object.keys(types || {});
   const drop = (PC_BUILTIN_KINDS[classKey] || []).concat(excludeKinds || []);
-  const kept = served.filter((k) => drop.indexOf(k) < 0);
+  const own = kinds || [];
+  const kept = served.filter((k) => drop.indexOf(k) < 0 && (own.length === 0 || own.indexOf(k) >= 0));
   const order = Object.keys(PC_KIND_LABELS[classKey] || {});
   return order.filter((k) => kept.indexOf(k) >= 0).concat(kept.filter((k) => order.indexOf(k) < 0));
+}
+
+// Whether the catalog draws a row under a class (the claude_code plan, task 8): a class that names its own kinds draws only rows of those, and no class draws a kind its
+// excludeKinds names. A row without a kind the class rules on is the class's to draw.
+function PC_classAccepts(klass, row) {
+  const kind = row && row.provider;
+  if (kind != null && (klass.kinds || []).length > 0 && klass.kinds.indexOf(kind) < 0) return false;
+  if (kind != null && (klass.excludeKinds || []).indexOf(kind) >= 0) return false;
+  return true;
+}
+
+// The class a provider row of the named plural belongs to (the claude_code plan, task 8): the first class of that plural whose rules (PC_classAccepts)
+// draw the row. An LLM provider is the agent_runtime class when its kind is claude_code (the llm class excludes that kind and agent_runtime names
+// it), and the llm class for every other kind.
+function PC_classOf(plural, row) {
+  for (let i = 0; i < PC_CLASSES.length; i++) {
+    const klass = PC_CLASSES[i];
+    if (klass.plural !== plural) continue;
+    if (PC_classAccepts(klass, row)) return klass.key;
+  }
+  return null;
 }
 
 // ---- limits ------------------------------------------------------------------------------------------------------------------------------------------
 //
 // The Limits fields each class's adapters READ, so the limits box never shows a control the server ignores (design 2, anti-goal 1). Every LLM adapter is
-// wrapped in RetryingLLM (primer/api/registries/provider_registry.py), which reads all seven; the OpenAI and Gemini embedders read max_concurrency and
+// wrapped in RetryingLLM (primer/api/registries/provider_registry.py), which reads all seven, as does the agent runtime's ClaudeCodeLLM; the OpenAI and
+// Gemini embedders read max_concurrency and
 // connect_timeout_seconds (primer/embedder/openai.py, gemini.py); the Hugging Face embedder and the cross encoder read max_concurrency only
 // (primer/embedder/huggingface.py, primer/cross_encoder/huggingface.py); the ASR adapter reads the two timeouts (primer/speech/openai_asr.py) and the TTS
 // adapter the timeouts, retries and backoffs (primer/speech/openai_tts.py). A "<class>:<kind>" entry wins over the class's own.
 const PC_LIMIT_FIELDS = {
   llm: ["max_concurrency", "request_timeout_seconds", "max_retries", "retry_backoff_seconds", "connect_timeout_seconds", "total_timeout_seconds",
+    "retry_backoff_max_seconds"],
+  agent_runtime: ["max_concurrency", "request_timeout_seconds", "max_retries", "retry_backoff_seconds", "connect_timeout_seconds", "total_timeout_seconds",
     "retry_backoff_max_seconds"],
   "embedding:openai": ["max_concurrency", "connect_timeout_seconds"],
   "embedding:gemini": ["max_concurrency", "connect_timeout_seconds"],
@@ -596,7 +628,7 @@ Object.assign(window, {
 
 Object.assign(window, {
   PC_CLASSES, PC_classByKey, PC_BUILTIN_IDS, PC_READONLY_IDS, PC_isBuiltin, PC_isReadonly, PC_BUILTIN_KINDS,
-  PC_KIND_LABELS, PC_FLAVOR_LABELS, PC_kindLabel, PC_servedKinds,
+  PC_KIND_LABELS, PC_FLAVOR_LABELS, PC_kindLabel, PC_servedKinds, PC_classAccepts, PC_classOf,
   PC_LIMIT_FIELDS, PC_limitFieldsFor, PC_initialLimits, PC_limitsProblems, PC_LimitsSection,
   PC_idProblem, PC_IdField, PC_useTypes, PC_embedFirst, PC_mergeKeep,
 });
