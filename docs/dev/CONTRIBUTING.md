@@ -287,3 +287,15 @@ a one-line reason; it may not simply be omitted.
   dash and secret checks.
 - `scripts/docs_verifier.py` - the consolidation verifier.
 - `scripts/audit_touch_targets.py` - the mobile touch-target audit.
+
+### Optional real-model recovery evidence
+
+Do not run the manual W4 F1 case as a local debugging shortcut. Its isolated
+runner, protected model-owner reservation and exact reviewed main source must
+be authorized first. The normal live workflow excludes real models; manually
+dispatching it does not exercise F1. The separate manual-only `w4-f1.yml` fails
+closed on missing prerequisites and uploads actual or partial evidence. See
+[sessions](subsystems/sessions.md#optional-real-model-w4-recovery-evidence) for
+its process/lease/raw-evidence boundaries. Safe focused wiring tests are
+`uv run pytest tests/tooling/test_w4_f1_contracts.py tests/tooling/test_w4_f1_relay.py
+-o addopts= -n0`; they use synthetic in-memory transports, never a live model.
