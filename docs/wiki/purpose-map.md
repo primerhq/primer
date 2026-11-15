@@ -27,6 +27,7 @@ The platform is configured through the operator (an admin tells the operator to 
 | enable semantic search on a collection (provider use, inline backfill, verify hits) | [runbooks/enable-collection-search](runbooks/enable-collection-search) |
 | ingest a knowledge base into a collection and search its actual text | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) |
 | onboard a channel end to end (provider, room, approved source, inbound binding and replies) | [runbooks/onboard-a-channel](runbooks/onboard-a-channel) |
+| wire a trigger and the subscription that says what a fire does | [runbooks/wire-a-trigger](runbooks/wire-a-trigger) |
 | coordinate multiple agents in one workspace (the coordinator and sub-agents file pattern, the other coordination surfaces) | [collaboration/coordinator-pattern](collaboration/coordinator-pattern) + [collaboration/other-patterns](collaboration/other-patterns) |
 | build a wiki-driven agent (the prompt that teaches the wiki loop, the smallest grant, the characterization probe) | [agents/wiki-driven-agent](agents/wiki-driven-agent) |
 | understand what the access model allows (the roles, the grants, what "admin" means) | [start-here/roles-and-approvals](start-here/roles-and-approvals) |
@@ -52,6 +53,7 @@ One row per runbook as it lands (the authoring rule and the citation rule: [runb
 | enable or disable collection search and prove retrieval | [runbooks/enable-collection-search](runbooks/enable-collection-search) |
 | ingest text and a ZIP knowledge base, then verify stored bodies and hits | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) |
 | onboard a messaging room and prove the actual inbound message and answer | [runbooks/onboard-a-channel](runbooks/onboard-a-channel) |
+| wire a trigger, prove the worker's answer and deliberately disable or remove it | [runbooks/wire-a-trigger](runbooks/wire-a-trigger) |
 | the authoring rule for a new runbook (structure, citation, index row) | [runbooks/conventions](runbooks/conventions) |
 
 ## The operator's own roles
