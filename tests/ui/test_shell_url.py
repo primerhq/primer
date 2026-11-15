@@ -301,7 +301,7 @@ def test_view_round_trips_and_studio_stays_unwritten() -> None:
 # Provider types: the third segment of view=platform:providers:<type> (Platform revamp Plan 01, Task 6; seam I-1).
 # ---------------------------------------------------------------------------
 
-SIDEBAR_TYPES = ["llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
+SIDEBAR_TYPES = ["llm", "agent_runtime", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
 
 
 def test_a_provider_type_round_trips() -> None:
@@ -353,6 +353,14 @@ def test_view_subs_match_the_manifest() -> None:
     ctx = _ctx()
     man = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS)")) == man["view_subs"]
+
+
+def test_view_subs_include_agent_runtime() -> None:
+    """Agent runtimes are a provider type of their own (task 8 of the claude_code plan): the grammar admits the sub, and the hand-off manifest mirrors it."""
+    ctx = _ctx()
+    assert "agent_runtime" in json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS['platform:providers'])"))
+    man = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert "agent_runtime" in man["view_subs"]["platform:providers"]
 
 
 def test_every_sub_list_belongs_to_a_nav_of_the_grammar() -> None:

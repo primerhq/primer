@@ -31,6 +31,7 @@ def test_every_spec_class_is_on_the_rail() -> None:
     src = _read("components/providers/register-common.jsx")
     for label in (
         "LLM",
+        "Agent runtimes",
         "Embedding",
         "TTS",
         "ASR",
@@ -58,6 +59,24 @@ def test_each_crud_class_names_its_plural_path() -> None:
         "artifact_storage_providers",
     ):
         assert f'plural: "{plural}"' in src, f"no plural wired for {plural}"
+
+
+def test_the_catalog_filters_each_class_rows_with_class_accepts() -> None:
+    """The LLM class and the agent runtimes class read one plural (/llm_providers): the catalog must filter each class's fetched rows with
+    PC_classAccepts, or a claude_code row would draw under both classes."""
+    src = _read("components/provider-catalog.jsx")
+    assert "window.PC_classAccepts(c, row)" in src, "the fetched rows of every class are filtered with PC_classAccepts"
+
+
+def test_profile_carrying_classes_drive_the_card_facts_and_badges() -> None:
+    """The card's probe status, profile count, grant badge and the /model_profiles fetch follow the class's own ``profiles`` property (the claude_code plan,
+    task 8 fix round 1): the agent runtimes class gets the same facts as the LLM class instead of a key === "llm" special case."""
+    src = _read("components/provider-catalog.jsx")
+    assert "if (klass.profiles && row.last_probe_at != null)" in src, "the reachable status is driven by the class's profiles property"
+    assert "if (klass.profiles) {" in src, "the card facts are driven by the class's profiles property"
+    assert 'klass.key === "llm"' not in src, "no llm-keyed special case left in the card"
+    assert "agent_runtime: 1" in src, "the agent runtimes class is grantable (its rows are granted like LLM rows)"
+    assert "classesToFetch.some((c) => c.profiles)" in src, "the profile fetch follows the class, not the key"
 
 
 def test_the_mount_contract_is_props_only() -> None:

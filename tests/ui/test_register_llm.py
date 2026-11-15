@@ -25,6 +25,7 @@ LLM_FILE = COMPONENTS / "providers" / "register-llm.jsx"
 STUBS = r"""
 var SAVED = [], CLOSED = 0;
 var ROUTES = {}, HELD = {};
+window.primerApi.useMutation = function (fetcher, opts) { return { loading: false }; };
 // "METHOD /path" -> { answer } | { refuse: envelope } | { hold: name } (or a list of them: one per call, the last one repeating). An unscripted request is answered with
 // the body it was sent, as a create answers the row it stored.
 HANDLER = function (method, path, body) {
@@ -212,7 +213,8 @@ def test_page_one_shows_url_only_for_kinds_that_have_one(ctx, kind: str, has_url
         assert js(ctx, "fieldRow('pc-llm-settings', 'pc-field:url')")[0]["text"].startswith("URL"), "the box is labelled URL"
 
 
-def test_the_type_select_lists_the_six_kinds_in_the_designs_order_and_starts_on_openchat(ctx) -> None:
+def test_the_type_select_lists_the_llm_kinds_in_the_designs_order_and_never_claude_code(ctx) -> None:
+    """claude_code is the agent runtimes class's kind, not the LLM class's (the claude_code plan, task 8): the LLM wizard excludes it."""
     _open(ctx)
     assert js(ctx, "options('pc-field:type')") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter"]
     assert ctx.eval("value('pc-field:type')") == "openchat"
@@ -1181,7 +1183,57 @@ def test_a_discovery_answer_for_a_connection_that_has_since_changed_is_not_used(
 
 def test_the_kinds_a_caller_excludes_are_not_offered(ctx) -> None:
     _open(ctx, excludeKinds=["ollama", "anthropic"])
+    # the class's own exclusion (claude_code, the agent runtimes kind) rides on top of the caller's
     assert js(ctx, "options('pc-field:type')") == ["openchat", "openresponses", "gemini", "openrouter"]
+
+
+# ---- agent runtimes (the claude_code plan, task 8) -------------------------------------------------------------------
+
+def test_the_agent_runtime_wizard_offers_exactly_claude_code(ctx) -> None:
+    """The agent runtimes class is the LLM plural's wizard narrowed to its own kind: the Type select offers exactly claude_code, under the console's name."""
+    _open(ctx, initialClass="agent_runtime")
+    assert js(ctx, "options('pc-field:type')") == ["claude_code"]
+    assert ctx.eval("value('pc-field:type')") == "claude_code"
+    labels = js(ctx, "ALL('pc-field:type').filter(function (n) { return n.type === 'option'; }).map(function (n) { return textOf(n); })")
+    assert labels == ["Claude Code"]
+
+
+def test_the_agent_runtime_connection_page_carries_the_disclosure(ctx) -> None:
+    """The connection page of an agent runtime says what the child adds to every request and which login it uses; the other connection pages say nothing of it."""
+    _open(ctx, initialClass="agent_runtime")
+    assert ctx.eval("MR.find('pc-cc-disclosure') !== null") is True, "the disclosure is on the connection page"
+    assert "uses the login on each worker host" in js(ctx, "textOf(MR.find('pc-cc-disclosure'))")
+    _open(ctx)
+    assert ctx.eval("MR.find('pc-cc-disclosure') === null") is True, "an LLM connection page carries no such line"
+
+
+def test_the_models_page_shows_the_discovery_runtime_block(ctx) -> None:
+    """The discovery answer of a claude_code provider carries the runtime facts (host, installed, version, logged in, minimum): the models page shows them."""
+    runtime = {"host": "worker-7", "installed": True, "version": "1.0.42", "logged_in": True, "meets_minimum": True}
+    _route(ctx, {"POST /llm_providers/_discover_models": {"answer": {"models": [{"name": "sonnet"}], "runtime": runtime}}})
+    _open(ctx, initialClass="agent_runtime")
+    _type(ctx, "pc-field:id", "cc")
+    assert _press(ctx, "pc-register-next") == "fulfilled"
+    assert ctx.eval("MR.find('pc-llm-models') !== null") is True
+    text = js(ctx, "textOf(MR.find('pc-cc-runtime'))")
+    assert "worker-7" in text and "1.0.42" in text and "logged in" in text
+
+
+def test_the_models_page_without_a_runtime_says_nothing_of_one(ctx) -> None:
+    _route(ctx, {"POST /llm_providers/_discover_models": _models("m")})
+    _open(ctx)
+    _fill(ctx)
+    assert _press(ctx, "pc-register-next") == "fulfilled"
+    assert ctx.eval("MR.find('pc-llm-models') !== null") is True
+    assert ctx.eval("MR.find('pc-cc-runtime') === null") is True
+
+
+def test_the_agent_runtime_create_page_shows_the_llm_limits(ctx) -> None:
+    """An agent runtime row carries the same Limits as an LLM row (the claude_code plan, spec 6.1 and 7): the create page shows the section, max_concurrency among its fields."""
+    _open(ctx, initialClass="agent_runtime")
+    settle(ctx)
+    assert ctx.eval("MR.find('pc-limits') !== null") is True, "the Limits section is on the agent runtime connection page"
+    assert ctx.eval("MR.find('pc-limit:max_concurrency') !== null") is True
 
 
 def test_cancel_closes_the_overlay(ctx) -> None:

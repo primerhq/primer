@@ -21,6 +21,7 @@ SRC = (COMPONENTS / "providers" / "register-common.jsx").read_text(encoding="utf
 # design 4.1's sidebar order, then the hidden class (plan 02 Task 9's table)
 CLASSES = [
     ("llm", "LLM", "LLM", "llm_providers", "wizard", True),
+    ("agent_runtime", "Agent runtimes", "Agent runtime", "llm_providers", "wizard", True),
     ("embedding", "Embedding", "Embedding", "embedding_providers", "wizard", True),
     ("ssp", "Semantic Search Storage", "Semantic Search Storage", "ssp", "panel", True),
     ("cross_encoder", "Cross Encoding", "Cross Encoding", "cross_encoder_providers", "wizard", True),
@@ -42,6 +43,7 @@ LLM_LIMITS = [
 # the cross encoder and the speech adapters read only these).
 LIMIT_FIELDS = {
     "llm": LLM_LIMITS,
+    "agent_runtime": LLM_LIMITS,
     "embedding:openai": ["max_concurrency", "connect_timeout_seconds"],
     "embedding:gemini": ["max_concurrency", "connect_timeout_seconds"],
     "embedding:huggingface": ["max_concurrency"],
@@ -74,6 +76,7 @@ def test_classes_follow_the_sidebar_order_with_web_fetch_hidden(ctx) -> None:
     flags = js(ctx, "PC_CLASSES.map(function (c) { return [c.key, !!c.invalidate, !!c.profiles, !!c.draftTest, typeof c.detail, c.detailProp || null]; })")
     assert {row[0]: row[1:] for row in flags} == {
         "llm": [True, True, False, "undefined", None],
+        "agent_runtime": [True, True, False, "undefined", None],
         "embedding": [True, False, False, "undefined", None],
         "ssp": [False, False, False, "function", "sspId"],
         "cross_encoder": [True, False, False, "undefined", None],
@@ -109,6 +112,36 @@ def test_class_by_key(ctx) -> None:
     assert ctx.eval("PC_classByKey('all') === null") is True
 
 
+def test_agent_runtime_class_shape(ctx) -> None:
+    """Agent runtimes are a class of the LLM plural (task 8 of the claude_code plan): the wizard form, the LLM rows, the claude_code kind only."""
+    cls = js(ctx, "PC_classByKey('agent_runtime')")
+    assert cls is not None, "the agent runtimes class is registered"
+    assert cls["label"] == "Agent runtimes" and cls["noun"] == "Agent runtime"
+    assert cls["kinds"] == ["claude_code"]
+    assert cls["plural"] == "llm_providers"
+    assert cls["form"] == "wizard" and cls["nav"] is True
+    assert cls["invalidate"] is True and cls["profiles"] is True
+
+
+def test_llm_class_excludes_agent_runtimes(ctx) -> None:
+    """A claude_code row is the agent runtimes class's, not the LLM class's: the LLM entry names the kind in excludeKinds, and no other class has one."""
+    assert js(ctx, "PC_classByKey('llm').excludeKinds") == ["claude_code"]
+    for key, exclude in js(ctx, "PC_CLASSES.map(function (c) { return [c.key, c.excludeKinds || null]; })"):
+        if key != "llm":
+            assert exclude is None, (key, exclude)
+
+
+def test_class_accepts_filters_rows(ctx) -> None:
+    """One plural, two classes: the catalog keeps a shared plural's rows apart with PC_classAccepts (kinds admit, excludeKinds never do)."""
+    agent_rt = "PC_classByKey('agent_runtime')"
+    llm = "PC_classByKey('llm')"
+    assert js(ctx, f"PC_classAccepts({agent_rt}, {{ provider: 'claude_code' }})") is True
+    assert js(ctx, f"PC_classAccepts({llm}, {{ provider: 'claude_code' }})") is False, "the LLM class draws no claude_code row"
+    assert js(ctx, f"PC_classAccepts({llm}, {{ provider: 'anthropic' }})") is True
+    assert js(ctx, f"PC_classAccepts({agent_rt}, {{ provider: 'anthropic' }})") is False, "the agent runtimes class draws no other kind"
+    assert js(ctx, f"PC_classAccepts({llm}, {{ id: 'x' }})") is True, "a row without a known kind is the class's to draw"
+
+
 def test_every_class_has_a_distinct_icon_path(ctx) -> None:
     """One 14x14 stroke path per class (the kit's icon convention, ``PK_Card`` and ``PK_FormOverlay``'s selector draw it in a 14x14 view box)."""
     paths = js(ctx, "PC_CLASSES.map(function (c) { return c.iconPath; })")
@@ -138,10 +171,10 @@ def test_built_in_and_read_only_rows(ctx) -> None:
 
 
 def test_kind_labels_rename_the_served_kinds(ctx) -> None:
-    assert js(ctx, "Object.keys(PC_KIND_LABELS.llm)") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter"]
+    assert js(ctx, "Object.keys(PC_KIND_LABELS.llm)") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code"]
     assert js(ctx, "PC_KIND_LABELS.llm") == {
         "openchat": "OpenAI (completions)", "openresponses": "OpenAI (responses)", "anthropic": "Anthropic",
-        "gemini": "Gemini", "ollama": "Ollama", "openrouter": "OpenRouter",
+        "gemini": "Gemini", "ollama": "Ollama", "openrouter": "OpenRouter", "claude_code": "Claude Code",
     }
     assert js(ctx, "PC_KIND_LABELS.embedding") == {"openai": "OpenAI", "gemini": "Gemini", "huggingface": "Hugging Face"}
     assert js(ctx, "PC_KIND_LABELS.web_search") == {"tavily": "Tavily", "firecrawl": "Firecrawl", "exa": "Exa", "duckduckgo": "DuckDuckGo"}
@@ -165,7 +198,7 @@ def test_every_kind_the_server_serves_has_a_console_name() -> None:
         "artifact_storage_providers": "artifact_storage",
     }
     named = {
-        "llm": {"openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter"},
+        "llm": {"openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code"},
         "embedding": {"openai", "gemini", "huggingface"}, "cross_encoder": {"huggingface"}, "stt": {"openai"}, "tts": {"openai"},
         "web_search": {"tavily", "firecrawl", "exa", "duckduckgo"}, "web_fetch": {"jina", "firecrawl", "exa", "local"},
         "ssp": {"pgvector", "pgvectorscale", "lance"}, "artifact_storage": {"db", "filesystem", "s3"},
@@ -180,6 +213,7 @@ def test_every_kind_the_server_serves_has_a_console_name() -> None:
 def test_limit_fields_match_what_the_adapters_read(ctx) -> None:
     assert js(ctx, "PC_LIMIT_FIELDS") == LIMIT_FIELDS
     assert js(ctx, "PC_limitFieldsFor('llm', 'openchat')") == LLM_LIMITS
+    assert js(ctx, "PC_limitFieldsFor('agent_runtime', 'claude_code')") == LLM_LIMITS, "an agent runtime row carries the same limits as an LLM row (the claude_code plan, spec 6.1 and 7)"
     assert js(ctx, "PC_limitFieldsFor('embedding', 'openai')") == ["max_concurrency", "connect_timeout_seconds"]
     assert js(ctx, "PC_limitFieldsFor('embedding', 'huggingface')") == ["max_concurrency"]
     assert js(ctx, "PC_limitFieldsFor('cross_encoder', 'huggingface')") == ["max_concurrency"]
@@ -436,12 +470,23 @@ def test_served_kinds_drop_built_ins_and_follow_label_order(ctx) -> None:
     assert js(ctx, f"PC_servedKinds('web_fetch', {web_fetch}, ['local'])") == ["jina", "firecrawl", "exa"]
     assert js(ctx, f"PC_servedKinds('web_fetch', {web_fetch})") == ["jina", "firecrawl", "exa"], "local is built in whether or not it is excluded"
     assert js(ctx, f"PC_servedKinds('web_fetch', {web_fetch}, ['exa'])") == ["jina", "firecrawl"]
-    assert js(ctx, f"PC_servedKinds('llm', {llm})") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter"]
+    assert js(ctx, f"PC_servedKinds('llm', {llm})") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code"]
     # a kind the console has no name for is still offered (the server says what exists), after the named ones
     assert js(ctx, "PC_servedKinds('llm', { brandnew: {}, anthropic: {}, openchat: {} })") == ["openchat", "anthropic", "brandnew"]
     # a named kind the server does not serve is never offered
     assert js(ctx, "PC_servedKinds('llm', { anthropic: {} })") == ["anthropic"]
     assert js(ctx, "PC_servedKinds('llm', null)") == []
+
+
+def test_the_wizards_offer_their_class_kinds(ctx) -> None:
+    """The register wizard hands the class's own kinds and excludeKinds to PC_servedKinds (task 8): the LLM wizard never offers claude_code, the
+    agent runtimes wizard offers exactly claude_code, under the console's name."""
+    llm_types = json.dumps(types_of("llm_providers"))
+    assert "claude_code" not in js(ctx, f"PC_servedKinds('llm', {llm_types}, PC_classByKey('llm').excludeKinds)"), \
+        "the LLM class excludes the agent runtime kind"
+    assert js(ctx, f"PC_servedKinds('agent_runtime', {llm_types}, PC_classByKey('agent_runtime').excludeKinds, PC_classByKey('agent_runtime').kinds)") \
+        == ["claude_code"], "the agent runtimes class offers only its own kind"
+    assert js(ctx, "PC_KIND_LABELS.agent_runtime") == {"claude_code": "Claude Code"}
 
 
 def test_embed_first_sorts_and_ticks(ctx) -> None:

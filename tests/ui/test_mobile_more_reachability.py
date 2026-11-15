@@ -482,8 +482,8 @@ def test_a_plain_string_fact_is_one_line(app) -> None:
 
 # --- the Platform sections are the available navs: Providers and its types, custom pages (Platform revamp 01, Task 8; seam I-2 on phones) -------
 
-TYPES = ["llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
-LABELS = ["LLM", "Embedding", "Semantic Search Storage", "Cross Encoding", "Workspace", "Web Search", "Channels", "Artifact Store", "TTS", "ASR"]
+TYPES = ["llm", "agent_runtime", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
+LABELS = ["LLM", "Agent runtimes", "Embedding", "Semantic Search Storage", "Cross Encoding", "Workspace", "Web Search", "Channels", "Artifact Store", "TTS", "ASR"]
 LOAD_WEB = "window.WEB_SettingsPage = STAND_IN('web-stand-in');"
 LOAD_BOTH = LOAD_WEB + " window.WT_TemplatesPage = STAND_IN('templates-stand-in');"
 INTELLIGENCE = 'NV_PLAT_GROUPS = [{ label: "Intelligence", ids: ["providers", "agents"] }];'

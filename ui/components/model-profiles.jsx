@@ -371,7 +371,7 @@ function MP_ProfileModal(props) {
         onClose={props.onClose} onSaved={props.onSaved} />
     );
   }
-  return <MP_AggregateOverlay key={existing ? existing.id : "new"} existing={existing} onClose={props.onClose} onSaved={props.onSaved} />;
+  return <MP_AggregateOverlay key={existing ? existing.id : "new"} existing={existing} providers={props.providers || []} onClose={props.onClose} onSaved={props.onSaved} />;
 }
 
 // A harness-managed profile is shown, not edited: its fields sit in a disabled fieldset, so every native control under it (the kit's checkboxes and segmented buttons too) is
@@ -627,7 +627,7 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
 // that is not the model's default (MP_advancedIsSet) or on a harness-managed row. The model requires a description the design has no field for: a create writes
 // "Aggregate of <ids>", an edit shows the stored one. `existing` is the row the page listed; an edit sends it back whole with the form's fields laid over it (MP_editBody),
 // because PUT is a full replace and the row holds fields this form does not draw (`config`).
-function MP_AggregateOverlay({ existing, onClose, onSaved }) {
+function MP_AggregateOverlay({ existing, providers, onClose, onSaved }) {
   const isEdit = existing != null;
   const managed = MP_isManaged(existing);
   const selfId = isEdit ? existing.id : null;

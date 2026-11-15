@@ -36,7 +36,7 @@ def test_delete_asks_first() -> None:
 def test_invalidate_is_offered_only_where_the_endpoint_exists() -> None:
     common = (UI / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
     marked = re.findall(r'key:\s*"(\w+)"[^}]*invalidate:\s*true', common)
-    assert marked == ["llm", "embedding", "cross_encoder"], marked
+    assert marked == ["llm", "agent_runtime", "embedding", "cross_encoder"], marked
     assert "/invalidate" in _form_src()
 
 

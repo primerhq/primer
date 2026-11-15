@@ -331,6 +331,7 @@ LEGACY_ROUTE_OVERLAYS = {
     "ssp": "providers:ssp",
     "providers": "providers",
     "providers/llm": "providers:llm",
+    "providers/agent_runtime": "providers:agent_runtime",
     "providers/embedding": "providers:embedding",
     "providers/cross_encoder": "providers:cross_encoder",
     "providers/stt": "providers:stt",

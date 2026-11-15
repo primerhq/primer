@@ -88,7 +88,7 @@ window.primerApi.useFocusTrap = function () {
 """
 
 LABELS = [
-    "LLM provider", "Embedding provider", "Semantic Search Storage provider", "Cross Encoding provider", "Workspace provider",
+    "LLM provider", "Agent runtime provider", "Embedding provider", "Semantic Search Storage provider", "Cross Encoding provider", "Workspace provider",
     "Web Search provider", "Channel provider", "Artifact Store provider", "TTS provider", "ASR provider",
 ]
 
@@ -165,7 +165,7 @@ def test_start_class_rules(ctx) -> None:
         assert ctx.eval(f"PC_startClass.apply(null, {json.dumps(list(args))})") == expected, args
 
 
-def test_the_selector_lists_ten_types_in_sidebar_order(ctx) -> None:
+def test_the_selector_lists_eleven_types_in_sidebar_order(ctx) -> None:
     assert [o["label"] for o in js(ctx, "PC_selectorOptions()")] == LABELS
     assert js(ctx, "PC_selectorOptions().map(function (o) { return o.iconPath; })") == js(
         ctx, "PC_CLASSES.filter(function (c) { return c.nav; }).map(function (c) { return c.iconPath; })")
@@ -775,12 +775,14 @@ def test_index_loads_the_overlay_after_register_common() -> None:
 # ---- the kit's CSS the overlay leans on --------------------------------------------------------------------------------------------------------------
 
 
-def test_the_selector_menu_holds_all_ten_types_and_keeps_its_scroll() -> None:
-    """Review of #773: ``max-height: 340px`` clipped the tenth entry (ASR provider) behind the menu's scroll. Measured in Chromium, the ten rows and the menu's padding
-    are 356px on a desktop (34.8px a row) and 448px on a phone, where the rows are 44px touch targets; the menu's border adds 2px: so the cap is 460px. On a short screen
-    it is 70% of the viewport and the menu scrolls, as it always did."""
+def test_the_selector_menu_holds_all_eleven_types_and_keeps_its_scroll() -> None:
+    """Review of #773: ``max-height: 340px`` clipped the last entry (ASR provider) behind the menu's scroll. Measured in Chromium, the rows and the menu's
+    padding are 34.8px a row, so the eleven rows are 383px on a desktop. On a phone every row is the 44px touch target (``--tap-min``, the
+    ``@media (max-width: 639px)`` rule), so the eleven rows are 484px; with the menu's 8px padding and 2px border the content is 494px -- more than the
+    460px cap the stale 448px measurement set, so the ASR row sat behind the scroll again. The cap is 500px (the measured 494px plus slack). On a
+    short screen it is 70% of the viewport and the menu scrolls, as it always did."""
     menu = declarations(css_body(".pk-selector-menu"))
-    assert menu["max-height"] == "min(70vh, 460px)"
+    assert menu["max-height"] == "min(70vh, 500px)"
     assert menu["overflow-y"] == "auto"
 
 

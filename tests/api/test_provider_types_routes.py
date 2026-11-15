@@ -89,9 +89,20 @@ async def test_discoverable_flag_matches_the_probe_helper(client) -> None:
         LLMProviderType.OPENROUTER.value,
         LLMProviderType.ANTHROPIC.value,
         LLMProviderType.GEMINI.value,
+        # Deliberate exception (the claude_code plan, task 1): claude_code is
+        # marked discoverable in _types ahead of its adapter; _probe_llm_models
+        # still answers a clean 400 for it until the CLI-based probe lands.
+        LLMProviderType.CLAUDE_CODE.value,
     }
     for kind, meta in body.items():
         assert meta["discoverable"] is (kind in discoverable_kinds), kind
+
+
+@pytest.mark.asyncio
+async def test_llm_types_lists_claude_code(client) -> None:
+    body = (await client.get("/v1/llm_providers/_types")).json()
+    assert body["claude_code"]["label"] == "Claude Code"
+    assert [f["key"] for f in body["claude_code"]["config_fields"]] == ["binary_path", "pass_env"]
 
 
 @pytest.mark.asyncio

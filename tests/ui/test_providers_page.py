@@ -144,6 +144,42 @@ def test_web_fetchers_never_appear(ctx) -> None:
     assert not any("web_fetch" in c for c in cards)
 
 
+def test_a_claude_code_row_draws_only_under_agent_runtimes(ctx) -> None:
+    """Two classes read one plural (/llm_providers, the claude_code plan task 8): the claude_code row draws under Agent runtimes only, the other LLM
+    row under LLM only."""
+    ctx.eval("""
+    PROVIDER_FIXTURES["/llm_providers"] = { items: [{ id: "cc-1", provider: "claude_code" }, { id: "llm-1", provider: "anthropic" }] };
+    MR.mount(window.ProviderCatalog, {
+      initialClass: "all",
+      onNavigate: onNavigate
+    });
+    """)
+    settle(ctx)
+    cards = json.loads(ctx.eval("JSON.stringify(MR.findAll('pk-card:').map(function (n) { return n.props['data-testid']; }))"))
+    assert "pk-card:agent_runtime:cc-1" in cards, cards
+    assert "pk-card:llm:llm-1" in cards, cards
+    assert "pk-card:llm:cc-1" not in cards, "a claude_code row does not draw under the LLM class"
+    assert "pk-card:agent_runtime:llm-1" not in cards, "another LLM row does not draw under Agent runtimes"
+
+
+def test_the_agent_runtime_view_fetches_profiles_and_counts_them_on_the_card(ctx) -> None:
+    """The agent runtimes class carries model profiles like the LLM class (the claude_code plan, task 8 fix round 1): the class view fetches /model_profiles and the card
+    carries the profile count, not just the row's id."""
+    ctx.eval("""
+    PROVIDER_FIXTURES["/llm_providers"] = { items: [{ id: "cc-1", provider: "claude_code" }] };
+    PROVIDER_FIXTURES["/model_profiles"] = { items: [{ id: "cc-1--sonnet", provider_id: "cc-1" }] };
+    MR.mount(window.ProviderCatalog, {
+      initialClass: "agent_runtime",
+      onNavigate: onNavigate
+    });
+    """)
+    settle(ctx)
+    calls = js(ctx, "CALLS")
+    assert any(c["method"] == "GET" and "model_profiles" in c["path"] for c in calls), "the class view must fetch the profiles for the card's count"
+    card = js(ctx, "textOf(MR.find('pk-card:agent_runtime:cc-1'))")
+    assert "1 profile" in card, card
+
+
 def test_the_header_has_filter_pager_and_register(ctx) -> None:
     ctx.eval("""
     MR.mount(window.ProviderCatalog, {

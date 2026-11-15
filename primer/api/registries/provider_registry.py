@@ -42,6 +42,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_agent_runtime_sweep_done = False
+_agent_runtime_sweep_task: asyncio.Task | None = None
+
+
+def _sweep_agent_runtime_orphans_once() -> None:
+    """The agent-runtime crash sweep, once per process, at first build.
+
+    A crashed worker leaves its ``primer-cc-<pid>-*`` temp directories; the
+    sweep kills any process group they record and removes them. It runs off
+    the running loop as a detached task; a build with no running loop (a sync
+    construction in a test) defers to the next build that has one.
+    """
+    global _agent_runtime_sweep_done, _agent_runtime_sweep_task
+    if _agent_runtime_sweep_done:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _agent_runtime_sweep_done = True
+    from primer.llm.claude_code.process import sweep_orphans
+
+    _agent_runtime_sweep_task = loop.create_task(sweep_orphans())
+
 
 def _build_default_llm_factory(
     *,
@@ -85,6 +109,12 @@ def _build_default_llm_factory(
             case LLMProviderType.OPENROUTER:
                 from primer.llm.openrouter import OpenRouterLLM
                 return OpenRouterLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
+            case LLMProviderType.CLAUDE_CODE:
+                from primer.llm.claude_code import ClaudeCodeLLM
+                _sweep_agent_runtime_orphans_once()
+                return ClaudeCodeLLM(
                     provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
                 )
             case _:
@@ -1016,6 +1046,17 @@ class ProviderRegistry:
                     type(adapter).__name__,
                     exc,
                 )
+        try:
+            # The process-wide agent-runtime tool bridge (claude_code steps);
+            # a no-op when no bridge was started on this process's loop.
+            from primer.llm.claude_code.bridge import aclose_bridge
+
+            await aclose_bridge()
+        except Exception as exc:  # noqa: BLE001 -- best-effort
+            logger.warning(
+                "ProviderRegistry: aclose failed on the agent-runtime bridge: %s",
+                exc,
+            )
         await self._retirement.close_all()
 
 

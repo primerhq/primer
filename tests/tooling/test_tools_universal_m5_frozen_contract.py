@@ -4,9 +4,9 @@ Restamped for W3 welcome (base ``6fe6f03d7``): exactly two new generated
 operations; curated/skip/aggregation/core-kit contracts are unchanged. From the live
 production projection and the reviewed manifest:
 
-* 406 operation identities (operationId, method, path)
-* 489 scoped tool ids (exact set, from the reviewed tool catalogue)
-* 263 generated declared ids
+* 407 operation identities (operationId, method, path)
+* 490 scoped tool ids (exact set, from the reviewed tool catalogue)
+* 264 generated declared ids
 * the 135 curated pairs (operation -> canonically sorted ids)
 * the 8 skips (method, path, skip_code), cross-checked against the manifest's
   reviewed skip digest
@@ -39,9 +39,9 @@ MANIFEST_PATH = Path("scripts/data/tools_universal_m0_manifest.json")
 BASE_COMMIT = "fb18c24b92bec57131bc5e49959344a4d7d97960"
 
 # Frozen digests (sha256 over canonical JSON of the sorted values).
-IDENTITIES_406_SHA256 = "0fca73ea3dceb3f52eeab4d623770e0314327c66238eadf6cba7b9003ffd26c6"
-TOOLS_489_SHA256 = "8628a4645190ebe17a07d32bdbcbf884411ba91d89c669408aaa7c1001235297"
-GENERATED_263_SHA256 = "bba67fb59cfb337d44f66c7d8f5ad9dda5bdf0b93806b494e44c5a1d9d841b7e"
+IDENTITIES_407_SHA256 = "495473987d4a6db1d31f5fc7f4b08791ecbc8e3bd7b673cb02e5f6162916862b"
+TOOLS_490_SHA256 = "92c82e578e8e345ebcfbbf3930e6425f96b1e51bd6e2f2b5597809ce7316e9f7"
+GENERATED_264_SHA256 = "1aa65d250b41f173af758dfb2a2b5f36c7d8d80d5dbaead5b15e219c0e081cac"
 CURATED_PAIRS_135_SHA256 = "c4e02bffd013b8b430467a2ac8c5a6132cd6fd86d4c70ac82861524f58172d7e"
 SKIPS_8_SHA256 = "48dce3e34e1e74800dfba42fb9130d43d0bc0b75d0387c7bd252ef7622099abf"
 EMPTY_SET_SHA256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
@@ -72,31 +72,31 @@ def projection(built_app) -> tuple:
 @pytest.fixture(scope="module")
 def live_catalogue(built_app):
     # Build first so inventory enumerates this app's generated providers.
-    assert len(built_app.state.generated_route_toolsets.operations) == 263
+    assert len(built_app.state.generated_route_toolsets.operations) == 264
     return asyncio.run(inventory.build_builtin_catalogue())
 
 
 def test_operation_identity_is_frozen(projection) -> None:
     rows = list(projection)
-    assert len(rows) == 406
-    assert len({(row.operation_id, row.method, row.path) for row in rows}) == 406
-    assert _digest([[row.operation_id, row.method, row.path] for row in rows]) == IDENTITIES_406_SHA256
+    assert len(rows) == 407
+    assert len({(row.operation_id, row.method, row.path) for row in rows}) == 407
+    assert _digest([[row.operation_id, row.method, row.path] for row in rows]) == IDENTITIES_407_SHA256
 
 
 def test_the_stable_tool_id_set_is_frozen(manifest, live_catalogue) -> None:
     ids = [tool.scoped_id for tool in live_catalogue]
-    assert len(ids) == len(set(ids)) == 489
+    assert len(ids) == len(set(ids)) == 490
     assert all(item.count("__") == 1 for item in ids)
-    assert _digest(ids) == TOOLS_489_SHA256
+    assert _digest(ids) == TOOLS_490_SHA256
     assert set(ids) == {tool["scoped_id"] for tool in manifest["tool_catalogue"]}
 
 
 def test_the_generated_declared_ids_are_frozen(projection, built_app) -> None:
     generated = [row for row in projection if row.state == "generated"]
-    assert len(generated) == 263
+    assert len(generated) == 264
     ids = [row.tool_ids[0] for row in generated]
-    assert len(set(ids)) == 263
-    assert _digest(ids) == GENERATED_263_SHA256
+    assert len(set(ids)) == 264
+    assert _digest(ids) == GENERATED_264_SHA256
     # Origin is descriptor-owned and must retain the same operation coordinates.
     by_operation = {row.operation_id: row for row in generated}
     for operation in built_app.state.generated_route_toolsets.operations:
@@ -143,16 +143,16 @@ def test_the_manifest_baseline_is_frozen(manifest) -> None:
     assert manifest["schema_version"] == 1
     assert manifest["base_commit"] == BASE_COMMIT
     assert manifest["reviewed_surface_revision"] == "wiki-first-w3-welcome"
-    assert manifest["expected_operation_count"] == 406
-    assert manifest["expected_path_count"] == 275
+    assert manifest["expected_operation_count"] == 407
+    assert manifest["expected_path_count"] == 276
 
 
 def test_every_tool_has_exactly_one_reference_path(live_catalogue) -> None:
-    """Reference-path freeze: unique reference/tools/<toolset>/<tool> for all 489."""
+    """Reference-path freeze: unique reference/tools/<toolset>/<tool> for all 490."""
     paths = []
     for tool in live_catalogue:
         path = reference_path(tool.toolset_id, tool.bare_id)
         assert re.fullmatch(r"reference/tools/[^/]+/[^/]+", path)
         assert tool.scoped_id == f"{tool.toolset_id}__{tool.bare_id}"
         paths.append(path)
-    assert len(set(paths)) == 489
+    assert len(set(paths)) == 490

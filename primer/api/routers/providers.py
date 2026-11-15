@@ -33,6 +33,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from dataclasses import asdict
 from typing import Any, NoReturn
 from uuid import uuid4
 
@@ -46,6 +47,8 @@ from primer.access.policy import catalogue_predicate, level_of, require, visible
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
+from primer.llm.claude_code.process import child_env
+from primer.llm.claude_code.status import CLAUDE_CODE_ALIASES, MINIMUM_VERSION, runtime_status
 from primer.llm.gemini import _discover_gemini_models
 from primer.llm.openrouter import _discover_openrouter_models
 
@@ -97,6 +100,7 @@ from primer.toolset.toolset_checks import (
 )
 from primer.model.provider import (
     AnthropicConfig,
+    ClaudeCodeConfig,
     CrossEncoderProvider,
     CrossEncoderProviderType,
     EmbeddingProvider,
@@ -483,6 +487,26 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
             "row_fields": [],
             "discoverable": True,
         },
+        LLMProviderType.CLAUDE_CODE.value: {
+            "label": "Claude Code",
+            "config_fields": [
+                _form_field(
+                    "binary_path",
+                    "CLI path",
+                    "text",
+                    placeholder="claude",
+                    help_="Path or name of the claude CLI on every worker host",
+                ),
+                _form_field(
+                    "pass_env",
+                    "Pass-through variables",
+                    "text",
+                    help_="Comma-separated environment variable names, for example HTTPS_PROXY",
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
     })
 
 
@@ -793,6 +817,38 @@ async def get_llm_provider_models(
     return {"models": sorted(set(names))}
 
 
+@llm_provider_router.get(
+    "/llm_providers/{provider_id}/runtime_status",
+    summary="Check the agent-runtime CLI on the host this worker runs on",
+    responses=common_responses(404, 500),
+)
+@route_tool(scoped_id="llm_providers__get_llm_provider_runtime_status")
+async def get_llm_provider_runtime_status(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    providers=Depends(get_llm_provider_storage),
+) -> dict:
+    """Live-check the CLI a claude_code provider drives, on THIS host.
+
+    The row must exist and be a claude_code provider (404 otherwise). The answer is
+    ``runtime_status``' five fields (host, installed, version, logged_in,
+    meets_minimum): the CLI's auth output carries account details (email, org)
+    and none of them are read, so none can come back here. The child env is
+    Task 5's scrubbed child_env (controller ruling).
+    """
+    from primer.model.except_ import NotFoundError
+
+    row = await providers.get(provider_id)
+    if row is None:
+        raise NotFoundError(f"LLMProvider {provider_id!r} does not exist")
+    if row.provider is not LLMProviderType.CLAUDE_CODE:
+        raise NotFoundError(
+            f"LLMProvider {provider_id!r} is a {row.provider.value} provider; "
+            "runtime_status exists only for claude_code providers",
+        )
+    st = await runtime_status(row.config.binary_path, env=child_env(row.config.pass_env))
+    return asdict(st)
+
+
 @llm_provider_router.post(
     "/llm_providers/_discover_models",
     summary="Probe a draft LLM provider for its model list",
@@ -1006,14 +1062,43 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
         result = {"models": catalogue}
     elif provider == "gemini":
         result = await _probe_gemini_models(config, method="generateContent")
+    elif provider == "claude_code":
+        # Agent-runtime provider: nothing to list upstream. The check IS the
+        # probe -- the CLI on THIS worker host must exist, be new enough and
+        # be logged in -- and its "model list" is the CLI's own aliases.
+        # The child env is Task 5's scrubbed child_env, so the CLI sees only
+        # the allowlist plus the operator-named pass_env (controller ruling).
+        try:
+            cc_draft = ClaudeCodeConfig.model_validate(config)
+        except ValidationError as exc:
+            raise _probe_failure(
+                f"invalid claude_code config: {_validation_detail(exc)}",
+            ) from exc
+        st = await runtime_status(cc_draft.binary_path, env=child_env(cc_draft.pass_env))
+        if not st.installed:
+            raise _probe_failure(
+                f"claude CLI on {st.host}: not installed (looked for "
+                f"{cc_draft.binary_path!r})",
+            )
+        if not st.meets_minimum:
+            raise _probe_failure(
+                f"claude CLI on {st.host}: version {st.version} is below the "
+                f"minimum {'.'.join(str(p) for p in MINIMUM_VERSION)}",
+            )
+        if not st.logged_in:
+            raise _probe_failure(
+                f"claude CLI on {st.host}: not logged in (run `claude` on "
+                f"that host once)",
+            )
+        result = {"models": list(CLAUDE_CODE_ALIASES), "runtime": asdict(st)}
     else:
         # 01a06918: unreachable today. _build_stub_provider above already
         # validated `provider` against LLMProvider's own LLMProviderType
-        # field, so by this point it is one of the 6 current members --
-        # ollama/openresponses/openchat/openrouter/anthropic/gemini --
-        # every one of which has its own elif above. The old reachable
-        # case was "aggregated" (an LLMProviderType member with no live
-        # probe of its own); it moved off LLMProvider entirely onto
+        # field, so by this point it is one of the 7 current members --
+        # ollama/openresponses/openchat/openrouter/anthropic/gemini/
+        # claude_code -- every one of which has its own elif above. The old
+        # reachable case was "aggregated" (an LLMProviderType member with no
+        # live probe of its own); it moved off LLMProvider entirely onto
         # ModelProfile (01a067c4) and no longer exists as a value this
         # function can even receive.
         #

@@ -147,7 +147,7 @@ var SH_VIEW_REDIRECTS = {
 // written, so a pasted link with a type that does not exist opens the nav itself (Providers, every type) and the address bar is rewritten without it.
 var SH_VIEW_SUBS = {
   "platform:providers": [
-    "llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search",
+    "llm", "agent_runtime", "embedding", "ssp", "cross_encoder", "workspace", "web_search",
     "channel", "artifact_storage", "tts", "stt",
   ],
 };

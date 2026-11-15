@@ -289,6 +289,11 @@ function PC_LlmSettings({ s }) {
         </PK_Field>
         {flavor ? PC_llmField(s, flavor) : null}
       </PK_Grid>
+      {s.kind === "claude_code" ? (
+        <div className="field-help" data-testid="pc-cc-disclosure">
+          {"Claude Code adds its own identity line, the account email and an environment block to every request, and uses the login on each worker host."}
+        </div>
+      ) : null}
       {s.loadingShape ? (
         <div className="muted text-sm" role="status" data-testid="pc-register-loading">Loading the fields for this kind…</div>
       ) : null}
@@ -312,7 +317,7 @@ function PC_LlmSettings({ s }) {
         </div>
       ) : null}
       {wide.length || others.length ? <PK_Grid cols={2}>{wide.concat(others).map((f) => PC_llmField(s, f))}</PK_Grid> : null}
-      {s.shape && s.shape.limits ? (
+      {s.shape && s.shape.limits && s.limitFields.length ? (
         <window.PC_LimitsSection fields={s.limitFields} value={s.eff.limits} problems={s.limitProblems} testid="pc-limits" classKey={s.classKey}
           onChange={(next) => s.setField("row", "limits", next)} />
       ) : null}
@@ -370,6 +375,16 @@ function PC_LlmModels({ s }) {
         <div className="pc-import-title">{"Models found at " + s.providerId}</div>
         <div className="pc-import-sub">{"✓ Connected; " + PC_llmCount(s.listed, "model", "models") + " listed"}</div>
       </div>
+      {s.runtime ? (
+        <div className="field-help" role="status" data-testid="pc-cc-runtime">
+          {
+            "Claude Code " + (s.runtime.version || "of unknown version") + " on " + (s.runtime.host || "this host") +
+            (s.runtime.installed ? "" : " (not installed)") +
+            (s.runtime.logged_in ? "; logged in" : "; not logged in") +
+            (s.runtime.meets_minimum ? "" : "; below the minimum version")
+          }
+        </div>
+      ) : null}
       {s.already != null ? (
         <div className="field-help" data-testid="pc-import-already">{"Already imported: " + s.already}</div>
       ) : null}
@@ -393,7 +408,8 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
   const editing = !!editRow;
   const ty = window.PC_useTypes(klass.plural);
   const typeMap = ty.types || {};
-  const kinds = ty.types ? window.PC_servedKinds(klass.key, typeMap, excludeKinds) : [];
+  // The kinds the class offers: the served kinds minus the caller's and the class's own exclusions, and - for a class that names its own kinds - only those (the claude_code plan, task 8).
+  const kinds = ty.types ? window.PC_servedKinds(klass.key, typeMap, (excludeKinds || []).concat(klass.excludeKinds || []), klass.kinds) : [];
 
   // The row as the overlay opened it: "unsaved changes" are the draft against THIS, not against whatever `editRow` is later handed (a caller that reloads its list under
   // the open overlay, after the probe of Import more models stamped the row, would otherwise make an untouched draft look changed).
@@ -403,6 +419,8 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
   const [rows, setRows] = React.useState([]);
   const [listed, setListed] = React.useState(0);
   const [already, setAlready] = React.useState(null);
+  // The discovery's runtime facts (the claude_code plan, task 2 and 8): the host, install, version, login and minimum of the child the provider runs on.
+  const [runtime, setRuntime] = React.useState(null);
   const [providerRow, setProviderRow] = React.useState(null);
   const [rounds, setRounds] = React.useState(0);
   const [out, setOut] = React.useState(null);
@@ -554,6 +572,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
     setRows(PC_llmRows(models));
     setListed(models.length);
     setAlready(null);
+    setRuntime((answer && answer.runtime) || null);
     showModels();
   };
 
@@ -712,6 +731,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
       setError(PC_LLM_NO_MODELS);
       return;
     }
+    setRuntime((probed && probed.runtime) || null);
     const registered = new Set(((have && have.models) || []).map(String));
     const unregistered = models.filter((m) => !registered.has(m.name));
     setRows(PC_llmRows(unregistered));
@@ -728,7 +748,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
     editing, classKey: klass.key, eff, kind, kinds, typeMap, shape, configFields, hasUrl, types: ty, typesFailed, loadingShape, kindNotServed,
     idProblem, idTyped, limitFields, limitProblems, dirty, helpId, setField, setKind, retryTypes, handoff, rootRef,
     providerId, listed, already, rows, uid, summary, frozen, toggle, toggleAll, setContext,
-    plural: klass.plural, pub: pub, setPub: setPub,
+    plural: klass.plural, pub: pub, setPub: setPub, runtime,
   };
   // The footer's buttons carry keys of their own. React keeps the DOM node of an element with the same type and key at the same place, so without them the Back button of the
   // models page and the Cancel of the connection page (both the first thing in the left of the footer) would be ONE node: a focus left on Back would stay on a button now called
@@ -802,5 +822,5 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
   });
 }
 
-window.PC_REGISTER_PAGES = Object.assign(window.PC_REGISTER_PAGES || {}, { llm: PC_LlmRegister });
+window.PC_REGISTER_PAGES = Object.assign(window.PC_REGISTER_PAGES || {}, { llm: PC_LlmRegister, agent_runtime: PC_LlmRegister });
 Object.assign(window, { PC_LlmRegister, PC_llmBody, PC_importProfiles });

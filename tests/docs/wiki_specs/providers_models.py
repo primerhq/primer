@@ -1,10 +1,12 @@
 """The providers pages for the model families (pivot P4, task 13).
 
-Four admin feature pages, one per model family: ``llm`` (the provider rows
-agents talk through), ``model-profiles`` (the registry of what a provider
-serves, single and aggregated), ``embedding`` (the embedders) and
-``cross-encoder`` (the rerankers). The embedding and cross-encoder pages
-list the probe tools as conditional: they are shown when live.
+Five admin feature pages: ``llm`` (the provider rows agents talk
+through), ``agent-runtimes`` (the ``claude_code`` rows that drive the
+operator's logged-in CLI on the worker hosts), ``model-profiles`` (the
+registry of what a provider serves, single and aggregated),
+``embedding`` (the embedders) and ``cross-encoder`` (the rerankers).
+The embedding and cross-encoder pages list the probe tools as
+conditional: they are shown when live.
 """
 
 from tests.docs._wiki_specs import PageSpec, scoped
@@ -16,6 +18,12 @@ SPECS = (
              audience="admin",
              tools=scoped("system", "list_llm_providers get_llm_provider create_llm_provider update_llm_provider delete_llm_provider find_llm_providers fetch_llm_provider_models"),
              related=("providers/model-profiles", "agents/create-and-edit")),
+    PageSpec("providers/agent-runtimes", "Agent runtimes",
+             "Admin: run agents on a Claude subscription through the Claude Code CLI installed and logged in on the worker hosts.",
+             "feature", 8,
+             audience="admin",
+             tools=scoped("system", "create_llm_provider fetch_llm_provider_models") + scoped("llm_providers", "get_llm_provider_runtime_status"),
+             related=("providers/llm", "providers/model-profiles")),
     PageSpec("providers/model-profiles", "Model profiles",
              "Admin: a model profile names a provider, a model and a context length. Agents bind to profiles, and a profile can pool others.",
              "feature", 2,

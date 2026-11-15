@@ -5,7 +5,7 @@ audience: admin
 order: 110
 ---
 
-These pages are for admins. A provider is a connection the platform runs on: model servers, embedders, rerankers, vector stores, file storage and web search. Register providers here before agents and collections can use them. Start with [LLM providers](providers/llm).
+These pages are for admins. A provider is a connection the platform runs on: model servers, embedders, rerankers, vector stores, file storage and web search. Register providers here before agents and collections can use them. Start with [LLM providers](providers/llm). [Agent runtimes](providers/agent-runtimes) run on a local CLI such as `claude`.
 
 ## Additional operation reference
 
