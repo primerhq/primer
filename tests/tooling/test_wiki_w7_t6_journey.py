@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from tests.e2e import test_wiki_w7_t6_lifecycle as journey
+from tests.api.conftest import app, fake_provider_registry, raw_client  # noqa: F401
 from tests.toolset.test_system_crud_guards import _call, world  # noqa: F401
 
 
@@ -40,13 +41,13 @@ def valid_evidence():
     default_provider = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}}
     default = {"id": "default", "is_default": True, "access": {"owners": ["runner"]}}
     base = {"id": "hns", "slug": "sample", "status": "ready", "pending_operation": None, "last_operation_error": None,
-            "available_commit": "a" * 40, "git_url": "file:///private/bundle.git", "overrides_schema": {"type": "object"}, "access": {"owners": ["runner"]}}
+            "available_commit": "a" * 40, "git_url": "file:///private/bundle.git", "overrides_schema": {"type": "object"}, "access": {"owners": ["runner"], "grants": {"reader": "read"}, "public": False}}
     actions = {name: {"id": "hns", **({"overrides": {"profile_id": "profile", "description": "v2" if name == "sync" else "v1"}} if operation != "uninstall" else {})}
                for name, (operation, _) in journey.SPECS.items()}
     trace = {"case": journey.CASE, "source_sha": "source", "runbook_hashes": dict.fromkeys(journey.PAGES, "doc"), "outcome": "passed",
         "wiki": {p: {"path": p, "body": (journey.REPO / "docs/wiki" / (p + ".md")).read_text().split("---", 2)[2].strip()} for p in journey.PAGES},
         "identities": {"runner": "runner", "reader": "reader", "stranger": "stranger"}, "approver": "approver", "slug": "sample",
-        "git": {"url": base["git_url"], "commit": "a" * 40}, "registered": {**base, "status": "draft"},
+        "git": {"url": base["git_url"], "commit": "a" * 40}, "registered": {**base, "status": "draft", "access": {"owners": ["runner"], "grants": {}, "public": False}},
         "hidden": {"ok": False, "error": {"message": "not-found"}}, "fetch_queued": {**base, "pending_operation": "fetch"}, "fetched": base,
         "reader_no_effect": {"before": base, "after": copy.deepcopy(base)},
         "no_schema": {"ok": False, "error": {"message": "overrides-schema-missing"}},
@@ -56,16 +57,21 @@ def valid_evidence():
         "calls": [{"actor": "reader", "scoped_id": scoped, "envelope": {"ok": scoped == "harness__get"}} for scoped in (
             "harness__register", "harness__get", "harness__fetch", "system__create_artifact_storage_provider", "system__set_active_artifact_store", "system__get_active_artifact_store")],
         "default": {"before": default, "after": copy.deepcopy(default), "directory_exists": True},
+        "decision_workspace": {"before": {"id": "decisions", "is_default": False, "access": {"owners": ["runner"], "grants": {}, "public": False}},
+            "after": {"id": "decisions", "is_default": False, "access": {"owners": ["runner"], "grants": {"reader": "full"}, "public": False}}},
+        "decision_workspace_cleanup": {"id": "decisions", "delete_http": 204, "get_http": 404, "directory_exists": False},
     }
     for number, (name, (operation, decision)) in enumerate(journey.SPECS.items()):
         value = {"rejected": True, "tool_name": operation} if decision == "rejected" else {**base, "pending_operation": operation}
         items = message_items(name, actions[name], value);records, answer, result, _ = journey.read_gate(items, name)
-        row = {"initiated_by": {"user_id": "runner", "role": "admin"}, "turn_status": "idle", "ended_reason": "completed"}
+        row = {"initiated_by": {"user_id": "runner", "role": "admin"}, "workspace_id": "decisions", "turn_status": "idle", "ended_reason": "completed"}
         trace["stages"][name] = {"started": row, "row": row, "before": base, "items": items, "records": records, "answer": answer, "result": result}
         policy, gate = default_policy_id("harness", operation), "gate-" + str(number)
         trace["gates"].append({"stage": name, "operation": operation, "decision": decision, "http": 202, "policy_id": policy, "gate_id": gate,
             "reader_http": 403, "reader_body": {"detail": {"error": "approver_mismatch"}}, "pending": {"tool_name": operation, "policy_id": policy,
             "gate_id": gate, "approval_type": "required", "arguments": actions[name], "approvers": {"kind": "roles", "roles": [], "users": []}}})
+        trace["gates"][-1].update(reader_pending=copy.deepcopy(trace["gates"][-1]["pending"]), stranger_http=404,
+            stranger_body={"detail": "Session does not exist"})
     for version, state, action in (("v1", "installed", "install"), ("v2", "synced", "sync")):
         values = actions[action]["overrides"]
         trace[state] = {**base, "status": "installed", "resolved_commit": "a" * 40, "overrides": values}
@@ -124,6 +130,11 @@ def valid_evidence():
     (("artifact", "default_after", "provider"), "filesystem"), (("default", "after", "access"), {"owners": ["approver"]}),
     (("default", "directory_exists"), False),
     (("calls", 6, "envelope", "output"), "{}"), (("calls", 13, "arguments", "id"), "wrong"),
+    (("decision_workspace", "after", "access", "grants", "reader"), "read"), (("decision_workspace", "after", "is_default"), True),
+    (("stages", "install", "started", "workspace_id"), "default"), (("gates", 0, "reader_pending", "gate_id"), "other"),
+    (("gates", 0, "stranger_http"), 202), (("decision_workspace_cleanup", "get_http"), 200),
+    (("decision_workspace_cleanup", "directory_exists"), True),
+    (("reader_no_effect", "before", "access", "grants", "reader"), "full"),
 ])
 def test_required_evidence_rejects_partial_wrong_identity_or_false_effects(path, bad):
     trace = valid_evidence();journey.require_evidence(trace, "source", dict.fromkeys(journey.PAGES, "doc"))
@@ -339,3 +350,70 @@ async def test_actual_filesystem_tools_create_probe_and_delete_response_contract
     assert not error and deleted == {"deleted": True, "id": entity["id"]}
     error, missing = await _call(toolset, "get_artifact_storage_provider", id=entity["id"])
     assert error and missing["type"] == "not-found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+async def test_real_session_access_precedes_admin_only_approval_and_scoped_full_grant_is_insufficient(raw_client, app, decision):
+    """Reproduce the CI 404, then reach the real unchanged approver refusal."""
+    import httpx
+    from primer.auth.passwords import hash_password
+    from primer.model.access import Access
+    from primer.model.common import dump_for_storage
+    from primer.model.user import User
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.model.yield_ import new_gate_id
+    from primer.session.approvers import ADMIN_ONLY_SPEC
+    from tests.api.test_approver_routing import _parked_session, _register_admin
+
+    await _register_admin(raw_client)
+    owner = (await raw_client.get("/v1/auth/status")).json()["principal"]["user_id"]
+    sp = app.state.storage_provider;workspaces = sp.get_storage(Workspace);sessions = sp.get_storage(WorkspaceSession)
+    user = User(id="t6-reader", username="t6reader", password_hash=await hash_password("reader-password-123"), role="user", created_at=datetime.now(UTC))
+    await sp.get_storage(User).create(user)
+    for identifier in ("private-work", "decision-work"):
+        await workspaces.create(Workspace(id=identifier, template_id="template", provider_id="local", created_at=datetime.now(UTC),
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://private", token="private"), access=Access(owners=[owner])))
+        session = _parked_session(session_id=identifier + "-session", tool_call_id="call-" + identifier, approvers=ADMIN_ONLY_SPEC).model_copy(update={"workspace_id": identifier})
+        metadata = session.parked_state["yielded"]["resume_metadata"]
+        metadata.update(gate_id=new_gate_id(), approval_type="required", policy_id="test-admin-only")
+        metadata["original_call"].update(name="install", arguments={"id": "hns", "overrides": {}})
+        await sessions.create(session)
+    private_before = dump_for_storage(await workspaces.get("private-work"))
+    parked_before = dump_for_storage(await sessions.get("decision-work-session"))
+    pending = (await raw_client.get("/v1/sessions/decision-work-session/tool_approval/pending")).json()
+    body = {"tool_call_id": "call-decision-work", "gate_id": pending["gate_id"], "decision": decision}
+    path = "/v1/sessions/decision-work-session/tool_approval/respond"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as reader:
+        assert (await reader.post("/v1/auth/login", json={"username": user.username, "password": "reader-password-123"})).status_code == 200
+        hidden = await reader.post(path, json=body)
+        assert hidden.status_code == 404 and "does not exist" in hidden.text
+        assert dump_for_storage(await sessions.get("decision-work-session")) == parked_before
+        evidence = await journey.grant_decision_workspace(raw_client, "decision-work", owner, user.id)
+        assert evidence["after"]["access"]["grants"] == {user.id: "full"}
+        assert dump_for_storage(await workspaces.get("private-work")) == private_before
+        visible = await reader.get("/v1/sessions/decision-work-session/tool_approval/pending")
+        assert visible.status_code == 200 and visible.json() == pending
+        refused = await reader.post(path, json=body)
+        assert refused.status_code == 403 and refused.json()["extensions"]["error"] == "approver_mismatch"
+        assert dump_for_storage(await sessions.get("decision-work-session")) == parked_before
+        other = await reader.post("/v1/sessions/private-work-session/tool_approval/respond", json={"tool_call_id": "call-private-work", "decision": decision})
+        assert other.status_code == 404
+        accepted = await raw_client.post(path, json=body)
+        assert accepted.status_code == 202 and accepted.json() == {"status": "accepted"}
+        assert (await sessions.get("decision-work-session")).parked_status == "resumable"
+        assert dump_for_storage(await workspaces.get("private-work")) == private_before
+
+
+@pytest.mark.asyncio
+async def test_decision_workspace_setup_refuses_to_share_a_default_workspace():
+    import httpx
+
+    requests = []
+    def transport(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, json={"id": "default", "is_default": True, "access": {"owners": ["runner"], "grants": {}, "public": False}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport), base_url="http://test") as runner:
+        with pytest.raises(AssertionError):await journey.grant_decision_workspace(runner, "default", "runner", "reader")
+    assert requests == [("GET", "/v1/workspaces/default")]
