@@ -26,6 +26,8 @@ One row per runbook as it lands; the purpose-mapped index ([purpose-map](purpose
 | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) | store and import text, reread bodies and verify real retrieval |
 | [runbooks/onboard-a-channel](runbooks/onboard-a-channel) | approve its source, bind incoming work and replies, prove real message delivery |
 | [runbooks/wire-a-trigger](runbooks/wire-a-trigger) | approve a source, bind delivery, prove the worker answer and deliberate cleanup |
+| [runbooks/install-a-harness](runbooks/install-a-harness) | approve a Git bundle, verify managed rows, sync and deliberately uninstall |
+| [runbooks/configure-artifact-storage](runbooks/configure-artifact-storage) | probe a provider, select new writes and prove old/new bytes before cleanup |
 
 The how-to set grows as documented flows land; every runbook listed here has a matching purpose-mapped index row.
 

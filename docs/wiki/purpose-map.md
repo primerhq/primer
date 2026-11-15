@@ -28,6 +28,8 @@ The platform is configured through the operator (an admin tells the operator to 
 | ingest a knowledge base into a collection and search its actual text | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) |
 | onboard a channel end to end (provider, room, approved source, inbound binding and replies) | [runbooks/onboard-a-channel](runbooks/onboard-a-channel) |
 | wire a trigger and the subscription that says what a fire does | [runbooks/wire-a-trigger](runbooks/wire-a-trigger) |
+| install or sync a harness (register from Git; gated install; verify the bundle landed) | [runbooks/install-a-harness](runbooks/install-a-harness) |
+| configure artifact storage (register, test, activate and verify bytes) | [runbooks/configure-artifact-storage](runbooks/configure-artifact-storage) |
 | coordinate multiple agents in one workspace (the coordinator and sub-agents file pattern, the other coordination surfaces) | [collaboration/coordinator-pattern](collaboration/coordinator-pattern) + [collaboration/other-patterns](collaboration/other-patterns) |
 | build a wiki-driven agent (the prompt that teaches the wiki loop, the smallest grant, the characterization probe) | [agents/wiki-driven-agent](agents/wiki-driven-agent) |
 | understand what the access model allows (the roles, the grants, what "admin" means) | [start-here/roles-and-approvals](start-here/roles-and-approvals) |
@@ -54,6 +56,8 @@ One row per runbook as it lands (the authoring rule and the citation rule: [runb
 | ingest text and a ZIP knowledge base, then verify stored bodies and hits | [runbooks/ingest-a-knowledge-base](runbooks/ingest-a-knowledge-base) |
 | onboard a messaging room and prove the actual inbound message and answer | [runbooks/onboard-a-channel](runbooks/onboard-a-channel) |
 | wire a trigger, prove the worker's answer and deliberately disable or remove it | [runbooks/wire-a-trigger](runbooks/wire-a-trigger) |
+| install and sync a trusted harness, then remove its managed rows | [runbooks/install-a-harness](runbooks/install-a-harness) |
+| configure artifact storage and verify old and new reads | [runbooks/configure-artifact-storage](runbooks/configure-artifact-storage) |
 | the authoring rule for a new runbook (structure, citation, index row) | [runbooks/conventions](runbooks/conventions) |
 
 ## The operator's own roles
