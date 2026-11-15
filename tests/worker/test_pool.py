@@ -59,6 +59,15 @@ async def test_pool_start_registers_worker(worker_pool, scheduler):
     await worker_pool.drain_and_stop()
 
 
+async def test_pool_starts_if_label_reporting_fails(worker_pool, scheduler):
+    with patch.object(scheduler, "report_worker_label", new_callable=AsyncMock, side_effect=RuntimeError("unavailable")):
+        await worker_pool.start()
+        try:
+            assert (await scheduler.list_workers())[0].label is None
+        finally:
+            await worker_pool.drain_and_stop()
+
+
 async def test_pool_drain_deregisters_worker(worker_pool, scheduler):
     await worker_pool.start()
     await worker_pool.drain_and_stop()

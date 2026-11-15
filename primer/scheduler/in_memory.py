@@ -126,6 +126,12 @@ class InMemoryScheduler(Scheduler):
                 ),
             )
 
+    async def report_worker_label(self, worker_id: str, *, label: str) -> None:
+        async with self._lock:
+            w = self._workers.get(worker_id)
+            if w is not None:
+                w.info = w.info.model_copy(update={"label": label})
+
     async def heartbeat_worker(self, worker_id: str) -> None:
         async with self._lock:
             w = self._workers.get(worker_id)

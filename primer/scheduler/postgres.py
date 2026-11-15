@@ -196,6 +196,13 @@ class PostgresScheduler(Scheduler):
                 worker_id, host, pid, capacity, label,
             )
 
+    async def report_worker_label(self, worker_id: str, *, label: str) -> None:
+        async with self._storage.pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE {self._workers_table} SET label = $2 WHERE id = $1",
+                worker_id, label,
+            )
+
     async def heartbeat_worker(self, worker_id: str) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(

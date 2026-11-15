@@ -36,7 +36,7 @@ class _NullScheduler(Scheduler):
     async def aclose(self) -> None:
         pass
 
-    async def register_worker(self, *, worker_id, host, pid, capacity, label=None) -> None:
+    async def register_worker(self, *, worker_id, host, pid, capacity) -> None:
         pass
 
     async def heartbeat_worker(self, worker_id: str) -> None:
