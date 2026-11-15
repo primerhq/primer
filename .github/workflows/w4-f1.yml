@@ -1,0 +1,146 @@
+name: W4 real-model evidence (manual only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact independently reviewed main SHA containing this probe
+        type: string
+        required: true
+      opt_in:
+        description: Owner authorized this isolated real-model reservation window
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: w4-f1-k1-qwen38-27b
+  cancel-in-progress: false
+
+jobs:
+  prerequisites:
+    runs-on: ubuntu-latest
+    environment: w4-f1-control-plane
+    timeout-minutes: 3
+    outputs:
+      runner_label: ${{ steps.control.outputs.runner_label }}
+      proof: ${{ steps.control.outputs.proof }}
+      proof_sha256: ${{ steps.control.outputs.proof_sha256 }}
+    env:
+      REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      OPT_IN: ${{ inputs.opt_in }}
+      RUNNER_ENABLED: ${{ vars.W4_F1_RUNNER_ENABLED }}
+      APPROVED_RUNNER_ID: ${{ vars.W4_F1_APPROVED_RUNNER_ID }}
+    steps:
+      - name: Refuse untrusted source before checkout or control-plane credentials
+        run: |
+          python3 - <<'PY'
+          import os, re
+          env = os.environ
+          assert env['GITHUB_REF'] == 'refs/heads/main'
+          assert env['GITHUB_REPOSITORY'] == 'primerhq/primer'
+          assert env['OPT_IN'] == 'true' and env['RUNNER_ENABLED'] == 'true'
+          assert re.fullmatch('[0-9a-f]{40}', env['REVIEWED_SHA'])
+          assert env['REVIEWED_SHA'] == env['GITHUB_SHA']
+          PY
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.reviewed_sha }}
+          persist-credentials: false
+      - name: Verify real restricted control-plane access and exact ephemeral runner
+        id: control
+        env:
+          # Owner-provisioned read-only one-repository credential; NEVER the
+          # workflow token, and never exported to the private/model job.
+          W4_F1_CONTROL_PLANE_READ_TOKEN: ${{ secrets.W4_F1_CONTROL_PLANE_READ_TOKEN }}
+        run: >-
+          python3 -m scripts.e2e.w4_f1.control_plane
+          --output "${RUNNER_TEMP}/w4-f1-control-plane.json"
+      - name: Upload redacted actual control-plane metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w4-f1-control-plane-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w4-f1-control-plane.json
+          if-no-files-found: error
+          retention-days: 7
+
+  f1:
+    name: W4 F1 protected probe
+    needs: prerequisites
+    environment: w4-f1-model-reservation
+    runs-on:
+      group: w4-f1-isolated
+      labels: [self-hosted, linux, x64, "${{ needs.prerequisites.outputs.runner_label }}"]
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: mirror.gcr.io/pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: primer
+          POSTGRES_PASSWORD: primer-f1-only
+          POSTGRES_DB: primer_w4_f1
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U primer -d primer_w4_f1"
+          --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      W4_F1_CONTROL_PLANE_PROOF: ${{ needs.prerequisites.outputs.proof }}
+      W4_F1_CONTROL_PLANE_SHA256: ${{ needs.prerequisites.outputs.proof_sha256 }}
+      W4_F1_OPT_IN: ${{ inputs.opt_in }}
+      W4_F1_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      W4_F1_ISOLATED_RUNNER: ${{ vars.W4_F1_ISOLATED_RUNNER }}
+      W4_F1_NETWORK_AUTHORIZED: ${{ vars.W4_F1_NETWORK_AUTHORIZED }}
+      W4_F1_MODEL_URL: ${{ vars.W4_F1_MODEL_URL }}
+      W4_F1_RESERVATION_ID: ${{ vars.W4_F1_RESERVATION_ID }}
+      W4_F1_RESERVATION_OWNER: ${{ vars.W4_F1_RESERVATION_OWNER }}
+      W4_F1_RESERVATION_EXPIRES: ${{ vars.W4_F1_RESERVATION_EXPIRES }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.reviewed_sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+      - name: Sync isolated probe dependencies
+        run: uv sync --python /usr/bin/python3.12 --all-extras --dev --group docs
+      - name: Bind actual running job to the observed ephemeral runner
+        id: execution
+        env:
+          # Actions(read) only. No administrative credential in this job.
+          W4_F1_EXECUTION_READ_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -m scripts.e2e.w4_f1.control_plane --bind-execution
+          --output "${RUNNER_TEMP}/w4-f1-execution.json"
+      - name: Run only the bounded genuine F1 case
+        env:
+          W4_F1_EXECUTION_PROOF: ${{ steps.execution.outputs.proof }}
+          W4_F1_EXECUTION_SHA256: ${{ steps.execution.outputs.proof_sha256 }}
+          W4_F1_POSTGRES_DSN: postgresql://primer:primer-f1-only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/primer_w4_f1
+          W4_F1_OUTPUT: ${{ runner.temp }}/w4-f1-artifact
+        run: >-
+          uv run --no-sync pytest scripts/e2e/w4_f1/acceptance.py -o addopts= -n0 -q
+          --timeout=610 --timeout-method=thread --tb=short
+          --junitxml="${RUNNER_TEMP}/w4-f1-junit.xml"
+      - name: Require connected raw evidence and named execution
+        run: >-
+          uv run --no-sync python -m scripts.e2e.w4_f1.verify
+          --output "${RUNNER_TEMP}/w4-f1-artifact" --source "${GITHUB_SHA}"
+          --junit "${RUNNER_TEMP}/w4-f1-junit.xml"
+      - name: Upload actual or partial evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w4-f1-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/w4-f1-artifact/
+            ${{ runner.temp }}/w4-f1-junit.xml
+            ${{ runner.temp }}/w4-f1-execution.json
+          if-no-files-found: error
+          retention-days: 7

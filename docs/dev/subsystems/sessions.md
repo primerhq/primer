@@ -1020,3 +1020,82 @@ sessions) so the next turn of the same session reads and parses nothing.
 ### Segmented session log
 
 A session's message log rotates into segments: when its active segment holds at least `session_log_segment_bytes` bytes (default 1 MiB, `primer/model/scheduler.py`; `0` is the kill switch - no new segment starts, the existing ones are always read), the next state commit continues the log in a new file, so a closed segment is never written again and each commit stores only the small active one. Rotation happens only by the state commit, between whole batches of records. Segment 0 keeps the legacy name `messages.jsonl`; the others are zero padded to four digits, `messages.NNNN.jsonl` (`SEGMENT_RE` and `segment_name`, `primer/workspace/segments.py`), and readers order them numerically (`ordered`). A missing middle segment raises `SegmentGap` (the log cannot be read whole); the seq gap a crash leaves inside a segment is the one the seq-lease paragraph above says readers tolerate. The size flows from `WorkerConfig.session_log_segment_bytes` through `set_segment_bytes_default` (an explicit setting over the `PRIMER_SESSION_LOG_SEGMENT_BYTES` environment, over `DEFAULT_SEGMENT_BYTES`).
+
+## Optional real-model W4 recovery evidence
+
+The normal CI base-prompt journey uses a scripted model. It proves the launch
+field and prompt/compactor wire contract, but does not prove real-model
+file-watch behavior across compaction and an active-lease process crash.
+The manual-only `w4-f1.yml` workflow and `scripts/e2e/w4_f1/` supply a separate
+bounded evidence lane. Wiring or collection is not acceptance: F1 remains open
+until the actual named case, connected raw packet and independent review pass.
+
+This lane refuses absent opt-in, an unreviewed/non-main SHA, an unavailable
+isolated runner, an unprotected execution environment or an expired model-owner
+reservation. The dedicated ephemeral runner group and private-network/model
+reservation must be provisioned and authorized by their owners. None is created
+by the workflow. Repository concurrency serializes participating jobs across
+refs; it does not reserve a model against dogfood or other clients.
+
+A fresh CI-owned Postgres service uses only `primer_w4_f1` on an explicit
+loopback port. Storage and scheduler must both be Postgres; the child records
+and asserts the actual Postgres event bus and claim engine. SQLite's in-memory
+lease engine cannot prove a persisted lease expiring while the process is dead.
+The controller and recording relay remain outside the owned application group
+that is killed. No shared database, service, process or workspace is targeted.
+
+The hosted control-plane step needs an owner-provisioned, short-lived
+one-repository credential in the protected `w4-f1-control-plane` environment:
+Administration(read), Actions(read) and Contents(read). The default workflow
+token cannot list runners; the [runner REST contract](https://docs.github.com/en/rest/actions/self-hosted-runners#list-self-hosted-runners-for-a-repository)
+requires Administration(read). This credential is never passed to the private
+job. Both execution environments require independent approval; their owners
+must restrict deployments to reviewed main. No environment, token or runner is
+provisioned by this change.
+
+The preflight reads the exact approved runner ID, requires its actual ephemeral
+flag and unique `w4-f1-runner-<id>` affinity label, and binds redacted metadata to
+the source and run. The private job additionally uses an Actions(read)-only
+step to read its [actual job runner ID/group](https://docs.github.com/en/rest/actions/workflow-jobs),
+then passes only the digest-bound receipt to the probe. A label/name or mocked
+API success alone is insufficient. Source, run, attempt, actual runner/group
+and finite reservation windows are checked before model, DB or app activity.
+The dedicated Linux runner must provide native `/usr/bin/python3.12` with
+`os.pidfd_open` and `signal.pidfd_send_signal`; a missing capability refuses
+before model activity. No numeric-PID fallback is used after a leader dies.
+
+The real agent watches, reads a fresh unpredictable task file and writes one
+answer. It then becomes idle, compacts through the workspace-scoped route,
+repeats the watch and is killed while an actual unexpired lease is held. The
+relay has already received a genuine complete upstream response before that
+kill. Natural expiry/reclaim on the same session must use a new worker; no
+manual lease repair or repeated launch instructions is allowed. Durable base,
+raw model requests, native tool results, transcript and file bytes must agree.
+
+The workspace still advertises all seven file tools, including exec, plus the
+registered watch tool. This probe does not claim to remove exec. It runs only
+in the isolated runner and rejects any non-read/write/watch response before
+forwarding it. SSE keepalive comments open the connection while genuine model
+bytes are buffered; they do not reset the adapter's 20-second parsed-event stall
+timer. A slow buffer therefore fails closed. Provider connect5/stall20/total30,
+zero retries, eleven upstream attempts including capability/summary/crash replay,
+per-hold bounds, 570 seconds of active work and a 25-second cleanup reserve
+within the 600-second controller acceptance bound cap the attempt.
+An uncertain upstream cancellation stops the run without another model request
+or a claim that the external model slot is free.
+
+Safe wiring tests under `tests/tooling/test_w4_f1_*` use in-memory transports and
+mocked process identities. They launch no application, model or Postgres.
+The actual opt-in case lives outside normal `tests/` collection, and ordinary
+PR/live CI selection and coverage gates keep their scope. Raw partial evidence
+is uploaded on failure. The bounded finalizer copies whitelisted runtime and
+native session logs even if the lifecycle stopped early, without copying
+private passwords/config. A refused or uncertain stop retains the private root
+and recorded identities for the resource owner. Known descendants of an exited
+leader require their captured PID/start/executable/session identity and Linux
+pidfds; unknown or reused identities are never signaled. A final real heartbeat
+between the before/dead snapshots is allowed, while owner/claim, UTC order,
+heartbeat/30-second expiry and immutable dead-state joins remain mandatory.
+`accepted.json` and the separate source/JUnit gate are
+written only for a complete connected run. Required runner and protected model
+reservation are currently unavailable/unverified; no real F1 run is claimed.
