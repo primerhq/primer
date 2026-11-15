@@ -142,6 +142,7 @@ class GateRule(Rule):
 def read_gate(items, name):
     from primer.model.chat import Message, ToolCallPart, ToolResultPart
     from primer.model.workspace_session import SessionMessageRecord
+    from primer.session.terminals import is_delegated
 
     rejected = SPECS[name][1] == "rejected"
     records, raw, calls = [], [], []
@@ -153,12 +154,35 @@ def read_gate(items, name):
                 if isinstance(part, ToolCallPart):calls.append(part)
     assert len(raw) == len(calls) == 1
     assert raw[0].id == calls[0].id == name and raw[0].error is rejected and calls[0].name == "system__call_tool"
+    event_calls = [r for r in records if r["kind"] == "tool_call"]
+    event_results = [r for r in records if r["kind"] == "tool_result"]
+    assert len(event_calls) == len(event_results) == 1
+    for record in (*event_calls, *event_results):
+        assert record["node_id"] is None and not is_delegated(record)
+        assert not record["payload"].get("delegate_run_id") and not record["payload"].get("delegate_tool_call_id")
+    call, result = event_calls[0]["payload"], event_results[0]["payload"]
+    # Durable events pair by scoped id; model Messages retain the provider's
+    # wire id. The tool_call record is the bridge, not an id-prefix guess.
+    assert isinstance(call["id"], str) and call["id"]
+    assert call["raw_id"] == calls[0].id and call["name"] == calls[0].name and call["arguments"] == calls[0].arguments
+    assert result["call_id"] == call["id"] and result["error"] is rejected
+    assert json.loads(result["output"]) == json.loads(raw[0].output)
     failed = [r for r in records if r["kind"] == "tool_result" and r["payload"].get("error")]
     assert len(failed) == int(rejected)
-    if failed:assert failed[0]["payload"]["call_id"] == name and json.loads(failed[0]["payload"]["output"]) == json.loads(raw[0].output)
+    if failed:assert failed[0]["payload"]["call_id"] == call["id"] and json.loads(failed[0]["payload"]["output"]) == json.loads(raw[0].output)
     answer, value = stage_answer(records)
     assert value == json.loads(raw[0].output);gate_result(name, value)
     return records, answer, value, calls[0].arguments
+
+
+def capture_stage(trace, name, *, started, before, row, items):
+    # Preserve the unparsed evidence even when validation raises. A partial
+    # stage still cannot pass require_evidence or the named JUnit gate.
+    stage = {"started": started, "before": before, "row": row, "items": items}
+    trace["stages"][name] = stage
+    records, answer, value, arguments = read_gate(items, name)
+    stage.update(records=records, answer=answer, result=value)
+    return records, answer, value, arguments
 
 
 def tar_bytes(content: bytes) -> bytes:
@@ -356,13 +380,12 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
                         await asyncio.sleep(.1)
                     else:pytest.fail("harness gate never completed: " + name)
                     items = (await runner.get(f"/v1/sessions/{sid}/messages", params={"limit": 200})).json()["items"]
-                    records, answer, value, actual_args = read_gate(items, name)
-                    assert actual_args == {"toolset_id": "harness", "tool_name": operation, "arguments": actions[name]}
                     trace["gates"].append({"stage": name, "operation": operation, "decision": decision, "http": 202,
                         "policy_id": policies[operation], "gate_id": pending["gate_id"], "pending": pending,
                         "reader_http": refused.status_code, "reader_body": refused.json(), "reader_pending": reader_pending.json(),
                         "stranger_http": hidden.status_code, "stranger_body": hidden.json()})
-                    trace["stages"][name] = {"started": started, "row": row, "items": items, "records": records, "answer": answer, "result": value, "before": before}
+                    records, answer, value, actual_args = capture_stage(trace, name, started=started, before=before, row=row, items=items)
+                    assert actual_args == {"toolset_id": "harness", "tool_name": operation, "arguments": actions[name]}
                     return value
 
                 await stage("reject_install")
