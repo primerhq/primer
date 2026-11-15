@@ -290,6 +290,10 @@ a one-line reason; it may not simply be omitted.
 
 ### Optional real-model recovery evidence
 
+The separately reviewed [isolated local VM lane](w4-local-vm.md) uses explicit
+local authority and a pure owner-reservation preflight before any VM boot. It
+requires genuine model-wide holds and never fabricates GitHub receipts.
+
 Do not run the manual W4 F1 case as a local debugging shortcut. Its isolated
 runner, protected model-owner reservation and exact reviewed main source must
 be authorized first. The normal live workflow excludes real models; manually

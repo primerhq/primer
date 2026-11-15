@@ -1023,6 +1023,14 @@ A session's message log rotates into segments: when its active segment holds at 
 
 ## Optional real-model W4 recovery evidence
 
+An explicitly authorized [local isolated-VM entry/gate](../w4-local-vm.md) can
+reuse these lifecycle oracles with separate host and model-owner signatures,
+actual VM/source/network evidence and original hold acknowledgements. Its pure
+owner preflight precedes any VM boot; its host acceptance and later resource
+cleanup receipts are distinct from CI. No local evidence is accepted by the CI
+gate. This is evidence infrastructure, not a new runtime/API/UI capability.
+
+
 The normal CI base-prompt journey uses a scripted model. It proves the launch
 field and prompt/compactor wire contract, but does not prove real-model
 file-watch behavior across compaction and an active-lease process crash.
