@@ -100,12 +100,27 @@ async def test_initialize_is_idempotent(sched):
     await sched.initialize()
 
 
+async def test_initialize_adds_label_to_legacy_workers_table(sched, storage_provider):
+    async with storage_provider.pool.acquire() as conn:
+        await conn.execute(f'ALTER TABLE "{storage_provider.schema}"."workers" DROP COLUMN label')
+    await sched.initialize()
+    await sched.register_worker(worker_id="legacy", host="h", pid=1, capacity=1, label="new-label")
+    assert next(w for w in await sched.list_workers() if w.id == "legacy").label == "new-label"
+
+
 async def test_register_worker_persists_row(sched):
     await sched.register_worker(
         worker_id="w1", host="h", pid=42, capacity=8,
     )
     workers = await sched.list_workers()
     assert any(w.id == "w1" and w.pid == 42 for w in workers)
+
+
+async def test_worker_label_persists_and_updates(sched):
+    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4, label="first")
+    assert next(w for w in await sched.list_workers() if w.id == "w1").label == "first"
+    await sched.register_worker(worker_id="w1", host="h", pid=2, capacity=4, label="second")
+    assert next(w for w in await sched.list_workers() if w.id == "w1").label == "second"
 
 
 async def test_heartbeat_worker_bumps_timestamp(sched):

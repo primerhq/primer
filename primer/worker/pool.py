@@ -262,6 +262,7 @@ class WorkerPool:
             host=socket.gethostname(),
             pid=os.getpid(),
             capacity=self.config.concurrency,
+            label=self._worker_label,
         )
 
         # Build the dispatch table now that _worker_id is known. TOOL_CALL is

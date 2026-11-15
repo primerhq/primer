@@ -124,6 +124,15 @@ class PostgresScheduler(Scheduler):
                         await conn.execute(
                             f"ALTER TABLE {self._workers_table} ADD COLUMN IF NOT EXISTS in_flight INT"
                         )
+                    has_label_column = await conn.fetchval(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_schema = $1 AND table_name = 'workers' AND column_name = 'label'",
+                        self._schema,
+                    )
+                    if not has_label_column:
+                        await conn.execute(
+                            f"ALTER TABLE {self._workers_table} ADD COLUMN IF NOT EXISTS label TEXT"
+                        )
                     # Boot-time recovery: mark dead any worker rows that
                     # haven't heartbeat in 5 minutes.
                     await conn.execute(
@@ -167,23 +176,24 @@ class PostgresScheduler(Scheduler):
     # ---- methods filled in by Task 9 -----------------------------------
 
     async def register_worker(
-        self, *, worker_id: str, host: str, pid: int, capacity: int,
+        self, *, worker_id: str, host: str, pid: int, capacity: int, label: str | None = None,
     ) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
                 f"""
                 INSERT INTO {self._workers_table} (id, host, pid, capacity, started_at,
-                                     last_heartbeat, status)
-                VALUES ($1, $2, $3, $4, now(), now(), 'active')
+                                     last_heartbeat, status, label)
+                VALUES ($1, $2, $3, $4, now(), now(), 'active', $5)
                 ON CONFLICT (id) DO UPDATE SET
                     host = EXCLUDED.host,
                     pid = EXCLUDED.pid,
                     capacity = EXCLUDED.capacity,
+                    label = EXCLUDED.label,
                     last_heartbeat = now(),
                     status = 'active',
                     in_flight = NULL
                 """,
-                worker_id, host, pid, capacity,
+                worker_id, host, pid, capacity, label,
             )
 
     async def heartbeat_worker(self, worker_id: str) -> None:
@@ -224,7 +234,7 @@ class PostgresScheduler(Scheduler):
     async def list_workers(self) -> list[WorkerInfo]:
         async with self._storage.pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT id, host, pid, capacity, started_at, last_heartbeat, status, in_flight "
+                f"SELECT id, host, pid, capacity, started_at, last_heartbeat, status, in_flight, label "
                 f"FROM {self._workers_table} ORDER BY id"
             )
         return [
@@ -232,7 +242,7 @@ class PostgresScheduler(Scheduler):
                 id=r["id"], host=r["host"], pid=r["pid"],
                 capacity=r["capacity"], started_at=r["started_at"],
                 last_heartbeat=r["last_heartbeat"], status=r["status"],
-                in_flight=r["in_flight"],
+                in_flight=r["in_flight"], label=r["label"],
             )
             for r in rows
         ]
