@@ -168,6 +168,17 @@ def lease_clock(lease: dict, observed_at: str) -> None:
 
 
 def require_evidence(t: dict, source: str) -> None:
+    """The CI authority is mandatory here; local receipts cannot enter this gate."""
+    if t.get("authority_mode") not in (None, "github-actions") or "local_vm" in t:
+        raise ValueError("CI evidence cannot use local authority")
+    from .control_plane import validate_proof, validate_execution
+    reservation = t["reservation"]
+    validate_proof(reservation["control_plane"], t["run"], source, reservation["checked_at"])
+    validate_execution(reservation["execution"], reservation["control_plane"], t["run"], source, reservation["checked_at"])
+    require_lifecycle_evidence(t, source)
+
+
+def require_lifecycle_evidence(t: dict, source: str) -> None:
     """Accept one connected raw source-bound run, not a collection or PASS flag."""
     assert t["case"] == CASE and t["outcome"] == "passed" and t["source_sha"] == source
     assert re.fullmatch(r"[0-9a-f]{40}", source)
@@ -178,9 +189,6 @@ def require_evidence(t: dict, source: str) -> None:
     reservation = t["reservation"]
     assert math.isfinite(reservation["checked_at"]) and math.isfinite(reservation["expires"])
     assert reservation["expires"] >= reservation["checked_at"] + 900
-    from .control_plane import validate_proof, validate_execution
-    validate_proof(reservation["control_plane"], t["run"], source, reservation["checked_at"])
-    validate_execution(reservation["execution"], reservation["control_plane"], t["run"], source, reservation["checked_at"])
     runtime = t["runtime"]
     assert len(runtime) == 2 and {r["pid"] for r in runtime} == {t["old_process"]["pid"], t["new_process"]["pid"]}
     for r in runtime:

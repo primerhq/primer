@@ -23,6 +23,13 @@ def verify(output: Path, source: str, junit: Path, *, expected_run: dict):
     if trace['driver_hashes'] != source_hashes(REPO):
         raise ValueError('probe source bytes changed')
     require_evidence(trace, source)
+    verify_native(output, trace)
+    verify_named_junit(junit, 'scripts.e2e.w4_f1.acceptance')
+    return {'source_sha': source, 'trace_sha256': digest(raw), 'junit_sha256': digest(junit.read_bytes())}
+
+
+def verify_native(output: Path, trace: dict):
+    """Compare the copied actual runtime and native session bytes, without authority shortcuts."""
     for row in trace['cleanup']['native_evidence']:
         relative = Path(row['path'])
         if relative.is_absolute() or '..' in relative.parts:
@@ -45,10 +52,12 @@ def verify(output: Path, source: str, junit: Path, *, expected_run: dict):
     rows = [json.loads(line) for _, name in segments for line in (slot / name).read_bytes().splitlines() if line]
     if normalized_records(rows) != trace['disk_records']:
         raise ValueError('copied native transcript differs from claimed records')
-    cases = [c for c in ET.parse(junit).iter('testcase') if c.get('name') == CASE and c.get('classname') == 'scripts.e2e.w4_f1.acceptance']
+
+
+def verify_named_junit(junit: Path, classname: str):
+    cases = [c for c in ET.parse(junit).iter('testcase') if c.get('name') == CASE and c.get('classname') == classname]
     if len(cases) != 1 or any(cases[0].find(k) is not None for k in ('skipped', 'failure', 'error')):
         raise ValueError('actual named lifecycle did not execute successfully exactly once')
-    return {'source_sha': source, 'trace_sha256': digest(raw), 'junit_sha256': digest(junit.read_bytes())}
 
 
 def main():

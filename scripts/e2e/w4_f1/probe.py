@@ -485,16 +485,32 @@ async def run(output: Path):
     require_process_handles()
     if subprocess.check_output(['git', 'status', '--porcelain=v1', '--untracked-files=normal'], cwd=REPO):
         raise ValueError('probe checkout must be clean')
+    await execute_probe(output, head=head, reservation=reservation,
+                        run_context={k: os.environ[k] for k in (
+                            'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
+                            'GITHUB_JOB', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_NAME')},
+                        temp_root=Path(os.environ['RUNNER_TEMP']), dsn=os.environ['W4_F1_POSTGRES_DSN'],
+                        evidence_validator=require_evidence, accepted_name='accepted.json')
+
+
+async def execute_probe(output: Path, *, head: str, reservation: dict, run_context: dict,
+                        temp_root: Path, dsn: str, evidence_validator, accepted_name: str,
+                        local_vm: dict | None = None, timer_started: float | None = None, relay_type=Relay):
+    """Shared bounded lifecycle; callers supply disjoint, already checked authority."""
+    if timer_started is not None and time.monotonic()-timer_started>=570:
+        raise ValueError('local outer preparation deadline exceeded')
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
-    started = time.monotonic()
-    root = Path(tempfile.mkdtemp(prefix='w4-f1-owned-', dir=os.environ['RUNNER_TEMP']))
+    started = time.monotonic() if timer_started is None else timer_started
+    root = Path(tempfile.mkdtemp(prefix='w4-f1-owned-', dir=temp_root))
     t = {'case': CASE, 'source_sha': head, 'driver_hashes': source_hashes(REPO), 'reservation': reservation,
          'base': BASE, 'base_sha256': digest(BASE.encode()), 'storage': 'private-postgres',
          'outcome': 'running', 'snapshots': {}, 'packets': [], 'cleanup': {},
          'controller': {'pid': os.getpid(), 'pgid': os.getpgrp()},
-         'run': {k: os.environ[k] for k in ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_NAME')},
+         'run': run_context,
          'interpreter': {'executable': sys.executable, 'real_executable': os.readlink('/proc/self/exe')}}
-    relay = Relay(reservation['endpoint'])
+    if local_vm is not None:
+        t.update(authority_mode='local-vm', local_vm=local_vm)
+    relay = relay_type(reservation['endpoint'])
     relay_socket = listening_socket()
     app_socket = listening_socket()
     app_port = app_socket.getsockname()[1]
@@ -506,8 +522,7 @@ async def run(output: Path):
     conn = None
     log = None
     try:
-        async with asyncio.timeout(570):
-            dsn = os.environ['W4_F1_POSTGRES_DSN']
+        async with asyncio.timeout(570 if timer_started is None else max(0,570-(time.monotonic()-started))):
             conn = await asyncpg.connect(dsn, timeout=5, command_timeout=5)
             # Fresh dedicated database only. No destructive cleanup or accepting stale probe data.
             tables = await conn.fetchval("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
@@ -553,13 +568,16 @@ async def run(output: Path):
         raise
     finally:
         await finish_probe(output, root, t, app, relay, server, relay_task, relay_socket, conn, log, started)
+    if local_vm is not None:
+        local_vm['timeline']['finished_at']=time.time()
+        (output/'trace.json').write_text(json.dumps(t,indent=2)+'\n')
     try:
-        require_evidence(t, head)
+        evidence_validator(t, head)
     except BaseException as exc:
         t.update(outcome='failed', failure_type=type(exc).__name__, failure_stage='raw_evidence_validation')
         (output / 'trace.json').write_text(json.dumps(t, indent=2) + '\n')
         raise
-    (output / 'accepted.json').write_text(json.dumps({'source_sha': head, 'trace_sha256': digest((output / 'trace.json').read_bytes())}) + '\n')
+    (output / accepted_name).write_text(json.dumps({'source_sha': head, 'trace_sha256': digest((output / 'trace.json').read_bytes())}) + '\n')
 
 
 def main():
