@@ -172,6 +172,26 @@ def blobs(root):
     return sorted(p for p in root.rglob("artifact-*") if p.is_file() and not p.name.endswith(".json"))
 
 
+async def grant_decision_workspace(runner, identifier, owner, reader):
+    """Reach approver routing without sharing the runner's default workspace.
+
+    Respond needs FULL on the session's workspace before it checks the
+    stamped approvers. Harness sharing stays READ-only and independent.
+    """
+    path = "/v1/workspaces/" + identifier
+    response = await runner.get(path);assert response.status_code == 200, response.text
+    before = response.json()
+    assert before["id"] == identifier and before["is_default"] is False
+    assert before["access"]["owners"] == [owner] and before["access"]["grants"] == {} and before["access"]["public"] is False
+    response = await runner.get(path + "/access");assert response.status_code == 200, response.text
+    response = await runner.put(path + "/access", json={"owners": [owner], "grants": {reader: "full"}, "public": False, "rev": response.json()["rev"]})
+    assert response.status_code == 200, response.text
+    response = await runner.get(path);assert response.status_code == 200, response.text
+    after = response.json()
+    assert after["access"]["owners"] == [owner] and after["access"]["grants"] == {reader: "full"} and after["access"]["public"] is False
+    return {"before": before, "after": after}
+
+
 @pytest.mark.asyncio
 async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_routing(mock_llm, unique_suffix, tmp_path, unused_tcp_port):
     from mcp import ClientSession
@@ -231,6 +251,10 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
                     clients[label], defaults[label] = client, status["default_workspace_id"]
                 runner = clients["runner"]
                 default_before = (await runner.get("/v1/workspaces/" + defaults["runner"])).json();assert default_before["is_default"]
+                decision_workspace = "w7-decisions-" + unique_suffix
+                response = await runner.post("/v1/workspaces", json={"id": decision_workspace, "template_id": "w7-template"})
+                assert response.status_code == 201, response.text
+                trace["decision_workspace"] = await grant_decision_workspace(runner, decision_workspace, trace["identities"]["runner"], trace["identities"]["reader"])
                 assert (await admin.put("/v1/mcp_exposure", json={"enabled": True, "mode": "allowlist", "allowed_tools": sorted(ALLOWED)})).status_code in (200, 204)
                 sessions = {}
                 for label, client in clients.items():
@@ -299,11 +323,12 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
 
                 async def stage(name):
                     operation, decision = SPECS[name];before = await call("harness__get", {"id": identifier})
-                    response = await runner.post("/v1/workspaces/" + defaults["runner"] + "/sessions", json={
+                    response = await runner.post("/v1/workspaces/" + decision_workspace + "/sessions", json={
                         "binding": {"kind": "agent", "agent_id": driver}, "initial_instructions": name, "auto_start": True, "autonomous": True})
                     assert response.status_code == 201, response.text
                     started = response.json();sid = started["id"]
                     assert started["initiated_by"]["user_id"] == trace["identities"]["runner"] and started["initiated_by"]["role"] == "admin"
+                    assert started["workspace_id"] == decision_workspace
                     while asyncio.get_running_loop().time() < deadline:
                         response = await admin.get(f"/v1/sessions/{sid}/tool_approval/pending")
                         if response.status_code == 200:pending = response.json();break
@@ -315,6 +340,10 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
                     assert pending["policy_id"] == policies[operation] and pending["arguments"] == actions[name] and pending["gate_id"]
                     assert await call("harness__get", {"id": identifier}) == before
                     body = {"tool_call_id": pending["tool_call_id"], "gate_id": pending["gate_id"], "decision": decision, "reason": "Private T6 " + name}
+                    hidden = await clients["stranger"].post(f"/v1/sessions/{sid}/tool_approval/respond", json=body)
+                    assert hidden.status_code == 404 and "does not exist" in hidden.text, hidden.text
+                    reader_pending = await clients["reader"].get(f"/v1/sessions/{sid}/tool_approval/pending")
+                    assert reader_pending.status_code == 200 and reader_pending.json() == pending, reader_pending.text
                     refused = await clients["reader"].post(f"/v1/sessions/{sid}/tool_approval/respond", json=body)
                     assert refused.status_code == 403 and "approver_mismatch" in refused.text, refused.text
                     assert (await admin.get(f"/v1/sessions/{sid}/tool_approval/pending")).json()["gate_id"] == pending["gate_id"]
@@ -331,7 +360,8 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
                     assert actual_args == {"toolset_id": "harness", "tool_name": operation, "arguments": actions[name]}
                     trace["gates"].append({"stage": name, "operation": operation, "decision": decision, "http": 202,
                         "policy_id": policies[operation], "gate_id": pending["gate_id"], "pending": pending,
-                        "reader_http": refused.status_code, "reader_body": refused.json()})
+                        "reader_http": refused.status_code, "reader_body": refused.json(), "reader_pending": reader_pending.json(),
+                        "stranger_http": hidden.status_code, "stranger_body": hidden.json()})
                     trace["stages"][name] = {"started": started, "row": row, "items": items, "records": records, "answer": answer, "result": value, "before": before}
                     return value
 
@@ -428,6 +458,11 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
                     "blocked_active": blocked_active.json(), "blocked_held": blocked_held.json(), "blocked_move": moved.json(),
                     "moved_root_exists": moved_root.exists(), "service_delete": response.status_code, "blobs_after": [],
                     "provider_deleted": deleted, "provider_missing": provider_missing, "restored": await call("system__get_active_artifact_store", {})}
+                response = await runner.delete("/v1/workspaces/" + decision_workspace);assert response.status_code == 204, response.text
+                missing_workspace = await runner.get("/v1/workspaces/" + decision_workspace)
+                assert missing_workspace.status_code == 404 and not (tmp_path / "workspaces" / decision_workspace).exists()
+                trace["decision_workspace_cleanup"] = {"id": decision_workspace, "delete_http": response.status_code,
+                    "get_http": missing_workspace.status_code, "directory_exists": False}
                 after = (await runner.get("/v1/workspaces/" + defaults["runner"])).json()
                 trace["default"] = {"before": default_before, "after": after, "directory_exists": (tmp_path / "workspaces" / defaults["runner"]).is_dir()}
                 trace["outcome"] = "passed";require_evidence(trace, trace["source_sha"], page_hashes())
@@ -456,12 +491,20 @@ def require_evidence(trace, source, hashes):
         native("system__wiki_read", {"path": p}, trace["wiki"][p])
     ids = trace["identities"]
     assert set(ids) == {"runner", "reader", "stranger"} and len(set(ids.values()) | {trace["approver"]}) == 4
+    workspace = trace["decision_workspace"];workspace_id = workspace["before"]["id"]
+    assert workspace_id == workspace["after"]["id"] and workspace_id != trace["default"]["before"]["id"]
+    assert workspace["before"]["is_default"] is workspace["after"]["is_default"] is False
+    assert workspace["before"]["access"]["owners"] == workspace["after"]["access"]["owners"] == [ids["runner"]]
+    assert workspace["before"]["access"]["grants"] == {} and workspace["after"]["access"]["grants"] == {ids["reader"]: "full"}
+    assert workspace["before"]["access"]["public"] is workspace["after"]["access"]["public"] is False
     registered = trace["registered"];identifier = registered["id"]
     assert registered["status"] == "draft" and registered["slug"] == trace["slug"] and registered["access"]["owners"] == [ids["runner"]]
+    assert registered["access"]["grants"] == {} and registered["access"]["public"] is False
     assert registered["git_url"] == trace["git"]["url"] and trace["git"]["url"].startswith("file:///")
     assert len(trace["git"]["commit"]) == 40
     assert trace["hidden"]["ok"] is False and "not-found" in trace["hidden"]["error"]["message"]
     assert trace["reader_no_effect"]["before"] == trace["reader_no_effect"]["after"]
+    assert trace["reader_no_effect"]["before"]["access"]["grants"] == {ids["reader"]: "read"}
     assert trace["no_schema"]["ok"] is False and "overrides-schema-missing" in trace["no_schema"]["error"]["message"]
     assert trace["invalid_overrides"]["ok"] is False and "overrides-invalid" in trace["invalid_overrides"]["error"]["message"]
     assert trace["fetch_queued"]["pending_operation"] == "fetch"
@@ -479,8 +522,11 @@ def require_evidence(trace, source, hashes):
         assert gate["pending"]["approvers"] == {"kind": "roles", "roles": [], "users": []}
         assert gate["pending"]["tool_name"] == operation and gate["pending"]["arguments"] == trace["actions"][name]
         assert gate["reader_http"] == 403 and "approver_mismatch" in json.dumps(gate["reader_body"])
+        assert gate["reader_pending"] == gate["pending"]
+        assert gate["stranger_http"] == 404 and "does not exist" in json.dumps(gate["stranger_body"])
         for key in ("started", "row"):
             assert stage[key]["initiated_by"]["user_id"] == ids["runner"] and stage[key]["initiated_by"]["role"] == "admin"
+            assert stage[key]["workspace_id"] == workspace_id
         assert stage["row"]["ended_reason"] == "completed" and stage["row"]["turn_status"] == "idle"
         records, answer, value, arguments = read_gate(stage["items"], name)
         assert records == stage["records"] and answer == stage["answer"] and value == stage["result"]
@@ -535,6 +581,7 @@ def require_evidence(trace, source, hashes):
         assert artifact[key]["extensions"]["error"] == "artifact_provider_holds_artifacts" and artifact[key]["extensions"]["count"] == 1
     assert artifact["moved_root_exists"] is False and artifact["service_delete"] == 204 and artifact["blobs_after"] == []
     assert artifact["provider_deleted"] == {"deleted": True, "id": artifact["created"]["id"]} and artifact["provider_missing"]["ok"] is False
+    assert trace["decision_workspace_cleanup"] == {"id": workspace_id, "delete_http": 204, "get_http": 404, "directory_exists": False}
     default = trace["default"]
     assert default["before"]["id"] == default["after"]["id"] and default["before"]["is_default"] is default["after"]["is_default"] is True
     assert default["before"]["access"] == default["after"]["access"] and default["directory_exists"] is True
