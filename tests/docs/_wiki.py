@@ -40,4 +40,4 @@ def repo_wiki() -> WikiBuild:
     """The build of the checked-in wiki sources over the live catalog (no legacy pages)."""
     from primer.knowledge.wiki.build import build_wiki
 
-    return build_wiki(WIKI_DIR, tool_entries(), legacy_pages={})
+    return build_wiki(WIKI_DIR, tool_entries())

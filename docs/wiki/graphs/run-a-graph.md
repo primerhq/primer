@@ -56,6 +56,7 @@ Reference: [`workspaces__read_workspace_session_messages`](reference/tools/works
 Reference: [`workspace_ext__invoke_graph`](reference/tools/workspace_ext/invoke_graph)
 
 ## Gotchas
+- On the full session row, it keeps `status="running"` with `parked_status` set while a question or approval is pending.
 - `invoke_graph` sends its `input` as one user message, so the child's `initial_input` is a list of messages. The `begin` node's `input_schema` is not checked, and a template that reads `initial_input.text` fails. Invoke graphs whose templates use the default `input_template` or `nodes.<begin id>.text`.
 - `invoke_graph` works only inside a workspace session: not over MCP, and not from a caller with no session. Invocations nest at most 8 deep by default; past that the call is refused.
 - Starting a session needs `full` access to its workspace for the person behind your run, wherever your session runs. A workspace that person holds no access to answers `not-found`, as an unknown id does.

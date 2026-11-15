@@ -48,13 +48,9 @@ INTERNAL_COLLECTION_IDS: dict[str, str] = {
     "tool": "_internal_tools",
 }
 
-# Reserved id for the agent-facing platform docs collection. Distinct
-# from the four entity-keyed collections above: it does NOT track
-# storage rows. Its records are produced by walking
-# :mod:`primer.ai_docs` markdown files at bootstrap, chunking via the
-# the shipped-docs ingest (removed in v2), and embedding
-# each chunk. Search-only from the agent side; no CDC events are ever
-# enqueued for this collection.
+# The platform wiki lives in the reserved system collection. Its authored
+# sources and generated references are regenerated behind the WikiStamp;
+# the live install map is converged separately.
 
 
 class InternalCollectionsConfig(Identifiable):

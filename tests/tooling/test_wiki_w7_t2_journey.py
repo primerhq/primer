@@ -364,11 +364,11 @@ def test_scoped_wiki_and_child_process_are_isolated_without_starting_a_server(tm
     assert config.auth.enabled and not config.auto_bootstrap and config.port == 18701
     assert config.db.config.path == tmp_path / "data.sqlite"
     assert {k: v for k, v in kwargs["env"].items() if k.startswith("PRIMER_")} == {
-        "PRIMER_WIKI_DIR": str(tmp_path / "wiki"), "PRIMER_AI_DOCS_DIR": str(tmp_path / "legacy-empty"),
+        "PRIMER_WIKI_DIR": str(tmp_path / "wiki"),
     }
     source = load_source_pages(tmp_path / "wiki")
     assert set(source) == {"index", "runbooks", *journey.PAGES}
-    built = build_wiki(tmp_path / "wiki", tool_entries(), legacy_pages={})
+    built = build_wiki(tmp_path / "wiki", tool_entries())
     for path in journey.PAGES:
         assert source[path].body in built.pages[path].body
         assert (tmp_path / "wiki" / (path + ".md")).read_bytes() == (journey.REPO / "docs/wiki" / (path + ".md")).read_bytes()

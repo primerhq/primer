@@ -31,16 +31,17 @@ from primer.model_profile import ResolvedModel
 from tests._resume_hook_fakes import drain, drain_until_yield
 from tests.docs.test_docs_tool_call_bodies import REPO
 
-GRAPHS_DOC = REPO / "docs" / "agents" / "graphs.md"
+GRAPHS_DOC = REPO / "docs" / "wiki" / "graphs" / "ask-a-person.md"
 
 
 def _workflow_7() -> dict[str, Any]:
     text = GRAPHS_DOC.read_text(encoding="utf-8")
-    section = text[text.index("### Workflow 7"):]
-    section = section[: section.index("\n## ")]
-    match = re.search(r"```json\n(?P<body>.*?)```", section, re.DOTALL)
-    assert match is not None, "Workflow 7 has no json block"
-    return json.loads(match["body"])["entity"]
+    match = re.search(r"```json\n(?P<body>.*?)```", text, re.DOTALL)
+    assert match is not None, "the human-routed graph has no JSON example"
+    call = json.loads(match["body"])
+    assert (call["toolset_id"], call["tool_name"]) == ("crud", "create_graph")
+    return call["arguments"]["entity"]
+
 
 
 class _Scripted:

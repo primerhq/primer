@@ -22,7 +22,7 @@ def _flat(text: str) -> str:
 
 
 def test_the_python_tools_doc_says_a_parked_call_is_refused_after_a_source_change() -> None:
-    flat = _flat((ROOT / "docs/agents/python-tools.md").read_text(encoding="utf-8"))
+    flat = _flat((ROOT / "docs/wiki/toolsets/python-toolsets.md").read_text(encoding="utf-8"))
 
     assert "still resumes against the version that parked it" not in flat
     assert "the answer is not applied" in flat and "The same source keeps the version" in flat

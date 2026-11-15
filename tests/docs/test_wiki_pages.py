@@ -119,7 +119,7 @@ def test_the_recipe_template_parses_as_a_page():
 
 def test_planned_paths_are_slugs_and_cover_every_spec():
     assert all(re.fullmatch(r"[a-z0-9-]+(/[a-z0-9-]+)*", p) for p in PLANNED_PATHS)
-    assert set(all_specs()) <= PLANNED_PATHS and len(PLANNED_PATHS) == 106
+    assert set(all_specs()) <= PLANNED_PATHS and len(PLANNED_PATHS) == 116
 
 
 # ---- every page against its spec ----------------------------------------------------------------------------------
@@ -191,7 +191,7 @@ def test_a_recipe_calls_exactly_the_tools_it_lists_in_a_sound_order(path):
 
 @pytest.mark.parametrize("path", sorted(SPECS))
 def test_related_paths_resolve(path):
-    assert [r for r in SPECS[path].related if r not in PAGES and r not in PLANNED_PATHS] == []   # Task 23 drops the PLANNED_PATHS clause
+    assert [r for r in SPECS[path].related if r not in PAGES] == []   # Task 23 drops the PLANNED_PATHS clause
 
 
 @pytest.mark.parametrize("path", sorted(SPECS))

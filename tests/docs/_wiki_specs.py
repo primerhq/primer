@@ -20,10 +20,7 @@ call, a recipe calls exactly the tools it lists in a sound order
 (:data:`RECIPE_ORDER`), the related paths resolve, and the drift guards
 (:data:`DRIFT_GUARDS`) keep a page naming everything the code defines.
 
-``PLANNED_PATHS`` is the closed set of the paths the wiki may hold: a page
-for a path outside it is a bug, and while ``STRICT`` is False a spec whose
-page is not written yet skips its page tests (task 23 sets it True and drops
-the ``PLANNED_PATHS`` allowance from the link tests).
+``PLANNED_PATHS`` is the required core page paths: a spec outside that set is a bug. ``STRICT`` is True: every required page must exist. Additional runbooks have focused contracts, and every source page participates in the full link/schema/tool coverage checks.
 """
 
 from __future__ import annotations
@@ -175,6 +172,8 @@ def render_frontmatter(spec: PageSpec) -> str:
 
 
 PLANNED_PATHS = frozenset({
+    'approvals/decision-context', 'triggers/event-security',
+    'providers/speech', 'start-here/accounts-and-tokens', 'workspaces/services', 'sessions/operations', 'toolsets/mcp-exposure', 'toolsets/sign-in', 'graphs/ask-a-person', 'workspaces/write-safety',
     "index",
     "agents", "agents/what-an-agent-is", "agents/create-and-edit", "agents/prompts-and-parts", "agents/tools-and-grants", "agents/invoke-an-agent", "agents/switch-and-binding", "agents/compaction", "agents/wiki-driven-agent",
     "sessions", "sessions/what-a-session-is", "sessions/start-a-session", "sessions/observe-a-session", "sessions/control-a-session", "sessions/messaging-other-sessions", "sessions/find-sessions",
@@ -196,9 +195,9 @@ PLANNED_PATHS = frozenset({
     "cookbook", "cookbook/create-and-run-a-session", "cookbook/monitor-and-resume-a-parked-session", "cookbook/run-a-graph-and-collect-results", "cookbook/workspace-as-build-env", "cookbook/scheduled-summariser", "cookbook/daily-incident-digest", "cookbook/pr-reviewer-on-cron", "cookbook/event-driven-data-pipeline", "cookbook/slack-question-answerer", "cookbook/telegram-personal-assistant", "cookbook/discord-moderation-helper", "cookbook/approval-gated-deploy-bot", "cookbook/multi-agent-graph-research", "cookbook/discover-a-capability", "cookbook/internal-tool-via-mcp", "cookbook/run-a-task-through-prime",
     "start-here", "start-here/reading-this-wiki", "start-here/calling-tools", "start-here/roles-and-approvals", "start-here/errors", "start-here/the-core-kit",
 })
-"""The closed set of the paths the wiki may hold: ``index`` and the 105 hand-written paths.
+"""The required core page paths: ``index`` and the 115 PageSpec sources.
 
-A page for a path outside it is a bug, and a spec whose path is not here fails
+A spec whose path is not here fails
 ``test_planned_paths_are_slugs_and_cover_every_spec``.
 """
 
@@ -343,9 +342,9 @@ DRIFT_GUARDS = (
 """The code-defined sets a page must name in full, checked at test time against the live code:
 a new field, kind or state lands in the code and fails the page test until the page names it."""
 
-STRICT = False
+STRICT = True
 """While False, a test that needs a page that is not written yet skips. Task 23 sets it True,
-when every planned path holds a page and the ``PLANNED_PATHS`` allowance of the link tests goes."""
+Every required spec page is present; link checks have no planned-path allowance."""
 
 
 if __name__ == "__main__":

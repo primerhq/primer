@@ -119,11 +119,10 @@ def prepare_config(root: Path, port: int) -> tuple[Path, dict]:
     (wiki / "index.md").write_text("---\ntitle: T5 acceptance\nsummary: Private trigger flow.\n---\n[Runbooks](runbooks)\n")
     (wiki / "runbooks/index.md").write_text("---\ntitle: T5 runbook\nsummary: Private trigger flow.\n---\n[Wire a trigger](" + PAGE + ")\n")
     shutil.copyfile(REPO / "docs/wiki" / (PAGE + ".md"), wiki / (PAGE + ".md"))
-    (root / "legacy-empty").mkdir()
     config = root / "config.json"
     config.write_text(json.dumps(isolated_config(root, port)))
     env = {k: v for k, v in os.environ.items() if not k.startswith("PRIMER_")}
-    env.update(PRIMER_WIKI_DIR=str(wiki), PRIMER_AI_DOCS_DIR=str(root / "legacy-empty"))
+    env.update(PRIMER_WIKI_DIR=str(wiki))
     return config, env
 
 

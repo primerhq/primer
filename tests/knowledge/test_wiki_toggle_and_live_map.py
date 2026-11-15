@@ -1,5 +1,5 @@
 """T123 (GI-16, GI-18): a config toggle within one build rewrites the wiki again; the provider and profile kinds converge the live map; a public workspace
-never names a private template or provider; and the agent docs and the wiki ship in the wheel."""
+never names a private template or provider; and the one wiki source ships in the wheel."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import pytest
 from pydantic import SecretStr
 
 import primer
-from primer.ai_docs_path import resolve_ai_docs_dir
 from primer.bootstrap.seed import SYSTEM_CDC_SUBSCRIPTION, ensure_system_event_subscriptions
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID, converge_entity, regenerate_system_collection
 from primer.knowledge.tree import DocumentTreeService
@@ -197,31 +196,29 @@ async def test_a_public_template_and_provider_are_named(sp) -> None:  # noqa: F8
 
 # --- GR-9: docs in the wheel --------------------------------------------------------------------------------------------------------------------
 
-def test_the_wheel_force_includes_the_agent_docs_and_the_wiki():
+def test_the_wheel_force_includes_only_the_current_wiki_source():
     root = Path(__file__).resolve().parents[2]
     wheel = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["hatch"]["build"]["targets"]["wheel"]
     include = wheel["force-include"]
-    assert include["docs/agents"] == "primer/_docs/agents" and include["docs/wiki"] == "primer/_docs/wiki"
+    assert include["docs/wiki"] == "primer/_docs/wiki"
+    assert "docs/agents" not in include and "primer/_docs/agents" not in include.values()
     assert not (Path(primer.__file__).parent / "ai_docs").exists()
 
 
 def test_the_resolvers_find_the_docs_in_a_pip_layout(tmp_path, monkeypatch):
     pkg = tmp_path / "site-packages" / "primer"
-    (pkg / "_docs" / "agents").mkdir(parents=True)
     (pkg / "_docs" / "wiki").mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
-    (pkg / "_docs" / "agents" / "a.md").write_text("# a")
-    monkeypatch.delenv("PRIMER_AI_DOCS_DIR", raising=False)
+    (pkg / "_docs" / "wiki" / "a.md").write_text("# a")
     monkeypatch.delenv("PRIMER_WIKI_DIR", raising=False)
     monkeypatch.setattr(primer, "__file__", str(pkg / "__init__.py"))
-    assert resolve_ai_docs_dir() == pkg / "_docs" / "agents" and resolve_wiki_dir() == pkg / "_docs" / "wiki"
-    assert [p.name for p in resolve_ai_docs_dir().rglob("*.md")] == ["a.md"]
+    assert resolve_wiki_dir() == pkg / "_docs" / "wiki"
+    assert [p.name for p in resolve_wiki_dir().rglob("*.md")] == ["a.md"]
 
 
 def test_a_repo_checkout_and_the_env_override_resolve_as_before(tmp_path, monkeypatch):
-    monkeypatch.delenv("PRIMER_AI_DOCS_DIR", raising=False)
     monkeypatch.delenv("PRIMER_WIKI_DIR", raising=False)
     root = Path(primer.__file__).resolve().parent.parent
-    assert resolve_ai_docs_dir() == root / "docs" / "agents" and resolve_wiki_dir() == root / "docs" / "wiki"
-    monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(tmp_path))
-    assert resolve_ai_docs_dir() == tmp_path
+    assert resolve_wiki_dir() == root / "docs" / "wiki"
+    monkeypatch.setenv("PRIMER_WIKI_DIR", str(tmp_path))
+    assert resolve_wiki_dir() == tmp_path

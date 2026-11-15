@@ -89,15 +89,12 @@ async def sp(tmp_path):
 
 @pytest.fixture
 def wiki(tmp_path, monkeypatch):
-    """The hand-written wiki (plus an empty ai-docs dir), pinned by env vars."""
+    """The hand-written wiki pinned by the wiki source override."""
     root = tmp_path / "wiki"
     (root / "start-here").mkdir(parents=True)
     for name, text in FILES.items():
         (root / name).write_text(text, encoding="utf-8")
     monkeypatch.setenv("PRIMER_WIKI_DIR", str(root))
-    docs = tmp_path / "ai-docs"
-    docs.mkdir()
-    monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
     monkeypatch.setattr(
         "primer.knowledge.system_collection.RESERVED_TOOLSET_IDS",
         frozenset({"misc"}),
@@ -127,7 +124,7 @@ async def test_an_empty_path_reads_the_table_of_contents(system_toolset):
     # root, plus the legacy roots (the shipped docs index and the in-code
     # how-to guides), the TOC itself aside.
     assert {c["path"] for c in out["children"]} == {
-        "start-here", "reference", "this-install", "docs", "how-to",
+        "start-here", "reference", "this-install",
     }
 
 

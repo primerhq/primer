@@ -27,7 +27,7 @@ WIKI_DIR_ENV = "PRIMER_WIKI_DIR"
 SUMMARY_MAX = 160
 """The longest one-line summary a page may carry."""
 
-PageKind = Literal["toc", "section", "guide", "reference", "live", "legacy"]
+PageKind = Literal["toc", "section", "guide", "reference", "live"]
 
 _BOM = chr(0xFEFF)  # some editors start a UTF-8 file with a byte order mark
 _FRONTMATTER_KEYS = ("title", "summary", "audience", "tools", "related", "order")

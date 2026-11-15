@@ -1,14 +1,10 @@
 ---
-slug: mcp-exposure
-title: MCP exposure - primer as an MCP server
-summary: Use primer's fixed MCP discovery and dispatch surface, including exposure modes, caller authorization, and call-time safety checks.
-related: [auth-and-tokens, tool-approval, semantic-search, yielding]
-mcp_tools: []
+title: "MCP exposure and external clients"
+summary: "Discover and call exposed targets through the three caller-aware MCP meta-tools."
+order: 8
+related: [start-here/accounts-and-tokens, toolsets/mcp-toolsets, approvals/policies]
 ---
-
-# MCP exposure - primer as an MCP server
-
-## Overview
+## What it is
 
 Primer consumes external MCP servers as configured toolsets and also hosts an
 inbound Streamable HTTP server at `/v1/mcp`. The inbound endpoint lets an MCP
@@ -26,7 +22,7 @@ The hundreds of target schemas are not advertised in `tools/list`. A client
 requests schemas from `list_tools` or `find_tools` only when it needs them. This
 keeps model context bounded while preserving the full authorized catalogue.
 
-## Mental model
+## Concepts
 
 Discovery and dispatch are separate contracts, and neither trusts the
 other:
@@ -195,9 +191,23 @@ catalogue table scrolls horizontally rather than clipping its controls.
   route-to-tool mappings. A declared mapping does not grant access: MCP
   still checks the live exposure, role, toolset grant and approval policy.
 
+## Additional operation reference
+
+The following operations belong to this feature family. The role shown is the minimum role, not a grant of entity access or an approval exemption. Read the linked live argument, result and default-policy facts before a call; owner checks, cookie-only routes and human decision rules still apply. Generated writes can require approval even when an older curated read or operation does not.
+
+| Operation | Use for | Role floor |
+|---|---|---|
+| [`external_tools__list_external_tool_calls`](reference/tools/external_tools/list_external_tool_calls) | Global external tool call list (audit + orchestrator poll). | user |
+| [`external_tools__session_pending`](reference/tools/external_tools/session_pending) | Pending external tool calls for one session. | user |
+| [`mcp__available_tools`](reference/tools/mcp/available_tools) | available_tools_endpoint. | admin |
+| [`mcp__get_exposure`](reference/tools/mcp/get_exposure) | get_exposure_endpoint. | user |
+| [`mcp__update_exposure`](reference/tools/mcp/update_exposure) | update_exposure_endpoint. | admin |
+| [`tools__list_all_tools`](reference/tools/tools/list_all_tools) | List every tool currently exposed by every registered toolset (built-in + user-defined). | user |
+| [`tools__list_tools`](reference/tools/tools/list_tools) | Flat catalogue of every tool exposed by every reachable toolset. | user |
+
 ## Related
 
-- [auth-and-tokens](auth-and-tokens.md)
-- [tool-approval](tool-approval.md)
-- [semantic-search](semantic-search.md)
-- [yielding](yielding.md)
+- [auth-and-tokens](start-here/accounts-and-tokens)
+- [tool-approval](approvals/policies)
+- [semantic-search](knowledge/the-platform-wiki)
+- [yielding](sessions/control-a-session)

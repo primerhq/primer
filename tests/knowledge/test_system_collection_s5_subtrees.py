@@ -11,7 +11,6 @@ import pytest
 import pytest_asyncio
 
 from primer.knowledge.system_collection import (
-    HOW_TO_GUIDES,
     LIVE_ROOT,
     ROOT_INDEX_SLUG,
     SYSTEM_COLLECTION_ID,
@@ -45,7 +44,7 @@ async def sp(tmp_path):
 
 @pytest.fixture
 def wiki(tmp_path, monkeypatch):
-    """A hand-written wiki plus an empty ai-docs dir, pinned by env vars."""
+    """A hand-written wiki pinned by the wiki source override."""
     root = tmp_path / "wiki"
     root.mkdir()
     (root / "index.md").write_text(
@@ -57,10 +56,7 @@ def wiki(tmp_path, monkeypatch):
         "The s5 wiki.\n",
         encoding="utf-8",
     )
-    docs = tmp_path / "ai-docs"
-    docs.mkdir()
     monkeypatch.setenv("PRIMER_WIKI_DIR", str(root))
-    monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
     monkeypatch.setattr(
         "primer.knowledge.system_collection.RESERVED_TOOLSET_IDS",
         frozenset(),
@@ -70,7 +66,7 @@ def wiki(tmp_path, monkeypatch):
 
 # The roots a healthy pass holds: the table of contents, the generated
 # reference, the live install map and the legacy how-to layer.
-ROOT_SLUGS = {"index", "reference", LIVE_ROOT, "how-to"}
+ROOT_SLUGS = {"index", "reference", LIVE_ROOT}
 
 
 async def test_every_subtree_is_present_at_the_root(sp, wiki):
@@ -91,7 +87,7 @@ async def test_the_root_index_names_every_subtree(sp, wiki):
     index = await tree.read(
         collection_id=SYSTEM_COLLECTION_ID, path=ROOT_INDEX_SLUG,
     )
-    for subtree in ("reference", LIVE_ROOT, "how-to"):
+    for subtree in ("reference", LIVE_ROOT):
         assert f"({subtree})" in index.body, subtree
 
 
@@ -165,16 +161,14 @@ async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp, wiki):
     assert "leaf-b" in profiles.body
 
 
-async def test_how_to_guides_are_written(sp, wiki):
+async def test_retired_doc_roots_are_not_synthesized(sp, wiki):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
-    index = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="how-to")
-    for slug in HOW_TO_GUIDES:
-        assert slug in index.body
-        page = await tree.read(
-            collection_id=SYSTEM_COLLECTION_ID, path=f"how-to/{slug}",
-        )
-        assert page.body.strip()
+    roots = {n.slug for n in await tree.tree(collection_id=SYSTEM_COLLECTION_ID, depth=1)}
+    assert roots == {"index", "reference", LIVE_ROOT}
+    index = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path=ROOT_INDEX_SLUG)
+    assert "(how-to)" not in index.body and "(docs)" not in index.body
+
 
 
 async def test_a_removed_provider_disappears_from_the_next_pass(sp, wiki):

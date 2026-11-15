@@ -91,7 +91,7 @@ def test_scoped_fixture_is_accepted_by_the_real_wiki_loader_and_builder(tmp_path
     source = load_source_pages(wiki)
     assert set(source) == {"index", "runbooks", "runbooks/manage-a-workspace"}
     assert (wiki / "runbooks/manage-a-workspace.md").read_bytes() == (WIKI_DIR / "runbooks/manage-a-workspace.md").read_bytes()
-    built = build_wiki(wiki, tool_entries(), legacy_pages={})
+    built = build_wiki(wiki, tool_entries())
     page = built.pages["runbooks/manage-a-workspace"]
     assert page.kind == "guide" and source["runbooks/manage-a-workspace"].body in page.body
 

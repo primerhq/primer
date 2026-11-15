@@ -66,10 +66,8 @@ files a task touches (never `git add -A`).
   - `docs/dev/` - the authoritative developer reference (architecture +
     subsystems). `docs/wiki/` - the platform wiki source: the hand-written
     pages the boot-time build writes into the `system` collection behind the
-    version stamp; it replaces `docs/agents/` (the agent-usage docs, which the
-    same build writes into the `system` collection's `docs/` subtree as its
-    legacy layer; see `docs/agents/_README.md`), which the pivot P4 content
-    slice retires. The operator-facing console docs now live in a separate
+    version stamp, alongside generated reference pages for the full tool catalogue.
+    This is the single agent-facing documentation source. The operator-facing console docs live in a separate
     external repo (the `primerhq.github.io` Pages site), not in this tree.
   - `skills/` - guidance for agents using a primer deployment (not contribution).
 
@@ -120,7 +118,7 @@ checklist.
    tools in the appropriate toolset under `primer/toolset/` (built with
    `make_tool`, registered with its toolset, callable over
    `POST /v1/mcp`), so agents and MCP clients can use it.
-4. **Docs** - update the agent-usage docs in `docs/agents/` plus the dev docs
+4. **Docs** - update the agent-facing wiki in `docs/wiki/` plus the dev docs
    in `docs/dev/subsystems/` and `docs/dev/architecture/` as the change
    warrants. The operator-facing docs now live in a separate external repo (the
    `primerhq.github.io` Pages site); update them there when an operator-visible

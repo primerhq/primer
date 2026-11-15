@@ -87,10 +87,10 @@ Reference: [`crud__list_python_tools`](reference/tools/crud/list_python_tools)
 - A source that fails registration is not an error result. The call succeeds with `{"ok": false, ...}` and nothing is stored, and an unknown id answers `{"ok": false, "error": "not-found"}`. Read `ok`.
 - A run below admin is refused by the two write tools before any approval (`forbidden` through `system__call_tool`), so no approval helps. Ask an admin.
 - `crud__list_python_tools` parks for approval like the rest of `crud`. To see the tools without a gate, call `system__list_toolset_tools` with the toolset id.
-- Every update bumps `source_version`, even with the same source. A call parked in one of the toolset's yielding tools does not resume on new code: it ends with an error naming both versions, and the answer is not applied.
+- An update that changes the source bumps `source_version`. The same source keeps the version, so a parked call still resumes. A source change means the answer is not applied to the parked call. A call parked in one of the toolset's yielding tools does not resume on new code: it ends with an error naming both versions, and the answer is not applied.
 - Nothing survives in memory across a park: the two halves of a yielding tool are separate processes. Put what the companion needs in `meta`. A yield helper called outside a session, or at module level, is an error.
 - A taken id fails the create: update the source instead. A built-in or scope id (`web`, `workspace`) answers `conflict`, and so does editing the source of a toolset a harness manages.
-- Give these tools a Python toolset's id only. Given an MCP toolset's id, they fail with a bare internal error.
+- Give these tools a Python toolset's id only. Given an MCP toolset's id, they fail with a validation error.
 
 ## Related
 [MCP toolsets](toolsets/mcp-toolsets), [approval policies](approvals/policies), [built-in toolsets](toolsets/builtin-toolsets), [list and describe tools](toolsets/list-and-describe-tools).

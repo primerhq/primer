@@ -144,104 +144,38 @@ an echo of your input.
 
 ## 3. How to learn more - the documentation contract
 
-Primer's full documentation lives in the reserved `system`
-collection, a read-only wiki of the platform. Its pages are addressed
-by slug path: the table of contents is `index`; the guides sit under
-sections such as `start-here/`; each tool has a reference page,
-`reference/tools/<toolset>/<tool>`; each capability's agent doc is
-`docs/<slug>` (lowercase, kebab-case, e.g. `docs/agents`); and
-`this-install/` is the live map of this install's agents, graphs,
-collections, workspaces and providers. Two MCP tools give you access:
+Primer's full documentation lives in the reserved `system` collection, a read-only platform wiki. Read `index` for its table of contents, `purpose-map` for goals, or a feature path such as `agents/create-and-edit`. Each exact tool has a generated reference at `reference/tools/<toolset>/<tool>`. `this-install/` is the live map of this install's agents, graphs, collections, workspaces and providers.
 
-- **`system::wiki_search`** - search. Takes `query` and optionally
-  `mode` (`auto`, `semantic`, `fulltext` or `literal`), `path_prefix`
-  and `limit`; returns `{hits: [{path, excerpt, score}], truncated,
-  mode_used}`. It matches keywords until an admin turns internal
-  search on and searches by meaning after (`mode_used` says which). It
-  leaves `this-install/` out unless `path_prefix` names it. Use this
-  when you know what you want to do but not which page covers it.
+- **`system__wiki_search`** takes `query`, optional `mode` (`auto`, `semantic`, `fulltext` or `literal`), `path_prefix` and `limit`. It returns `{hits, truncated, mode_used}`. With no working semantic index, use auto for lexical discovery. The live map is excluded unless the prefix requests it.
+- **`system__wiki_read`** takes a canonical path, for example `{"path": "agents/create-and-edit"}`; an empty path reads the table of contents. It returns `{path, title, summary, kind, body, children}`. Read the complete page after search has identified it.
 
-- **`system::wiki_read`** - read one page by path
-  (`{"path": "docs/agents"}`; an empty path reads the table of
-  contents). Returns `{path, title, summary, kind, body, children}`:
-  the whole page, not a chunk. Use this once search has named the
-  page.
+These are target ids: an outside client discovers them through the three MCP meta-tools, then calls a returned scoped id through `call_tool`. Both targets are read-only. Ordinary collection search/read on `collection: system` reaches the same pages. Reading by path never depends on a semantic index.
 
-Both tools are read-only and idempotent; calling them never changes
-primer state. `collections::search` and `collections::read_document`
-with `"collection": "system"` reach the same pages.
-
-The loop: call `system::wiki_search(query="<goal>")` for ranked pages;
-read the best one with `system::wiki_read(path="<path>")`; then call
-the `toolset::tool` it documents. Each doc is structured Overview,
-Mental model, Lifecycle, MCP tools, Workflows (request AND response
-JSON), Gotchas, so skim the section you need.
-
-Search works on every deployment: with internal search off it matches
-keywords (`mode_used: "fulltext"`) and `mode: "semantic"` is refused
-(`type=conflict`), so keep `mode: "auto"`. Reading a page by path
-never depends on it.
+The loop is: search for the goal, read the matching feature or runbook, inspect the exact tool reference and live describe facts, then make the authorized call. Feature pages use What it is, Concepts, How to, Tool calls, Gotchas and Related; recipes use Goal, Prerequisites, Steps, Verify, Gotchas and Related. A reference supplies actual argument, role, default policy and result facts. A default policy is not a promise that a call is currently ungated.
 
 ### Capability index
 
-Every entry below is one document under `docs/` in the `system`
-collection. Read the full doc with
-`system::wiki_read(path="docs/<slug>")`. Search for a topic with
-`system::wiki_search(query="<terms>")`.
-
-| Slug | What it covers |
-| --- | --- |
-| `agents` | Agent definition, system prompts, tool sets, LLM config, response formats, the turn-loop runtime, auto-compaction. |
-| `graphs` | Multi-step agent orchestration. Nodes (agent/task/subgraph/http/callable_router), edges (static/json_path/callable_router), supersteps, cycles. |
-| `workspaces` | Execution sandboxes. Workspace lifecycle, providers, templates, `.state/` and `.tmp/` layout, multi-session coordination, MCP file I/O tools. |
-| `sessions` | Long-running headless agent runs. Status enum (RUNNING/WAITING/PAUSED/ENDED), pause/resume/end controls, `waiting.json` contract. |
-| `knowledge` | User-defined collections and documents. CRUD, content storage (`meta.content`), ingest pipeline status, `get_document_content`. |
-| `semantic-search` | The `system` collection (this wiki, the tool reference, these docs and the live install map), internal search, and how to search and read it. |
-| `triggers-and-subscriptions` | Event scheduling. Trigger kinds (delayed/scheduled/channel), subscription kinds (agent_fresh_session/graph_fresh_session/parked_session/session_append), fire semantics, catch-up policy. |
-| `yielding` | The park/resume primitive. `Yielded` sentinel, parked state fields, event keys, timeout sweeper, cancellation; why yielding tools are invisible from MCP. |
-| `tool-approval` | Pre-dispatch gates on tool calls. Approval kinds (required/policy/llm), fail-closed semantics, supersession by new user turns, interaction with MCP exposure. |
-| `harnesses` | Git-installed entity bundles. Lifecycle (draft → ready → installed → outdated), fetch/install/sync/uninstall, managed entity guard. |
-| `channels` | Slack/Telegram/Discord adapters. ChannelProvider → Channel → WorkspaceChannelAssociation, forwarding flags, first-reply-wins, fire-and-forget posts. |
-| `mcp-exposure` | The MCP server endpoint itself. The `McpExposure` singleton, the exposure mode (rbac floor / allowlist narrowing), the saved allowlist, scope auth, hard-deny (none in v1), GZip bypass. |
-| `auth-and-tokens` | API tokens, scopes, cookie vs bearer, token minting, revocation, the `mcp` scope. |
+| Goal | Canonical wiki path |
+|---|---|
+| Define an agent, prompts, tools or compaction | `agents` |
+| Create and run a graph, including human answer routing | `graphs`, `graphs/ask-a-person` |
+| Create workspaces, use files, locks and templates | `workspaces`, `workspaces/write-safety` |
+| Start, observe, steer or resume a session | `sessions` |
+| Work with collections, stored bodies and search | `knowledge` |
+| Schedule or subscribe to events safely | `triggers`, `triggers/event-security` |
+| Understand approvals and hidden card arguments | `approvals`, `approvals/decision-context` |
+| Install or sync a harness | `harnesses`, `runbooks/install-a-harness` |
+| Configure channels and reply binding | `channels`, `runbooks/onboard-a-channel` |
+| Manage models, search or artifact providers | `providers` |
+| Understand speech as an edge transform | `providers/speech` |
+| Publish and activate service bundles | `workspaces/services` |
+| Connect external clients or upstream MCP servers | `toolsets/mcp-exposure`, `toolsets/sign-in` |
+| Understand accounts, scoped tokens and welcomes | `start-here/accounts-and-tokens` |
+| Find human sign-in or deployment boundaries | `not-agent-callable` |
 
 ### Recipes by goal
 
-End-to-end recipes live under `cookbook/` slugs, read the same way
-(`system::wiki_read(path="docs/cookbook/<slug>")`).
-
-| Goal | Recipe slug |
-| --- | --- |
-| Run a headless agent over MCP | `cookbook/create-and-run-a-session` |
-| Find the right capability/tool/agent/graph | `cookbook/discover-a-capability` |
-| Run a multi-step graph and collect output | `cookbook/run-a-graph-and-collect-results` |
-| Handle a parked (waiting) session | `cookbook/monitor-and-resume-a-parked-session` |
-| Review PRs on a schedule | `cookbook/pr-reviewer-on-cron` |
-| Summarise documents periodically | `cookbook/scheduled-summariser` |
-| Daily incident digest | `cookbook/daily-incident-digest` |
-| Event-driven data pipeline | `cookbook/event-driven-data-pipeline` |
-| Workspace as a build environment | `cookbook/workspace-as-build-env` |
-| Multi-agent research graph | `cookbook/multi-agent-graph-research` |
-| Expose an internal tool over MCP | `cookbook/internal-tool-via-mcp` |
-| Slack question answerer | `cookbook/slack-question-answerer` |
-| Discord moderation helper | `cookbook/discord-moderation-helper` |
-| Telegram personal assistant | `cookbook/telegram-personal-assistant` |
-| Approval-gated deploy bot | `cookbook/approval-gated-deploy-bot` |
-
-### Quick-pick by goal
-
-- **"I want to find a tool that does X."** Call
-  `system::wiki_search(query="<terms>", path_prefix="reference/tools/")`.
-  Returns ranked tool reference pages,
-  `reference/tools/<toolset>/<tool>`; `system::describe_tool` gives
-  the exact arguments.
-- **"I want to find an agent that does X."** Call
-  `system::wiki_search(query="<terms>", path_prefix="this-install/agents/")`.
-- **"I want to find a graph that does X."** Call
-  `system::wiki_search(query="<terms>", path_prefix="this-install/graphs/")`.
-- **"How does X work?"** Call
-  `system::wiki_search(query="<terms>")`, then read the matched page
-  with `system::wiki_read(path="<path>")`.
+Read `cookbook` for complete recipes and `runbooks` for the sampled lifecycle contracts. Recipe paths have no extra prefix: for example `cookbook/create-and-run-a-session`, `cookbook/monitor-and-resume-a-parked-session`, `cookbook/multi-agent-graph-research` and `cookbook/internal-tool-via-mcp`. A parked turn usually keeps `status: running` with park fields; waiting between turns is a different state. Follow the page's actual pending-response instructions rather than answering a park with a steer or peer message.
 
 ## 4. A minimal first-touch workflow
 
@@ -327,4 +261,3 @@ bottom of each doc usually contains the one thing that catches
 people, and the snippet won't include it.
 
 ---
-

@@ -85,7 +85,7 @@ Reference: [`workspaces__workspace_tap`](reference/tools/workspaces/workspace_ta
 ## Gotchas
 - Never read `.state/sessions/<id>/messages.jsonl` with `workspaces__read_workspace_file`: raw `.state` reads need an admin. Use `read_workspace_session_messages`.
 - A session parked on a gate has `status` `running`. Read `session_state` from the full row before you decide it is busy.
-- An answer to a parked `ask_user` and an approval decision are made by a person, in the console or a bound channel. No tool answers them, and a steer or a message is never the answer.
+- An answer to a parked `ask_user` and an approval decision are made by a person, in the console or a bound channel. Authorized generated response operations reach the existing human response routes; workspace, nonce and approver checks still apply. A steer or a message is never the answer.
 - A missing, empty or unreadable `cursor` starts a fresh drain from the beginning of every session's stream. Keep the `next_cursor` of each workspace you follow.
 - `wait_seconds` blocks your turn while it waits. Keep it short, or wait with `system__wait_for_event`, which parks the turn instead.
 

@@ -113,6 +113,15 @@ def valid_evidence():
     call("system__get_active_artifact_store", {}, original)
     call("system__get_artifact_storage_provider", {"id": DEFAULT_ARTIFACT_PROVIDER_ID}, default_provider)
     call("system__delete_artifact_storage_provider", {"id": "store"}, {"deleted": True, "id": "store"})
+    trace["wiki_root"] = {"path": "index", "children": [{"path": "providers"}, {"path": "reference"}]}
+    trace["speech_wiki"] = {"path": "providers/speech", "body": (journey.REPO / "docs/wiki/providers/speech.md").read_text().split("---", 2)[2].strip()}
+    call("system__wiki_read", {"path": ""}, trace["wiki_root"])
+    call("system__wiki_read", {"path": "providers/speech"}, trace["speech_wiki"])
+    trace["retired_wiki"] = {}
+    for path in ("docs", "how-to"):
+        missing = {"ok": False, "error": {"code": "tool_failed", "message": json.dumps({"type": "not-found"})}}
+        trace["retired_wiki"][path] = missing
+        trace["calls"].append({"actor": "runner", "scoped_id": "system__wiki_read", "arguments": {"path": path}, "envelope": missing})
     return copy.deepcopy(trace)
 
 
@@ -140,6 +149,11 @@ def valid_evidence():
     (("gates", 0, "stranger_http"), 202), (("decision_workspace_cleanup", "get_http"), 200),
     (("decision_workspace_cleanup", "directory_exists"), True),
     (("reader_no_effect", "before", "access", "grants", "reader"), "full"),
+    (("wiki_root", "children"), [{"path": "docs"}, {"path": "providers"}, {"path": "reference"}]),
+    (("wiki_root", "path"), "docs"),
+    (("speech_wiki", "body"), "Voice is an edge transform, but this is not the real source"),
+    (("retired_wiki", "docs", "ok"), True),
+    (("retired_wiki", "how-to", "error", "message"), '{"type": "forbidden"}'),
 ])
 def test_required_evidence_rejects_partial_wrong_identity_or_false_effects(path, bad):
     trace = valid_evidence();journey.require_evidence(trace, "source", dict.fromkeys(journey.PAGES, "doc"))
@@ -240,7 +254,8 @@ async def test_real_bundle_clone_metadata_render_rewrite_and_runnability(tmp_pat
 
 def test_private_child_config_and_mocked_launcher_preserve_parent_and_gate_boundaries(tmp_path, monkeypatch):
     from primer.api.config import AppConfig
-    from primer.knowledge.wiki.pages import load_source_pages
+    from primer.knowledge.wiki.build import build_wiki, wiki_links
+    from primer.knowledge.wiki.pages import load_source_pages, parse_page_source
     from primer.model.harness import FILE_GIT_URLS_ENV
     from tests.pg_gate import CANONICAL_ENV, DEPRECATED_ALIASES, REQUIRE_ENV
 
@@ -256,7 +271,20 @@ def test_private_child_config_and_mocked_launcher_preserve_parent_and_gate_bound
     assert config.host == "127.0.0.1" and config.port == 50124 and config.db.provider.value == "sqlite"
     assert str(config.db.config.path) == str(tmp_path / "data.sqlite") and not (tmp_path / "data.sqlite").exists()
     assert env[FILE_GIT_URLS_ENV] == "1" and not set(gates) & env.keys()
-    assert set(load_source_pages(tmp_path / "wiki")) == {"index", "runbooks", *journey.PAGES}
+    wiki_root = Path(env["PRIMER_WIKI_DIR"])
+    assert wiki_root == tmp_path / "wiki"
+    source_pages = load_source_pages(wiki_root)
+    assert set(source_pages) == {"index", "runbooks", *journey.PAGES, "providers", "providers/speech"}
+    assert source_pages["providers"].kind == "section"
+    assert "providers/speech" in wiki_links(source_pages["providers"].body)
+    speech_source = journey.REPO / "docs/wiki/providers/speech.md"
+    assert (wiki_root / "providers/speech.md").read_bytes() == speech_source.read_bytes()
+    speech_page = parse_page_source(speech_source.read_text(), path="providers/speech")
+    assert source_pages["providers/speech"] == speech_page
+    built = build_wiki(wiki_root, [])
+    assert {"providers", "reference", "runbooks"} <= set(wiki_links(built.pages["index"].body))
+    assert "providers/speech" in wiki_links(built.pages["providers"].body)
+    assert built.pages["providers/speech"] == speech_page
     assert captured["argv"] == [sys.executable, "-m", "primer", "api", "--config", str(tmp_path / "config.json")]
     assert captured["cwd"] == journey.REPO and captured["stderr"] == subprocess.STDOUT
     assert captured["start_new_session"] is True
@@ -341,6 +369,9 @@ def test_actual_copy_and_gate_in_a_clean_shell_fail_closed_without_real_named_ev
         page.parent.mkdir(parents=True, exist_ok=True)
         page.write_bytes((journey.REPO / "docs/wiki" / (page_name + ".md")).read_bytes())
         trace["runbook_hashes"][page_name] = hashlib.sha256(page.read_bytes()).hexdigest()
+    speech_page = tmp_path / "docs/wiki/providers/speech.md"
+    speech_page.parent.mkdir(parents=True, exist_ok=True)
+    speech_page.write_bytes((journey.REPO / "docs/wiki/providers/speech.md").read_bytes())
     evidence = tmp_path / "tests/.e2e/w7-t6/trace.json"
     evidence.parent.mkdir(parents=True)
     evidence.write_text(json.dumps(trace))

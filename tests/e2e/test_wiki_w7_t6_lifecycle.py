@@ -85,10 +85,12 @@ def prepare_config(root: Path, port: int) -> tuple[Path, dict]:
     (wiki / "runbooks/index.md").write_text("---\ntitle: T6 runbooks\nsummary: Private storage flow.\n---\n" +
         "\n".join("[Runbook](" + p + ")" for p in PAGES))
     for page in PAGES:shutil.copyfile(REPO / "docs/wiki" / (page + ".md"), wiki / (page + ".md"))
-    (root / "legacy-empty").mkdir()
+    (wiki / "providers").mkdir()
+    (wiki / "providers/index.md").write_text("---\ntitle: T6 providers\nsummary: Private voice reference.\n---\n[Speech and voice](providers/speech)\n")
+    shutil.copyfile(REPO / "docs/wiki/providers/speech.md", wiki / "providers/speech.md")
     config = root / "config.json";config.write_text(json.dumps(isolated_config(root, port)))
     env = private_env()
-    env.update(PRIMER_WIKI_DIR=str(wiki), PRIMER_AI_DOCS_DIR=str(root / "legacy-empty"))
+    env.update(PRIMER_WIKI_DIR=str(wiki))
     env[FILE_GIT_URLS_ENV] = "1"
     return config, env
 
@@ -298,6 +300,17 @@ async def test_admin_installs_syncs_uninstalls_bundle_and_proves_artifact_byte_r
                     return json.loads(envelope["output"])
 
                 trace["wiki"] = {p: await call("system__wiki_read", {"path": p}) for p in PAGES}
+                trace["wiki_root"] = await call("system__wiki_read", {"path": ""})
+                root_paths = {child["path"] for child in trace["wiki_root"]["children"]}
+                assert "docs" not in root_paths and "how-to" not in root_paths
+                assert "providers" in root_paths and "reference" in root_paths
+                trace["speech_wiki"] = await call("system__wiki_read", {"path": "providers/speech"})
+                assert "Voice is an edge transform" in trace["speech_wiki"]["body"]
+                trace["retired_wiki"] = {}
+                for retired_path in ("docs", "how-to"):
+                    missing = await call("system__wiki_read", {"path": retired_path}, error="tool_failed")
+                    assert json.loads(missing["error"]["message"])["type"] == "not-found"
+                    trace["retired_wiki"][retired_path] = missing
                 policies = {}
                 for operation in ("install", "sync", "uninstall"):
                     detail = await call("system__describe_tool", {"toolset_id": "harness", "tool_name": operation})
@@ -512,6 +525,21 @@ def require_evidence(trace, source, hashes):
         assert trace["wiki"][p]["path"] == p
         assert (REPO / "docs/wiki" / (p + ".md")).read_text().split("---", 2)[2].strip() in trace["wiki"][p]["body"]
         native("system__wiki_read", {"path": p}, trace["wiki"][p])
+    root = trace["wiki_root"]
+    assert root["path"] == "index"
+    root_paths = {child["path"] for child in root["children"]}
+    assert {"providers", "reference"} <= root_paths and not {"docs", "how-to"} & root_paths
+    native("system__wiki_read", {"path": ""}, root)
+    speech = trace["speech_wiki"]
+    assert speech["path"] == "providers/speech"
+    assert (REPO / "docs/wiki/providers/speech.md").read_text().split("---", 2)[2].strip() in speech["body"]
+    native("system__wiki_read", {"path": "providers/speech"}, speech)
+    for path in ("docs", "how-to"):
+        missing = trace["retired_wiki"][path]
+        assert missing["ok"] is False and missing["error"]["code"] == "tool_failed"
+        assert json.loads(missing["error"]["message"])["type"] == "not-found"
+        assert any(c["actor"] == "runner" and c["scoped_id"] == "system__wiki_read" and
+                   c["arguments"] == {"path": path} and c["envelope"] == missing for c in trace["calls"])
     ids = trace["identities"]
     assert set(ids) == {"runner", "reader", "stranger"} and len(set(ids.values()) | {trace["approver"]}) == 4
     workspace = trace["decision_workspace"];workspace_id = workspace["before"]["id"]

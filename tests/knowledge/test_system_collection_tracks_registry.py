@@ -34,7 +34,7 @@ async def sp(tmp_path):
 
 @pytest.fixture
 def wiki(tmp_path, monkeypatch):
-    """A hand-written wiki plus an empty ai-docs dir, pinned by env vars."""
+    """A hand-written wiki pinned by the wiki source override."""
     root = tmp_path / "wiki"
     root.mkdir()
     (root / "index.md").write_text(
@@ -46,10 +46,7 @@ def wiki(tmp_path, monkeypatch):
         "The tracks wiki.\n",
         encoding="utf-8",
     )
-    docs = tmp_path / "ai-docs"
-    docs.mkdir()
     monkeypatch.setenv("PRIMER_WIKI_DIR", str(root))
-    monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
     monkeypatch.setattr(
         "primer.knowledge.system_collection.RESERVED_TOOLSET_IDS",
         frozenset(),

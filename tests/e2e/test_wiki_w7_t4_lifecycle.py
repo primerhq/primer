@@ -132,11 +132,10 @@ def start_server(root: Path, port: int, slack_url: str, log):
     (wiki / "index.md").write_text("---\ntitle: T4 acceptance\nsummary: Channel onboarding.\n---\n[Runbooks](runbooks)\n")
     (wiki / "runbooks/index.md").write_text("---\ntitle: T4 runbook\nsummary: The channel flow.\n---\n[Onboard a channel](" + PAGE + ")\n")
     shutil.copyfile(REPO / "docs/wiki" / (PAGE + ".md"), wiki / (PAGE + ".md"))
-    (root / "legacy-empty").mkdir()
     config = root / "config.json"
     config.write_text(json.dumps(isolated_config(root, port)))
     env = {k: v for k, v in os.environ.items() if not k.startswith("PRIMER_")}
-    env.update(PRIMER_WIKI_DIR=str(wiki), PRIMER_AI_DOCS_DIR=str(root / "legacy-empty"))
+    env.update(PRIMER_WIKI_DIR=str(wiki))
     return subprocess.Popen([
         sys.executable, "-m", "tests._support.w7_channel_server", "--config", str(config), "--slack-url", slack_url,
     ], cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)

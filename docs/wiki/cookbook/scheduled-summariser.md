@@ -152,6 +152,7 @@ Re-call on an interval until `status` is `ended`.
 The fired session ends `ended_reason: completed`, its transcript shows the log reads and the summary, and the Slack thread for the session (opened with its first post, `Agent session <id>`) ends with the digest. From here the weekday fires run unattended; `trigger__get` on the trigger reads `next_fire_at` for the next one.
 
 ## Gotchas
+- On the full session row, a park keeps `status` and sets `parked_status`; an idle waiting state is not the park itself.
 
 - The summary reaches Slack only through the reply binding. A workspace with no reply binding posts to no channel, and a session that ends without a final answer posts nothing.
 - A local workspace create can be refused: when an operator has told a deployment with separate API and worker processes to refuse local workspaces, step 3 fails and creates nothing. Use a Docker or Kubernetes template instead.
