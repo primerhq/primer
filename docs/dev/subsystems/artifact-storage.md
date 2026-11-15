@@ -491,3 +491,7 @@ own `tmp_path`, and no test reaches the network. `tests/e2e/test_artifact_store_
   provider-row evictions only. Selecting a store probes it.
 - The re-read after the record and the compare-and-set selection came from the G5 audit (G5-03, G5-05, G5-06). The leases came from the
   review of #899 (slice D), replacing a close-on-eviction that could close a store under a call in flight.
+
+## 12. Runbook acceptance
+
+The agent-facing [configure artifact storage runbook](../../wiki/runbooks/configure-artifact-storage.md) follows create, probe, select, then real old/new byte reads and deliberate rollback. The CI-owned T6 lifecycle in `tests/e2e/test_wiki_w7_t6_lifecycle.py` configures only its private SQLite child. Native admin tools create/probe/select a private filesystem store; an ordinary user is refused. The existing human REST service-publication surface supplies real bytes: DB v1 remains readable while filesystem is selected, and filesystem v2 remains readable after restoring DB. Active/held-store deletion and root moves are refused; normal service deletion removes the owned bytes before provider deletion. The reserved DB row, original selection and default workspace must remain. It does not prove S3 credentials or mounts across multiple pods. No shared provider/exposure/config is edited. Exact named JUnit execution and a source/runbook-bound raw trace are required in CI; safe local tooling checks only validate the fixture and fail-closed evidence.
