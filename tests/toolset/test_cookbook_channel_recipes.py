@@ -7,8 +7,6 @@ of the platform its channel declares, so the channel step is still exercised.
 
 from __future__ import annotations
 
-import json
-import re
 from pathlib import Path
 
 import pytest
@@ -21,16 +19,14 @@ from primer.model.channel import (
     SlackChannelProviderConfig,
     TelegramChannelProviderConfig,
 )
+from tests.docs.test_docs_tool_call_bodies import calls_in
 from tests.toolset.test_system_crud_guards import _call, world  # noqa: F401  (world is a fixture)
 
-COOKBOOK = Path(__file__).resolve().parents[2] / "docs" / "agents" / "cookbook"
-# "`system::create_channel`" with its closing backtick, so it does not match "`system::create_channel_provider`".
-BLOCK = r"`system::{tool}`\s*```json\n(.*?)```"
+COOKBOOK = Path(__file__).resolve().parents[2] / "docs" / "wiki" / "cookbook"
 
 
 def _body(text: str, tool: str) -> dict | None:
-    match = re.search(BLOCK.format(tool=tool), text, re.S)
-    return json.loads(match.group(1)) if match else None
+    return next((call.arguments for call in calls_in(text) if call.toolset == "system" and call.tool == tool), None)
 
 
 def _recipes() -> list[tuple[str, dict | None, dict]]:
@@ -56,6 +52,36 @@ def test_the_extraction_finds_the_recipes() -> None:
     # A regex that finds nothing would make every test below vanish and "pass".
     names = [name for name, _, _ in _recipes()]
     assert len(names) >= 5, f"expected at least the five recipes that create a channel, found {names}"
+
+
+def test_the_canonical_channel_recipes_remain_in_the_executable_inventory() -> None:
+    assert {
+        "approval-gated-deploy-bot.md", "daily-incident-digest.md", "discord-moderation-helper.md",
+        "slack-question-answerer.md", "telegram-personal-assistant.md",
+    } <= {name for name, _, _ in _recipes()}
+
+
+def test_wiki_channel_calls_select_the_exact_system_operation_and_arguments() -> None:
+    text = '''`system__create_channel` names the channel.
+```json
+{"toolset_id": "other", "tool_name": "create_channel", "arguments": {"entity": {"id": "wrong-toolset"}}}
+```
+```text
+{"toolset_id": "system", "tool_name": "create_channel", "arguments": {"entity": {"id": "not-a-call"}}}
+```
+```json
+{"id": "response", "provider": "slack"}
+```
+```json
+{"toolset_id": "system", "tool_name": "create_channel_provider", "arguments": {"entity": {"id": "provider"}}}
+```
+```json
+{"toolset_id": "system", "tool_name": "create_channel", "arguments": {"entity": {"id": "channel", "provider_id": "provider", "provider": "slack"}}}
+```
+'''
+    assert _body(text, "create_channel") == {"entity": {"id": "channel", "provider_id": "provider", "provider": "slack"}}
+    assert _body(text, "create_channel_provider") == {"entity": {"id": "provider"}}
+    assert _body(text, "delete_channel") is None
 
 
 @pytest.mark.parametrize("name,provider,channel", _recipes(), ids=[name for name, _, _ in _recipes()])
