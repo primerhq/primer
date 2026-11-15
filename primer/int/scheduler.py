@@ -107,6 +107,10 @@ class Scheduler(ABC):
     @abstractmethod
     async def heartbeat_worker(self, worker_id: str) -> None: ...
 
+    async def report_worker_label(self, worker_id: str, *, label: str) -> None:
+        """Record a stable label when supported; legacy schedulers may ignore it."""
+        del worker_id, label
+
     async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
         """Record how many items the worker is running, beside its heartbeat (Lead sweep M2).
 

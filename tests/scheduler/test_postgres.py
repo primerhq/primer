@@ -121,6 +121,8 @@ async def test_worker_label_persists_and_updates(sched):
     assert next(w for w in await sched.list_workers() if w.id == "w1").label == "first"
     await sched.register_worker(worker_id="w1", host="h", pid=2, capacity=4, label="second")
     assert next(w for w in await sched.list_workers() if w.id == "w1").label == "second"
+    await sched.report_worker_label("w1", label="reported")
+    assert next(w for w in await sched.list_workers() if w.id == "w1").label == "reported"
 
 
 async def test_heartbeat_worker_bumps_timestamp(sched):

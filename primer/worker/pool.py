@@ -262,8 +262,11 @@ class WorkerPool:
             host=socket.gethostname(),
             pid=os.getpid(),
             capacity=self.config.concurrency,
-            label=self._worker_label,
         )
+        try:
+            await self._scheduler.report_worker_label(self._worker_id, label=self._worker_label)
+        except Exception:
+            logger.exception("Failed to report worker label for %s", self._worker_id)
 
         # Build the dispatch table now that _worker_id is known. TOOL_CALL is
         # registered UNCONDITIONALLY (the executor slice, BPF wave 1): the
