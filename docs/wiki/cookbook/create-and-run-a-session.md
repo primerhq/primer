@@ -116,6 +116,7 @@ Response:
 `workspaces__get_workspace_session` reads `status: ended` with `ended_reason: completed`, `workspaces__read_workspace_file` returns the file, and `workspaces__delete_workspace` answered `deleted: true`.
 
 ## Gotchas
+- On the full session row, a park keeps `status` `running` and sets `parked_status`; the native SessionInfo response does not carry those park fields.
 
 - `waiting` where you expected `ended` means the turn ended without finishing the work (the assistant ended on a question, a `max_tokens` stop or a content filter, or the model call failed on a transport error): the session rests, and a new message or a steer starts the next turn. A session parked on a question, an approval or a timer keeps `status: running`, and the last `yielded` record of the transcript names what it waits on. Follow [cookbook/monitor-and-resume-a-parked-session](cookbook/monitor-and-resume-a-parked-session).
 - Stopping is not cancelling. `workspaces__interrupt_workspace_session` stops the turn that is running and keeps the session alive; `workspaces__cancel_workspace_session` ends it (`ended_reason: cancelled`).

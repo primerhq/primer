@@ -107,7 +107,7 @@ def test_dependabot_has_no_cli_entry() -> None:
     assert "primectl" not in body
 
 
-_SEARCH_ROOTS = ("primer", "ui", "tests", "docs/dev", "docs/agents", "docs/wiki", "scripts")
+_SEARCH_ROOTS = ("primer", "ui", "tests", "docs/dev", "docs/wiki", "scripts")
 _SEARCH_FILES = ("README.md", "AGENTS.md", "CONTRIBUTING.md", "Makefile")
 _SUFFIXES = {".py", ".jsx", ".js", ".md", ".yml", ".yaml", ".toml", ".sh"}
 

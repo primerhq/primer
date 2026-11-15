@@ -4,9 +4,7 @@ The ``system`` collection is a read-only wiki describing the platform to
 its own agents. It holds two things (pivot plan 01, task 11):
 
 * the platform wiki at the root: the hand-written ``docs/wiki`` pages, one
-  generated reference page per agent-callable tool, and the legacy layer
-  (the shipped agent docs and the how-to guides) until their replacements
-  are written. A build writes it only when the version stamp
+  generated reference page per agent-callable tool. A build writes it only when the version stamp
   (:mod:`primer.knowledge.wiki.stamp`) lets it, and a build that is missing
   hand-written pages or a skipped toolset never claims it and never deletes
   stored pages (lead ruling (b));
@@ -28,8 +26,6 @@ import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from primer.ai_docs_path import resolve_ai_docs_dir
-from primer.knowledge.importer import slugify_segment
 from primer.knowledge.row_writes import write_collection_fields
 from primer.knowledge.indexing import (
     make_document_indexer,
@@ -293,50 +289,6 @@ def _index_body(title: str, children: list[tuple[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-HOW_TO_GUIDES: dict[str, str] = {
-    "create-an-agent": (
-        "# Create an agent\n\n"
-        "Ask the operator for the capability you want. The operator delegates "
-        "to the builder agent (invoke_agent 'builder'), which calls "
-        "crud__create_agent. That call is approval-gated: approve it in the "
-        "console's approvals view and the agent is created.\n\n"
-        "An agent row needs a description, a model profile id, a tool grant "
-        "(scoped ids of the form toolset__tool), and a system prompt. See "
-        "/tools for every tool that can be granted, and /providers/"
-        "model-profiles for the profiles this install has registered.\n"
-    ),
-    "enable-semantic-search": (
-        "# Enable semantic search on a collection\n\n"
-        "Grep works on every collection with no setup. Semantic search is "
-        "opt-in per collection and needs a registered embedding provider and "
-        "a semantic-search provider; see /providers.\n\n"
-        "Enable it from the collection's search settings, which registers the "
-        "collection for backfill. While backfill runs the collection reports "
-        "an indexing state; disabling it drops the vectors again. Grep is "
-        "unaffected either way.\n"
-    ),
-    "configure-voice": (
-        "# Configure voice\n\n"
-        "Voice is an edge transform: agents stay text in, text out. Register "
-        "a speech-to-text provider and a text-to-speech provider (see "
-        "/providers), then set the install defaults for each. An agent may "
-        "override the TTS voice for its own replies.\n\n"
-        "Once both defaults are set, any session composer can record audio "
-        "and play replies back.\n"
-    ),
-    "wire-a-trigger": (
-        "# Wire a trigger\n\n"
-        "A trigger starts a run without a human typing. Four kinds exist: "
-        "delayed, scheduled, webhook, and channel. Ask the operator, which "
-        "delegates to the builder's crud__create_trigger (approval-gated).\n\n"
-        "Scheduled and delayed triggers are fire and forget. Webhook and "
-        "channel triggers can be interactive, meaning the caller or thread "
-        "receives the run's final result. See /agents for what a trigger can "
-        "target.\n"
-    ),
-}
-
-
 async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]:
     """/workspaces: one page per workspace row plus an index, under ``root``."""
     from primer.model.workspace import Workspace
@@ -441,22 +393,8 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
     return out
 
 
-def _how_to_map() -> dict[str, str]:
-    """/how-to: the authored guides plus their index."""
-    out = {f"how-to/{slug}": body for slug, body in HOW_TO_GUIDES.items()}
-    out["how-to"] = _index(
-        "How to",
-        [
-            (slug, f"how-to/{slug}", body.splitlines()[0].lstrip("# "))
-            for slug, body in sorted(HOW_TO_GUIDES.items())
-        ],
-        preamble="Task-shaped guides. Read one before configuring anything.",
-    )
-    return out
-
-
 def _title_of(path: str, body: str) -> str:
-    """A live or legacy page's title: the body's first heading, else the slug."""
+    """A live page's title: the body's first heading, else the slug."""
     first = body.splitlines()[0] if body else ""
     return first[2:].strip() if first.startswith("# ") else path.rsplit("/", 1)[-1]
 
@@ -543,62 +481,6 @@ async def _live_pages(storage_provider) -> dict[str, WikiPage]:
 
     put(LIVE_ROOT, _this_install_body())
     return {path: live[path] for path in sorted(live)}
-
-
-def _legacy_bodies() -> dict[str, str]:
-    """Today's docs/ and how-to/ bodies, as written before the wiki existed.
-
-    The shipped agent docs (``resolve_ai_docs_dir()``) plus their index and
-    their synthesised ancestors, and the task-shaped how-to guides. They are
-    the legacy layer of the wiki: kept verbatim until their replacements
-    are written under ``docs/wiki``.
-    """
-    out: dict[str, str] = {}
-    doc_children = []
-    try:
-        root = resolve_ai_docs_dir()
-        for md in sorted(root.rglob("*.md")):
-            rel = md.relative_to(root).with_suffix("").as_posix()
-            slugs = [slugify_segment(seg) for seg in rel.split("/")]
-            if any(s is None for s in slugs):
-                continue
-            path = "docs/" + "/".join(slugs)
-            out[path] = md.read_text(encoding="utf-8", errors="replace")
-            doc_children.append((path, rel))
-    except Exception:  # noqa: BLE001 - shipped docs are optional at runtime
-        logger.warning("system collection: ai docs directory unavailable")
-    out["docs"] = _index_body("Docs", doc_children)
-
-    # Nested sources imply intermediate nodes; the tree requires a parent to
-    # exist before its child, so synthesise an index for every missing
-    # ancestor, then rebuild each synthesised index to list its children.
-    for path in sorted(out, key=lambda p: p.count("/")):
-        parts = path.split("/")
-        for depth in range(1, len(parts)):
-            ancestor = "/".join(parts[:depth])
-            if ancestor not in out:
-                out[ancestor] = _index_body(parts[depth - 1], [])
-    for path in list(out):
-        kids = [
-            (p, p.rsplit("/", 1)[-1]) for p in out
-            if p.startswith(path + "/") and p.count("/") == path.count("/") + 1
-        ]
-        if kids and out[path].startswith("# ") and "_(none)_" in out[path]:
-            out[path] = _index_body(path.rsplit("/", 1)[-1], kids)
-
-    out.update(_how_to_map())
-    return out
-
-
-def _legacy_pages() -> dict[str, WikiPage]:
-    pages = {
-        path: WikiPage(
-            path=path, title=_title_of(path, body), summary="", body=body,
-            kind="legacy", meta={"kind": "legacy", "summary": ""},
-        )
-        for path, body in _legacy_bodies().items()
-    }
-    return {path: pages[path] for path in sorted(pages)}
 
 
 async def _write_tree_page(
@@ -867,7 +749,7 @@ async def _wiki_pass(
         return 0
 
     try:
-        build = build_wiki(source_root, entries, legacy_pages=_legacy_pages())
+        build = build_wiki(source_root, entries)
     except WikiSourceError as exc:
         logger.error("system wiki degraded: %s (the stored wiki is kept)", exc)
         return 0
@@ -940,7 +822,7 @@ async def regenerate_system_collection(
     The live install map is written under ``this-install/`` whatever the
     stamp says, and every node it no longer holds is deleted. The platform
     wiki is the versioned part: :mod:`primer.knowledge.wiki.build` assembles
-    it from the hand-written pages, the tool catalog and the legacy layer,
+    it from the hand-written pages and the tool catalog,
     and :mod:`primer.knowledge.wiki.stamp` decides whether THIS build may
     replace the stored one. See :func:`_wiki_pass` for the rules (a build
     that is missing hand-written pages or a skipped toolset never claims

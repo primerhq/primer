@@ -122,7 +122,7 @@ Response (the stored policy):
 {"id": "require-delete-message", "toolset_id": "discord-tools", "tool_name": "delete_message", "approval": {"type": "required"}}
 ```
 
-A call parked past `timeout_seconds` auto-rejects instead of holding a worker slot. Because the policy names no approvers, the decision may come from the console Inbox or from the Discord approval buttons in the session's thread; a policy that names approvers can be decided in the console only.
+A call parked past `timeout_seconds` auto-rejects; a park holds no worker slot. Because the policy names no approvers, the decision may come from the console Inbox or from the Discord approval buttons in the session's thread; a policy that names approvers can be decided in the console only.
 
 ### 8. Observe a parked deletion
 When a borderline message arrives and the agent calls `delete_message`, the session parks. Find it:
@@ -156,6 +156,7 @@ The session reads `status: "running"` while parked. The full row says why: its `
 A borderline message parks the session on the `delete_message` call (`status: "running"`, `parked_event_key` starting with `tool_approval:`), no deletion happens until a person approves, and a clear violation is deleted without a park once the agent is confident.
 
 ## Gotchas
+- On the full session row, it reads `status: "running"` with `parked_status` set while the tool approval is pending.
 
 - The bot's own posts pass through the binding too. The prompt instruction to skip self-authored messages is what keeps the loop from forming.
 - Discord fills `sender.roles` (the sender's guild role IDs, not names, without `@everyone`); Slack and Telegram do not. Use `sender_roles_any` in the matcher to run the moderator only for messages from members with a given role. To copy a role id, enable Developer Mode (User Settings > Advanced), then right-click the role and choose Copy Role ID.

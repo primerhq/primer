@@ -1,13 +1,10 @@
 ---
-slug: mcp-toolset-sign-in
-title: MCP toolset sign-in
-summary: How each person signs in to an OAuth MCP toolset for themselves (or uses its shared client-credentials sign-in), and how that sign-in is inspected, refreshed and ended.
-mcp_tools: [system::get_toolset_auth_status]
+title: "Sign in to an upstream MCP toolset"
+summary: "Understand personal browser sign-ins, shared client credentials, callback binding and reconnects."
+order: 8
+related: [start-here/accounts-and-tokens, toolsets/mcp-toolsets, approvals/policies]
 ---
-
-# MCP toolset sign-in
-
-## Overview
+## What it is
 
 An HTTP or SSE MCP toolset can authenticate to its upstream server with an
 OAuth browser grant or client credentials.
@@ -26,7 +23,7 @@ The browser flow needs a stable externally reachable callback origin. Set
 `PRIMER_PUBLIC_URL` to the deployment's public HTTP or HTTPS URL when Primer
 cannot safely derive it from the incoming request.
 
-## Mental model
+## Concepts
 
 A browser sign-in is the upstream account of the person a run acts for: the
 person who sent the turn, an API token's owner, a trigger's owner, the parent
@@ -85,14 +82,14 @@ page cannot connect them again afterwards; for client credentials it ends the
 shared sign-in and needs full access. There is no action that ends every
 person's sign-in: deleting the toolset, or changing its URL or OAuth settings,
 does, whichever way it is done: the console or the REST API, the
-`system::delete_toolset` tool, or a harness uninstall or sync that drops it. A
+`system__delete_toolset` tool, or a harness uninstall or sync that drops it. A
 toolset created again under the same id needs everyone to connect again. A changed
 encryption key also requires every connected sign-in to reconnect. This includes setting `PRIMER_ENCRYPTION_KEY` after the deployment
 previously used the session-secret fallback.
 
-## MCP tools
+## Tool calls
 
-`system::get_toolset_auth_status` reads one toolset's sign-in status for the
+`system__get_toolset_auth_status` reads one toolset's sign-in status for the
 person the run acts for. It is read-only and requires the user role; a run whose
 person may not use the toolset gets the same `not-found` answer as for a missing
 toolset. Connecting and disconnecting happen in the console.
@@ -105,11 +102,11 @@ list its tools, Primer leaves that toolset out of the current turn and tells the
 model which toolset was unavailable and why, in a fixed word (needs sign-in,
 unreachable, timed out or failed).
 
-## Workflows
+## How to
 
 ### Check whether a toolset is connected
 
-Call `system::get_toolset_auth_status`:
+Call `system__get_toolset_auth_status`:
 
 ```json
 {"toolset_id": "internal-kb"}
@@ -139,7 +136,7 @@ changes.
 
 ### Confirm a successful sign-in
 
-Call `system::get_toolset_auth_status` again after the person completes the
+Call `system__get_toolset_auth_status` again after the person completes the
 browser flow:
 
 ```json
@@ -169,7 +166,7 @@ another person's runs still need that person's own sign-in.
   Use a browser grant when each person should act as their own upstream account.
 - Changing only extra HTTP headers does not sign out an OAuth toolset. Changing
   the URL or any OAuth setting does, whichever way it is changed: the console or
-  the REST API, the `system::update_toolset` tool, or a harness sync.
+  the REST API, the `system__update_toolset` tool, or a harness sync.
 - Primer does not call an OAuth endpoint the MCP server names on another host
   when it is on a private, loopback or link-local address (the start answers 400
   naming the URL). An operator whose authorization server is on a private
@@ -193,10 +190,21 @@ another person's runs still need that person's own sign-in.
   fails only its own calls as `needs_sign_in` and logs an ERROR naming the
   toolset; it leaves the sign-in in place for the processes that can read it. Fix that process's `PRIMER_ENCRYPTION_KEY` rather than reconnecting.
 
+## Additional operation reference
+
+The following operations belong to this feature family. The role shown is the minimum role, not a grant of entity access or an approval exemption. Read the linked live argument, result and default-policy facts before a call; owner checks, cookie-only routes and human decision rules still apply. Generated writes can require approval even when an older curated read or operation does not.
+
+| Operation | Use for | Role floor |
+|---|---|---|
+| [`toolset_oauth__complete_toolset_sign_in`](reference/tools/toolset_oauth/complete_toolset_sign_in) | complete_toolset_sign_in. | user |
+| [`toolset_oauth__disconnect_toolset_sign_in`](reference/tools/toolset_oauth/disconnect_toolset_sign_in) | disconnect_toolset_sign_in. | user |
+| [`toolset_oauth__start_toolset_sign_in`](reference/tools/toolset_oauth/start_toolset_sign_in) | start_toolset_sign_in. | user |
+| [`toolset_oauth__toolset_sign_in_status`](reference/tools/toolset_oauth/toolset_sign_in_status) | toolset_sign_in_status. | user |
+
 ## Related
 
-- [MCP exposure](mcp-exposure.md) explains Primer's inbound `/v1/mcp` server,
+- [MCP exposure](toolsets/mcp-exposure) explains Primer's inbound `/v1/mcp` server,
   which is separate from the outbound MCP toolsets covered here.
-- [Auth and tokens](auth-and-tokens.md) covers authentication to Primer itself.
-- [Internal tool via MCP](cookbook/internal-tool-via-mcp.md) shows how to
+- [Auth and tokens](start-here/accounts-and-tokens) covers authentication to Primer itself.
+- [Internal tool via MCP](cookbook/internal-tool-via-mcp) shows how to
   register and expose an MCP-backed toolset.

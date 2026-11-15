@@ -20,7 +20,7 @@ _SENTENCE = "host-privileged mounts, secrets or a service account with real perm
 _SITES = (
     "primer/workspace/template_privilege.py",
     "docs/dev/subsystems/workspaces.md",
-    "docs/agents/workspaces.md",
+    "docs/wiki/workspaces/templates.md",
     "ui/components/workspaces/templates.jsx",
 )
 

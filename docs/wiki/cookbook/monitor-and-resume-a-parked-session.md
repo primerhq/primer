@@ -31,7 +31,7 @@ Response:
 {"info": {"session_id": "sess-a1b2", "status": "running"}, "status": "running"}
 ```
 
-`status` is the lifecycle state: `running` (a turn is in flight, or parked on a yielding tool), `waiting` (a turn ended, resting between turns), `paused` or `ended`. A park does not move `status`: a session parked on a question, an approval or a timer reads `running`, and the answer has no park field to say so (the full row, with the park fields, is in `workspaces__find_sessions`, or `workspaces__list_my_sessions` for your own workspace). A session that stopped moving reads `running` (parked), `waiting` (resting) or `paused`; the transcript says which, so read it next.
+`status` is the lifecycle state: `running` (a turn is in flight, or parked on a yielding tool), `waiting` (a turn ended, resting between turns), `paused` or `ended`. A park does not move `status`: a session parked on a question, an approval or a timer reads `running`, and the answer carries no park field to say so (the full row, with `parked_event_key` and the other park fields, is in `workspaces__find_sessions`, or `workspaces__list_my_sessions` for your own workspace). A session that stopped moving reads `running` (parked), `waiting` (resting) or `paused`; the transcript says which, so read it next.
 
 ### 2. Read the transcript tail
 

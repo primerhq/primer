@@ -22,7 +22,7 @@ def test_subsystem_doc_covers_lock_tiers():
 
 
 def test_agent_doc_covers_access_writes():
-    a = (ROOT / "docs/agents/workspaces.md").read_text("utf-8")
+    a = (ROOT / "docs/wiki/workspaces/write-safety.md").read_text("utf-8")
     assert "access" in a and "writes" in a
     assert "same directory" in a.lower() or "same-directory" in a.lower()
 

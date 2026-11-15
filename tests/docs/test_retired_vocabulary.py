@@ -47,7 +47,7 @@ EXEMPT = {
 
 def _docs() -> list[Path]:
     out: list[Path] = [REPO / "README.md", REPO / "AGENTS.md"]
-    for root in ("docs/dev", "docs/agents", "docs/wiki"):
+    for root in ("docs/dev", "docs/wiki"):
         out.extend((REPO / root).rglob("*.md"))
     return sorted(
         p for p in out

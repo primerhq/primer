@@ -8,7 +8,7 @@ related: [sessions/start-a-session, sessions/observe-a-session, workspaces/what-
 A session is one agent or graph working inside a workspace. It has a durable row in storage, a transcript inside the workspace, and it runs one turn at a time on whichever worker is free. You start one with `workspaces__create_workspace_session` ([start a session](sessions/start-a-session)) and drive it with the session tools, never with a process handle.
 
 ## Concepts
-- **The row.** Every session read serves the same row: `id` (`sess-<hex>`), `workspace_id`, `binding` (`{"kind": "agent", "agent_id": ...}` or `{"kind": "graph", "graph_id": ...}`), `status`, `session_state`, `turn_status`, `ended_reason`, `last_turn_error`, `parked_event_key`, `parent_session_id` and `initiated_by` (who started it).
+- **The row.** Full session lists and find results serve the durable row: `id` (`sess-<hex>`), `workspace_id`, `binding` (`{"kind": "agent", "agent_id": ...}` or `{"kind": "graph", "graph_id": ...}`), `status`, `session_state`, `turn_status`, `ended_reason`, `last_turn_error`, `parked_event_key`, `parent_session_id` and `initiated_by` (who started it).
 - **`status`** is the stored lifecycle: `created` (the row exists, nothing has run), `running` (a turn is armed, running, or parked on a yielding tool), `waiting` (alive and idle between turns), `paused` (a person or an agent paused it) and `ended` (terminal).
 - **`session_state`** is one value derived on every read. Use it to answer "is it working right now":
 
@@ -33,6 +33,8 @@ A session is one agent or graph working inside a workspace. It has a durable row
   - `.state/shared/`: the place sessions of one workspace coordinate through files.
 
 ## Gotchas
+- A yield (a question, approval, timer or event wait) does NOT change `status`: the session stays `RUNNING` with `parked_status="parked"`. API rows serialize that enum as `running`.
+- `workspaces__get_workspace_session` returns native `{info, status}`: `info.session_id` identifies the session, and it carries no park fields. Read the durable row with `workspaces__find_sessions` for park details.
 - `ended` is terminal. Only `workspaces__restart_workspace_session`, or a new message to a restartable session, reopens it ([control a session](sessions/control-a-session)).
 - A parked session holds no worker and no compute. It can wait for hours and resume on another worker.
 - `auto_start: false` leaves the session `created` and inert: nothing runs it until a message reaches it or a person starts it.

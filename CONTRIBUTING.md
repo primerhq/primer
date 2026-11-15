@@ -140,8 +140,9 @@ Definition of Done in [AGENTS.md](AGENTS.md) section 4). In summary:
   with no console surface is incomplete).
 - **System tools** for new functionality are exposed in `primer/toolset/`
   (built with `make_tool`, callable over `POST /v1/mcp`).
-- **Docs** are updated: operator docs in `primer/user_docs/`, agent-usage docs
-  in `docs/agents/`, and dev docs in `docs/dev/` as the change warrants.
+- **Docs** are updated: operator docs in the separate `primerhq.github.io`
+  Pages repository, agent-facing wiki sources in `docs/wiki/`, and developer
+  docs in `docs/dev/` as the change warrants.
 - **Tests**: add or extend unit tests and, for user-visible flows, e2e coverage.
 - **Regressions**: keep the suites green; do not weaken a test to hide a real
   regression - fix the cause.

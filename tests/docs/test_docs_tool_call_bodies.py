@@ -1,6 +1,6 @@
 """Every example tool call in the agent docs and the platform wiki passes the arguments its tool's input schema accepts (follow-up to finding A-19).
 
-``docs/agents/`` is served to agents by search, and its examples are copied into tool calls. Checking only that a documented tool EXISTS (see
+``docs/wiki/`` is served to agents by search, and its examples are copied into tool calls. Checking only that a documented tool EXISTS (see
 ``test_docs_name_real_tools_and_routes.py``) missed examples whose arguments the tool refuses: a matcher written ``"surface": "channel"`` where the
 schema wants a list (``["channel"]``), an agent passed without its ``entity`` wrapper, an agent whose ``model`` was still the retired provider/model
 pair. This validates the arguments of every documented call against the live tool's ``args_schema`` with ``jsonschema``.
@@ -33,9 +33,8 @@ import pytest
 from tests.docs._live_toolsets import built_in_tools
 
 REPO = Path(__file__).resolve().parents[2]
-AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
 WIKI_DOCS = sorted(p for p in (REPO / "docs" / "wiki").rglob("*.md") if not p.name.startswith("_"))
-DOC_FILES = [*AGENT_DOCS, *WIKI_DOCS]
+DOC_FILES = [*WIKI_DOCS]
 
 # Every fenced block, whatever its info string (``json``, ``text``, ``bash``, none): a fence must be paired with its own closing fence, or a
 # ```text block shifts every later pair by one and the calls after it go unread. Only the ``json`` and unlabelled blocks are parsed.
@@ -118,7 +117,7 @@ def test_the_scan_finds_enough_documented_calls_to_be_real() -> None:
     calls = [call for doc in DOC_FILES for call in calls_in(doc.read_text(encoding="utf-8"))]
     checked = [c for c in calls if built_in_tools().get(c.toolset, {}).get(c.tool) is not None]
 
-    assert len(checked) >= 60, f"only {len(checked)} documented calls to a built-in tool found in docs/agents/ and docs/wiki/"
+    assert len(checked) >= 60, f"only {len(checked)} documented calls to a built-in tool found in docs/wiki/"
 
 
 def test_every_built_in_toolset_has_tools_and_schemas() -> None:

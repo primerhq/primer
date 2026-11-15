@@ -107,7 +107,7 @@ Response (the stored policy):
 {"id": "gate-deploy-prod", "toolset_id": "deploy-tools", "tool_name": "deploy_prod", "approval": {"type": "required"}}
 ```
 
-A call parked past `timeout_seconds` (900 s here) auto-rejects instead of holding a worker slot. Because the policy names no approvers, a person may decide from the console Inbox or from the Slack approval buttons in the session's thread; a policy that names approvers can be decided in the console only.
+A call parked past `timeout_seconds` (900 s here) auto-rejects; a park holds no worker slot. Because the policy names no approvers, a person may decide from the console Inbox or from the Slack approval buttons in the session's thread; a policy that names approvers can be decided in the console only.
 
 ### 7. Start a deploy session
 `workspaces__create_workspace_session` binds the agent and starts its first turn.
@@ -142,10 +142,11 @@ The session reads `status: "running"` while parked, and its full row's `parked_e
 The session parks on the `deploy_prod` call and does not deploy until a person approves. While it waits there is no other post: the binding posts no start message. Approving finishes the turn and posts the outcome to the session's thread in `#deploys`; rejecting posts the rejection instead.
 
 ## Gotchas
+- On the full session row, it reads `status: "running"` with `parked_status` set while the tool approval is pending.
 
 - There is no start message and no per-turn acknowledgement: the session posts its questions, its approvals and its final answer, and nothing else.
 - In production the inbound Slack message drives the session instead of `workspaces__create_workspace_session`: a `channel` trigger and a `system__create_channel_binding` on it ([inbound bindings](channels/bindings)) start the deploy session, and the reply binding above keeps forwarding its gates.
-- A parked session holds a worker slot until it is decided. Rely on `timeout_seconds` to auto-reject stale calls and page on-call separately.
+- A parked session holds no worker slot while it waits for a decision. Rely on `timeout_seconds` to auto-reject stale calls and page on-call separately.
 - `deploy_prod` is irreversible. Test the gate-pause path in a development workspace before the policy guards production.
 - A workspace has one standing reply binding; setting it again replaces it. Point it at a dedicated channel so the forwarded approval prompts do not scroll away under traffic.
 - Approving or rejecting is a person's act (console Inbox or the channel buttons), not a tool call. No tool here approves.

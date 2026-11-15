@@ -35,7 +35,7 @@ The sections, and the task each one covers:
 | install a bundle of agents, graphs and documents | [harnesses](harnesses) |
 | search the web, fetch a page or make a request | [web](web) |
 | get the time, an id, a hash or a math answer | [utilities](utilities) |
-| find what only the console or REST can drive | [not-agent-callable](not-agent-callable) |
+| find human and deployment boundaries | [not-agent-callable](not-agent-callable) |
 | follow an end-to-end recipe | [cookbook](cookbook) |
 
 Links in the wiki are wiki paths, never URLs: no leading slash, no `.md`, an optional `#anchor`. A link that goes nowhere is a defect, not a style.

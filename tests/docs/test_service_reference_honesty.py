@@ -11,14 +11,16 @@ def _read(relative: str) -> str:
 
 def test_service_docs_name_rest_publish_as_the_current_surface() -> None:
     developer = _read("docs/dev/subsystems/services.md")
-    wiki = _read("docs/wiki/not-agent-callable/index.md")
+    wiki = _read("docs/wiki/workspaces/services.md")
 
     assert "Publishing is available today through" in developer
     assert "`POST /v1/services/{id}/versions`" in developer
     assert "`Primer.tool` is planned" in developer
     assert "`publish_service`" in developer
     assert "agent/system tool is not implemented" in developer
-    assert "There is no agent tool." in wiki
+    assert "Service management and publishing have generated route-backed tools" in wiki
+    assert "services__publish_service_version" in wiki
+    assert "no separate curated `publish_service` tool" in wiki
 
 
 def test_unbuilt_service_surfaces_are_not_described_as_active() -> None:

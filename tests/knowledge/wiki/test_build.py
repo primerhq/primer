@@ -176,37 +176,19 @@ def test_the_index_pages_own_keys_survive_into_the_table_of_contents(tmp_path):
     assert page.body.startswith("# Docs home\n\nHello.\n\n## Contents\n")
 
 
-def _legacy(path: str, title: str, summary: str) -> WikiPage:
-    return WikiPage(path, title, summary, f"# {title}\n", "legacy", {"kind": "legacy", "summary": summary})
 
 
-def test_legacy_roots_are_listed_under_legacy(tmp_path):
-    legacy = {
-        "docs": _legacy("docs", "Docs", "The shipped docs."),
-        "docs/guide": _legacy("docs/guide", "Guide", "A shipped guide."),
-        "how-to": _legacy("how-to", "How to", "Task-shaped guides."),
-        "how-to/create-an-agent": _legacy("how-to/create-an-agent", "Create an agent", "Steps."),
-    }
-    build = build_wiki(_wiki(tmp_path), [], legacy_pages=legacy)
-    toc = build.pages["index"].body
-    assert toc.endswith(
-        "\n## Legacy (being replaced)\n\n"
-        "- [Docs](docs) - The shipped docs.\n"
-        "- [How to](how-to) - Task-shaped guides.\n"
-    )
-    assert "(docs/guide)" not in toc and "(how-to/create-an-agent)" not in toc
-    assert all(build.pages[path] is page for path, page in legacy.items())
+def test_the_build_has_one_authored_layer_and_generated_roots(tmp_path):
+    build = build_wiki(_wiki(tmp_path), [])
+    assert {path for path in build.pages if "/" not in path} == {"index", "agents", "start-here", "reference"}
+    assert all(page.kind in {"toc", "section", "guide", "reference"} for page in build.pages.values())
+    assert "Legacy" not in build.pages["index"].body
+    assert "(this-install)" in build.pages["index"].body
 
 
-def test_a_legacy_root_without_a_summary_is_listed_without_a_dash(tmp_path):
-    build = build_wiki(_wiki(tmp_path), [], legacy_pages={"docs": _legacy("docs", "Docs", "")})
-    assert build.pages["index"].body.endswith("## Legacy (being replaced)\n\n- [Docs](docs)\n")
 
 
-def test_no_legacy_pages_means_no_legacy_section(tmp_path):
-    for legacy in (None, {}):
-        toc = build_wiki(_wiki(tmp_path), [], legacy_pages=legacy).pages["index"].body
-        assert "Legacy" not in toc and "## Contents" in toc
+
 
 
 # ---- section pages -------------------------------------------------------------------
@@ -354,12 +336,11 @@ def test_a_related_entry_may_carry_an_anchor_like_a_body_link(tmp_path):
     assert unresolved_links(build_wiki(tmp_path, []).pages) == [("a", "missing")]
 
 
-def test_a_legacy_pages_links_are_not_checked():
-    pages = {
-        "legacy": _wp("legacy", "[old](/tools) [older](no/such)", kind="legacy"),
-        "guide": _wp("guide", "[ok](legacy) [bad](no/such)"),
-    }
-    assert unresolved_links(pages) == [("guide", "no/such")]
+@pytest.mark.parametrize("kind", ["toc", "section", "guide", "reference", "live"])
+def test_links_are_checked_for_every_current_page_kind(kind):
+    pages = {"page": _wp("page", "[missing](no/such)", kind=kind)}
+    assert unresolved_links(pages) == [("page", "no/such")]
+
 
 
 def test_unresolved_links_come_back_in_page_order_then_reading_order():
@@ -386,9 +367,9 @@ def test_the_build_logs_each_unresolved_link_and_does_not_raise(tmp_path, caplog
 
 def test_a_missing_source_folder_is_logged_and_the_build_holds_only_what_is_generated(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="primer.knowledge.wiki.build"):
-        build = build_wiki(tmp_path / "absent", [DATETIME], legacy_pages={"docs": _legacy("docs", "Docs", "Old.")})
+        build = build_wiki(tmp_path / "absent", [DATETIME])
     assert sorted(build.pages) == [
-        "docs", "index", "reference", "reference/tools", "reference/tools/misc", "reference/tools/misc/get_datetime",
+        "index", "reference", "reference/tools", "reference/tools/misc", "reference/tools/misc/get_datetime",
     ]
     assert not [p for p in build.pages.values() if p.kind in ("guide", "section")]
     warnings = [r for r in caplog.records if r.name == "primer.knowledge.wiki.build" and r.levelno == logging.WARNING]
@@ -482,13 +463,21 @@ def test_the_hash_does_not_depend_on_the_order_of_the_entries(tmp_path):
     assert build_wiki(tmp_path, [DATETIME, echo]).content_hash == build_wiki(tmp_path, [echo, DATETIME]).content_hash
 
 
-def test_the_hash_covers_the_legacy_pages(tmp_path):
-    _wiki(tmp_path)
-    base = build_wiki(tmp_path, [DATETIME]).content_hash
-    one = {"docs": _wp("docs", "# Docs\n", kind="legacy")}
-    two = {"docs": _wp("docs", "# Docs\n\nchanged\n", kind="legacy")}
-    hashes = {build_wiki(tmp_path, [DATETIME], legacy_pages=pages).content_hash for pages in (one, two)}
-    assert len(hashes) == 2 and base not in hashes
+@pytest.mark.parametrize("replacement", [
+    _page("New title", "Every feature an agent can use.", "Start with start-here.\n"),
+    _page("Platform wiki", "A new summary.", "Start with start-here.\n"),
+    _page("Platform wiki", "Every feature an agent can use.", "New root instructions.\n"),
+    _page("Platform wiki", "Every feature an agent can use.", "Start with start-here.\n", audience="admin"),
+    _page("Platform wiki", "Every feature an agent can use.", "Start with start-here.\n", order=99),
+])
+def test_the_root_source_changes_both_hashes_so_it_is_not_a_toolset_toggle(tmp_path, replacement):
+    root = _wiki(tmp_path)
+    before = build_wiki(root, [DATETIME])
+    (root / "index.md").write_text(replacement)
+    after = build_wiki(root, [DATETIME])
+    assert after.source_hash != before.source_hash
+    assert after.content_hash != before.content_hash
+
 
 
 def test_the_hash_is_identical_across_processes_and_hash_seeds(tmp_path):
@@ -547,11 +536,6 @@ def test_a_source_page_cannot_sit_on_a_generated_or_live_path(tmp_path, files):
         build_wiki(tmp_path, [DATETIME])
 
 
-def test_a_legacy_page_cannot_shadow_another_page(tmp_path):
-    _wiki(tmp_path)
-    for clash in ("agents", "reference", "index", "reference/tools/misc/get_datetime"):
-        with pytest.raises(WikiSourceError, match=f"{clash}: two pages"):
-            build_wiki(tmp_path, [DATETIME], legacy_pages={clash: _wp(clash, "x", kind="legacy")})
 
 
 # ---- the generated by-purpose section (M3) -------------------------------------------------

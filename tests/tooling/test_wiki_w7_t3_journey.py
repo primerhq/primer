@@ -324,7 +324,7 @@ def test_private_wiki_loader_and_child_process_config_preserve_isolation(tmp_pat
     assert config["db"] == {"provider": "sqlite", "config": {"path": str(tmp_path / "data.sqlite")}}
     assert config["auto_bootstrap"] is False and config["auth"]["enabled"] is True
     assert {k: v for k, v in seen["env"].items() if k.startswith("PRIMER_")} == {
-        "PRIMER_WIKI_DIR": str(tmp_path / "wiki"), "PRIMER_AI_DOCS_DIR": str(tmp_path / "legacy-empty"),
+        "PRIMER_WIKI_DIR": str(tmp_path / "wiki"),
     }
     assert set(load_source_pages(tmp_path / "wiki")) == {"index", "runbooks", *journey.PAGES}
     assert seen["args"][-1] == str(tmp_path / "config.json")

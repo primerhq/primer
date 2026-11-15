@@ -320,7 +320,7 @@ def test_the_docs_do_not_call_a_declared_list_trusted() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    for doc in ("docs/dev/subsystems/ui-pages.md", "docs/agents/tool-approval.md"):
+    for doc in ("docs/dev/subsystems/ui-pages.md", "docs/wiki/approvals/policies.md"):
         text = (root / doc).read_text(encoding="utf-8")
 
         assert "(`tool`, `policy`) is trusted" not in text and "declared is trusted" not in text, doc

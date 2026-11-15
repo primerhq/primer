@@ -374,7 +374,7 @@ get nothing) and the writes (create / update / delete, `POST .../find`, the `_te
   `system::find_artifact_storage_providers`, `system::create_artifact_storage_provider`, `system::update_artifact_storage_provider` and
   `system::delete_artifact_storage_provider` (the generic CRUD tools, with the same checks as the routes), and
   `system::test_artifact_storage_provider` (a saved row), `system::get_active_artifact_store` and `system::set_active_artifact_store` (both
-  answer `{"provider_id", "provider"}`). Agent doc: `docs/agents/artifact-storage.md`.
+  answer `{"provider_id", "provider"}`). Agent doc: `docs/wiki/providers/artifact-storage.md`.
 - Console: Providers > Artifact Store (`ui/components/provider-catalog.jsx`, the `artifact_storage` class of `PC_CLASSES` in
   `ui/components/providers/register-common.jsx`) lists the rows, each card showing its root or bucket, and registers, edits and deletes
   them through the schema-driven provider form fed by `_types`. The reserved default has no delete.

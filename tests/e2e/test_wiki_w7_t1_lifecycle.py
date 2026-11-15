@@ -137,14 +137,12 @@ def prepare_wiki(root: Path) -> Path:
 
 async def _start_server(root: Path, port: int, log):
     wiki = prepare_wiki(root)
-    legacy = root / "legacy-empty"
-    legacy.mkdir()
     config = root / "config.json"
     config.write_text(json.dumps(isolated_config(root, port)))
     # Child-only environment: no inherited database/auth/wiki overrides, no
     # changes to HOME or the parent process's configuration.
     env = {key: value for key, value in os.environ.items() if not key.startswith("PRIMER_")}
-    env.update(PRIMER_WIKI_DIR=str(wiki), PRIMER_AI_DOCS_DIR=str(legacy))
+    env.update(PRIMER_WIKI_DIR=str(wiki))
     return subprocess.Popen(
         [sys.executable, "-m", "primer", "api", "--config", str(config)],
         cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT,

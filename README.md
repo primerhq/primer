@@ -222,7 +222,7 @@ At runtime, requests arrive from many edges (REST/shell, MCP clients, messaging 
 ## Documentation
 
 - **Operator docs** - served at `/docs` when the server is running.
-- **Agent-usage docs** - [`docs/agents/`](https://github.com/primerhq/primer/tree/main/docs/agents) - how to drive a running Primer instance from an AI agent over MCP.
+- **Agent-usage docs** - [`docs/wiki/`](https://github.com/primerhq/primer/tree/main/docs/wiki) - how to drive a running Primer instance from an AI agent over MCP.
 - **Developer docs** - [`docs/dev/`](https://github.com/primerhq/primer/tree/main/docs/dev) - architecture patterns and subsystem references. Start at [`docs/dev/README.md`](https://github.com/primerhq/primer/blob/main/docs/dev/README.md).
 
 ## Contributing

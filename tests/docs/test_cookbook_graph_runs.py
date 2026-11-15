@@ -28,7 +28,7 @@ import pytest
 from primer.graph.executor import GraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, Message, StreamEvent, TextDelta
-from primer.model.graph import Graph, GraphNodeMessage, GraphThread, _AgentNodeRef, _ConditionalEdge, _JsonPathRouter
+from primer.model.graph import Graph, GraphNodeMessage, GraphThread, _AgentNodeRef, _ConditionalEdge, _JsonPathRouter, _ToolCallNode
 from primer.model.workspace_session import SessionStatus
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfileConfig
@@ -51,7 +51,7 @@ def documented_graphs(text: str) -> list[dict[str, Any]]:
 
 def graph_problems(entity: dict[str, Any]) -> list[str]:
     """What stops a documented graph from running as the page says: it does not validate, it is not runnable, or a json_path router reads a node
-    that never produces ``parsed`` (only an agent node with a ``response_format`` does)."""
+    that never produces ``parsed`` (an agent response_format or a tool-call output_schema)."""
     try:
         graph = Graph.model_validate(entity)
     except ValueError as exc:
@@ -65,12 +65,27 @@ def graph_problems(entity: dict[str, Any]) -> list[str]:
     for edge in graph.edges:
         if isinstance(edge, _ConditionalEdge) and isinstance(edge.router, _JsonPathRouter):
             source = by_id.get(edge.from_node)
-            if not (isinstance(source, _AgentNodeRef) and source.response_format is not None):
+            structured = (
+                isinstance(source, _AgentNodeRef) and source.response_format is not None
+            ) or (
+                isinstance(source, _ToolCallNode) and source.output_schema is not None
+            )
+            if not structured:
                 problems.append(
-                    f"graph {graph.id!r}: the json_path router on {edge.from_node!r} reads a node with no response_format, "
+                    f"graph {graph.id!r}: the json_path router on {edge.from_node!r} reads a node with no response_format or tool-call output_schema, "
                     "so its parsed output is never set and the router always takes default_to"
                 )
     return problems
+
+
+def test_a_human_answer_router_requires_the_tool_calls_actual_output_schema():
+    from tests.docs.test_graphs_doc_ask_user_routes import _workflow_7
+
+    graph = _workflow_7()
+    assert graph_problems(graph) == []
+    confirm = next(node for node in graph["nodes"] if node["id"] == "confirm")
+    del confirm["output_schema"]
+    assert any("no response_format or tool-call output_schema" in problem for problem in graph_problems(graph))
 
 
 # ---- every documented graph -----------------------------------------------------------------------------------------------------
@@ -79,7 +94,7 @@ def graph_problems(entity: dict[str, Any]) -> list[str]:
 def test_the_scan_finds_a_documented_graph() -> None:
     graphs = [g for doc in DOC_FILES for g in documented_graphs(doc.read_text(encoding="utf-8"))]
 
-    assert graphs, "no documented create_graph / update_graph example with a graph body was found in docs/agents/ and docs/wiki/"
+    assert graphs, "no documented create_graph / update_graph example with a graph body was found in docs/wiki/"
 
 
 @pytest.mark.parametrize("doc", DOC_FILES, ids=lambda p: str(p.relative_to(REPO)))

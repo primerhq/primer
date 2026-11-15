@@ -102,6 +102,7 @@ Deletes the recipe and answers `{deleted: true, id}`; existing workspaces are un
 Reference: [`workspaces__delete_workspace_template`](reference/tools/workspaces/delete_workspace_template)
 
 ## Gotchas
+- An admin must not put host-privileged mounts, secrets or a service account with real permissions in a template ordinary users may instantiate. A non-admin cannot rewrite held privileged settings, but a workspace created from that template runs with its service account and permissions.
 - `backend.kind` must match the provider's kind. Check it with `workspaces__list_workspace_provider_choices` first.
 - An update is a full replace. A field you leave out is gone.
 - A template you copied from a read carries masked secrets, and a create refuses a mask (`validation-error`). Type the secrets again in the copy.

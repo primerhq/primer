@@ -19,7 +19,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 DOCS = sorted([
-    *(REPO / "docs" / "agents").rglob("*.md"),
+    *(REPO / "docs" / "wiki").rglob("*.md"),
     *(p for p in (REPO / "docs" / "dev").rglob("*.md") if "vision" not in p.relative_to(REPO / "docs" / "dev").parts),
     *(REPO / "skills").rglob("*.md"),
     REPO / "AGENTS.md",
@@ -48,7 +48,7 @@ def test_no_doc_names_the_retired_internal_ai_docs_collection(doc: Path) -> None
 
 def test_the_scan_covers_the_docs_that_named_them() -> None:
     names = {str(p.relative_to(REPO)) for p in DOCS}
-    assert {"docs/agents/semantic-search.md", "docs/agents/_README.md", "docs/agents/cookbook/discover-a-capability.md",
+    assert {"docs/wiki/knowledge/search.md", "docs/wiki/knowledge/the-platform-wiki.md", "docs/wiki/cookbook/discover-a-capability.md",
             "skills/using-primer-over-mcp.md", "AGENTS.md", "docs/dev/subsystems/semantic-search.md"} <= names
 
 

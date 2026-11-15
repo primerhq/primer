@@ -18,7 +18,7 @@ Compaction is a session mechanism. Before the prompt overflows the model's conte
 - **The summariser can overflow.** The summariser is a model call like any other, and the head it has to summarise can be over the model's window. The compaction then retries once, without tools, on a reduced input: tool outputs are left out first, then the rest is summarised in up to four pieces, one after another, each with the summary so far. If the compaction uses tools and its tool loop overflows in a later round, it ends with the summary it had already written, and the marker names the round.
 - **The failures.** If even the reduced input cannot fit, or the retry is rejected too, the turn (or the manual compact request) fails with `summariser_overflow`, the same 413 as `context_overflow_unrecoverable`: compact earlier, or use a larger-context model. When the provider rejects the turn's own call as too large, the turn is compacted once more and CONTINUED from the tool rounds it already ran (no tool runs twice; a long turn's early rounds are summarised, the question and the newest round are kept). If compaction cannot shrink the prompt, or the replay is rejected too, the completed rounds are recorded with a note that the calls already ran, and the turn ends with `context_overflow_unrecoverable` (413): shorten the system prompt, give the agent fewer tools, or use a larger-context model. The turn ends the same way, without compacting anything, when the agent's `max_output_tokens` is not below the model's context window: no history, however short, fits beside that cap.
 - **Where it runs.** Compaction is the session executor's job. A graph agent node and a `system__invoke_agent` subagent run the plain turn loop without it: their single turn cannot compact itself.
-- **Manual compaction.** Compacting a session's transcript on demand is a console route with no agent tool: `POST /v1/workspaces/{workspace_id}/sessions/{session_id}/compact`. See [Not agent-callable yet](not-agent-callable).
+- **Manual compaction.** The generated `workspace_sessions__compact_session` operation reaches the same authorized manual-compaction route as the console: `POST /v1/workspaces/{workspace_id}/sessions/{session_id}/compact`. See [session operations](sessions).
 
 ## Gotchas
 
@@ -31,4 +31,4 @@ Compaction is a session mechanism. Before the prompt overflows the model's conte
 
 ## Related
 
-[What an agent is](agents/what-an-agent-is), [Switch agents and the binding](agents/switch-and-binding), [Not agent-callable yet](not-agent-callable).
+[What an agent is](agents/what-an-agent-is), [Switch agents and the binding](agents/switch-and-binding), [session operations](sessions).

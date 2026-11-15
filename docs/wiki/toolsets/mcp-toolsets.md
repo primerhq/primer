@@ -104,7 +104,7 @@ Reference: [`system__delete_toolset`](reference/tools/system/delete_toolset)
 - An operator can limit which commands a `stdio` toolset may start (`mcp_stdio_allowed_commands`). A command outside the list fails when the toolset lists or runs.
 - At the start of a turn, a server that is down, needs a sign-in or does not list within 60 seconds is left out of that turn, and the system message says why. A cold `stdio` start counts against those 60 seconds. See [tools and grants](agents/tools-and-grants).
 - The shared sign-in means every agent acts as whoever connected it. Use separate toolsets for separate identities.
-- The tools of a stored toolset are never offered to outside MCP clients through primer's own endpoint. That direction is on [not agent-callable yet](not-agent-callable).
+- The tools of a stored toolset are never offered to outside MCP clients through primer's own endpoint. See [MCP exposure](toolsets/mcp-exposure) for that separate direction.
 
 ## Related
 [List and describe tools](toolsets/list-and-describe-tools), [approval policies](approvals/policies), [built-in toolsets](toolsets/builtin-toolsets), [Python toolsets](toolsets/python-toolsets).

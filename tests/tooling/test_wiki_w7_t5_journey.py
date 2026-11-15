@@ -158,7 +158,7 @@ def test_private_config_has_auth_worker_sqlite_complete_wiki_and_scrubbed_enviro
     assert not set(gate_names).intersection(env)
     assert env["PRIMER_WIKI_DIR"] == str(tmp_path / "wiki")
     assert set(load_source_pages(tmp_path / "wiki")) == {"index", "runbooks", journey.PAGE}
-    assert list((tmp_path / "legacy-empty").iterdir()) == []
+    assert not (tmp_path / "legacy-empty").exists()
 
 
 def workflow_steps():
