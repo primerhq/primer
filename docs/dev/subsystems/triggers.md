@@ -12,6 +12,8 @@ The Trigger and Subscription models live in `primer/model/trigger.py`. All mutat
 
 ## 2. Conceptual model
 
+The agent-facing [trigger runbook](../../wiki/runbooks/wire-a-trigger.md) separates required trigger create/update/delete approvals from ungated subscription writes and manual dispatch. Its sampled acceptance uses a far-future delayed source to avoid an uncontrolled clock fire, then proves the real dispatched session and answer, disable/no-effect, webhook token visibility and exact cleanup in a private CI process. Native workspace tools serve `SessionInfo.session_id`; their view is checked alongside the durable session row and transcript. This manual dispatch sample does not claim external webhook connectivity or a real scheduled tick.
+
 A `Trigger` carries fire-time context only (timestamps, slug, kind). A `Subscription` carries the delivery rule and the payload template. Payload lives on the subscription, never on the trigger, so one trigger can fan out to many destinations with different rendered payloads.
 
 `Trigger.config` is a discriminated union over `kind`: `DelayedTriggerConfig` (`{kind: 'delayed', fire_at}`), `ScheduledTriggerConfig` (`{kind: 'scheduled', cron, timezone, catchup}`), `WebhookTriggerConfig` (`{kind: 'webhook', token, hmac_secret?, interactive, wait_timeout_seconds}`), and `ChannelTriggerConfig` (`{kind: 'channel', provider_id, channel_id?, interactive}`). `Subscription.config` is a discriminated union over four kinds: `AgentFreshSubConfig`, `GraphFreshSubConfig`, `ParkedSessionSubConfig`, and `SessionAppendSubConfig`. The `parked_session` config is special: it is the one the `subscribe_to_trigger` yielding tool writes, and it points back at the parked session by `(session_id, tool_call_id, parked_at)`.
