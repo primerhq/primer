@@ -146,7 +146,7 @@ def test_wrong_mode_source_window_VM_or_unknown_fields_reject(mutation):
 @pytest.mark.parametrize('field,value', [('scope', 'this-client'), ('mechanism', 'idle-metrics'),
     ('owner_reference', ''), ('endpoint', 'http://127.0.0.1:8000/v1'), ('model', 'other'),
     ('consumer_inventory', []), ('acknowledgements', []), ('expires_at', NOW + 100),
-    ('source_sha', 'c' * 40), ('exclusive_consumer', str(uuid.uuid4())), ('extra', True)])
+    ('source_sha', 'c' * 40), ('exclusive_consumer', VM), ('extra', True)])
 def test_even_validly_signed_owner_receipt_requires_actual_complete_bounded_hold(field, value):
     p = payload();r = p['reservation']['payload'];r[field] = value;p['reservation'] = signed(r, OWNER)
     with pytest.raises((ValueError, InvalidSignature, KeyError)):
@@ -558,3 +558,16 @@ async def test_local_relay_records_absolute_anchors_around_actual_parent_exchang
         with pytest.raises(ValueError,match='transport'):await relay.exchange(body)
     else:assert await relay.exchange(body) is sentinel
     assert relay.packets==[{'request':body,'started_at':NOW+1,'completed_at':NOW+2}]
+
+
+def test_collection_is_identical_in_independent_interpreters():
+    import subprocess
+    import sys
+    command=[sys.executable,'-m','pytest','tests/tooling/test_w4_f1_local_vm.py',
+             '-o','addopts=','-n0','--collect-only','-q']
+    collected=[]
+    for _ in range(2):
+        output=subprocess.check_output(command,cwd=probe.REPO,text=True,stderr=subprocess.STDOUT,timeout=30)
+        collected.append([line for line in output.splitlines() if line.startswith('tests/tooling/test_w4_f1_local_vm.py::')])
+    assert len(collected[0])>=134
+    assert collected[0]==collected[1]
