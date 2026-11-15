@@ -15,16 +15,21 @@ from tests.toolset.test_system_crud_guards import _call, world  # noqa: F401
 
 
 def message_items(name, arguments, value):
-    from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart
+    from primer.model.chat import ExtendedEvent, Message, TextPart, ToolCallEnd, ToolCallPart, ToolCallStart, ToolResultPart, _ExecutorToolResult
     from primer.model.workspace_session import SessionMessageRecord
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     def event(kind, payload):
         return SessionMessageRecord(seq=1, kind=kind, payload=payload, created_at=datetime(2026, 11, 15, tzinfo=UTC)).model_dump(mode="json")
     failed = journey.SPECS[name][1] == "rejected"
     output = json.dumps(value);answer = "RESULT:" + output
-    return [event("tool_result", {"call_id": name, "output": output, "error": failed}),
-        Message(role="assistant", parts=[ToolCallPart(id=name, name="system__call_tool", arguments={
-            "toolset_id": "harness", "tool_name": journey.SPECS[name][0], "arguments": arguments})]).model_dump(mode="json"),
+    args = {"toolset_id": "harness", "tool_name": journey.SPECS[name][0], "arguments": arguments}
+    state = _CoalesceState()
+    translate_stream_event(ToolCallStart(id=name, name="system__call_tool", index=0), state)
+    call = translate_stream_event(ToolCallEnd(id=name, arguments=args, index=0), state)
+    result = translate_stream_event(ExtendedEvent(extended=_ExecutorToolResult(call_id=name, output=output, error=failed)), state)
+    return [call.model_dump(mode="json"), result.model_dump(mode="json"),
+        Message(role="assistant", parts=[ToolCallPart(id=name, name="system__call_tool", arguments=args)]).model_dump(mode="json"),
         Message(role="tool", parts=[ToolResultPart(id=name, output=output, error=failed)]).model_dump(mode="json"),
         event("assistant_token", {"text": answer}), event("done", {"stop_reason": "stop"}),
         Message(role="assistant", parts=[TextPart(text=answer)]).model_dump(mode="json")]
@@ -157,11 +162,55 @@ def test_gate_model_uses_exact_native_operation_and_actual_result(name):
 def test_unexpected_error_raw_failure_or_missing_terminal_is_never_acceptance():
     items = valid_evidence()["stages"]["install"]["items"]
     with pytest.raises(AssertionError):journey.read_gate([r for r in items if r.get("kind") != "done"], "install")
-    items[0]["payload"]["error"] = True
+    next(r for r in items if r.get("kind") == "tool_result")["payload"]["error"] = True
     with pytest.raises(AssertionError):journey.read_gate(items, "install")
     items = valid_evidence()["stages"]["reject_install"]["items"]
     items.append({**items[0], "kind": "error", "payload": {"message": "unrelated child failure"}})
     with pytest.raises(AssertionError):journey.read_gate(items, "reject_install")
+
+
+@pytest.mark.parametrize("name", journey.SPECS)
+def test_production_scoped_event_ids_bridge_to_the_original_wire_messages(name):
+    stage = valid_evidence()["stages"][name]
+    call = next(r for r in stage["items"] if r.get("kind") == "tool_call")["payload"]
+    result = next(r for r in stage["items"] if r.get("kind") == "tool_result")["payload"]
+    assert call["id"] == result["call_id"] and call["id"] != name and call["raw_id"] == name
+    _, answer, value, arguments = journey.read_gate(stage["items"], name)
+    assert answer == stage["answer"] and value == stage["result"] and arguments["toolset_id"] == "harness"
+
+
+@pytest.mark.parametrize("name", journey.SPECS)
+@pytest.mark.parametrize("damage", ["wire-id", "scoped-result", "name", "arguments", "output", "error", "node", "delegation",
+    "result-run", "duplicate-call", "missing-result", "raw-result"])
+def test_every_gate_rejects_disconnected_or_cross_scope_call_result_evidence(name, damage):
+    items = valid_evidence()["stages"][name]["items"]
+    call = next(r for r in items if r.get("kind") == "tool_call")
+    result = next(r for r in items if r.get("kind") == "tool_result")
+    if damage == "wire-id":call["payload"]["raw_id"] = "other-wire"
+    elif damage == "scoped-result":result["payload"]["call_id"] = "other-scoped"
+    elif damage == "name":call["payload"]["name"] = "other-tool"
+    elif damage == "arguments":call["payload"]["arguments"] = {}
+    elif damage == "output":result["payload"]["output"] = '{"invented":true}'
+    elif damage == "error":result["payload"]["error"] = not result["payload"]["error"]
+    elif damage == "node":result["node_id"] = "child"
+    elif damage == "delegation":call["payload"].update(delegated=True, delegate_run_id="child-run")
+    elif damage == "result-run":result["payload"]["delegate_run_id"] = "child-run"
+    elif damage == "duplicate-call":items.append(copy.deepcopy(call))
+    elif damage == "missing-result":items.remove(result)
+    else:
+        raw = next(r for r in items if r.get("role") == "tool")
+        raw["parts"][0]["id"] = "other-wire"
+    with pytest.raises(AssertionError):journey.read_gate(items, name)
+
+
+def test_failed_stage_validation_keeps_unparsed_transcript_and_context():
+    name = "reject_install";stage = valid_evidence()["stages"][name]
+    next(r for r in stage["items"] if r.get("kind") == "tool_result")["payload"]["call_id"] = "unpaired"
+    trace = {"outcome": "running", "stages": {}}
+    with pytest.raises(AssertionError):journey.capture_stage(trace, name, started=stage["started"], before=stage["before"], row=stage["row"], items=stage["items"])
+    kept = json.loads(json.dumps(trace))
+    assert kept["outcome"] == "running" and kept["stages"][name] == {key: stage[key] for key in ("started", "before", "row", "items")}
+    assert not {"records", "answer", "result"} & kept["stages"][name].keys()
 
 
 @pytest.mark.asyncio
