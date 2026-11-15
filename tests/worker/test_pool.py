@@ -54,6 +54,8 @@ async def test_pool_start_registers_worker(worker_pool, scheduler):
     workers = await scheduler.list_workers()
     assert len(workers) == 1
     assert workers[0].capacity == 2
+    from primer.worker.identity import stable_worker_label
+    assert workers[0].label == stable_worker_label(worker_pool.config)
     await worker_pool.drain_and_stop()
 
 

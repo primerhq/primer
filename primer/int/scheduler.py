@@ -46,6 +46,7 @@ class WorkerInfo(BaseModel):
     id: str = Field(..., min_length=1)
     host: str
     pid: int
+    label: str | None = None
     capacity: int = Field(..., ge=1)
     started_at: datetime
     last_heartbeat: datetime
@@ -100,6 +101,7 @@ class Scheduler(ABC):
         host: str,
         pid: int,
         capacity: int,
+        label: str | None = None,
     ) -> None: ...
 
     @abstractmethod

@@ -115,13 +115,13 @@ class InMemoryScheduler(Scheduler):
     # ---- Worker membership ----------------------------------------------
 
     async def register_worker(
-        self, *, worker_id: str, host: str, pid: int, capacity: int,
+        self, *, worker_id: str, host: str, pid: int, capacity: int, label: str | None = None,
     ) -> None:
         async with self._lock:
             now = datetime.now(timezone.utc)
             self._workers[worker_id] = _WorkerState(
                 info=WorkerInfo(
-                    id=worker_id, host=host, pid=pid, capacity=capacity,
+                    id=worker_id, host=host, pid=pid, capacity=capacity, label=label,
                     started_at=now, last_heartbeat=now, status="active",
                 ),
             )
