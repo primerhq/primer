@@ -144,15 +144,19 @@ def test_reply_model_derives_answer_from_the_actual_rendered_fire_instruction():
 def test_private_config_has_auth_worker_sqlite_complete_wiki_and_scrubbed_environment(tmp_path, monkeypatch):
     from primer.api.config import AppConfig
     from primer.knowledge.wiki.pages import load_source_pages
+    from tests.pg_gate import CANONICAL_ENV, DEPRECATED_ALIASES, REQUIRE_ENV
 
-    monkeypatch.setenv("PRIMER_TEST_POSTGRES_URL", "never-inherit")
+    gate_names = (CANONICAL_ENV, *DEPRECATED_ALIASES, REQUIRE_ENV)
+    for name in gate_names:
+        monkeypatch.setenv(name, "never-inherit")
     monkeypatch.setenv("PRIMER_WIKI_DIR", "never-inherit")
     config_path, env = journey.prepare_config(tmp_path, 50124)
     config = AppConfig.model_validate(json.loads(config_path.read_text()))
     assert config.auth.enabled and not config.auto_bootstrap and config.runtime_mode.value == "api+worker"
     assert config.host == "127.0.0.1" and config.port == 50124 and config.db.provider.value == "sqlite"
     assert str(config.db.config.path) == str(tmp_path / "data.sqlite") and not (tmp_path / "data.sqlite").exists()
-    assert "PRIMER_TEST_POSTGRES_URL" not in env and env["PRIMER_WIKI_DIR"] == str(tmp_path / "wiki")
+    assert not set(gate_names).intersection(env)
+    assert env["PRIMER_WIKI_DIR"] == str(tmp_path / "wiki")
     assert set(load_source_pages(tmp_path / "wiki")) == {"index", "runbooks", journey.PAGE}
     assert list((tmp_path / "legacy-empty").iterdir()) == []
 
