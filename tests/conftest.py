@@ -8,15 +8,21 @@ use it without duplication.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import asyncio
+import copy
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
+from functools import wraps
 
 import pytest
 
+from primer.storage._locking import (
+    LockingTransaction, locking_context, current_transaction, model_operation, prepared_models, require_transaction,
+)
 from primer.model.common import Identifiable
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import ConfigError, ConflictError, NotFoundError
 from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
@@ -32,19 +38,51 @@ from primer.model.storage import (
 _T = TypeVar("_T", bound=Identifiable)
 
 
+def _fake_serialized(fn):
+    @wraps(fn)
+    async def run(self, *args, **kwargs):
+        if self._owner is None:
+            return await fn(self, *args, **kwargs)
+        async with self._owner._guard():
+            if current_transaction() is not None:
+                detached = {key: value if key == "conn" else copy.deepcopy(value) for key, value in kwargs.items()}
+                result = await fn(self, *copy.deepcopy(args), **detached)
+                return copy.deepcopy(result)
+            return await fn(self, *args, **kwargs)
+    return run
+
+
 class _InMemoryStorage(Generic[_T]):
     """Bare-bones in-memory ``Storage[T]`` for tests."""
 
-    def __init__(self, model_cls: type[_T]) -> None:
+    def __init__(self, model_cls: type[_T], owner=None) -> None:
         self._cls = model_cls
+        self._owner = owner
         self._data: dict[str, _T] = {}
         # Stored documents that differ from a fresh dump of the model (see ``patch_if`` / ``seed_raw``). A
         # whole-document write replaces the stored document with the model's dump, so it drops the entry.
         self._raw: dict[str, tuple[_T, dict[str, Any]]] = {}
 
+    def locking_identity(self):
+        name = self._cls.__name__.lower()
+        return self._owner, self._cls, "sessions" if name in ("session", "workspacesession") else name
+
+    @model_operation
+    async def get_for_update(self, id: str, *, conn) -> _T | None:
+        require_transaction(conn, self._owner, self._cls)
+        conn.check_key(self.locking_identity()[2], id)
+        result = await self.get(id, conn=conn)
+        if result is not None:
+            conn.hold_key(self.locking_identity()[2], id)
+        return result
+
+    @model_operation
+    @_fake_serialized
     async def get(self, id: str, *, conn=None) -> _T | None:
         return self._data.get(id)
 
+    @model_operation
+    @_fake_serialized
     async def create(self, entity: _T, *, conn=None) -> _T:
         if entity.id in self._data:
             raise ConflictError(f"id {entity.id!r} already exists")
@@ -52,6 +90,8 @@ class _InMemoryStorage(Generic[_T]):
         self._raw.pop(entity.id, None)
         return entity
 
+    @model_operation
+    @_fake_serialized
     async def update(self, entity: _T, *, conn=None) -> _T:
         if entity.id not in self._data:
             raise NotFoundError(f"no entity with id {entity.id!r}")
@@ -59,6 +99,8 @@ class _InMemoryStorage(Generic[_T]):
         self._raw.pop(entity.id, None)
         return entity
 
+    @model_operation
+    @_fake_serialized
     async def update_unless(
         self, entity: _T, *, field: str, forbidden: Any, conn=None,
     ) -> _T | None:
@@ -71,6 +113,8 @@ class _InMemoryStorage(Generic[_T]):
         self._raw.pop(entity.id, None)
         return entity
 
+    @model_operation
+    @_fake_serialized
     async def patch_if(
         self, id: str, patch=None, *, where, set_paths=None, conn=None,
     ) -> _T | None:
@@ -99,6 +143,8 @@ class _InMemoryStorage(Generic[_T]):
         self._raw[id] = (updated, produced)
         return updated
 
+    @model_operation
+    @_fake_serialized
     async def patch_if_or_current(
         self, id: str, patch=None, *, where, set_paths=None, conn=None,
     ) -> tuple[_T | None, _T | None]:
@@ -126,12 +172,16 @@ class _InMemoryStorage(Generic[_T]):
         self._raw[id] = (entity, dict(doc))
         return entity
 
+    @model_operation
+    @_fake_serialized
     async def delete(self, id: str, *, conn=None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
         del self._data[id]
         self._raw.pop(id, None)
 
+    @model_operation
+    @_fake_serialized
     async def list(self, page, *, order_by=None):
         items = list(self._data.values())
         # Honor order_by (additive; mirrors find) so endpoints that list +
@@ -163,6 +213,8 @@ class _InMemoryStorage(Generic[_T]):
             next_cursor = str(offset + page.length)
         return CursorPageResponse(next_cursor=next_cursor, items=sliced)
 
+    @model_operation
+    @_fake_serialized
     async def count_by(self, field, values, predicate=None):
         """``Storage.count_by`` over the stored rows."""
         wanted = set(values)
@@ -173,6 +225,8 @@ class _InMemoryStorage(Generic[_T]):
                 counts[key] = counts.get(key, 0) + 1
         return counts
 
+    @model_operation
+    @_fake_serialized
     async def find_ids(self, predicate):
         """``(id, access)`` of every match, ordered by id (the ``Storage.find_ids`` contract)."""
         rows = [e for e in self._data.values() if predicate is None or _eval_predicate(e, predicate)]
@@ -180,6 +234,8 @@ class _InMemoryStorage(Generic[_T]):
             ((e.id, e.access.model_dump(mode="json") if getattr(e, "access", None) is not None else None) for e in rows), key=lambda pair: pair[0],
         )
 
+    @model_operation
+    @_fake_serialized
     async def find(self, predicate, page, *, order_by=None):
         if predicate is None:
             return await self.list(page, order_by=order_by)
@@ -486,6 +542,9 @@ class _FakeStorageProvider:
 
     def __init__(self) -> None:
         self._stores: dict[type, _InMemoryStorage[Any]] = {}
+        self._guard_lock = asyncio.Lock()
+        self._guard_task = None
+        self._ordinary_transactions = {}
         self._content_store = _FakeContentStore()
         self._bootstrap_completed_at: datetime | None = None
         self._schema_version: int = 1
@@ -523,7 +582,44 @@ class _FakeStorageProvider:
             )
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:
-        return self._stores.setdefault(model_class, _InMemoryStorage(model_class))
+        return self._stores.setdefault(model_class, _InMemoryStorage(model_class, self))
+
+    @asynccontextmanager
+    async def _guard(self):
+        if self._guard_task is asyncio.current_task():
+            yield
+            return
+        async with self._guard_lock:
+            self._guard_task = asyncio.current_task()
+            try:
+                yield
+            finally:
+                self._guard_task = None
+
+    @asynccontextmanager
+    async def locking_transaction(self, *, models):
+        if (current_transaction() is not None or self._guard_task is asyncio.current_task()
+                or self._ordinary_transactions.get(asyncio.current_task(), 0)):
+            raise ConfigError("locking_transaction is not re-entrant")
+        models = prepared_models(models)
+        for model in models:
+            self.get_storage(model)
+        async with self._guard():
+            before = {model: copy.deepcopy((store._data, store._raw)) for model, store in self._stores.items()}
+            for store in self._stores.values():
+                store._data, store._raw = copy.deepcopy((store._data, store._raw))
+            scope = LockingTransaction(self, None, models)
+            token = locking_context.set(scope)
+            try:
+                yield scope
+                scope.ensure_committable()
+            except BaseException:
+                for model, store in self._stores.items():
+                    store._data, store._raw = before.get(model, ({}, {}))
+                raise
+            finally:
+                scope.active = False
+                locking_context.reset(token)
 
     def get_content_store(self) -> Any:
         return self._content_store
@@ -535,8 +631,18 @@ class _FakeStorageProvider:
             self._event_store = InMemoryEventStore()
         return self._event_store
 
-    def transaction(self) -> Any:
-        return _NoOpTransaction()
+    @asynccontextmanager
+    async def transaction(self) -> Any:
+        if current_transaction() is not None:
+            raise ConfigError("cannot mix transaction and locking_transaction")
+        task = asyncio.current_task()
+        self._ordinary_transactions[task] = self._ordinary_transactions.get(task, 0) + 1
+        try:
+            yield None  # Preserve the fake's existing no-op transaction behavior.
+        finally:
+            self._ordinary_transactions[task] -= 1
+            if not self._ordinary_transactions[task]:
+                del self._ordinary_transactions[task]
 
     async def initialize(self) -> None:
         return

@@ -52,6 +52,21 @@ class StorageProvider(ABC):
     runs schema migrations; ``aclose`` tears it down.
     """
 
+    def locking_transaction(self, *, models: tuple[type[Identifiable], ...]):
+        """Open an opt-in atomic model transaction and yield an opaque conn token.
+
+        Declare every touched model up front and pass the token to every model
+        read/write. get_for_update and writes acquire rows in ascending
+        (storage table, id) order; already acquired rows may be revisited.
+        No gap lock is promised for missing rows. Do not call external services,
+        claims, another connection or non-model stores under these locks.
+        Unsupported providers fail closed; nested units are unsupported.
+        A caught storage failure makes the unit rollback-only. Failed/cancelled
+        commit has an unknown outcome: reconcile durable state, never blindly
+        retry an effectful operation. Existing transaction() remains separate.
+        """
+        raise NotImplementedError("transactional row locking is unsupported")
+
     @abstractmethod
     async def initialize(self) -> None:
         """Open the connection pool and run any one-time schema setup.

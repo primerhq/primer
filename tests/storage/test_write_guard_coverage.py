@@ -31,17 +31,16 @@ from primer.storage.sqlite import SqliteStorageProvider
 # _write_guard() block.
 # ---------------------------------------------------------------------------
 
-# transaction/read_snapshot issue their own BEGIN..COMMIT to IMPLEMENT the
-# guard mechanism itself; _write_guard is the guard; initialize() runs once
-# at startup, synchronously, before the provider is shared with any other
-# coroutine, so no concurrent writer can race its DDL. All four are exempt
-# by design, not bypassers.
-_EXEMPT_FUNCTIONS = {"_write_guard", "transaction", "read_snapshot", "initialize"}
+# Transaction methods hold the same lock directly, checked below. _write_guard
+# implements the guard; initialize() runs before the provider is shared.
+_EXEMPT_FUNCTIONS = {"_write_guard", "initialize"}
 
 
 def _is_write_guard_call(node: ast.expr) -> bool:
-    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-        and node.func.attr == "_write_guard"
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_write_guard") or (
+        isinstance(node, ast.Attribute) and node.attr == "_write_lock"
+    )
 
 
 def _is_commit_call(node: ast.expr) -> bool:

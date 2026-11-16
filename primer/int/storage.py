@@ -70,6 +70,14 @@ class Storage(ABC, Generic[ModelT]):
     on the other side.
     """
 
+    async def get_for_update(self, id: str, *, conn: Any) -> ModelT | None:
+        """Lock and read a row in a provider locking transaction.
+
+        A missing row is not locked against insertion. Backends without this
+        capability fail closed. Lock multiple rows in a consistent order.
+        """
+        raise NotImplementedError("transactional row locking is unsupported")
+
     @abstractmethod
     async def get(self, id: str, *, conn: Any | None = None) -> ModelT | None:
         """Fetch the entity with the given id, or ``None`` if missing.

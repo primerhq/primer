@@ -98,6 +98,10 @@ from primer.model.storage import (
     Predicate,
 )
 from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
+from primer.storage._locking import (
+    LockingTransaction, locking_context, current_transaction, drain_cleanup, model_operation,
+    prepared_models, require_transaction,
+)
 from primer.storage._patch import (
     PatchSpecError,
     canonical_fixup,
@@ -196,6 +200,7 @@ class PostgresStorageProvider(StorageProvider):
         self._config = config
         self._schema = _sanitize_identifier(config.db_schema, kind="schema")
         self._pool: asyncpg.Pool | None = None
+        self._transaction_tasks: dict[Any, int] = {}
         self._handles: dict[type[Identifiable], PostgresStorage[Any]] = {}
 
     @property
@@ -553,9 +558,57 @@ class PostgresStorageProvider(StorageProvider):
         the SQLite provider offers a matching ``transaction()`` over its
         single shared connection.
         """
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                yield conn
+        if current_transaction() is not None:
+            raise ConfigError("cannot mix transaction and locking_transaction")
+        task = asyncio.current_task()
+        self._transaction_tasks[task] = self._transaction_tasks.get(task, 0) + 1
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    yield conn
+        finally:
+            self._transaction_tasks[task] -= 1
+            if not self._transaction_tasks[task]:
+                del self._transaction_tasks[task]
+
+    @asynccontextmanager
+    async def locking_transaction(self, *, models: tuple[type[Identifiable], ...]):
+        if current_transaction() is not None or self._transaction_tasks.get(asyncio.current_task(), 0):
+            raise ConfigError("locking_transaction is not re-entrant")
+        models = prepared_models(models)
+        for model in models:
+            await self.get_storage(model)._ensure_table()
+        if any(kind_for_model(model) is not None for model in models):
+            await self._ensure_events_schema()
+        conn = await self.pool.acquire()
+        transaction = conn.transaction()
+        scope = LockingTransaction(self, conn, models)
+        token = None
+        try:
+            await transaction.start()
+            token = locking_context.set(scope)
+            try:
+                yield scope
+                scope.ensure_committable()
+            except BaseException:
+                try:
+                    await drain_cleanup(transaction.rollback())
+                except BaseException:
+                    logger.exception("locking transaction rollback failed; closing Postgres connection")
+                    try:
+                        await drain_cleanup(conn.close())
+                    except BaseException:
+                        logger.exception("failed to close Postgres connection after rollback failure")
+                raise
+            else:
+                # A cancelled/failed COMMIT has an unknown outcome. Pool reset
+                # completes before returning the connection to other callers.
+                await transaction.commit()
+        finally:
+            scope.active = False
+            if token is not None:
+                locking_context.reset(token)
+            await drain_cleanup(self.pool.release(conn))
 
 
 # ===========================================================================
@@ -1008,12 +1061,31 @@ class PostgresStorage(Storage[ModelT]):
         transaction is reused. Otherwise acquire one from the pool for
         the duration of the block.
         """
-        if conn is not None:
+        if isinstance(conn, LockingTransaction):
+            yield conn.check(self._provider, self._model)
+        elif conn is not None:
             yield conn
         else:
             async with self._provider.pool.acquire() as acquired:
                 yield acquired
 
+    def locking_identity(self):
+        return self._provider, self._model, self._table
+
+    @model_operation
+    async def get_for_update(self, id: str, *, conn: Any) -> ModelT | None:
+        connection = require_transaction(conn, self._provider, self._model)
+        conn.check_key(self._table, id)
+        try:
+            row = await connection.fetchrow(f'SELECT id, data FROM {self._qualified} WHERE id = $1 FOR UPDATE', id)
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        if row is None:
+            return None
+        conn.hold_key(self._table, id)
+        return self._decode_row(row)
+
+    @model_operation
     async def get(self, id: str, *, conn: Any | None = None) -> ModelT | None:
         await self._ensure_table()
         sql = f'SELECT id, data FROM {self._qualified} WHERE id = $1'
@@ -1026,6 +1098,7 @@ class PostgresStorage(Storage[ModelT]):
             return None
         return self._decode_row(row)
 
+    @model_operation
     async def create(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
         event_kind = kind_for_model(self._model)
@@ -1059,6 +1132,7 @@ class PostgresStorage(Storage[ModelT]):
             raise self._wrap_db_error(exc) from exc
         return self._decode_row(row)
 
+    @model_operation
     async def update(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
         event_kind = kind_for_model(self._model)
@@ -1093,6 +1167,7 @@ class PostgresStorage(Storage[ModelT]):
             )
         return self._decode_row(row)
 
+    @model_operation
     async def update_unless(
         self, entity: ModelT, *, field: str, forbidden: Any,
         conn: Any | None = None,
@@ -1147,6 +1222,7 @@ class PostgresStorage(Storage[ModelT]):
             return None
         return self._decode_row(row)
 
+    @model_operation
     async def patch_if(
         self,
         id: str,
@@ -1158,6 +1234,7 @@ class PostgresStorage(Storage[ModelT]):
     ) -> ModelT | None:
         return (await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=False))[0]
 
+    @model_operation
     async def patch_if_or_current(
         self,
         id: str,
@@ -1259,6 +1336,7 @@ class PostgresStorage(Storage[ModelT]):
             return None, (self._decode_row(current_row) if current_row is not None else None)
         return entity, None
 
+    @model_operation
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()
         event_kind = kind_for_model(self._model)
@@ -1289,6 +1367,7 @@ class PostgresStorage(Storage[ModelT]):
 
     # ---------- list / find ------------------------------------------------
 
+    @model_operation
     async def list(
         self,
         page: PageRequest,
@@ -1297,6 +1376,7 @@ class PostgresStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=None, page=page, order_by=order_by)
 
+    @model_operation
     async def find(
         self,
         predicate: Predicate | None,
@@ -1323,6 +1403,7 @@ class PostgresStorage(Storage[ModelT]):
             await self._provider.get_storage(model)._ensure_table()  # type: ignore[attr-defined]
         return where_sql
 
+    @model_operation
     async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
         """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
         if not values:
@@ -1344,6 +1425,7 @@ class PostgresStorage(Storage[ModelT]):
             raise self._wrap_db_error(exc) from exc
         return {row["k"]: int(row["n"]) for row in rows if row["k"] is not None}
 
+    @model_operation
     async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
         """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
         await self._ensure_table()

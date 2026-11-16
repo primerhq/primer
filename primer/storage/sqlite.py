@@ -67,6 +67,10 @@ from primer.model.storage import (
     PageRequest,
     Predicate,
 )
+from primer.storage._locking import (
+    LockingTransaction, locking_context, current_transaction, drain_cleanup, model_operation,
+    prepared_models, require_transaction,
+)
 from primer.storage._patch import (
     PatchSpecError,
     canonical_fixup,
@@ -422,6 +426,61 @@ class SqliteStorageProvider(StorageProvider):
                     await conn.commit()
                 finally:
                     self._txn_task = None
+
+    async def _locking_rollback(self, conn):
+        try:
+            await drain_cleanup(conn.rollback())
+        except BaseException:
+            # An uncertain transaction must never be reused on the shared
+            # connection. Closing also drains the SQLite worker queue.
+            logger.exception("locking transaction rollback failed; closing SQLite connection")
+            try:
+                await drain_cleanup(conn.close())
+            except BaseException:
+                logger.exception("failed to close SQLite connection after rollback failure")
+            finally:
+                self._conn = None
+
+    @asynccontextmanager
+    async def locking_transaction(self, *, models: tuple[type[Identifiable], ...]):
+        if current_transaction() is not None or self._in_own_transaction():
+            raise ConfigError("locking_transaction is not re-entrant")
+        models = prepared_models(models)
+        for model in models:
+            await self.get_storage(model)._ensure_table()
+        if any(kind_for_model(model) is not None for model in models):
+            await self._ensure_events_schema()
+        async with self._write_lock:
+            conn = self.connection
+            scope = LockingTransaction(self, conn, models)
+            token = None
+            try:
+                try:
+                    await conn.execute("BEGIN IMMEDIATE")
+                except asyncio.CancelledError:
+                    await self._locking_rollback(conn)
+                    raise
+                self._txn_task = asyncio.current_task()
+                token = locking_context.set(scope)
+                try:
+                    yield scope
+                    scope.ensure_committable()
+                except BaseException:
+                    await self._locking_rollback(conn)
+                    raise
+                else:
+                    try:
+                        await conn.commit()
+                    except BaseException:
+                        # COMMIT may already be queued or durable: drain a
+                        # following rollback, then propagate unknown outcome.
+                        await self._locking_rollback(conn)
+                        raise
+            finally:
+                scope.active = False
+                if token is not None:
+                    locking_context.reset(token)
+                self._txn_task = None
 
     @asynccontextmanager
     async def read_snapshot(self):
@@ -933,6 +992,19 @@ class SqliteStorage(Storage[ModelT]):
 
     # ----- CRUD ---------------------------------------------------------
 
+    def locking_identity(self):
+        return self._provider, self._model, self._table
+
+    @model_operation
+    async def get_for_update(self, id: str, *, conn: object) -> ModelT | None:
+        require_transaction(conn, self._provider, self._model)
+        conn.check_key(self._table, id)
+        result = await self.get(id, conn=conn)
+        if result is not None:
+            conn.hold_key(self._table, id)
+        return result
+
+    @model_operation
     async def get(self, id: str, *, conn: object | None = None) -> ModelT | None:  # noqa: A002
         # SQLite uses a single shared connection so there is nothing to
         # thread; accept the kwarg for Protocol parity and ignore it.
@@ -950,6 +1022,7 @@ class SqliteStorage(Storage[ModelT]):
             return None
         return self._decode_row(row[0], row[1])
 
+    @model_operation
     async def create(self, entity: ModelT, *, conn: object | None = None) -> ModelT:
         # SQLite uses a single shared connection so there is nothing to
         # thread; accept the kwarg for Protocol parity and ignore it.
@@ -986,6 +1059,7 @@ class SqliteStorage(Storage[ModelT]):
         assert row is not None
         return self._decode_row(row[0], row[1])
 
+    @model_operation
     async def update(self, entity: ModelT, *, conn: object | None = None) -> ModelT:
         # SQLite uses a single shared connection so there is nothing to
         # thread; accept the kwarg for Protocol parity and ignore it.
@@ -1025,6 +1099,7 @@ class SqliteStorage(Storage[ModelT]):
             )
         return self._decode_row(row[0], row[1])
 
+    @model_operation
     async def update_unless(
         self, entity: ModelT, *, field: str, forbidden: Any,
         conn: object | None = None,
@@ -1078,6 +1153,7 @@ class SqliteStorage(Storage[ModelT]):
             return None
         return self._decode_row(row[0], row[1])
 
+    @model_operation
     async def patch_if(
         self,
         id: str,  # noqa: A002
@@ -1089,6 +1165,7 @@ class SqliteStorage(Storage[ModelT]):
     ) -> ModelT | None:
         return (await self._patch_if(id, patch, where=where, set_paths=set_paths, conn=conn, want_current=False))[0]
 
+    @model_operation
     async def patch_if_or_current(
         self,
         id: str,  # noqa: A002
@@ -1205,6 +1282,7 @@ class SqliteStorage(Storage[ModelT]):
             return None, (self._decode_row(current_row[0], current_row[1]) if current_row is not None else None)
         return entity, None
 
+    @model_operation
     async def delete(self, id: str, *, conn: object | None = None) -> None:  # noqa: A002
         # SQLite uses a single shared connection so there is nothing to
         # thread; accept the kwarg for Protocol parity and ignore it.
@@ -1236,6 +1314,7 @@ class SqliteStorage(Storage[ModelT]):
                 f"{self._model.__name__} with id {id!r} not found"
             )
 
+    @model_operation
     async def list(
         self,
         page: PageRequest,
@@ -1244,6 +1323,7 @@ class SqliteStorage(Storage[ModelT]):
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         return await self._paged(predicate=None, page=page, order_by=order_by)
 
+    @model_operation
     async def find(
         self,
         predicate: Predicate | None,
@@ -1270,6 +1350,7 @@ class SqliteStorage(Storage[ModelT]):
             await self._provider.get_storage(model)._ensure_table()  # type: ignore[attr-defined]
         return where_sql
 
+    @model_operation
     async def count_by(self, field: str, values: Sequence[str], predicate: Predicate | None = None) -> dict[str, int]:
         """One ``GROUP BY`` over the rows whose ``field`` is among ``values`` (and match ``predicate``)."""
         if not values:
@@ -1292,6 +1373,7 @@ class SqliteStorage(Storage[ModelT]):
             raise _wrap_sqlite_error(exc, model_name=self._model.__name__, op="count_by") from exc
         return {key: int(n) for key, n in rows if key is not None}
 
+    @model_operation
     async def find_ids(self, predicate: Predicate | None) -> list[tuple[str, dict[str, Any] | None]]:
         """``(id, access)`` of every matching row: ``id`` and the ``access`` block only, keyset-paged on ``id``, no ``COUNT`` and no row decode."""
         await self._ensure_table()
