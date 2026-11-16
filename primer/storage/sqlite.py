@@ -79,6 +79,7 @@ from primer.storage._patch import (
     WhereKey,
     normalise_where,
     validate_patch,
+    validate_where,
 )
 from primer.storage._cursor import (
     _decode_cursor_for,
@@ -1281,6 +1282,38 @@ class SqliteStorage(Storage[ModelT]):
                 )
             return None, (self._decode_row(current_row[0], current_row[1]) if current_row is not None else None)
         return entity, None
+
+    @model_operation
+    async def delete_if(self, id: str, *, where: Mapping[WhereKey, Sequence[Any]], conn: object | None = None) -> bool:
+        where_d = validate_where(where)
+        if not isinstance(id, str):
+            raise ConfigError("locking row id must be a string")
+        if conn is None:
+            # Do not upgrade an ordinary/unowned raw transaction or run DDL in it.
+            if (self._provider._in_own_transaction() or
+                    (self._provider._txn_task is None and self._provider.connection.in_transaction)):
+                raise ConfigError("delete_if does not support legacy/raw transactions")
+            async with self._provider.locking_transaction(models=(self._model,)) as token:
+                return await self.delete_if(id, where=where_d, conn=token)
+        if not isinstance(conn, LockingTransaction):
+            raise ConfigError("delete_if requires a locking token, not a raw connection")
+        connection = require_transaction(conn, self._provider, self._model)
+        # Empty SET input reuses only the existing, unchanged typed guard compiler.
+        _, _, clause, params = compile_sqlite({}, {}, normalise_where(self._model, where_d))
+        try:
+            async with connection.execute(
+                f'DELETE FROM "{self._table}" WHERE id = ? AND {clause} RETURNING id', (id, *params),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return False
+            kind = kind_for_model(self._model)
+            if kind is not None:
+                await _append_crud_event(connection, event_type=f"{kind}.deleted",
+                                         entity_kind=kind, entity_id=id, payload_json=json.dumps({"id": id}))
+            return True
+        except Exception as exc:
+            raise _wrap_sqlite_error(exc, model_name=self._model.__name__, op="delete") from exc
 
     @model_operation
     async def delete(self, id: str, *, conn: object | None = None) -> None:  # noqa: A002

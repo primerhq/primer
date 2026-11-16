@@ -154,9 +154,56 @@ never interpret cancellation as proof of rollback or blindly replay side effects
 This primitive supplies neither cross-resource atomicity nor a durable recovery
 protocol, priority scheduling, reserved provider capacity or caller authorization.
 
+### Guarded conditional deletion
+
+`await rows.delete_if(id, where={"generation": [expected]}) -> bool` is an
+internal, opt-in storage capability, not caller authorization. Unsupported
+backends raise `NotImplementedError`; there is no read/check/unconditional-delete
+fallback. PostgreSQL, SQLite and the test fake support it. Every guard must match
+the current stored document. Guards use the same nonempty scalar or tuple-path
+rules as `patch_if`: multiple allowed values, strict JSON boolean/number/string
+types, null/absent leaves and old model defaults. Malformed guards raise
+`PatchSpecError`. Use `raw_generation` to obtain canonical guard values.
+
+With `conn` omitted and no existing transaction, the method opens a declared
+`locking_transaction` and returns only after that unit exits. A compound call
+must instead pass the active, current provider-issued token explicitly. The
+token must match the task, provider, declared model and lifetime. Legacy
+`transaction()` scopes, explicit raw connections and SQLite's untracked raw
+transaction refuse before deletion SQL, including legacy scopes with omitted
+`conn`. Existing APIs retain their old behavior. Arbitrary raw PostgreSQL work
+on an undisclosed separate connection cannot be detected by this API; never
+mix it into the unit.
+
+The backend executes one guarded `DELETE ... RETURNING id`. A missing row or
+mismatched guard returns `False`, emits no deletion event and does not poison
+the unit. It records the attempted ordering high-water but grants no held-row
+or gap-lock receipt. Exactly `True` records a held, revisitable key until unit
+end. The registered `<kind>.deleted` event, its acting-person attribution and
+id-only payload are written on the same owner connection. Preparation of model
+and event tables happens before locks. No per-operation savepoint permits a
+caller to recover and commit after an entered-operation failure.
+
+Caught cancellation, database or CDC failure makes the entire locking unit
+rollback-only, including its prior model writes and events. Queued cleanup must
+finish before a peer writer proceeds; failed SQLite rollback invalidates the
+connection. PostgreSQL keeps the delivered cleanup error precedence: a failing
+pool release can surface its own exception with the original failure chained.
+A failed or cancelled COMMIT still has an unknown outcome: deletion and CDC can
+both be durable even when the call raises. Reconcile durable state and audit;
+do not treat an exception as `False`, absence as attribution, or retry effects
+blindly. The operation adds no durable recovery, scheduling or reservation
+policy. Perform no external, claim-engine, other-connection or non-model-store
+I/O under the token.
+
+The fake stages token-owned deletion events until a successful unit exit and
+serializes independent event appends behind that unit, so rolled-back events
+cannot erase unrelated events or publish their IDs out of order. Its ordinary
+model CRUD and no-op legacy transaction behavior remain unchanged.
+
 ### Model operations
 
-`Storage[ModelT]` (`primer/int/storage.py`, `ModelT` bound to `Identifiable`) exposes eleven operations:
+`Storage[ModelT]` (`primer/int/storage.py`, `ModelT` bound to `Identifiable`) exposes these operations:
 
 - `get(id)` returns the entity or `None` if missing; backend errors propagate rather than collapsing to `None`.
 - `create(entity)` inserts and returns the stored entity; raises `ConflictError` on duplicate id.
@@ -164,6 +211,7 @@ protocol, priority scheduling, reserved provider capacity or caller authorizatio
 - `update_unless(entity, field=, forbidden=)` is `update` that the backend atomically skips when the row's CURRENT `field` already equals `forbidden`; returns `None` when skipped, raises `NotFoundError` if absent.
 - `patch_if(id, patch, where=, set_paths=)` is the field-scoped compare-and-set, see below.
 - `patch_if_or_current(id, patch, where=, set_paths=)` is `patch_if` that answers a rejected write with the row as it stands: `(written, None)` when applied, `(None, current)` when the guard refused (the backends hand back the row their rejection probe already read). Raises exactly what `patch_if` raises, `NotFoundError` for a missing row included.
+- `delete_if(id, where=, conn=)` conditionally deletes using the opt-in unit above; returns a boolean.
 - `delete(id)` removes by id; raises `NotFoundError` if absent (callers wanting idempotent semantics suppress it).
 - `list(page, order_by)` paginated enumeration of every row.
 - `count_by(field, values, predicate=None)` returns `{value: matching row count}` for each of `values` of a text `field` (values with no matching row are absent) in one grouped query on the SQL backends.

@@ -110,6 +110,7 @@ from primer.storage._patch import (
     WhereKey,
     normalise_where,
     validate_patch,
+    validate_where,
 )
 from primer.storage._cursor import (
     _decode_cursor_for,
@@ -1338,6 +1339,34 @@ class PostgresStorage(Storage[ModelT]):
                 )
             return None, (self._decode_row(current_row) if current_row is not None else None)
         return entity, None
+
+    @model_operation
+    async def delete_if(self, id: str, *, where: Mapping[WhereKey, Sequence[Any]], conn: Any | None = None) -> bool:
+        where_d = validate_where(where)
+        if not isinstance(id, str):
+            raise ConfigError("locking row id must be a string")
+        if conn is None:
+            if self._provider._transaction_tasks.get(asyncio.current_task(), 0):
+                raise ConfigError("delete_if does not support legacy/raw transactions")
+            async with self._provider.locking_transaction(models=(self._model,)) as token:
+                return await self.delete_if(id, where=where_d, conn=token)
+        if not isinstance(conn, LockingTransaction):
+            raise ConfigError("delete_if requires a locking token, not a raw connection")
+        connection = require_transaction(conn, self._provider, self._model)
+        _, clause, params = compile_postgres({}, {}, normalise_where(self._model, where_d), first_param=2)
+        try:
+            row = await connection.fetchrow(
+                f'DELETE FROM {self._qualified} WHERE id = $1 AND {clause} RETURNING id', id, *params,
+            )
+            if row is None:
+                return False
+            kind = kind_for_model(self._model)
+            if kind is not None:
+                await _append_crud_event(connection, self._provider.schema, event_type=f"{kind}.deleted",
+                                         entity_kind=kind, entity_id=id, payload_json=json.dumps({"id": id}))
+            return True
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
 
     @model_operation
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
