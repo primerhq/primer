@@ -2,8 +2,9 @@
 
 import asyncio
 from contextvars import Context
+from collections.abc import Mapping, Sequence
 import json
-from typing import Any
+from typing import Any, get_type_hints
 
 from pydantic import Field
 import pytest
@@ -55,6 +56,17 @@ async def provider(request, tmp_path, monkeypatch):
 
 async def deleted_events(provider):
     return await provider.get_event_store().read_after(0, event_type_prefix="delete_test.deleted")
+
+
+def test_delete_if_runtime_type_hints():
+    hints = get_type_hints(Storage.delete_if)
+    assert hints == {
+        "id": str,
+        "where": Mapping[str | tuple[str, ...], Sequence[Any]],
+        "conn": Any | None,
+        "return": bool,
+    }
+    assert hints["where"] == get_type_hints(Storage.patch_if)["where"]
 
 
 async def test_unsupported_backend_refuses_without_fallback():
