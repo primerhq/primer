@@ -97,10 +97,7 @@ async def test_caught_mixed_cdc_error_poisoning_rolls_back_both_models(provider,
             await memory.patch_if(JOB, {'target_turn': 9}, where={'agent_id': ['agent']}, conn=token)
             with pytest.raises(ProviderError) as caught:
                 await deletes.delete_if('m', where={'guard': [1]}, conn=token)
-            if isinstance(provider, SqliteStorageProvider):
-                assert caught.value.cause is error and caught.value.__cause__ is error
-            else:
-                assert caught.value is error
+            assert_cdc_failure(provider, caught.value, error)
             assert token.failed
     assert token.rollback_complete and not token.active
     assert await deletes.get('m') is not None and (await memory.get(JOB)).target_turn == 1
@@ -386,3 +383,38 @@ async def test_sqlite_mixed_commit_uncertainty_preserves_atomic_durable_outcome(
             await asyncio.gather(task, return_exceptions=True)
     finally:
         await sp.aclose()
+
+
+def assert_cdc_failure(provider, caught, original):
+    if isinstance(provider, _FakeStorageProvider):
+        assert caught is original
+    else:
+        # Both concrete backends wrap driver/CDC errors, retaining the cause.
+        assert caught.cause is original and caught.__cause__ is original
+
+
+async def test_controlled_postgres_cdc_error_assertion_uses_backend_error_contract(monkeypatch):
+    """Real PG delete/error-routing method with a controlled driver, no server."""
+    import primer.storage.postgres as backend
+    from primer.model.provider import PostgresConfig
+    from primer.storage._locking import LockingTransaction, locking_context
+    monkeypatch.setitem(registry._KIND_BY_MODEL, DeleteThing, 'delete_test')
+    sp = PostgresStorageProvider(PostgresConfig.model_construct(db_schema='public'))
+    rows = sp.get_storage(DeleteThing)
+    trace, error = [], ProviderError('CDC append failed')
+    class Connection:
+        async def fetchrow(self, sql, *args):
+            trace.append(sql)
+            return {'id': 'm'}
+    async def fail(*args, **kwargs): raise error
+    monkeypatch.setattr(backend, '_append_crud_event', fail)
+    token = LockingTransaction(sp, Connection(), (DeleteThing,))
+    context = locking_context.set(token)
+    try:
+        with pytest.raises(ProviderError) as caught:
+            await rows.delete_if('m', where={'guard': [1]}, conn=token)
+        assert len(trace) == 1 and trace[0].startswith('DELETE FROM ') and token.failed
+        assert_cdc_failure(sp, caught.value, error)
+    finally:
+        token.active = False
+        locking_context.reset(context)
