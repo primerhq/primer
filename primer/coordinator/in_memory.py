@@ -31,9 +31,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class _RateLimitState:
+    """One key's holders and pending admissions, owned by one event loop."""
+
+    def __init__(self) -> None:
+        self.in_use = 0
+        self.waiters: list[tuple[int, asyncio.Future[None]]] = []
+
+    def wake_waiters(self) -> None:
+        remaining = []
+        for limit, waiter in self.waiters:
+            if waiter.done():
+                continue
+            if self.in_use < limit:
+                # Count the grant before scheduling its task. A new caller
+                # cannot take this slot while the waiter is still waking.
+                self.in_use += 1
+                waiter.set_result(None)
+            else:
+                remaining.append((limit, waiter))
+        self.waiters = remaining
+
+
 class _InMemoryRateLimiterLease(RateLimiterLease):
-    def __init__(self, semaphore: asyncio.Semaphore) -> None:
-        self._semaphore = semaphore
+    def __init__(self, state: _RateLimitState) -> None:
+        self._state = state
         self._released = False
 
     async def __aenter__(self) -> "_InMemoryRateLimiterLease":
@@ -46,52 +68,69 @@ class _InMemoryRateLimiterLease(RateLimiterLease):
         if self._released:
             return
         self._released = True
-        self._semaphore.release()
+        # No suspension: even repeated cancellation cannot interrupt cleanup
+        # between returning this slot and granting it to an eligible waiter.
+        self._state.in_use -= 1
+        self._state.wake_waiters()
 
     async def heartbeat(self) -> bool:
-        # In-memory leases never expire; only the in-process semaphore
-        # can revoke them, which it doesn't. Always alive while held.
+        # In-memory leases never expire. They stay alive until released.
         return not self._released
 
 
 class InMemoryRateLimiter(RateLimiter):
-    """Per-key ``asyncio.Semaphore`` cache.
+    """Count every holder of a key across per-caller limit changes.
 
-    When ``max_concurrency`` changes between calls for the same key the
-    semaphore is replaced. Brief over-grant during the swap is accepted.
+    Each admission uses its caller's limit, like the Postgres limiter. A
+    lower limit does not preempt holders; that caller waits for occupancy
+    to fall below its limit. Eligible waiters receive slots in arrival
+    order, skipping earlier waiters whose own limits prohibit admission.
+    This state is process-local and must stay on one event loop, like
+    asyncio synchronization primitives.
     """
 
     def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._semaphores: dict[str, tuple[asyncio.Semaphore, int]] = {}
-
-    async def _get_semaphore(
-        self, key: str, max_concurrency: int,
-    ) -> asyncio.Semaphore:
-        async with self._lock:
-            cached = self._semaphores.get(key)
-            if cached is not None and cached[1] == max_concurrency:
-                return cached[0]
-            sem = asyncio.Semaphore(max_concurrency)
-            self._semaphores[key] = (sem, max_concurrency)
-            return sem
+        self._states: dict[str, _RateLimitState] = {}
 
     async def acquire(
         self, key: str, *, max_concurrency: int,
     ) -> RateLimiterLease:
-        sem = await self._get_semaphore(key, max_concurrency)
-        await sem.acquire()
-        return _InMemoryRateLimiterLease(sem)
+        if max_concurrency < 0:
+            raise ValueError("max_concurrency must not be negative")
+        state = self._states.setdefault(key, _RateLimitState())
+        if state.in_use < max_concurrency:
+            state.in_use += 1
+            return _InMemoryRateLimiterLease(state)
+        waiter = asyncio.get_running_loop().create_future()
+        entry = (max_concurrency, waiter)
+        # No suspension between checking occupancy and registering the wait:
+        # a release on this event loop cannot be missed.
+        state.waiters.append(entry)
+        try:
+            await waiter
+        except BaseException:
+            if waiter.done() and not waiter.cancelled():
+                # The grant already counted us, but cancellation won before
+                # acquire returned its lease. Hand the reserved slot back.
+                state.in_use -= 1
+                state.wake_waiters()
+            elif entry in state.waiters:
+                state.waiters.remove(entry)
+            raise
+        return _InMemoryRateLimiterLease(state)
 
     async def try_acquire(
         self, key: str, *, max_concurrency: int, timeout_s: float,
     ) -> RateLimiterLease | None:
-        sem = await self._get_semaphore(key, max_concurrency)
+        if max_concurrency < 0:
+            raise ValueError("max_concurrency must not be negative")
+        if timeout_s <= 0:
+            return None
         try:
-            await asyncio.wait_for(sem.acquire(), timeout=timeout_s)
+            async with asyncio.timeout(timeout_s):
+                return await self.acquire(key, max_concurrency=max_concurrency)
         except TimeoutError:
             return None
-        return _InMemoryRateLimiterLease(sem)
 
 
 # ---------------------------------------------------------------------------
