@@ -150,7 +150,60 @@ entry's `meta['applied_runs']` in the same statement as the apply
 replay of a crashed run is a no-op at the storage level where before it
 double-credited by one.
 
+### Monotonic target merges
+
+The enqueue helper owns a one-model `locking_transaction(models=(MemoryJob,))`,
+reads the current row with `get_for_update`, decodes it, and patches only the
+maximum of current/requested target plus expiry on the same token. It does not
+compare reconstructed canonical dates or integers against historical raw JSON.
+Every representation readable by the model remains readable; untouched identity
+fields retain their stored representation. Invalid stored rows still fail.
+
+This helper requires the delivered SQLite/PostgreSQL model-locking capabilities
+(and the test fake). Extension providers/wrappers must implement/forward both
+provider locking and model locked reads. Unsupported or nested ordinary/locking
+units refuse visibly before mutation; there is no unlocked fallback. No claim
+engine or external I/O runs under the model lock.
+
+Only the exact original create `ConflictError` may cause one fresh recovery unit,
+after a confirmed body rollback and complete owner/pool cleanup. The recovery
+reads a current winner under lock and cannot recreate a vanished winner. New
+cancellation requests during cleanup forbid recovery, even when cleanup preserves
+the original error. Read/patch, commit, pool-reset or uncertain cleanup errors
+propagate without retry. Cancelled/failed commit can already be durable and must
+not be reported as a rollback or automatically replayed. PostgreSQL does not gap
+lock a missing row, so two initial creators can genuinely collide.
+
+An existing foreign owner retains the old no-write return. Current creation,
+kind/session identity and reflected progress are preserved, even if a caller's
+requested kind/session differs. Cooperating database writers cannot delete or
+replace the current row between its locked read and patch. A replacement BEFORE
+that read is current state, not a stale snapshot to reject. There is no durable
+incarnation/generation fence: identical-identity ABA, stale producers,
+disable/re-enable and cleanup across separate operations remain outside this
+contract. Older unconditional writers and arbitrary SQL are not fenced. Each
+unit touches one row in canonical lock order; SQLite's writer exclusion is
+broader than PostgreSQL's row lock.
+
+Expiry remains caller `now + seven days`, even when an older caller shortens it.
+Creation defaults, job kinds and due-time policy are unchanged.
+
+Lease arming remains a separate operation after the row merge. Turn completion
+still debounces by `idle_minutes`; session end still requests immediate work.
+The existing owner-mismatch and vanished-create-winner no-write returns can
+still be followed by a lease arm. This fix does not make those seams durable or
+atomic, change due-time policy, fence cleanup/recreation, or recover lost enqueue
+intent. The outer session hook remains best effort and logs a failure rather
+than failing the completed turn.
+
 ## 10. Testing patterns
+
+`tests/memory/test_job_target.py` covers controlled SQLite/fake/PostgreSQL
+locked target races, current identity/disappearance, expiry and hook deadlines.
+`test_job_target_locking.py` adds legacy representations, actual independent
+writer/create contention and rollback/commit/cancellation boundaries.
+Their marked native cases run in separate required PostgreSQL lane steps;
+collection or a local fake pass is not native acceptance.
 
 `tests/memory/` covers the settings transitions and the collection
 (`test_jobs.py`, `test_collection.py`), the entry store and body

@@ -7,6 +7,7 @@ are the runners of Tasks 7, 8 and 9 (``run_reflect``, ``run_curate``, ``run_topi
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from primer.model.chat import Message, ToolCallPart
 from primer.model.except_ import ConflictError
 from primer.memory.reflect import ReflectionTransient, new_turns, turn_starts
 from primer.model.memory import AgentMemory, MemoryJob
+from primer.storage._locking import LockingTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -81,22 +83,52 @@ async def _memory_agent(sp: Any, session: Any) -> tuple[str, AgentMemory] | None
 
 
 async def _upsert_job(sp: Any, job_id: str, *, kind: str, agent_id: str, session_id: str | None, target_turn: int, now: datetime) -> None:
-    """The job row: created, or its target turn raised and its lifetime renewed (never lowered: a late write of an older turn changes nothing)."""
-    store = sp.get_storage(MemoryJob)
+    """Merge the decoded current target while owning its row until unit exit.
+
+    Requires the provider's model-locking capability, never a raw/nested unit.
+    Only an original create collision with confirmed rollback/cleanup permits
+    one fresh winner read. No recovery after new cancellation or uncertain
+    cleanup/commit. This is neither generation fencing nor atomic lease arm.
+    """
     expires = now + JOB_LIFETIME
-    existing = await store.get(job_id)
-    if existing is None:
+    for attempt in range(2):
+        create_collision = None
+        token = None
+        cancellation_requests = asyncio.current_task().cancelling()
         try:
-            await store.create(MemoryJob(
-                id=job_id, kind=kind, agent_id=agent_id, session_id=session_id, target_turn=target_turn, created_at=now, expires_at=expires,
-            ))
-            return
-        except ConflictError:  # another worker enqueued it between the read and the write
-            existing = await store.get(job_id)
-            if existing is None:
+            async with sp.locking_transaction(models=(MemoryJob,)) as token:
+                store = sp.get_storage(MemoryJob)
+                current = await store.get_for_update(job_id, conn=token)
+                if current is None:
+                    if attempt:
+                        return  # Preserve a vanished create winner without resurrecting it.
+                    try:
+                        await store.create(MemoryJob(
+                            id=job_id, kind=kind, agent_id=agent_id, session_id=session_id,
+                            target_turn=target_turn, created_at=now, expires_at=expires,
+                        ), conn=token)
+                    except ConflictError as exc:
+                        create_collision = exc
+                        raise
+                    return
+                if current.agent_id != agent_id:
+                    return  # Preserve the old foreign-owner no-write behavior.
+                patch = {"target_turn": max(current.target_turn, target_turn), "expires_at": expires}
+                written = await store.patch_if(
+                    job_id, to_jsonable_python(patch), where={"agent_id": [agent_id]}, conn=token,
+                )
+                if written is None:
+                    raise ConflictError(f"locked memory job {job_id!r} changed during target merge")
                 return
-    patch = {"target_turn": max(existing.target_turn, target_turn), "expires_at": expires}
-    await store.patch_if(job_id, to_jsonable_python(patch), where={"agent_id": [agent_id]})
+        except ConflictError as exc:
+            # Class alone cannot identify a collision: COMMIT/reset may raise
+            # ConflictError too, and failed cleanup can preserve the body error.
+            if (exc is not create_collision or attempt or
+                    type(token) is not LockingTransaction or token.active is not False or
+                    token.owner is not asyncio.current_task() or
+                    token.rollback_complete is not True or
+                    asyncio.current_task().cancelling() > cancellation_requests):
+                raise
 
 
 async def _enqueue_reflect(sp: Any, engine: Any, session: Any, now: datetime, *, due: Callable[[AgentMemory], datetime]) -> None:

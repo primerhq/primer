@@ -586,6 +586,7 @@ class PostgresStorageProvider(StorageProvider):
         scope = LockingTransaction(self, conn, models)
         token = None
         failed = False
+        rolled_back = False
         try:
             await transaction.start()
             token = locking_context.set(scope)
@@ -595,6 +596,7 @@ class PostgresStorageProvider(StorageProvider):
             except BaseException:
                 try:
                     await drain_cleanup(transaction.rollback())
+                    rolled_back = True
                 except BaseException:
                     logger.exception("locking transaction rollback failed; closing Postgres connection")
                     try:
@@ -614,6 +616,9 @@ class PostgresStorageProvider(StorageProvider):
             if token is not None:
                 locking_context.reset(token)
             await drain_cleanup(self.pool.release(conn), propagate_cancellation=not failed)
+            # Rollback alone is insufficient: pool reset/release must finish.
+            # BEGIN/COMMIT paths deliberately leave this unconfirmed.
+            scope.rollback_complete = rolled_back
 
 
 # ===========================================================================
