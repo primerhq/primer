@@ -87,13 +87,18 @@ def model_operation(fn):
         transaction.check(provider, model)
         if supplied is not transaction:
             raise ConfigError("thread the locking transaction token through every model operation")
+        if fn.__name__ == "delete_if" and current_transaction() is not transaction:
+            raise ConfigError("delete_if requires the current provider-issued locking token")
         if fn.__name__ != "get":
             entity = args[0] if args else kwargs.get("entity", kwargs.get("id"))
             entity_id = entity.id if fn.__name__ in {"create", "update", "update_unless"} else entity
             transaction.check_key(table, entity_id)
         try:
             result = await fn(self, *args, **kwargs)
-            held = result[0] is not None if fn.__name__ == "patch_if_or_current" else result is not None
+            if fn.__name__ == "delete_if":
+                held = result is True
+            else:
+                held = result[0] is not None if fn.__name__ == "patch_if_or_current" else result is not None
             if fn.__name__ not in {"get", "get_for_update"} and (held or fn.__name__ == "delete"):
                 transaction.hold_key(table, entity_id)
             return result

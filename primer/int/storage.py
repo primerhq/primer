@@ -70,6 +70,20 @@ class Storage(ABC, Generic[ModelT]):
     on the other side.
     """
 
+    async def delete_if(
+        self, id: str, *, where: Mapping[WhereKey, Sequence[Any]], conn: Any | None = None,
+    ) -> bool:
+        """Delete iff the current stored document matches nonempty typed guards.
+
+        Missing/mismatching rows return False without CDC. A standalone call
+        opens a locking_transaction; compound calls require its explicit opaque
+        token. Legacy/raw connections are unsupported. True is conditional on
+        the unit committing; failed/cancelled COMMIT has an unknown outcome.
+        This internal capability is not authorization or a missing-row gap lock.
+        Unsupported backends must refuse, never read/check/unconditionally delete.
+        """
+        raise NotImplementedError("guarded transactional deletion is unsupported")
+
     async def get_for_update(self, id: str, *, conn: Any) -> ModelT | None:
         """Lock and read a row in a provider locking transaction.
 

@@ -331,6 +331,37 @@ def _where_key(key: Any) -> WhereKey:
     return field
 
 
+def validate_where(where: Mapping[WhereKey, Sequence[Any]]) -> dict[WhereKey, list[Any]]:
+    """Validate/copy scalar guards without inventing a patch or touching storage.
+
+    The same typed/path rules as patch_if; validation still precedes SQL.
+    """
+    if not where:
+        raise PatchSpecError("a guarded mutation needs a non-empty where")
+    where_d: dict[WhereKey, list[Any]] = {}
+    for key, allowed in where.items():
+        field = _where_key(key)
+        if field in where_d:
+            raise PatchSpecError(f"where names {field!r} twice (a one-element path is the field itself)")
+        if isinstance(allowed, (str, bytes)) or not isinstance(allowed, Sequence):
+            raise PatchSpecError(
+                f"where[{field!r}] must be a LIST of allowed values, got {type(allowed).__name__} "
+                "(a bare string would be read as a list of its characters and never match)"
+            )
+        values = list(allowed)
+        if not values:
+            raise PatchSpecError(f"where[{field!r}] is empty, which can never match")
+        for v in values:
+            if not isinstance(v, _WHERE_SCALARS):
+                raise PatchSpecError(
+                    f"where[{field!r}] holds {type(v).__name__}; use a JSON scalar "
+                    "(raw_generation gives the canonical value of a field)"
+                )
+            _check_json(v, f"where[{field!r}]")
+        where_d[field] = values
+    return where_d
+
+
 def validate_patch(
     patch: Mapping[str, Any] | None,
     set_paths: Mapping[tuple[str, ...], Any] | None,
@@ -359,7 +390,6 @@ def validate_patch(
     """
     patch_d = dict(patch or {})
     paths_d = dict(set_paths or {})
-    where_d: dict[WhereKey, list[Any]] = {}
 
     if not patch_d and not paths_d:
         raise PatchSpecError("patch_if needs a non-empty patch or set_paths")
@@ -405,27 +435,7 @@ def validate_patch(
             "the compiled statement grows as 3^parents"
         )
 
-    for key, allowed in where.items():
-        field = _where_key(key)
-        if field in where_d:
-            raise PatchSpecError(f"where names {field!r} twice (a one-element path is the field itself)")
-        if isinstance(allowed, (str, bytes)) or not isinstance(allowed, Sequence):
-            raise PatchSpecError(
-                f"where[{field!r}] must be a LIST of allowed values, got {type(allowed).__name__} "
-                "(a bare string would be read as a list of its characters and never match)"
-            )
-        values = list(allowed)
-        if not values:
-            raise PatchSpecError(f"where[{field!r}] is empty, which can never match")
-        for v in values:
-            if not isinstance(v, _WHERE_SCALARS):
-                raise PatchSpecError(
-                    f"where[{field!r}] holds {type(v).__name__}; use a JSON scalar "
-                    "(raw_generation gives the canonical value of a field)"
-                )
-            _check_json(v, f"where[{field!r}]")
-        where_d[field] = values
-    return patch_d, paths_d, where_d
+    return patch_d, paths_d, validate_where(where)
 
 
 def _value_at(doc: Mapping[str, Any], key: WhereKey) -> Any:

@@ -18,6 +18,8 @@ from functools import wraps
 
 import pytest
 
+from primer.events.memory_store import InMemoryEventStore
+from primer.model.event import Event
 from primer.storage._locking import (
     LockingTransaction, locking_context, current_transaction, model_operation, prepared_models, require_transaction,
 )
@@ -50,6 +52,33 @@ def _fake_serialized(fn):
                 return copy.deepcopy(result)
             return await fn(self, *args, **kwargs)
     return run
+
+
+class _LockingFakeEventStore(InMemoryEventStore):
+    """Stage only token-owned CDC; unrelated event appends stay independent."""
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    async def append(self, *, conn=None, **kwargs):
+        if not isinstance(conn, LockingTransaction):
+            if current_transaction() is not None:
+                raise ConfigError("thread the locking token through event append")
+            # Do not publish a later event ID ahead of a pending token-owned ID.
+            async with self.owner._guard():
+                return await super().append(conn=conn, **kwargs)
+        conn.check(self.owner, next(iter(conn.models)))
+        # Reserve a unique ID now, but publish only with the owning model unit.
+        # This path has no suspension and cannot expose an uncommitted event.
+        kwargs = dict(kwargs)
+        kwargs["occurred_at"] = kwargs.get("occurred_at") or datetime.now(UTC)
+        event = Event(id=self._next_id, **kwargs)
+        self._next_id += 1
+        conn._fake_events.append(event)
+        return event.id
+
+    def publish(self, pending):
+        self._events = sorted([*self._events, *pending], key=lambda event: event.id)
 
 
 class _InMemoryStorage(Generic[_T]):
@@ -170,6 +199,34 @@ class _InMemoryStorage(Generic[_T]):
         self._data[id] = entity
         self._raw[id] = (entity, dict(doc))
         return entity
+
+    @model_operation
+    async def delete_if(self, id: str, *, where, conn=None) -> bool:
+        from primer.access.acting import actor_label, acting_person
+        from primer.events.registry import kind_for_model
+        from primer.storage._patch import document_matches, normalise_where, validate_where
+
+        where_d = validate_where(where)
+        if not isinstance(id, str):
+            raise ConfigError("locking row id must be a string")
+        if self._owner is None:
+            raise NotImplementedError("delete_if needs a provider-backed fake")
+        if conn is None:
+            if self._owner._ordinary_transactions.get(asyncio.current_task(), 0):
+                raise ConfigError("delete_if does not support legacy/raw transactions")
+            async with self._owner.locking_transaction(models=(self._cls,)) as token:
+                return await self.delete_if(id, where=where_d, conn=token)
+        require_transaction(conn, self._owner, self._cls)
+        current = self._data.get(id)
+        if current is None or not document_matches(self._raw_doc(id, current), normalise_where(self._cls, where_d)):
+            return False
+        del self._data[id]
+        self._raw.pop(id, None)
+        kind = kind_for_model(self._cls)
+        if kind is not None:
+            await self._owner.get_event_store().append(event_type=f"{kind}.deleted", actor=actor_label(acting_person()),
+                                                     entity_kind=kind, entity_id=id, payload={"id": id}, conn=conn)
+        return True
 
     @model_operation
     @_fake_serialized
@@ -608,10 +665,13 @@ class _FakeStorageProvider:
             for store in self._stores.values():
                 store._data, store._raw = copy.deepcopy((store._data, store._raw))
             scope = LockingTransaction(self, None, models)
+            scope._fake_events = []
             token = locking_context.set(scope)
             try:
                 yield scope
                 scope.ensure_committable()
+                if scope._fake_events:
+                    self.get_event_store().publish(scope._fake_events)
             except BaseException:
                 for model, store in self._stores.items():
                     store._data, store._raw = before.get(model, ({}, {}))
@@ -624,10 +684,8 @@ class _FakeStorageProvider:
         return self._content_store
 
     def get_event_store(self) -> Any:
-        from primer.events.memory_store import InMemoryEventStore
-
         if not hasattr(self, "_event_store"):
-            self._event_store = InMemoryEventStore()
+            self._event_store = _LockingFakeEventStore(self)
         return self._event_store
 
     @asynccontextmanager
