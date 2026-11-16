@@ -90,6 +90,58 @@ missing fields on older rows mean no authenticated responder proof.
 
 The two concrete providers additionally expose `transaction()`, the backend-agnostic atomic-write entry point (it is intentionally a structural capability rather than a method on the `StorageProvider` ABC). The async context manager opens one transaction, using a pooled Postgres connection or the shared SQLite connection, and yields it so the caller threads it through the `conn` keyword of `Storage` and `DocumentContentStore` writes. It commits on clean exit and rolls back on any exception.
 
+### Opt-in model row-locking transactions
+
+`StorageProvider.locking_transaction(models=(ModelA, ModelB))` is a separate opt-in
+capability. The default implementation and `Storage.get_for_update` refuse
+unsupported backends. PostgreSQL, SQLite and the test fake implement it; no
+runtime caller enables it automatically. It prepares the declared model tables
+and any registered CRUD event schema before opening the transaction, then yields
+an opaque `conn` token bound to that provider, task, declared models and lifetime.
+Pass it to every model read/write in the unit. Missing or foreign tokens,
+undeclared models and nested units refuse before accessing the database. The
+legacy `transaction()` API and its raw connection behavior remain separate.
+
+`await rows.get_for_update(id, conn=conn)` reads a current row and locks it until
+the unit commits or rolls back. PostgreSQL uses `SELECT ... FOR UPDATE`; SQLite
+uses `BEGIN IMMEDIATE` and holds the shared writer guard for the whole unit; the
+fake serializes model operations and restores its snapshot on rollback. SQLite
+therefore excludes peer writers across the whole database, rather than one row.
+Existing reads on its shared connection retain their existing visibility; this
+API does not add independent reader snapshots. A missing row returns `None` and
+promises no gap lock: a PostgreSQL peer may insert it. Use `create`'s conflict
+result to arbitrate a missing id, never absence as proof of ownership.
+
+Acquire new rows in ascending `(storage table name, id)` order, including writes
+that implicitly lock a row. The token enforces this order, using Python string
+ordering, across all declared models; already held rows may be revisited. A
+missing or refused row is not recorded as held. This prevents opposing lock
+orders among callers of this API, not arbitrary legacy SQL or external writers.
+Declare all models up front, lock the rows needed for authorization and mutation,
+and perform no external service, claim engine, another-connection or non-model
+store I/O while holding these locks. Listing/search APIs do not accept `conn`
+and are unavailable inside this unit. Keep transactions short; database lock
+waits still follow backend timeouts, without a new application deadline.
+
+A clean exit commits model changes and their CRUD events together. A body error
+or cancellation rolls back. A storage-operation failure makes the unit
+rollback-only even if user code catches it; a later clean exit then raises
+`ConfigError` instead of committing partial work. Argument/ownership refusals
+before any operation do not poison an otherwise valid unit. SQLite drains queued
+BEGIN/rollback/commit cleanup, despite repeated cancellation, before releasing
+the shared writer guard. If rollback fails it closes and invalidates the
+connection; discard that provider. PostgreSQL drains rollback and pool reset
+before returning its connection. Cleanup may wait for the database/SQLite worker;
+releasing early would let another writer use an uncertain transaction.
+
+A failed or cancelled COMMIT has an **unknown outcome**, even when cleanup
+finishes: it may already be durable. Re-read durable receipts/state to reconcile;
+never interpret cancellation as proof of rollback or blindly replay side effects.
+This primitive supplies neither cross-resource atomicity nor a durable recovery
+protocol, priority scheduling, reserved provider capacity or caller authorization.
+
+### Model operations
+
 `Storage[ModelT]` (`primer/int/storage.py`, `ModelT` bound to `Identifiable`) exposes eleven operations:
 
 - `get(id)` returns the entity or `None` if missing; backend errors propagate rather than collapsing to `None`.
@@ -382,6 +434,12 @@ Storage and scheduler are independent provider-factory configs. SQLite storage p
 ## 7. Testing patterns
 
 Storage tests live under `tests/storage/`. `test_storage_contract.py` runs the same CRUD, pagination, predicate, ordering and `patch_if` scenarios (`_patch_scenarios.py`; the same scenarios also run against the shared in-memory test fake in `test_patch_if_fake.py`, so a fake that diverges fails a scenario instead of quietly misleading every test that uses it; the fake keeps the raw stored document per row, exactly as the backends do, and `test_patch_if_postgres_fixup.py` pins the Postgres statement sequence without a database) against both backends (Postgres skipped when no DSN is present), which is how the two backends stay behaviourally identical despite the duplicated translators. `test_patch_if_postgres_multi_value_guard.py` (Postgres lane only) races two real writers on one row lock and pins that a blocked `patch_if` is re-checked against the version the other writer committed, for a `where` list as for a single value. Backend-specific suites (`test_sqlite_provider.py`, `test_sqlite_storage.py`, `test_sqlite_predicate.py`) cover lifecycle, CRUD, and the SQLite translator; `test_factory.py` covers both factory branches plus the unknown-enum `ConfigError`; `test_cursor.py` covers the shared cursor helpers; `test_system_state.py` covers the singleton row; and `test_q.py` covers the `Q` builder (field validation, dotted-path regex, `or_` combinator, empty-build `ValueError`). The CRUD-factory extensions that sit on top of storage are covered under `tests/api/routers/` (`test_crud_scope_field.py`, `test_crud_managed_by_field.py`, `test_crud_references.py`, `test_crud_cdc_kind.py`, `test_cdc_registry.py`). The end-to-end SQLite journey at `tests/e2e/test_sqlite_multi_router_journey.py` boots the API against a `tmp_path`-resident SQLite file and exercises multiple routers. Per-test API-key and bearer-token values are read from env vars rather than inlined.
+
+`test_locking_transaction.py` checks token ownership, ordering (including missing
+rows), CDC atomicity, caught failures, real SQLite peer-process writers and queued
+cancellation at BEGIN, rollback and COMMIT. Its `@needs_postgres` cases run in the
+existing mandatory `tests/storage -m postgres` CI lane and must actually pass;
+serial SQLite/fake checks alone do not establish PostgreSQL acceptance.
 
 ## 8. Historical decisions
 
