@@ -70,7 +70,6 @@ class _InMemoryStorage(Generic[_T]):
     @model_operation
     async def get_for_update(self, id: str, *, conn) -> _T | None:
         require_transaction(conn, self._owner, self._cls)
-        conn.check_key(self.locking_identity()[2], id)
         result = await self.get(id, conn=conn)
         if result is not None:
             conn.hold_key(self.locking_identity()[2], id)

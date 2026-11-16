@@ -101,6 +101,13 @@ an opaque `conn` token bound to that provider, task, declared models and lifetim
 Pass it to every model read/write in the unit. Missing or foreign tokens,
 undeclared models and nested units refuse before accessing the database. The
 legacy `transaction()` API and its raw connection behavior remain separate.
+A task created inside the unit inherits its context, not authority to use it:
+its model operations and transaction entry refuse before database access, even
+without a token. Do not await an inherited child to perform storage work. A
+true independent peer must start outside that context (tests can explicitly use
+`asyncio.create_task(..., context=contextvars.Context())`). Independent SQLite
+readers retain the shared-connection visibility described below; this is not a
+new reader-isolation guarantee.
 
 `await rows.get_for_update(id, conn=conn)` reads a current row and locks it until
 the unit commits or rolls back. PostgreSQL uses `SELECT ... FOR UPDATE`; SQLite
@@ -127,11 +134,18 @@ A clean exit commits model changes and their CRUD events together. A body error
 or cancellation rolls back. A storage-operation failure makes the unit
 rollback-only even if user code catches it; a later clean exit then raises
 `ConfigError` instead of committing partial work. Argument/ownership refusals
-before any operation do not poison an otherwise valid unit. SQLite drains queued
+before any operation do not poison an otherwise valid unit; this includes
+`get_for_update` id/order admission, just as for writes. Database, decoding and
+CDC failures after operation entry still make the unit rollback-only, including
+a `ConfigError` raised after SQL. SQLite drains queued
 BEGIN/rollback/commit cleanup, despite repeated cancellation, before releasing
 the shared writer guard. If rollback fails it closes and invalidates the
 connection; discard that provider. PostgreSQL drains rollback and pool reset
-before returning its connection. Cleanup may wait for the database/SQLite worker;
+before returning its connection. If cancellation first arrives during a clean
+PostgreSQL pool release, cleanup still finishes, then cancellation propagates
+(including an `asyncio.timeout` deadline). Cancellation during cleanup of an
+already failed body or COMMIT preserves that earlier failure. Cleanup may wait
+for the database/SQLite worker;
 releasing early would let another writer use an uncertain transaction.
 
 A failed or cancelled COMMIT has an **unknown outcome**, even when cleanup
