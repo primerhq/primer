@@ -71,7 +71,7 @@ class Storage(ABC, Generic[ModelT]):
     """
 
     async def delete_if(
-        self, id: str, *, where: Mapping[WhereKey, Sequence[Any]], conn: Any | None = None,
+        self, id: str, *, where: Mapping[str | tuple[str, ...], Sequence[Any]], conn: Any | None = None,
     ) -> bool:
         """Delete iff the current stored document matches nonempty typed guards.
 
