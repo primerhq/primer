@@ -401,7 +401,7 @@ class SqliteStorageProvider(StorageProvider):
         Not re-entrant: a nested ``transaction()`` from the same task raises
         ``ConfigError`` (and never deadlocks).
         """
-        if self._in_own_transaction():
+        if current_transaction() is not None or self._in_own_transaction():
             raise ConfigError(
                 "SqliteStorageProvider.transaction() is not re-entrant"
             )
@@ -501,6 +501,7 @@ class SqliteStorageProvider(StorageProvider):
         opening a nested ``BEGIN`` would fail and the outer unit owns the
         commit. This makes the snapshot re-entrant and deadlock-free.
         """
+        current_transaction()
         if self._in_own_transaction():
             yield
             return
@@ -998,7 +999,6 @@ class SqliteStorage(Storage[ModelT]):
     @model_operation
     async def get_for_update(self, id: str, *, conn: object) -> ModelT | None:
         require_transaction(conn, self._provider, self._model)
-        conn.check_key(self._table, id)
         result = await self.get(id, conn=conn)
         if result is not None:
             conn.hold_key(self._table, id)

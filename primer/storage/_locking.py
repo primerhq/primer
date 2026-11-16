@@ -14,7 +14,9 @@ locking_context: ContextVar[LockingTransaction | None] = ContextVar("storage_loc
 
 def current_transaction():
     transaction = locking_context.get()
-    return transaction if transaction is not None and transaction.owner is asyncio.current_task() else None
+    if transaction is not None and transaction.owner is not asyncio.current_task():
+        raise ConfigError("inherited locking transaction belongs to another task")
+    return transaction
 
 
 def prepared_models(models):
@@ -85,7 +87,7 @@ def model_operation(fn):
         transaction.check(provider, model)
         if supplied is not transaction:
             raise ConfigError("thread the locking transaction token through every model operation")
-        if fn.__name__ not in {"get", "get_for_update"}:
+        if fn.__name__ != "get":
             entity = args[0] if args else kwargs.get("entity", kwargs.get("id"))
             entity_id = entity.id if fn.__name__ in {"create", "update", "update_unless"} else entity
             transaction.check_key(table, entity_id)
@@ -101,17 +103,23 @@ def model_operation(fn):
     return run
 
 
-async def drain_cleanup(awaitable):
+async def drain_cleanup(awaitable, *, propagate_cancellation=False):
     """Finish queued cleanup before releasing ownership, despite repeat cancellation.
 
     Cleanup runs as a child only because the cancelling task cannot safely await
     SQLite's queued worker future directly. Never use this to run model operations.
-    The original body/commit exception remains the caller's responsibility.
+    Preserve an exception already unwinding. A clean exit instead asks to
+    propagate cancellation first received here, after cleanup finishes.
     """
+    cancellation = None
     task = asyncio.ensure_future(awaitable)
     while not task.done():
         try:
             await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-    return task.result()
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+    result = task.result()
+    if propagate_cancellation and cancellation is not None:
+        raise cancellation
+    return result

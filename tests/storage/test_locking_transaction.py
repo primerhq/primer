@@ -1,6 +1,7 @@
 """The opt-in locking transaction must fence peer writers and roll back."""
 
 import asyncio
+from contextvars import Context
 import sys
 
 import pytest
@@ -49,7 +50,7 @@ async def check_lock(provider):
         assert (await store.get_for_update("a", conn=conn)).value == 1
         assert await store.get_for_update("missing", conn=conn) is None
         await store.patch_if("a", {"value": 2}, where={"value": [1]}, conn=conn)
-        task = asyncio.create_task(writer())
+        task = asyncio.create_task(writer(), context=Context())
         await started.wait()
         await asyncio.sleep(0.1)
         assert not task.done()
@@ -176,7 +177,7 @@ async def test_sqlite_cancel_while_waiting_to_begin(tmp_path, monkeypatch):
             async with second.locking_transaction(models=(LockingThing,)):
                 pytest.fail("cancelled contender entered")
         async with first.locking_transaction(models=(LockingThing,)):
-            task = asyncio.create_task(contender())
+            task = asyncio.create_task(contender(), context=Context())
             await asyncio.sleep(0.1)
             assert not task.done()
             task.cancel()
@@ -279,7 +280,7 @@ async def test_postgres_lock_and_rollback(monkeypatch):
                 await store.get_for_update("a", conn=conn)
         async with p.locking_transaction(models=(LockingThing,)) as conn:
             await store.get_for_update("a", conn=conn)
-            task = asyncio.create_task(blocked())
+            task = asyncio.create_task(blocked(), context=Context())
             await entered.wait()
             await asyncio.sleep(0.1)
             assert not task.done()
@@ -519,7 +520,7 @@ async def test_postgres_order_ownership_and_missing_row_contract(tmp_path):
         async with provider.locking_transaction(models=(LockingThing,)) as conn:
             assert await store.get_for_update("z", conn=conn) is None
             # SELECT FOR UPDATE on absence does not exclude a peer insertion.
-            await asyncio.wait_for(asyncio.create_task(store.create(LockingThing(id="z"))), 3)
+            await asyncio.wait_for(asyncio.create_task(store.create(LockingThing(id="z")), context=Context()), 3)
         assert await store.get("z") is not None
     finally:
         async with provider.pool.acquire() as conn:

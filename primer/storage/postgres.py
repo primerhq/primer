@@ -584,6 +584,7 @@ class PostgresStorageProvider(StorageProvider):
         transaction = conn.transaction()
         scope = LockingTransaction(self, conn, models)
         token = None
+        failed = False
         try:
             await transaction.start()
             token = locking_context.set(scope)
@@ -604,11 +605,14 @@ class PostgresStorageProvider(StorageProvider):
                 # A cancelled/failed COMMIT has an unknown outcome. Pool reset
                 # completes before returning the connection to other callers.
                 await transaction.commit()
+        except BaseException:
+            failed = True
+            raise
         finally:
             scope.active = False
             if token is not None:
                 locking_context.reset(token)
-            await drain_cleanup(self.pool.release(conn))
+            await drain_cleanup(self.pool.release(conn), propagate_cancellation=not failed)
 
 
 # ===========================================================================
@@ -1075,7 +1079,6 @@ class PostgresStorage(Storage[ModelT]):
     @model_operation
     async def get_for_update(self, id: str, *, conn: Any) -> ModelT | None:
         connection = require_transaction(conn, self._provider, self._model)
-        conn.check_key(self._table, id)
         try:
             row = await connection.fetchrow(f'SELECT id, data FROM {self._qualified} WHERE id = $1 FOR UPDATE', id)
         except Exception as exc:
