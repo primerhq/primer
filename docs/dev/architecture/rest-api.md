@@ -131,6 +131,25 @@ an auth-enabled app; an unattributed person never gains that identity. There is
 no localhost, cookie, or role-only surrogate. Dispatch has a 30 second bound,
 propagates task cancellation, rejects recursive generated dispatch, caps a
 response at 1 MiB, and writes a bounded audit record without arguments.
+
+Generated dispatch also copies `ToolContext.session_id` into that request's
+private trusted scope. `calling_session_id(request)` in `primer/api/route_tools.py`
+returns the carried string only when the object-identity trust marker matches;
+ordinary HTTP requests, direct tool calls without context and chat-only contexts
+return `None`. A path or body `session_id`, a supplied `parent_session_id`, and
+headers cannot select the calling session. The wrapper always overwrites its
+scope slot, including with `None`, while leaving the incoming scope untouched.
+Each call owns its wrapper and scope, so concurrent requests and later calls
+after errors or cancellation do not inherit another caller's session. Recursive
+generated dispatch remains refused by the existing depth guard.
+
+The carried ID is internal provenance only. It does not prove that the session
+still exists, is running, has a particular priority or may access a target.
+Any consumer must perform its own current-row authorization and lifecycle
+fencing. No current route changes its authorization or scheduling behavior from
+this field, and no request argument, persisted schema or public response is added.
+Older processes and direct callers require no migration or new argument.
+
 Its private transport advertises ASGI HTTP spec 2.4 so cancellation reaches a
 streaming producer without a legacy disconnect task group's repeated
 cancellation of the producer's own async finalizer. Explicit iterator closure
