@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from jinja2.exceptions import SecurityError
@@ -21,12 +21,12 @@ from primer.model.event_matcher import EventTextBudget, current_event_text_budge
 from primer.model.principal import PrincipalRef
 from primer.model.storage import Op, OffsetPage
 from primer.trigger.row_writes import write_trigger_fields
-from primer.model.trigger import Subscription, Trigger
+from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger, TriggerKind, WebhookTriggerConfig
 from primer.storage.q import Q
 from primer.trigger.fire_id import make_fire_id
 from primer.trigger.payload import PayloadTemplateError, render_payload
 from primer.trigger.sources import get_source
-from primer.trigger.subscribers import DispatchDeps, get_dispatcher
+from primer.trigger.subscribers import DispatchDeps, TriggerFireMetadata, get_dispatcher
 
 # Import the dispatcher modules so their register() calls run at
 # import time. Without these imports, ``get_dispatcher`` raises KeyError
@@ -267,6 +267,19 @@ async def fire_trigger(
     if trigger is None or not trigger.enabled:
         return FireResult(skipped=True)
 
+    # Capture before source rendering, extra_context overlays or any fan-out.
+    # Never derive trusted classification from mutable template/event payloads
+    # or re-read a trigger that may be edited/deleted while subscribers run.
+    fire_metadata = TriggerFireMetadata(
+        trigger_id=trigger.id,
+        kind=TriggerKind(trigger.config.kind),
+        interactive=(
+            trigger.config.interactive
+            if isinstance(trigger.config, (WebhookTriggerConfig, ChannelTriggerConfig))
+            else False
+        ),
+    )
+
     fired_at = datetime.now(timezone.utc)
     source = get_source(trigger.config.kind)
     fire_context = source.build_fire_context(
@@ -395,7 +408,9 @@ async def fire_trigger(
                 rendered_payload=rendered,
                 fire_context=fire_context,
                 fire_id=fire_id,
-                deps=deps,
+                # Keep shared caller dependencies untouched across concurrent
+                # fires and isolate a subscriber replacing its metadata field.
+                deps=replace(deps, fire_metadata=fire_metadata),
             )
             results.append({"subscription_id": sub.id, **res.model_dump()})
         except Exception as exc:  # noqa: BLE001 — isolate per-sub failures

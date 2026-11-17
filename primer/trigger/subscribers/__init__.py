@@ -21,7 +21,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from primer.model.storage import CursorPage, Op
-from primer.model.trigger import Subscription
+from primer.model.trigger import Subscription, TriggerKind
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.storage.q import Q
 
@@ -52,6 +52,19 @@ class SubscriptionDispatchResult(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     artefact_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerFireMetadata:
+    """Internal classification captured from the trigger row for one fire.
+
+    Separate from template/event payloads, with no authorization or scheduling
+    authority. It describes the snapshot at fire entry, not later row edits.
+    """
+
+    trigger_id: str
+    kind: TriggerKind
+    interactive: bool
 
 
 @dataclass
@@ -88,6 +101,9 @@ class DispatchDeps:
     scheduler: Any | None = None
     workspace_registry: Any | None = None
     event_bus: Any | None = None
+    # fire_trigger supplies an isolated bundle per subscriber. Direct/legacy
+    # dispatcher callers have no trusted classification, rather than False.
+    fire_metadata: TriggerFireMetadata | None = None
 
 
 class Dispatcher(Protocol):
@@ -217,6 +233,7 @@ __all__ = [
     "DispatchDeps",
     "Dispatcher",
     "SubscriptionDispatchResult",
+    "TriggerFireMetadata",
     "check_subscription_busy",
     "get_dispatcher",
     "register",
