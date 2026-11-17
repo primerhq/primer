@@ -114,6 +114,25 @@ and whose search index is what `auto_inject` and the console's search read.
 The lease's `next_attempt_at` is the debounce; nothing else is written back
 by the claim engine (`MemoryClaimAdapter.on_release` is a no-op).
 
+Job cleanup after topics completion, expiry or a missing agent locks the
+current `MemoryJob` row and compares all its decoded fields with the worker's
+observed snapshot. A changed target, lifetime, owner or other field leaves the
+row intact. An unchanged row is removed with `delete_if` on that same locked
+connection; no unconditional-delete fallback or automatic retry follows a
+refusal or failure. Unsupported locking/deletion capabilities retain the row
+and log the failure. Cancellation propagates. A false deletion result is
+logged; a later cleanup with a fresh snapshot may try again.
+
+Comparison uses decoded timestamps so readable legacy spellings (including
+offsets and epoch values) do not permanently prevent cleanup. The row lock
+spans comparison and deletion; a raw JSON comparison of reserialized dates
+would not provide that compatibility. This is snapshot protection, not an
+occurrence fence: deleting and recreating an identical same-id row cannot be
+distinguished. It also does not make job creation, lease arming and release
+atomic. A refused cleanup still returns the existing drop-lease outcome;
+retaining a renewed row does not prove that its pending work will be re-armed.
+Durable due-time intents and generation-aware release remain separate work.
+
 ## 8. Public surfaces
 
 REST (`primer/api/routers/agent_memory.py`, user tier):
@@ -161,6 +180,9 @@ injection (`test_reflect.py`, `test_auto_inject.py`), the curation
 (`test_real_session_log.py`). The claim-kind wiring rides the
 `tests/claim` and `tests/worker` suites; the routes ride
 `tests/api` (owner-only refusals included).
+`tests/storage/test_memory_job_cleanup.py` exercises the actual cleanup paths
+against the fake, private SQLite and gated PostgreSQL, including stale
+snapshots, legacy timestamps, cancellation, refused deletion and peer writers.
 
 ## 11. Historical decisions
 

@@ -196,7 +196,7 @@ async def run_topics(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: A
     from primer.memory.topics import derive_topics
 
     await derive_topics(deps, agent, settings)
-    await _forget(deps.sp.get_storage(MemoryJob), job)
+    await _forget(deps.sp, job)
 
 
 # --- the gates ---------------------------------------------------------------------------------------------------------------------------------
@@ -265,7 +265,7 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
         return _DROP
     agent = await sp.get_storage(Agent).get(job.agent_id)
     if agent is None:  # the agent is gone: the job goes with it
-        await _forget(jobs, job)
+        await _forget(sp, job)
         return _DROP
     settings = await sp.get_storage(AgentMemory).get(job.agent_id)
     # 1. memory is off (or was never on): nothing is written, the lease is dropped
@@ -277,7 +277,7 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     if now > job.expires_at:
         if job.kind == "reflect":
             await _skipped(deps, job, "expired")
-        await _forget(jobs, job)
+        await _forget(sp, job)
         return _DROP
     if job.kind == "reflect":
         # 3. over today's budget: try again after the UTC midnight
@@ -305,8 +305,24 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     return _DROP
 
 
-async def _forget(jobs: Any, job: MemoryJob) -> None:
+async def _forget(sp: Any, job: MemoryJob) -> None:
+    """Remove only the decoded job this worker observed, under its row lock.
+
+    Compare timestamps as decoded values so readable legacy spellings do not
+    permanently refuse cleanup. The current row stays locked through deletion;
+    the scalar delete guard is not a substitute for that lock. This is snapshot
+    protection, not an occurrence/generation fence or durable lease re-arming.
+    """
     try:
-        await jobs.delete(job.id)
+        async with sp.locking_transaction(models=(MemoryJob,)) as conn:
+            jobs = sp.get_storage(MemoryJob)
+            current = await jobs.get_for_update(job.id, conn=conn)
+            if current is None or current.model_dump() != job.model_dump():
+                return
+            # All decoded fields matched while holding this exact row. Do not
+            # compare reserialized datetimes with legacy raw JSON spellings.
+            deleted = await jobs.delete_if(job.id, where={"agent_id": [current.agent_id]}, conn=conn)
+        if not deleted:
+            logger.warning("memory job %s: guarded cleanup refused; row retained", job.id)
     except Exception:  # noqa: BLE001 - cleanup; the lease is dropped either way
-        logger.warning("memory job %s: could not delete its row", job.id, exc_info=True)
+        logger.warning("memory job %s: cleanup did not confirm deletion", job.id, exc_info=True)
