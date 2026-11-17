@@ -428,7 +428,7 @@ class SqliteStorageProvider(StorageProvider):
                 finally:
                     self._txn_task = None
 
-    async def _locking_rollback(self, conn):
+    async def _locking_rollback(self, conn) -> bool:
         try:
             await drain_cleanup(conn.rollback())
         except BaseException:
@@ -441,6 +441,8 @@ class SqliteStorageProvider(StorageProvider):
                 logger.exception("failed to close SQLite connection after rollback failure")
             finally:
                 self._conn = None
+            return False
+        return True
 
     @asynccontextmanager
     async def locking_transaction(self, *, models: tuple[type[Identifiable], ...]):
@@ -451,37 +453,47 @@ class SqliteStorageProvider(StorageProvider):
             await self.get_storage(model)._ensure_table()
         if any(kind_for_model(model) is not None for model in models):
             await self._ensure_events_schema()
-        async with self._write_lock:
-            conn = self.connection
-            scope = LockingTransaction(self, conn, models)
-            token = None
-            try:
+        scope = None
+        body_failure = None
+        rolled_back = False
+        try:
+            async with self._write_lock:
+                conn = self.connection
+                scope = LockingTransaction(self, conn, models)
+                token = None
                 try:
-                    await conn.execute("BEGIN IMMEDIATE")
-                except asyncio.CancelledError:
-                    await self._locking_rollback(conn)
-                    raise
-                self._txn_task = asyncio.current_task()
-                token = locking_context.set(scope)
-                try:
-                    yield scope
-                    scope.ensure_committable()
-                except BaseException:
-                    await self._locking_rollback(conn)
-                    raise
-                else:
                     try:
-                        await conn.commit()
-                    except BaseException:
-                        # COMMIT may already be queued or durable: drain a
-                        # following rollback, then propagate unknown outcome.
+                        await conn.execute("BEGIN IMMEDIATE")
+                    except asyncio.CancelledError:
                         await self._locking_rollback(conn)
                         raise
-            finally:
-                scope.active = False
-                if token is not None:
-                    locking_context.reset(token)
-                self._txn_task = None
+                    self._txn_task = asyncio.current_task()
+                    token = locking_context.set(scope)
+                    try:
+                        yield scope
+                        scope.ensure_committable()
+                    except BaseException as exc:
+                        body_failure = exc
+                        rolled_back = await self._locking_rollback(conn)
+                        raise
+                    else:
+                        try:
+                            await conn.commit()
+                        except BaseException:
+                            # A queued/durable COMMIT has an unknown outcome.
+                            await self._locking_rollback(conn)
+                            raise
+                finally:
+                    scope.active = False
+                    if token is not None:
+                        locking_context.reset(token)
+                    self._txn_task = None
+        except BaseException as exc:
+            # Only confirm after the owner lock itself has exited. A hidden
+            # rollback failure/quarantine or a later cleanup error is not proof.
+            if scope is not None and exc is body_failure and rolled_back:
+                scope.rollback_complete = True
+            raise
 
     @asynccontextmanager
     async def read_snapshot(self):
