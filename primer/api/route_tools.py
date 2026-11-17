@@ -52,6 +52,7 @@ _HTTP_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"})
 _METADATA_ATTR = "__primer_route_tool_metadata__"
 _TRUST_SCOPE_KEY = "primer.route_tool_dispatch"
 _TRUST_PERSON_SCOPE_KEY = "primer.route_tool_person"
+_TRUST_SESSION_SCOPE_KEY = "primer.route_tool_session_id"
 _TRUST_OBJECT = object()
 _DISPATCH_DEPTH: ContextVar[int] = ContextVar("primer_route_tool_dispatch_depth", default=0)
 _STREAM_CLEANUP_OWNERS: ContextVar[list[asyncio.Task[BaseException | None]] | None] = ContextVar(
@@ -597,14 +598,16 @@ def _body_kwargs(body: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class _TrustedAsgiApp:
-    def __init__(self, app: FastAPI, person: Person) -> None:
+    def __init__(self, app: FastAPI, person: Person, *, session_id: str | None = None) -> None:
         self._app = app
         self._person = person
+        self._session_id = session_id
 
     async def __call__(self, scope, receive, send) -> None:
         trusted_scope = dict(scope)
         trusted_scope[_TRUST_SCOPE_KEY] = _TRUST_OBJECT
         trusted_scope[_TRUST_PERSON_SCOPE_KEY] = self._person
+        trusted_scope[_TRUST_SESSION_SCOPE_KEY] = self._session_id
         await self._app(trusted_scope, receive, send)
 
 
@@ -901,6 +904,18 @@ def trusted_route_tool_person(scope: Mapping[str, Any]) -> Person | None:
         return None
     person = scope.get(_TRUST_PERSON_SCOPE_KEY)
     return person if isinstance(person, Person) else None
+
+
+def calling_session_id(request: Request) -> str | None:
+    """Read tool-context provenance, never a request-supplied target or parent.
+
+    This identifies the enclosing call only. It is not authorization, a live
+    session lookup, a lifecycle fence or proof of the session's priority.
+    """
+    if not is_trusted_route_tool_scope(request.scope):
+        return None
+    session_id = request.scope.get(_TRUST_SESSION_SCOPE_KEY)
+    return session_id if isinstance(session_id, str) else None
 
 
 def _install_stream_cleanup(route: APIRoute) -> bool:
@@ -1986,7 +2001,7 @@ def build_generated_route_toolsets(
                     # large HTTPX-decoded allocation after the counter.
                     merged_headers["accept-encoding"] = "identity"
                     transport = _BoundedAsgiTransport(
-                        app=_TrustedAsgiApp(owning_app, person),
+                        app=_TrustedAsgiApp(owning_app, person, session_id=ctx.session_id if ctx is not None else None),
                         max_response_bytes=_MAX_RESPONSE_BYTES,
                     )
                     async with httpx.AsyncClient(transport=transport, base_url="http://primer.internal") as client:
@@ -2131,6 +2146,7 @@ __all__ = [
     "RouteToolMetadata",
     "attach_route_tool_metadata",
     "build_generated_route_toolsets",
+    "calling_session_id",
     "canonical_tool_id",
     "coverage_projection",
     "derive_argument_schema",
