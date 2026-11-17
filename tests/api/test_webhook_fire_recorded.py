@@ -112,6 +112,18 @@ async def test_W12_a_held_fire_outliving_the_grace_is_not_refired_by_recovery(
     monkeypatch.setattr(app.state, "event_bus", bus)
     fires: list[str] = []
     fired = asyncio.Event()
+    hold_tasks: list[asyncio.Task] = []
+    real_fire_and_hold = webhooks.fire_and_hold
+
+    async def _hold(**kw):
+        # The endpoint owns a separate hold task, which request cancellation
+        # alone need not stop before its caller-visible wait cap expires.
+        task = asyncio.current_task()
+        assert task is not None
+        hold_tasks.append(task)
+        return await real_fire_and_hold(**kw)
+
+    monkeypatch.setattr(webhooks, "fire_and_hold", _hold)
 
     async def _fire(**kw):
         fires.append(kw["trigger_id"])
@@ -135,13 +147,21 @@ async def test_W12_a_held_fire_outliving_the_grace_is_not_refired_by_recovery(
         poll = await client.get(f"/v1/webhooks/{trigger.config.token}/deliveries/{row.id}")
         assert poll.json()["status"] == "pending"  # the poll still says the run is going
         assert poll.json()["fire_id"] == "fire-1"
-    finally:
         await bus.publish("session:s1:terminal", {"status": "ended"})
         r = await asyncio.wait_for(post, 10)
-        await bus.aclose()
-    assert r.status_code == 200
-    row = await _only_row(fake_storage_provider)
-    assert (row.status, row.fire_id, row.attempts) == ("done", "fire-1", 1)
+        assert r.status_code == 200
+        row = await _only_row(fake_storage_provider)
+        assert (row.status, row.fire_id, row.attempts) == ("done", "fire-1", 1)
+    finally:
+        # A failed startup/assertion must not publish before the hold subscribes
+        # and replace the original failure with a second POST timeout.
+        try:
+            for task in (post, *hold_tasks):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(post, *hold_tasks, return_exceptions=True)
+        finally:
+            await bus.aclose()
 
 
 async def test_W12_a_hold_without_a_bus_records_its_fire(fake_storage_provider):

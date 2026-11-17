@@ -130,7 +130,7 @@ async def _seed_parked(storage, scheduler, sess: WorkspaceSession) -> None:
 
 @pytest.mark.asyncio
 class TestYieldEventListener:
-    async def test_listener_flips_parked_to_resumable(self, harness):
+    async def test_listener_flips_parked_to_resumable(self, harness, monkeypatch):
         bus, scheduler, storage, engine, _listener = harness
         sess = _make_parked_session(
             session_id="sess-A",
@@ -141,14 +141,20 @@ class TestYieldEventListener:
         )
         await _seed_parked(storage, scheduler, sess)
 
+        # The row flip commits before lease rearming finishes. Observe the
+        # completed rearm, rather than treating the intermediate row as done.
+        rearmed = asyncio.Event()
+        original_mark_resumable = InMemoryClaimEngine.mark_resumable
+
+        async def mark_and_signal(self, kind, entity_id, **kwargs):
+            await original_mark_resumable(self, kind, entity_id, **kwargs)
+            if self is engine and kind == ClaimKind.SESSION and entity_id == sess.id:
+                rearmed.set()
+
+        monkeypatch.setattr(InMemoryClaimEngine, "mark_resumable", mark_and_signal)
         await bus.publish("timer:tc-A", {})
-        # Give the listener time to consume + flip.
-        row = None
-        for _ in range(50):
-            await asyncio.sleep(0.02)
-            row = await storage.get("sess-A")
-            if row is not None and row.parked_status == "resumable":
-                break
+        await asyncio.wait_for(rearmed.wait(), timeout=5)
+        row = await storage.get("sess-A")
         assert row is not None
         assert row.parked_status == "resumable"
         # Lease re-armed: engine should return this session as claimable.

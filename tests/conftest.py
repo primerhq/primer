@@ -67,6 +67,8 @@ class _LockingFakeEventStore(InMemoryEventStore):
             # Do not publish a later event ID ahead of a pending token-owned ID.
             async with self.owner._guard():
                 return await super().append(conn=conn, **kwargs)
+        if current_transaction() is not conn or self.owner._guard_task is not asyncio.current_task():
+            raise ConfigError("event append requires the current transaction and its owner guard")
         conn.check(self.owner, next(iter(conn.models)))
         # Reserve a unique ID now, but publish only with the owning model unit.
         # This path has no suspension and cannot expose an uncommitted event.
@@ -660,25 +662,49 @@ class _FakeStorageProvider:
         models = prepared_models(models)
         for model in models:
             self.get_storage(model)
-        async with self._guard():
-            before = {model: copy.deepcopy((store._data, store._raw)) for model, store in self._stores.items()}
-            for store in self._stores.values():
-                store._data, store._raw = copy.deepcopy((store._data, store._raw))
-            scope = LockingTransaction(self, None, models)
-            scope._fake_events = []
-            token = locking_context.set(scope)
-            try:
-                yield scope
-                scope.ensure_committable()
-                if scope._fake_events:
-                    self.get_event_store().publish(scope._fake_events)
-            except BaseException:
-                for model, store in self._stores.items():
-                    store._data, store._raw = before.get(model, ({}, {}))
-                raise
-            finally:
-                scope.active = False
-                locking_context.reset(token)
+        scope = None
+        body_failure = None
+        rolled_back = False
+        try:
+            async with self._guard():
+                before = {model: copy.deepcopy((store._data, store._raw)) for model, store in self._stores.items()}
+                for store in self._stores.values():
+                    store._data, store._raw = copy.deepcopy((store._data, store._raw))
+                scope = LockingTransaction(self, None, models)
+                scope._fake_events = []
+                token = locking_context.set(scope)
+                try:
+                    yield scope
+                    scope.ensure_committable()
+                except BaseException as exc:
+                    body_failure = exc
+                    for model, store in self._stores.items():
+                        store._data, store._raw = before.get(model, ({}, {}))
+                    rolled_back = True
+                    raise
+                else:
+                    # Publication is COMMIT, not a body rollback. This fake's
+                    # publisher is synchronous under the owner guard: restore
+                    # both snapshots on error, but never issue a retry receipt.
+                    if scope._fake_events:
+                        events = self.get_event_store()
+                        before_events = list(events._events)
+                        try:
+                            events.publish(scope._fake_events)
+                        except BaseException:
+                            for model, store in self._stores.items():
+                                store._data, store._raw = before.get(model, ({}, {}))
+                            events._events = before_events
+                            # Reserved IDs are intentionally not rewound. Every
+                            # append/reservation shares this guard or token.
+                            raise
+                finally:
+                    scope.active = False
+                    locking_context.reset(token)
+        except BaseException as exc:
+            if scope is not None and exc is body_failure and rolled_back:
+                scope.rollback_complete = True
+            raise
 
     def get_content_store(self) -> Any:
         return self._content_store
