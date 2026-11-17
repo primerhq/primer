@@ -792,33 +792,36 @@ class SessionMessagingSweeper(_BackgroundTask):
             )
             items = list(page.items)
             for row in items:
-                state = row.parked_state or {}
-                event_key = state.get("resume_event_key")
-                payload = state.get("resume_event_payload")
-                current_keys = set(row.parked_event_keys or [])
-                if row.parked_event_key:
-                    current_keys.add(row.parked_event_key)
-                if (
-                    row.parked_at is None
-                    or not isinstance(event_key, str)
-                    or not event_key
-                    or event_key not in current_keys
-                    or not isinstance(payload, dict)
-                    or await self._has_lease(row.id)
-                ):
-                    continue
-                if await durably_mark_session_resumable(
-                    row,
-                    event_key=event_key,
-                    payload=payload,
-                    session_storage=storage,
-                    engine=self._claim_engine,
-                ):
-                    logger.warning(
-                        "session-messaging-sweeper: session %s held an accepted resumable park with no claim; it is claimed now",
-                        row.id,
-                    )
-                    repaired += 1
+                try:
+                    state = row.parked_state or {}
+                    event_key = state.get("resume_event_key")
+                    payload = state.get("resume_event_payload")
+                    current_keys = set(row.parked_event_keys or [])
+                    if row.parked_event_key:
+                        current_keys.add(row.parked_event_key)
+                    if (
+                        row.parked_at is None
+                        or not isinstance(event_key, str)
+                        or not event_key
+                        or event_key not in current_keys
+                        or not isinstance(payload, dict)
+                        or await self._has_lease(row.id)
+                    ):
+                        continue
+                    if await durably_mark_session_resumable(
+                        row,
+                        event_key=event_key,
+                        payload=payload,
+                        session_storage=storage,
+                        engine=self._claim_engine,
+                    ):
+                        logger.warning(
+                            "session-messaging-sweeper: session %s held an accepted resumable park with no claim; it is claimed now",
+                            row.id,
+                        )
+                        repaired += 1
+                except Exception:  # noqa: BLE001 - retry this session next tick; keep repairing its peers
+                    logger.exception("session-messaging-sweeper: repairing resumable park of session %s failed", row.id)
             if len(items) < _MAX_PAGE:
                 return repaired
             # Repair changes only the claim table, never the session fields in
@@ -882,23 +885,26 @@ class SessionMessagingSweeper(_BackgroundTask):
         wall_now = datetime.now(timezone.utc)
         healed = 0
         for row in candidates:
-            if row.turn_status == "arming":
-                armed_at = row.armed_at
-                if armed_at is not None:
-                    if armed_at.tzinfo is None:
-                        armed_at = armed_at.replace(tzinfo=timezone.utc)
-                    if (wall_now - armed_at).total_seconds() < grace:
-                        continue
-                if await self._heal_an_arm(storage, row):
-                    healed += 1
-                continue
-            if row.status in (SessionStatus.PAUSED, SessionStatus.ENDED) or row.parked_status is not None:
-                continue
-            if await self._has_lease(row.id):
-                continue
-            await self._arm_the_claim(row.id)
-            logger.warning("session-messaging-sweeper: session %s was left claimable with no claim; it is claimed now", row.id)
-            healed += 1
+            try:
+                if row.turn_status == "arming":
+                    armed_at = row.armed_at
+                    if armed_at is not None:
+                        if armed_at.tzinfo is None:
+                            armed_at = armed_at.replace(tzinfo=timezone.utc)
+                        if (wall_now - armed_at).total_seconds() < grace:
+                            continue
+                    if await self._heal_an_arm(storage, row):
+                        healed += 1
+                    continue
+                if row.status in (SessionStatus.PAUSED, SessionStatus.ENDED) or row.parked_status is not None:
+                    continue
+                if await self._has_lease(row.id):
+                    continue
+                await self._arm_the_claim(row.id)
+                logger.warning("session-messaging-sweeper: session %s was left claimable with no claim; it is claimed now", row.id)
+                healed += 1
+            except Exception:  # noqa: BLE001 - retry this session next tick; keep healing its peers
+                logger.exception("session-messaging-sweeper: healing armed turn of session %s failed", row.id)
         return healed
 
     async def _heal_an_arm(self, storage, row) -> bool:
