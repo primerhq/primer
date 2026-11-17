@@ -267,6 +267,19 @@ jobs:
           -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
 
+      - name: Postgres-gated test, memory target merge (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/memory/test_job_target.py
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
+          --timeout=120 --timeout-method=thread
+      - name: Postgres-gated test, memory target representation and cleanup (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/memory/test_job_target_locking.py
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
+          --timeout=120 --timeout-method=thread
+
   core-install:
     # Boundary rule 1 enforcement (modular-monolith): a core-only install
     # (no extras) must import the app, boot, and pass the guard suite.

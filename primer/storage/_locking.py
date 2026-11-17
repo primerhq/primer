@@ -39,6 +39,9 @@ class LockingTransaction:
         self.owner = asyncio.current_task()
         self.active = True
         self.failed = False
+        # Internal post-exit receipt, not a commit/authorization receipt. A
+        # provider confirms it only after body rollback AND owner cleanup.
+        self.rollback_complete = False
         self._keys: set[tuple[str, str]] = set()
         self._last_key: tuple[str, str] | None = None
 

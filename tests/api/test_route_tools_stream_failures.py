@@ -28,16 +28,21 @@ async def _call(snapshot):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("termination", ["single_cancel", "double_cancel", "timeout_cancel"])
+@pytest.mark.parametrize("termination", ["single_cancel", "double_cancel", "timeout_cancel", "timeout_cancel_delayed_start"])
 async def test_caller_cancellation_drains_without_recancelling_generator(termination, monkeypatch):
     app = FastAPI()
     producing = asyncio.Event()
+    entered = asyncio.Event()
+    allow_production = asyncio.Event()
     closing = asyncio.Event()
     release = asyncio.Event()
     cleaned = asyncio.Event()
 
     async def chunks():
         try:
+            if termination == "timeout_cancel_delayed_start":
+                entered.set()
+                await allow_production.wait()
             yield b"first"
             producing.set()
             await asyncio.Event().wait()
@@ -52,14 +57,43 @@ async def test_caller_cancellation_drains_without_recancelling_generator(termina
         return StreamingResponse(chunks())
 
     snapshot = route_tools.build_generated_route_toolsets(app)
-    if termination == "timeout_cancel":
+    dispatch_deadline = None
+    if termination.startswith("timeout_cancel"):
+        # Exercise a real timeout only after production has started. A tiny
+        # setup deadline can expire alongside the observer's own watchdog
+        # under delayed scheduling, before cancellation can reach the body.
+        dispatch_deadline = asyncio.timeout(None)
+        native_timeout = asyncio.timeout
+
+        class DispatchAsyncio:
+            # Intercept only this module's timeout factory, leaving observer
+            # watchdogs and unrelated asyncio callers untouched.
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            def timeout(self, delay):
+                return dispatch_deadline if delay == 0.02 else native_timeout(delay)
+
         monkeypatch.setattr(route_tools, "_DISPATCH_TIMEOUT_S", 0.02)
+        monkeypatch.setattr(route_tools, "asyncio", DispatchAsyncio())
+        assert asyncio.timeout is native_timeout, "the observer's timeout factory must remain native"
     task = asyncio.create_task(_call(snapshot))
     try:
+        if termination == "timeout_cancel_delayed_start":
+            await asyncio.wait_for(entered.wait(), 1)
+            # A dispatch-start delay beyond the old synthetic deadline must
+            # not replace the cancellation/cleanup behavior under test.
+            await asyncio.sleep(0.03)
+            allow_production.set()
         await asyncio.wait_for(producing.wait(), 1)
-        if termination != "timeout_cancel":
+        if dispatch_deadline is not None:
+            assert dispatch_deadline.when() is None and not dispatch_deadline.expired()
+            dispatch_deadline.reschedule(asyncio.get_running_loop().time())
+        else:
             task.cancel()
         await asyncio.wait_for(closing.wait(), 1)
+        if dispatch_deadline is not None:
+            assert dispatch_deadline.expired(), "the real dispatch deadline did not trigger cancellation"
         if termination != "single_cancel":
             task.cancel()
             await asyncio.sleep(0)

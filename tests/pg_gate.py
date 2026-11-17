@@ -61,6 +61,8 @@ LANE_FILES = (
     "tests/worker/test_cancel_reconcile_live.py",
     "tests/session/test_park_flip_writes_leaves_live.py",
     "tests/events/test_stable_head_live.py",
+    "tests/memory/test_job_target.py",
+    "tests/memory/test_job_target_locking.py",
 )
 
 # The e2e server's own database. Its bringup script creates it and a live
