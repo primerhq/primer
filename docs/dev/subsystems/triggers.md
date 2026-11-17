@@ -202,6 +202,26 @@ On the wire the code of a trigger refusal is in the RFC 7807 envelope's `extensi
 
 `Dispatcher` (protocol in `primer/trigger/subscribers/__init__.py`) exposes one async `dispatch(sub, rendered_payload, fire_context, fire_id, deps)` returning a `SubscriptionDispatchResult(ok, skipped, error_code, error_message, artefact_id)`. `ok=True` covers both delivery and deliberate skips; `skipped` distinguishes them. Dispatchers self-register via `register(kind, instance)`. Per-kind error codes include `skipped_subscription_busy` / `dispatch_failed` (fresh-session), `graph_input_invalid` (graph_fresh), `owner_unresolvable` (both fresh-session kinds), `skipped_session_busy` / `skipped_session_missing` / `skipped_session_ended` / `dispatch_failed` (session_append; `skipped_session_ended` is a target that has ended and cannot take the message: one an operator cancelled, which no fire reopens, or one that cannot be reopened), and `skipped_session_unparked` (parked_session).
 
+`fire_trigger` captures a frozen `TriggerFireMetadata(trigger_id, kind, interactive)`
+from the enabled trigger row before building the source payload. Webhook and
+channel fires use that row's `config.interactive`; delayed and scheduled fires
+are non-interactive. Each subscriber receives an isolated `DispatchDeps` copy
+whose `fire_metadata` points to that same immutable snapshot. Concurrent and
+nested fires do not mutate their caller's dependencies. Replacing a subscriber's
+metadata field cannot change a sibling's classification. Trigger edits or deletion
+during fan-out do not cause classification re-reads; deletion can still fail the
+existing final bookkeeping write after subscribers run.
+
+This internal metadata is separate from the mutable template/event `fire_context`
+and its `extra_context` overlay. Payload fields cannot set or override it. Direct
+dispatcher callers that do not go through `fire_trigger` keep the default
+`fire_metadata=None`, meaning unknown, not non-interactive. Existing dispatch
+signatures, persisted rows and payloads are unchanged, so older processes require
+no migration. This is a foundation for future priority sources only: no current
+consumer changes session priority, queue order, webhook holding, channel replies,
+authorization or scheduling based on it. It is not a durable receipt or an
+authorization token, and does not make a partial fire exactly-once.
+
 `deliver_steer` (`primer/session/steer_delivery.py`) is the ONE steer-delivery path. A trigger's `session_append` subscription and a channel thread reply both mean "put this text on that session", so both go through it and the S1 routing rule (a steer that lands while a turn is open becomes a `PendingSessionMessage`, never a second `USER_INPUT`) is applied in exactly one place. It reports `woken`, `queued`, `skipped_busy` or `missing`. A message the pause hold of `wake_session` queues reports `queued`. A peer message (`message_session`) passes a `PeerAttribution`, which reaches the USER_INPUT record or the queued row and survives the realize. `missing` covers both "no such row" and "row exists but cannot take a message", so a thread whose session was deleted falls through to a fresh one instead of raising. A message from another session (`message_session`, `peer` given) can also get `queue_full`: the target's queue already holds 50 waiting messages and a peer message never takes a person's place in it (nothing is stored). It gets `missing` for a session an operator cancelled (an operator's Cancel sticks).
 
 A fire carrying an inbound channel event never busy-skips. `check_subscription_busy` takes the `fire_context` and returns `None` when it carries an `"event"` key: channel dispatch is thread-mapped, so a fire only reaches a fresh-session subscriber when the thread has no session yet, and skipping there would silently drop the user's first message in a brand-new thread.
