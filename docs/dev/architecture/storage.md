@@ -95,7 +95,7 @@ The two concrete providers additionally expose `transaction()`, the backend-agno
 `StorageProvider.locking_transaction(models=(ModelA, ModelB))` is a separate opt-in
 capability. The default implementation and `Storage.get_for_update` refuse
 unsupported backends. PostgreSQL, SQLite and the test fake implement it; no
-runtime caller enables it automatically. It prepares the declared model tables
+legacy call opts in automatically. Memory enqueue uses it explicitly. It prepares the declared model tables
 and any registered CRUD event schema before opening the transaction, then yields
 an opaque `conn` token bound to that provider, task, declared models and lifetime.
 Pass it to every model read/write in the unit. Missing or foreign tokens,
@@ -154,6 +154,17 @@ never interpret cancellation as proof of rollback or blindly replay side effects
 This primitive supplies neither cross-resource atomicity nor a durable recovery
 protocol, priority scheduling, reserved provider capacity or caller authorization.
 
+The opaque internal token also carries a default-false `rollback_complete`
+receipt. Built-in providers confirm it only AFTER a body-triggered rollback and
+all owner/lock or pool-release cleanup succeeds. It stays false for BEGIN,
+COMMIT (including unknown outcomes), failed rollback/quarantine or failed
+cleanup. Custom/unknown tokens are unconfirmed; bounded memory collision recovery accepts
+only the built-in token after exit, owned by that same task. It is neither authorization nor
+a commit/durability receipt and does not make an operation replayable. A caller
+classifying a definite body failure for bounded recovery must independently
+refuse newly requested cancellation, even if cleanup preserves the body error.
+Existing exception precedence and ordinary transactions are unchanged.
+
 ### Guarded conditional deletion
 
 `await rows.delete_if(id, where={"generation": [expected]}) -> bool` is an
@@ -200,6 +211,15 @@ The fake stages token-owned deletion events until a successful unit exit and
 serializes independent event appends behind that unit, so rolled-back events
 cannot erase unrelated events or publish their IDs out of order. Its ordinary
 model CRUD and no-op legacy transaction behavior remain unchanged.
+Fake event appends and ID reservations require either the current owner token
+under its held guard or a standalone append that acquires that guard. These are
+internal lifecycle checks, not caller authorization. Publication is a separate
+commit phase. Its synchronous fake publisher is guarded: on publication/ack
+failure, both internal model/event snapshots are restored, but no body-rollback
+receipt is issued. Reserved event IDs are not rewound or reused. Independent
+appends wait through publication/restoration and keep their events and IDs.
+A guard-exit failure after successful publication can leave both rows/events
+committed; receipt stays false and callers must reconcile rather than retry.
 
 ### Model operations
 
