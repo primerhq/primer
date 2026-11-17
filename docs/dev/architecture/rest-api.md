@@ -135,7 +135,7 @@ response at 1 MiB, and writes a bounded audit record without arguments.
 Generated dispatch also copies `ToolContext.session_id` into that request's
 private trusted scope. `calling_session_id(request)` in `primer/api/route_tools.py`
 returns the carried string only when the object-identity trust marker matches;
-ordinary HTTP requests, direct tool calls without context and chat-only contexts
+ordinary HTTP requests, direct tool calls without context and contexts without a session
 return `None`. A path or body `session_id`, a supplied `parent_session_id`, and
 headers cannot select the calling session. The wrapper always overwrites its
 scope slot, including with `None`, while leaving the incoming scope untouched.
