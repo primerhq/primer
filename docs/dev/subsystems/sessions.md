@@ -504,8 +504,14 @@ Four rules make that safe:
   PAUSED resumable park deliberately has no lease until `/resume`; excluding it
   prevents a claim-and-preserve-park loop on every sweep. Each heal is one
   conditional or exact-redelivery operation fenced on what it was judged on,
-  and the candidates are read before any is healed (N12). Without a claim
-  engine the sweep does nothing.
+  and the turn-healing candidates are read before any is healed (N12).
+  Both recovery passes isolate ordinary per-session failures, including the
+  lease check: the failure is logged with the session ID, later rows and pages
+  continue, and the failed session is reconsidered on the next tick through
+  the same lifecycle and occurrence fences. Cancellation still propagates.
+  Page-scan failures propagate to the tick's existing pass-level error handler;
+  they are not reported as successful recovery. Without a claim engine the
+  sweep does nothing.
   Known and ticketed: the sweep skips ENDED sessions (an autonomous or failed
   one keeps its queue until its next message reopens it, and that message runs
   first), and it decides "at rest" on a read a Cancel can overtake before the
