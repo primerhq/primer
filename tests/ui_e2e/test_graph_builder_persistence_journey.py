@@ -165,6 +165,13 @@ def test_u0107_graph_builder_persistence_journey(
         id_input = modal.get_by_placeholder("auto-generated", exact=False).first
         id_input.fill(graph_id)
 
+        # Agent options arrive asynchronously and the seed is optional. A
+        # submit before they load creates a valid empty graph, whose starter
+        # screen has no Add-step control. Choose this journey's own agent.
+        seed_agent = modal.get_by_role("combobox", name="Seed agent", exact=True)
+        seed_agent.select_option(value=ids["agent"], timeout=20_000)
+        expect(seed_agent).to_have_value(ids["agent"])
+
         # Submit — the modal's onCreate navigates to /graphs/{gid}.
         # NewGraphModal uses footer button "Create"; the exact label
         # is set inline via Btn. Find the primary submit by text.
