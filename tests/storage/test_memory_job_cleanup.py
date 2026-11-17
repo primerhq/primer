@@ -121,6 +121,7 @@ async def test_delete_refusal_preserves_row_without_fallback_and_later_cleanup_s
     old = (await rows.get("topics:a")).model_copy(deep=True)
     real_delete_if = rows.delete_if
     attempts = []
+    forbidden_calls = []
 
     async def refuse(*args, **kwargs):
         attempts.append(kwargs.get("conn"))
@@ -131,17 +132,20 @@ async def test_delete_refusal_preserves_row_without_fallback_and_later_cleanup_s
         return False
 
     async def forbidden(*args, **kwargs):
+        forbidden_calls.append((args, kwargs))
         raise AssertionError("unconditional deletion fallback")
 
     monkeypatch.setattr(rows, "delete_if", refuse)
     monkeypatch.setattr(rows, "delete", forbidden)
     await _complete(provider, old)
+    assert forbidden_calls == [], "cleanup must never attempt unconditional deletion"
     assert len(attempts) == 1 and attempts[0] is not None
     assert (await rows.get(old.id)).model_dump() == old.model_dump()
     assert old.id in caplog.text
     monkeypatch.setattr(rows, "delete_if", real_delete_if)
     await _complete(provider, old)
     assert await rows.get(old.id) is None
+    assert forbidden_calls == []
 
 
 @pytest.mark.parametrize("point", ["get_for_update", "delete_if"])
@@ -291,6 +295,7 @@ async def test_unsupported_locking_retains_the_row_without_legacy_fallback(provi
     await rows.create(_job())
     old = (await rows.get("topics:a")).model_copy(deep=True)
     original = provider.locking_transaction
+    forbidden_calls = []
 
     @asynccontextmanager
     async def unsupported(**kwargs):
@@ -298,13 +303,16 @@ async def test_unsupported_locking_retains_the_row_without_legacy_fallback(provi
         yield  # pragma: no cover - model the optional async context-manager capability
 
     async def forbidden(*args, **kwargs):
+        forbidden_calls.append((args, kwargs))
         raise AssertionError("legacy delete fallback")
 
     monkeypatch.setattr(provider, "locking_transaction", unsupported)
     monkeypatch.setattr(rows, "delete", forbidden)
     await _complete(provider, old)
+    assert forbidden_calls == [], "unsupported locking must never fall back to unconditional deletion"
     assert (await rows.get(old.id)).model_dump() == old.model_dump()
     assert "row locking unsupported" in caplog.text
     monkeypatch.setattr(provider, "locking_transaction", original)
     await _complete(provider, old)
     assert await rows.get(old.id) is None
+    assert forbidden_calls == []
