@@ -17,7 +17,7 @@ Authentication identifies the person a request and its agent turn act for. A bro
 - Open streams are revalidated against account existence, enabled state, role, cookie epoch/lifetime or token revocation/expiry. A terminal WebSocket closes with `4401` on lost authentication; the session tap is HTTP SSE, not a WebSocket. Authentication failure is not a retryable tool failure.
 - Roles and entity sharing are separate. Admin account/SSO management does not grant an ordinary user access to another user's private workspace. See [sharing and access](start-here/sharing-and-access).
 - The welcome is personal and role-aware. Acknowledging or reopening it changes only the current role's acknowledgement; a stale role is refused, and existing sign-in sessions remain valid.
-- In the operator chat, the initial suggestions collapse when a message is accepted, including a message you write yourself. They stay dismissed on later visits after the welcome state is saved. Use "Show Me What You Can Do" to deliberately reopen them; a failed send keeps the suggestions and your draft available.
+- In the operator session, the initial suggestions collapse when a message is accepted, including a message you write yourself. They stay dismissed on later visits after the welcome state is saved. Use "Show Me What You Can Do" to deliberately reopen them; a failed send keeps the suggestions and your draft available.
 
 ## How to
 
