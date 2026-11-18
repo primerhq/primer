@@ -2283,7 +2283,11 @@ function NV_SessionWelcome(props) {
         focusNext.current = true; setVisible(true);
         if (heading.current) { focusNext.current = false; heading.current.focus(); }
       }
-    }, failed);
+    }, function (err) {
+      if (!alive.current || presentation.current !== token) return;
+      if (ownReopen.current === token) ownReopen.current = null;
+      failed(err);
+    });
   }
   var reopenRef = React.useRef(reopen); reopenRef.current = reopen;
   React.useEffect(function () {
