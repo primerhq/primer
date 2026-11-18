@@ -18,6 +18,10 @@ This wiki is the read-only `system` collection, titled "Platform wiki": the plat
 - `system__wiki_search` takes a `query`, a `mode` of `auto`, `semantic`, `fulltext` or `literal`, an optional `path_prefix` and a `limit` of 1 to 50, and searches the same collection. It returns the hits (each a `path`, an `excerpt` and a `score`), `mode_used`, and `truncated` when the hits were cut.
 
 ## How to
+Full API processes build the shared wiki at startup. Worker-only and dedicated
+service-serving processes read it without rebuilding it from their reduced tool
+catalogs. Start a full API process to publish or refresh the complete reference.
+
 1. Find a feature: `system__wiki_search` with a natural-language `query` and `mode` at `auto`; read the hit's page with `system__wiki_read`.
 2. Get a tool's exact call: `system__wiki_read` on its reference page, `reference/tools/<toolset>/<tool>`.
 3. List the agents of this install: `system__wiki_read` on `this-install/agents` (or search it with `path_prefix: "this-install"`).

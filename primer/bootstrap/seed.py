@@ -424,6 +424,7 @@ async def run_ensure_pass(
     provider_registry=None,
     semantic_search_registry=None,
     default_workspace_template: str | None = None,
+    seed_system_collection: bool = True,
 ) -> EnsureResult:
     """Run every S5 ensure step. Idempotent, marker-independent.
 
@@ -434,6 +435,11 @@ async def run_ensure_pass(
 
     Each step is independent: a failure is recorded and the others still
     run, mirroring :class:`primer.bootstrap.runner.BootstrapRunner`.
+
+    Reduced-surface worker/serving lifespans opt out of the system collection:
+    their partial generated catalog must not replace the shared API wiki.
+    All other ensure steps still run. Full API and explicit setup callers keep
+    the default, including normal version/stamp and degraded-build guards.
     """
     from primer.bootstrap.defaults import (
         RESERVED_BUILDER_AGENT,
@@ -497,17 +503,20 @@ async def run_ensure_pass(
     # The registries let regeneration re-index the documents it rewrites,
     # so a platform change shows up in search without a re-bootstrap. It
     # writes only what actually differs, so the cost tracks the diff.
-    written = await _step(
-        "system_collection",
-        lambda: regenerate_system_collection(
-            storage_provider,
-            toolset_providers=toolset_providers or {},
-            provider_registry=provider_registry,
-            semantic_search_registry=semantic_search_registry,
-        ),
-    )
-    if written:
-        logger.info("seed: system collection wrote %d documents", written)
+    if seed_system_collection:
+        written = await _step(
+            "system_collection",
+            lambda: regenerate_system_collection(
+                storage_provider,
+                toolset_providers=toolset_providers or {},
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            ),
+        )
+        if written:
+            logger.info("seed: system collection wrote %d documents", written)
+    else:
+        logger.info("seed: system collection left to full API processes")
     return result
 
 

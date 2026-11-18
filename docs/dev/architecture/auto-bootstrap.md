@@ -22,6 +22,13 @@ never re-creates them; the ensure pass seeds the world an agent-first install ne
 to function at all, so it repairs on every boot. Neither reads the other's state.
 See [bootstrap-operator](../subsystems/bootstrap-operator.md) for that half.
 
+The system-collection step requires a complete API tool catalog. Full `api` and
+`api+worker` processes run it; worker-only and `PRIMER_SERVE_ONLY=1` processes
+retain the other ensure steps but leave the shared wiki and live map unchanged.
+Their reduced public routes produce a partial generated catalog, which must not
+replace or prune the full API's pages or claim its wiki stamp. Explicit setup
+seeding retains the normal full-API behavior and stamp/degraded-build guards.
+
 One ensure-pass rule is worth stating here, because it differs between a new and an old install. The default workspace is
 named by `SystemState.default_workspace_id`: a fresh install creates `prime` and records it (before the row exists, so a delete
 can never slip through a gap), while an existing install keeps its own workspace id (`primer`) and has it adopted, recorded
