@@ -27,7 +27,7 @@ an agent response. Typing, optimistic rows and failed sends do not dismiss it.
 Acknowledgement is saved when the card mounts, without closing the current
 card; a revisit hides it. Dismiss returns focus to the composer. A failed
 save announces the error and offers retry before dismissal or chip send. Normal
-chat remains usable: an accepted message collapses the card while its save
+message entry remains usable: an accepted message collapses the card while its save
 finishes, with a compact error/retry if persistence fails. A completed save keeps
 it dismissed on reload. Late sends cannot close a deliberately reopened card or
 a different person's, role's or session's welcome. While saving, controls stay focusable, expose `aria-disabled`,
