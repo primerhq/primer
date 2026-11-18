@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid as _uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -61,6 +62,14 @@ logger = logging.getLogger(__name__)
 
 
 def _make_lifespan(config: AppConfig):
+    # Only the full API route graph is authoritative for the shared wiki.
+    # Capture the serving-only selection alongside create_app's route mount;
+    # a later environment change must not change that graph's authority.
+    seed_system_collection = (
+        config.runtime_mode != RuntimeMode.WORKER
+        and os.environ.get("PRIMER_SERVE_ONLY") != "1"
+    )
+
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # A python tool runs as this process's user: non-dumpable keeps it from reading /proc/<pid>/environ (the DSN and provider keys).
@@ -1007,7 +1016,10 @@ def _make_lifespan(config: AppConfig):
         # the internal-collections subsystem's (this lifespan's lacked ``crud``,
         # the bootstrap route's also ``collections``): the ensure pass and that
         # subsystem take this one map now.
-        builtin_providers = await builtin_toolset_providers(provider_registry)
+        builtin_providers = (
+            await builtin_toolset_providers(provider_registry)
+            if seed_system_collection else {}
+        )
 
         _ensure = await run_ensure_pass(
             storage_provider,
@@ -1016,6 +1028,7 @@ def _make_lifespan(config: AppConfig):
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
             default_workspace_template=config.default_workspace_template,
+            seed_system_collection=seed_system_collection,
         )
         if _ensure.errors:
             logger.warning("seed: ensure pass finished with errors", extra={
