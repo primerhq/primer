@@ -13,12 +13,18 @@ def welcome():
 var CON = { wid: "w", role: "user", username: "A", viewer: { id: "a" }, defaultWorkspaceId: "w", toast: function () {},
   welcomeState: { variant: "user", show: true }, welcomeChanged: function (id, state) { CHANGES.push([id, state]); CON.welcomeState = state; } };
 function NV_useConsole() { return CON; }
-var CHANGES = [], REQUESTS = [], SENT = [], FOCUSED = 0;
+var CHANGES = [], REQUESTS = [], SENT = [], FOCUSED = 0, ACCEPTED = {current:null};
 function setInterval() { return 0; } function clearInterval() {}
 window.primerApi = { apiFetch: function (method, path, body) { return new Promise(function (resolve, reject) { REQUESTS.push({method:method,path:path,body:body,resolve:resolve,reject:reject}); }); } };
 var COMPOSER = { current: { send: function (text) { SENT.push(text); return Promise.resolve(true); }, focus: function () { FOCUSED++; } } };
-function mountWelcome() { MR.mount(NV_SessionWelcome, {sid:"s",composer:COMPOSER}); }
+function mountWelcome() { MR.mount(NV_SessionWelcome, {sid:"s",composer:COMPOSER,accepted:ACCEPTED}); }
 function button(text) { return MR.findProp("children", text); }
+var SEND_REQUESTS = [], STARTED = 0, SID = 's';
+function Chat() { return React.createElement(React.Fragment,null,
+  React.createElement(NV_SessionWelcome,{key:CON.viewer.id+':'+CON.role+':'+SID,sid:SID,composer:COMPOSER,accepted:ACCEPTED}),
+  React.createElement(NV_Composer,{sid:SID,welcomeComposer:COMPOSER,welcomeAccepted:ACCEPTED,
+    onSend:function(text){return new Promise(function(resolve,reject){SEND_REQUESTS.push({text:text,resolve:resolve,reject:reject});});},
+    onSendStarted:function(){STARTED++;}})); }
 """)
     context.eval((ROOT / "ui/foundation/use-mutation.js").read_text())
     try:
@@ -34,6 +40,82 @@ def value(context, expression):
 def resolve(context, index, role="user", show=False):
     context.eval(f"REQUESTS[{index}].resolve({json.dumps({'variant': role, 'show': show})});")
     context.eval("MR.settle();")
+
+
+@pytest.mark.parametrize("ack_pending", [False, True])
+def test_first_manual_send_hides_on_acceptance_without_waiting_for_a_turn(welcome, ack_pending):
+    welcome.eval("MR.mount(Chat);")
+    if not ack_pending:
+        resolve(welcome, 0)
+    welcome.eval("MR.find('nv-composer-input').props.onChange({target:{value:'Hello'}}); MR.settle(); MR.click('nv-send');")
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+    welcome.eval("SEND_REQUESTS[0].resolve({accepted:true});")
+    welcome.eval("MR.settle();")
+    assert value(welcome, "STARTED") == 1
+    assert value(welcome, "!!MR.find('nv-welcome')") is False
+    if ack_pending:
+        resolve(welcome, 0)
+    welcome.eval("MR.mount(function(){return null;}); MR.mount(Chat);")
+    assert value(welcome, "!!MR.find('nv-welcome')") is False
+    assert value(welcome, "REQUESTS.length") == 1
+
+
+def test_failed_manual_send_preserves_welcome_and_draft(welcome):
+    welcome.eval("MR.mount(Chat);")
+    resolve(welcome, 0)
+    welcome.eval("MR.find('nv-composer-input').props.onChange({target:{value:'Keep this'}}); MR.settle(); MR.click('nv-send'); SEND_REQUESTS[0].reject({detail:'Offline'});")
+    welcome.eval("MR.settle();")
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+    assert value(welcome, "MR.find('nv-composer-input').props.value") == "Keep this"
+
+
+def test_delayed_chip_cannot_dismiss_a_deliberately_reopened_presentation(welcome):
+    welcome.eval("MR.mount(Chat);")
+    resolve(welcome, 0)
+    welcome.eval("button('Start a new project').props.onClick(); MR.settle(); NV_WELCOME_INSTANCES.s(); MR.settle();")
+    resolve(welcome, 1, show=True)
+    resolve(welcome, 2)
+    welcome.eval("SEND_REQUESTS[0].resolve({accepted:true});")
+    welcome.eval("MR.settle();")
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+
+
+def test_manual_send_during_reopen_is_not_undone_by_its_late_response(welcome):
+    welcome.eval("MR.mount(Chat);")
+    resolve(welcome, 0)
+    welcome.eval("button('Dismiss welcome').props.onClick(); MR.settle(); NV_WELCOME_INSTANCES.s(); MR.settle();")
+    welcome.eval("MR.find('nv-composer-input').props.onChange({target:{value:'Hello'}}); MR.settle(); MR.click('nv-send'); SEND_REQUESTS[0].resolve({});")
+    welcome.eval("MR.settle();")
+    resolve(welcome, 1, show=True)
+    assert value(welcome, "!!MR.find('nv-welcome')") is False
+    resolve(welcome, 2)
+    assert value(welcome, "CON.welcomeState.show") is False
+
+
+def test_accepted_chat_retries_failed_ack_and_exposes_compact_durable_retry(welcome):
+    welcome.eval("MR.mount(Chat); REQUESTS[0].reject({detail:'Storage unavailable'});")
+    welcome.eval("MR.settle(); MR.find('nv-composer-input').props.onChange({target:{value:'Hello'}}); MR.settle(); MR.click('nv-send'); SEND_REQUESTS[0].resolve({});")
+    welcome.eval("MR.settle();")
+    assert value(welcome, "!!MR.find('nv-welcome')") is False
+    assert value(welcome, "REQUESTS[1].path") == "/auth/welcome/acknowledge"
+    welcome.eval("REQUESTS[1].reject({detail:'Still unavailable'});")
+    welcome.eval("MR.settle();")
+    assert "Still unavailable" in value(welcome, "MR.texts().join(' ')")
+    welcome.eval("button('Retry saving').props.onClick(); MR.settle();")
+    resolve(welcome, 2)
+    welcome.eval("MR.mount(function(){return null;}); MR.mount(Chat);")
+    assert value(welcome, "!!MR.find('nv-welcome')") is False
+
+
+@pytest.mark.parametrize("scope", ["person", "role", "session"])
+def test_old_send_cannot_dismiss_another_welcome_scope(welcome, scope):
+    welcome.eval("MR.mount(Chat);")
+    resolve(welcome, 0)
+    welcome.eval("MR.find('nv-composer-input').props.onChange({target:{value:'Hello'}}); MR.settle(); MR.click('nv-send');")
+    welcome.eval({"person": "CON.viewer={id:'b'}", "role": "CON.role='admin'", "session": "SID='other'"}[scope] + "; CON.welcomeState={variant:CON.role,show:true}; MR.rerender();")
+    welcome.eval("SEND_REQUESTS[0].resolve({});")
+    welcome.eval("MR.settle();")
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
 
 
 def test_ack_is_durable_but_current_mount_stays_visible_and_revisit_hides(welcome):
@@ -92,6 +174,15 @@ def test_reopen_keeps_focusable_busy_control_and_refuses_duplicate_click(welcome
     assert value(welcome, "REQUESTS[1].path") == "/auth/welcome/acknowledge"
     resolve(welcome, 1)
     assert value(welcome, "!!button('Dismiss welcome').props['aria-disabled']") is False
+
+
+def test_failed_reopen_retry_reopens_before_acknowledging(welcome):
+    welcome.eval("CON.welcomeState.show=false; mountWelcome(); MR.click('nv-welcome-reopen'); REQUESTS[0].reject({detail:'Offline'});")
+    welcome.eval("MR.settle(); button('Retry saving').props.onClick(); MR.settle();")
+    assert value(welcome, "REQUESTS[1].path") == "/auth/welcome/reopen"
+    resolve(welcome, 1, show=True)
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+    assert value(welcome, "REQUESTS[2].path") == "/auth/welcome/acknowledge"
 
 
 @pytest.mark.parametrize("role,own,other", [

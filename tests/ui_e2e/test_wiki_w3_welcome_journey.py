@@ -19,7 +19,8 @@ from tests.ui_e2e._shell_helpers import boot_mobile_shell, default_wid, run_verb
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize("mobile", [False, True])
 @pytest.mark.parametrize("role", ["admin", "user"])
-def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, base_url, console_url, role, mobile):
+@pytest.mark.parametrize("initial_action", ["dismiss", "manual"])
+def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, base_url, console_url, role, mobile, initial_action):
     wid = default_wid(console_url)
     with httpx.Client(base_url=base_url, timeout=60) as client:
         main = client.post(f"/v1/workspaces/{wid}/main_session")
@@ -82,8 +83,14 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
     original_url = page.url
     if not mobile:
         expect(page.locator('[data-testid^="nv-tg-tab:session:"]')).to_have_count(1)
-    card.get_by_role("button", name="Dismiss welcome").focus()
-    page.keyboard.press("Enter")
+    if initial_action == "manual":
+        page.get_by_test_id("nv-composer-input").fill("My first message")
+        page.get_by_test_id("nv-composer-input").press("Enter")
+        expect(card).to_have_count(0)
+        assert len(sends) == 1
+    else:
+        card.get_by_role("button", name="Dismiss welcome").focus()
+        page.keyboard.press("Enter")
     expect(page.get_by_test_id("nv-composer-input")).to_be_focused()
     page.reload()
     expect(page.get_by_test_id("nv-welcome-reopen")).to_be_visible(timeout=30_000)
@@ -113,10 +120,10 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
     card.get_by_role("button", name=own, exact=True).click()
     expect(card).to_have_count(0)
     expect(composer).to_have_value("Keep my unfinished draft")
-    assert len(sends) == 1
-    assert own.lower().split()[0] in sends[0]["instruction"].lower()
+    assert len(sends) == (2 if initial_action == "manual" else 1)
+    assert own.lower().split()[0] in sends[-1]["instruction"].lower()
     if role == "user":
-        assert "runbooks/moderate-a-request" in sends[0]["instruction"]
+        assert "runbooks/moderate-a-request" in sends[-1]["instruction"]
     assert page.url == original_url
     if not mobile:
         expect(page.locator('[data-testid^="nv-tg-tab:session:"]')).to_have_count(1)

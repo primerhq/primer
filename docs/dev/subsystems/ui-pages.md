@@ -19,18 +19,24 @@ shows `NV_SessionWelcome` once per real user and role, using the additive
 embedding provider". User chips are "Explore my workspace", "Start a new
 project" and "What can you do for me?". The project prompt invokes the live
 W6 moderator runbook; exploration invokes its workspace-status runbook.
-Chips send ordinary text through the existing composer/store, retain any
-unfinished draft and attachments, and dismiss the card only after acceptance.
+Chips send ordinary text through the existing composer/store and retain any
+unfinished draft and attachments. Either a chip or a manually written message
+collapses the initial card as soon as the store accepts it, without waiting for
+an agent response. Typing, optimistic rows and failed sends do not dismiss it.
 
 Acknowledgement is saved when the card mounts, without closing the current
 card; a revisit hides it. Dismiss returns focus to the composer. A failed
-save stays visible, announces the error, and offers retry before dismissal
-or chip send. While saving, controls stay focusable, expose `aria-disabled`,
+save announces the error and offers retry before dismissal or chip send. Normal
+chat remains usable: an accepted message collapses the card while its save
+finishes, with a compact error/retry if persistence fails. A completed save keeps
+it dismissed on reload. Late sends cannot close a deliberately reopened card or
+a different person's, role's or session's welcome. While saving, controls stay focusable, expose `aria-disabled`,
 and refuse clicks; the reopening button also exposes its own `aria-busy`.
 The inline "Show me what you can do" button and the
 `welcome.reopen` palette verb reopen it for either full role, focus its
 heading, and preserve the URL, workspace, tabs and history. The same component
-runs in the phone session; buttons wrap and retain 44px touch targets. Signed-out,
+runs in the phone session; themed buttons wrap, retain 44px touch targets and
+show keyboard focus in dark and light modes. Signed-out,
 restricted and auth-disabled callers get no welcome. First-login tab opening
 still depends exclusively on `MainSessionOut.created`, independently of the
 welcome state. There is no browser persistence or separate onboarding router.
