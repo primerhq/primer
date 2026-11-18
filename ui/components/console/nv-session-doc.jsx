@@ -2210,8 +2210,8 @@ function NV_welcomeChips(role) {
   ];
 }
 
-// A mounted welcome stays visible after its durable acknowledgement succeeds.
-// Only that presentation latch is local; subsequent visits read server state.
+// Server acknowledgement owns persistence. A presentation ends on accepted input;
+// its token prevents an older send from closing a deliberately reopened card.
 function NV_SessionWelcome(props) {
   var con = NV_useConsole();
   var person = con.viewer.user_id || con.viewer.id;
@@ -2231,6 +2231,8 @@ function NV_SessionWelcome(props) {
   var ackState = React.useState(!!con.welcomeState.show), needsAck = ackState[0], setNeedsAck = ackState[1];
   var attemptState = React.useState(0), attempt = attemptState[0], setAttempt = attemptState[1];
   var heading = React.useRef(null), focusNext = React.useRef(false), alive = React.useRef(true);
+  var presentation = React.useRef({ used: false }), ownReopen = React.useRef(null);
+  var previousShow = React.useRef(!!con.welcomeState.show);
   var wasRunning = React.useRef(!!props.running);
   React.useEffect(function () { alive.current = true; return function () { alive.current = false; }; }, []);
   React.useEffect(function () {
@@ -2243,9 +2245,16 @@ function NV_SessionWelcome(props) {
   }, [props.running]);
   React.useEffect(function () {
     if (con.welcomeState.show) {
-      if (!visible) focusNext.current = true;
-      setVisible(true); setNeedsAck(true);
+      var own = ownReopen.current === presentation.current;
+      if (!previousShow.current && !own) presentation.current = { used: false };
+      if (own) ownReopen.current = null;
+      if (!own || !presentation.current.used) {
+        if (!visible) focusNext.current = true;
+        setVisible(true);
+      }
+      setNeedsAck(true);
     }
+    previousShow.current = !!con.welcomeState.show;
   }, [con.welcomeState.show]);
   function changed(state) { if (typeof con.welcomeChanged === "function") con.welcomeChanged(person, state); }
   function failed(err) {
@@ -2264,11 +2273,16 @@ function NV_SessionWelcome(props) {
   }, [needsAck, attempt]);
   function reopen() {
     if (pending) return;
+    var token = { used: false };
+    presentation.current = token; ownReopen.current = token;
     setError(null);
     return mutation.mutate({ action: "reopen", role: role }).then(function (state) {
-      if (!alive.current) return;
-      changed(state); focusNext.current = true; setVisible(true); setNeedsAck(true);
-      if (heading.current) { focusNext.current = false; heading.current.focus(); }
+      if (!alive.current || presentation.current !== token) return;
+      changed(state); setNeedsAck(true);
+      if (!token.used) {
+        focusNext.current = true; setVisible(true);
+        if (heading.current) { focusNext.current = false; heading.current.focus(); }
+      }
     }, failed);
   }
   var reopenRef = React.useRef(reopen); reopenRef.current = reopen;
@@ -2285,26 +2299,50 @@ function NV_SessionWelcome(props) {
     setVisible(false);
     if (props.composer.current) props.composer.current.focus();
   }
+  function accepted(token, refocus) {
+    if (!alive.current || token !== presentation.current) return;
+    token.used = true; setVisible(false);
+    // Normal chat remains usable if the initial save failed; retry its durable
+    // acknowledgement, and retain a compact error/retry if storage still fails.
+    if (needsAck && !pending) setAttempt(function (n) { return n + 1; });
+    if (refocus && props.composer.current) props.composer.current.focus();
+  }
+  function retrySave() {
+    if (pending) return;
+    if (needsAck) setAttempt(function (n) { return n + 1; });
+    else reopen();
+  }
+  React.useEffect(function () {
+    if (!props.accepted) return;
+    var token = presentation.current;
+    var notice = { accept: function () { accepted(token, false); } };
+    props.accepted.current = notice;
+    return function () { if (props.accepted.current === notice) props.accepted.current = null; };
+  });
   if (!visible) return <div className="nv-welcome-reopen">
-    <button type="button" data-verb="welcome.reopen" data-testid="nv-welcome-reopen"
+    <button type="button" className="nv-btn-secondary nv-welcome-quiet" data-verb="welcome.reopen" data-testid="nv-welcome-reopen"
       aria-busy={pending ? "true" : undefined} aria-disabled={pending ? "true" : undefined}
       onClick={reopen}>Show me what you can do</button>
-    {error ? <p role="alert">{error}</p> : null}
+    {pending && needsAck ? <p role="status">Saving welcome state…</p> : null}
+    {error ? <p role="alert">{error} <button type="button" className="nv-btn-secondary" onClick={retrySave}>Retry saving</button></p> : null}
   </div>;
   return <section className="nv-welcome" aria-labelledby={"nv-welcome-title-" + props.sid} data-testid="nv-welcome" data-variant={role} aria-busy={pending}>
-    <h2 id={"nv-welcome-title-" + props.sid} ref={heading} tabIndex={-1}>Welcome, {con.username || "there"}</h2>
-    <p>Ask your operator to help you get started. Each choice sends a message in this chat.</p>
+    <div className="nv-welcome-heading">
+      <h2 id={"nv-welcome-title-" + props.sid} ref={heading} tabIndex={-1}>Welcome, {con.username || "there"}</h2>
+      <button type="button" className="nv-btn-secondary nv-welcome-quiet" aria-disabled={pending || needsAck ? "true" : undefined} onClick={dismiss}>Dismiss welcome</button>
+    </div>
+    <p className="nv-welcome-intro">Choose a starting point, or write your own message below.</p>
     <div className="nv-welcome-chips">{NV_welcomeChips(role).map(function (chip) {
-      return <button type="button" key={chip.label}
+      return <button type="button" className="nv-btn-secondary nv-welcome-chip" key={chip.label}
         aria-disabled={pending || needsAck || con.wsReadonly ? "true" : undefined} onClick={function () {
         if (pending || needsAck || con.wsReadonly) return;
+        var token = presentation.current;
         var composer = props.composer.current;
-        if (composer) composer.send(chip.text).then(function (sent) { if (sent && alive.current) dismiss(); });
+        if (composer) composer.send(chip.text).then(function (sent) { if (sent) accepted(token, true); });
       }}>{chip.label}</button>;
     })}</div>
     {pending ? <p role="status">Saving welcome state…</p> : null}
-    {error ? <p role="alert">{error} <button type="button" onClick={function () { setAttempt(attempt + 1); }}>Retry saving</button></p> : null}
-    <button type="button" aria-disabled={pending || needsAck ? "true" : undefined} onClick={dismiss}>Dismiss welcome</button>
+    {error ? <p role="alert">{error} <button type="button" className="nv-btn-secondary" onClick={retrySave}>Retry saving</button></p> : null}
   </section>;
 }
 
@@ -2449,6 +2487,7 @@ function NV_Composer(props) {
       : undefined;
     setSending(true);
     setSendErr(null);
+    var welcomeNotice = props.welcomeAccepted && props.welcomeAccepted.current;
     // The store owns the optimistic row and the steer POST; it removes the
     // optimistic row on failure, and the composer restores the composer
     // text + shows the inline error (P0 send-failure behaviour).
@@ -2484,6 +2523,7 @@ function NV_Composer(props) {
       }
       setSending(false);
       grow();
+      if (welcomeNotice) welcomeNotice.accept();
       props.onSendStarted();
       return true;
     }, function (err) {
@@ -2873,6 +2913,7 @@ function NV_SessionDoc(props) {
   var con = NV_useConsole();
   var sid = props.sid;
   var welcomeComposer = React.useRef(null);
+  var welcomeAccepted = React.useRef(null);
   // UI-M1: the tap is read through the listener below, which renders this document only when THIS session's live status
   // changed; the render hook re-rendered it (and re-parsed every row) on every frame of every session in the workspace.
   var setLiveTick = React.useState(0)[1];
@@ -3848,8 +3889,8 @@ function NV_SessionDoc(props) {
         }}
         onOpenCanvasSettings={function () { setCanvasSettingsOpen(true); }} />
       {NV_welcomeEligible(con, session) ? <NV_SessionWelcome
-        key={(con.viewer.user_id || con.viewer.id) + ":" + con.role}
-        sid={sid} composer={welcomeComposer} running={!!shown} /> : null}
+        key={(con.viewer.user_id || con.viewer.id) + ":" + con.role + ":" + sid}
+        sid={sid} composer={welcomeComposer} accepted={welcomeAccepted} running={!!shown} /> : null}
       {canvasSettingsOpen && typeof window.NV_CanvasSettingsDialog === "function" ? (
         <window.NV_CanvasSettingsDialog onClose={function () { setCanvasSettingsOpen(false); }} />
       ) : null}
@@ -4028,6 +4069,7 @@ function NV_SessionDoc(props) {
       </div>
       <NV_Composer sid={sid}
         welcomeComposer={welcomeComposer}
+        welcomeAccepted={welcomeAccepted}
         running={!!shown}
         statusShown={shown}
         degraded={degraded}

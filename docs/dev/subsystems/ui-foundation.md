@@ -36,7 +36,7 @@ shared `NV_SessionDoc` on desktop and phone. It introduces no polling stream.
 Acknowledgement/reopen writes use `useMutation`; successful responses replace
 only the matching person's current-role welcome in that resource. A delayed
 response for a prior principal/role is ignored. A mounted card stays visible
-after acknowledgement until dismissed or a suggested message is accepted;
+after acknowledgement until dismissed or any composer message is accepted;
 subsequent mounts use the server's durable state. When an operator turn
 finishes, the existing status resource is refreshed once so a generated
 reopen tool call can show the welcome in the active session. Tokens cause no
