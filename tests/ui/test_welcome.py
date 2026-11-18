@@ -92,6 +92,23 @@ def test_manual_send_during_reopen_is_not_undone_by_its_late_response(welcome):
     assert value(welcome, "CON.welcomeState.show") is False
 
 
+def test_failed_pending_reopen_does_not_consume_a_later_external_reset(welcome):
+    welcome.eval("MR.mount(Chat);")
+    resolve(welcome, 0)
+    welcome.eval("button('Dismiss welcome').props.onClick(); MR.settle(); NV_WELCOME_INSTANCES.s(); MR.settle();")
+    welcome.eval("MR.find('nv-composer-input').props.onChange({target:{value:'Hello'}}); MR.settle(); MR.click('nv-send'); SEND_REQUESTS[0].resolve({});")
+    welcome.eval("MR.settle(); REQUESTS[1].reject({detail:'Reopen failed'});")
+    welcome.eval("MR.settle();")
+    assert value(welcome, "!!MR.find('nv-welcome')") is False
+    assert value(welcome, "REQUESTS.length") == 2
+    welcome.eval("CON.welcomeState={variant:'user',show:true}; MR.rerender();")
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+    assert value(welcome, "REQUESTS[2].path") == "/auth/welcome/acknowledge"
+    resolve(welcome, 2)
+    assert value(welcome, "!!MR.find('nv-welcome')") is True
+    assert value(welcome, "CON.welcomeState.show") is False
+
+
 def test_accepted_chat_retries_failed_ack_and_exposes_compact_durable_retry(welcome):
     welcome.eval("MR.mount(Chat); REQUESTS[0].reject({detail:'Storage unavailable'});")
     welcome.eval("MR.settle(); MR.find('nv-composer-input').props.onChange({target:{value:'Hello'}}); MR.settle(); MR.click('nv-send'); SEND_REQUESTS[0].resolve({});")
