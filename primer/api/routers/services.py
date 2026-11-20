@@ -159,6 +159,20 @@ async def _get_service_or_404(
     response_model=ServiceVersion,
     status_code=201,
     summary="Publish a bundle as a new service version",
+    # Keep raw Request handling (including its existing error ordering and
+    # application/gzip callers), but describe the bytes so generated tools
+    # can bind a body through their existing base64 octet-stream transport.
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "description": "Gzipped tar archive of the service bundle files.",
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
 )
 @route_tool(scoped_id="services__publish_service_version")
 async def publish_service_version(

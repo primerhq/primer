@@ -13,8 +13,9 @@ Design rationale and the full decision trail live in the (local, not
 committed) spec `docs/superpowers/specs/2026-08-08-services-design.md`.
 This page documents what is implemented: spec phases 1-2. Phase 3 (tool
 dispatch through a manifest allowlist and an anonymous service principal)
-and phase 4 (the agent/system `publish_service` tool and agent-usage docs)
-are not built yet. `viewer_auth="none"` already applies to static files and
+and the separate curated phase-4 `publish_service` tool for workspace-authored
+bundles are not built yet. Generated route-backed publishing and its agent
+guide are available. `viewer_auth="none"` already applies to static files and
 published functions; it does not make an unbuilt tool gateway available.
 
 ## 2. Conceptual model
@@ -100,6 +101,15 @@ pointer (unless `?activate=false`), and retention pruning (newest 20
 kept, the active version always kept).
 `POST /v1/services/{id}/_activate` repoints (rollback = pointing back).
 Deleting a service cascades versions and artifacts.
+
+The generated admin tool `services__publish_service_version` calls this same
+pipeline. It takes `service_id`, a required `body` containing the base64-encoded
+gzipped tar bundle, and optional `activate` (default true). The route declares
+a binary `application/octet-stream` body in OpenAPI so generated dispatch
+decodes the base64 into the original archive bytes. REST continues to consume
+raw bytes (including existing `application/gzip` callers); its validation and
+authentication order are unchanged. This tool publishes a prepared archive,
+not a workspace directory. It uses the normal generated-write approval gate.
 
 ## 7. Persistence
 
@@ -202,7 +212,8 @@ The shell reaches services through the `services` overlay (list,
 create/edit/delete with the standard modal) and `services::{id}` (Config
 plus Versions tabs; activate/rollback; open-app link). The console has no
 bundle upload control. Publishing is available today through
-`POST /v1/services/{id}/versions`; the planned phase-4 `publish_service`
+`POST /v1/services/{id}/versions` and the generated
+`services__publish_service_version` tool; the planned phase-4 `publish_service`
 agent/system tool is not implemented.
 
 ## 9. Internal contracts
@@ -242,6 +253,7 @@ agent/system tool is not implemented.
   add a coordination dependency to the one plane built to avoid them.
 - **The roadmap keeps publishing out of the console.** Today an operator or
   API client publishes through `POST /v1/services/{id}/versions`; there is no
-  console upload control or agent tool. The planned phase-4 design adds a
+  console upload control. The generated publishing tool accepts a prepared
+  archive; the planned phase-4 design adds a
   `publish_service` tool for workspace-authored bundles rather than a console
   button that uploads a bundle the operator did not build.

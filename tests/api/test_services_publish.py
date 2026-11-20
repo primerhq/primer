@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import io
+import json
+from datetime import datetime, timezone
 import tarfile
 
 import pytest
@@ -160,3 +163,113 @@ async def test_delete_cascades_versions_after_publish(client):
     assert r.status_code in (200, 204)
     listing = await client.get(f"/v1/services/{s['id']}/versions")
     assert listing.status_code == 404
+
+
+async def _publish_tool(app, service_id, body, *, activate=True, role="admin"):
+    from primer.access.acting import acting_as
+    from primer.access.person import Person
+    from primer.model.user import User
+
+    users = app.state.storage_provider.get_storage(User)
+    user_id = f"publish-test-{role}"
+    if await users.get(user_id) is None:
+        await users.create(User(
+            id=user_id, username=user_id, password_hash="!test", role=role,
+            created_at=datetime(2026, 11, 20, tzinfo=timezone.utc),
+        ))
+    provider = app.state.generated_route_toolsets.providers["services"]
+    with acting_as(Person(user_id, role)):
+        return await provider.call(
+            tool_name="publish_service_version",
+            arguments={"service_id": service_id, "body": body, "activate": activate},
+        )
+
+
+@pytest.mark.asyncio
+async def test_generated_publish_roundtrip_preserves_binary_and_activation(app, client):
+    s = await _mk_service(client, "tool-publish")
+    original = await _publish(client, s["id"], {"index.html": b"original"})
+    assert original.status_code == 201, original.text
+    binary = bytes(range(256))
+    bundle = _tar({"index.html": b"from tool", "asset.bin": binary})
+    encoded = base64.b64encode(bundle).decode("ascii")
+    result = await _publish_tool(app, s["id"], encoded, activate=False)
+    assert not result.is_error, result.output
+    version = json.loads(result.output)
+    assert version["version"] == 2
+    assert set(version["files"]) == {"index.html", "asset.bin"}
+    assert (await client.get(f"/v1/services/{s['id']}")).json()["active_version_id"] == original.json()["id"]
+    result = await _publish_tool(app, s["id"], encoded)
+    assert not result.is_error, result.output
+    active = json.loads(result.output)
+    assert active["version"] == 3
+    assert (await client.get(f"/v1/services/{s['id']}")).json()["active_version_id"] == active["id"]
+    page = await client.get("/svc/tool-publish/")
+    assert page.status_code == 200 and page.content == b"from tool"
+    asset = await client.get("/svc/tool-publish/asset.bin")
+    assert asset.status_code == 200 and asset.content == binary
+
+
+@pytest.mark.asyncio
+async def test_generated_publish_schema_exposes_required_binary_body(app):
+    operation = next(
+        op for op in app.state.generated_route_toolsets.operations
+        if op.tool.toolset_id == "services" and op.tool.id == "publish_service_version"
+    )
+    schema = operation.tool.args_schema
+    assert "body" in schema["required"]
+    assert schema["properties"]["body"]["type"] == "string"
+    assert schema["properties"]["body"]["contentEncoding"] == "base64"
+    assert operation.tool.required_role == "admin"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [base64.b64encode(b"not a tar").decode(), ""])
+async def test_generated_publish_rejects_invalid_body_without_versions(app, client, body):
+    s = await _mk_service(client, "tool-invalid")
+    result = await _publish_tool(app, s["id"], body)
+    assert result.is_error, result.output
+    assert json.loads(result.output)["status"] == 422
+    assert (await client.get(f"/v1/services/{s['id']}/versions")).json()["items"] == []
+    assert (await client.get(f"/v1/services/{s['id']}")).json()["active_version_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_generated_publish_requires_admin(app, client):
+    s = await _mk_service(client, "tool-permissions")
+    encoded = base64.b64encode(_tar({"index.html": b"denied"})).decode()
+    result = await _publish_tool(app, s["id"], encoded, role="user")
+    assert result.is_error, result.output
+    assert json.loads(result.output)["status"] == 403
+    assert (await client.get(f"/v1/services/{s['id']}/versions")).json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_generated_publish_refuses_invalid_base64_before_dispatch(app, client):
+    from primer.model.except_ import ConfigError
+
+    s = await _mk_service(client, "tool-base64")
+    # The shared binary transport raises ConfigError before any HTTP request.
+    # Its caller (MCP or the agent tool executor) renders the tool error.
+    with pytest.raises(ConfigError, match="body must be base64"):
+        await _publish_tool(app, s["id"], "not-base64!")
+    assert (await client.get(f"/v1/services/{s['id']}/versions")).json()["items"] == []
+    assert (await client.get(f"/v1/services/{s['id']}")).json()["active_version_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_generated_publish_preserves_missing_and_harness_guards(app, client):
+    from primer.model.service import Service
+
+    encoded = base64.b64encode(_tar({"index.html": b"guarded"})).decode()
+    missing = await _publish_tool(app, "service-nope", encoded)
+    assert missing.is_error and json.loads(missing.output)["status"] == 404
+    s = await _mk_service(client, "tool-managed")
+    store = app.state.storage_provider.get_storage(Service)
+    row = await store.get(s["id"])
+    row.harness_id = "harness-test"
+    await store.update(row)
+    managed = await _publish_tool(app, s["id"], encoded)
+    assert managed.is_error and json.loads(managed.output)["status"] == 409
+    assert json.loads(managed.output)["extensions"]["error"] == "managed_by_harness"
+    assert (await client.get(f"/v1/services/{s['id']}/versions")).json()["items"] == []
