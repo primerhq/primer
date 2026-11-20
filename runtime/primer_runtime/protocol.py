@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION: str = "1.5"
+PROTOCOL_VERSION: str = "1.6"
 
 
 class OpName(StrEnum):
@@ -41,6 +41,7 @@ class OpName(StrEnum):
     STATE_COMMIT = "state_commit"
     STATE_READ = "state_read"
     STATE_HISTORY = "state_history"
+    STATE_SHOW_COMMIT = "state_show_commit"
     # Interactive PTY ops (Studio integrated terminal). PTY_OPEN is a
     # long-lived streaming op (emits pty_open / data / exit events) keyed by
     # its req_id; PTY_STDIN / PTY_RESIZE / PTY_CLOSE are single-shot control

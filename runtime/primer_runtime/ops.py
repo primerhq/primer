@@ -756,6 +756,10 @@ async def state_history(
     session_id, agent_id, op, tool, call_id (all str|None except sha/subject/committed_at).
     Newest first.
     """
+    if args.get("with_files"):
+        from primer_runtime.state_inspect import state_history_files
+        return await state_history_files(args, workspace_root)
+
     limit: int = int(args.get("limit", 100))
     session_id: str | None = args.get("session_id")
     agent_id: str | None = args.get("agent_id")
@@ -783,6 +787,9 @@ async def state_history(
 # Dispatch table
 # ---------------------------------------------------------------------------
 
+from primer_runtime.state_inspect import state_show_commit
+
+
 HANDLERS: dict[str, object] = {
     "read_file": read_file,
     "write_file": write_file,
@@ -793,6 +800,7 @@ HANDLERS: dict[str, object] = {
     "state_commit": state_commit,
     "state_read": state_read,
     "state_history": state_history,
+    "state_show_commit": state_show_commit,
 }
 
 

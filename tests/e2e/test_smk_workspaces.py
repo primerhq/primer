@@ -313,6 +313,40 @@ async def test_container_backend(authed_client, unique_suffix):
         #    wrote above must also be visible to the shell, proving the file
         #    API and exec share the same container filesystem.
         await _exec_inside_the_workspace(authed_client, wid)
+
+        # Seed state through a second runtime client, then inspect through the
+        # API's independently attached workspace handle. Only this test's
+        # newly created container/volume is touched; no host state repo.
+        from primer.model.workspace import DockerRuntimeConfig
+        from primer.workspace.runtime.docker import DockerRuntimeAdapter
+
+        adapter = DockerRuntimeAdapter(DockerRuntimeConfig())
+        await adapter.initialize()
+        sandbox = None
+        try:
+            sandbox = await adapter.get_sandbox(f"workspace-{wid}")
+            assert sandbox is not None
+            first = await sandbox.state_commit(
+                files={"audit.txt": b"before\n"}, deletes=[], message="diff seed",
+            )
+            sha = await sandbox.state_commit(
+                files={"audit.txt": b"after\n"}, deletes=[], message="diff update",
+            )
+            log = await authed_client.get(f"/v1/workspaces/{wid}/log", params={"with_files": "true"})
+            assert log.status_code == 200, log.text
+            row = next(c for c in log.json()["commits"] if c["sha"] == sha)
+            assert row["files"] == [{"path": "audit.txt", "additions": 1, "deletions": 1, "binary": False}]
+            shown = await authed_client.get(f"/v1/workspaces/{wid}/commit/{sha}")
+            assert shown.status_code == 200, shown.text
+            assert shown.json()["parent"] == first
+            patch = shown.json()["files"][0]["patch"]
+            assert "-before" in patch and "+after" in patch
+            missing = await authed_client.get(f"/v1/workspaces/{wid}/commit/" + "0" * 40)
+            assert missing.status_code == 404, missing.text
+        finally:
+            if sandbox is not None:
+                await sandbox.aclose()
+            await adapter.aclose()
     finally:
         # 3) Teardown: DELETE removes the container + volume. Assert the API
         #    contract (204 + GET 404) and, as a bonus, that docker shows no
@@ -648,6 +682,7 @@ async def test_kubernetes_backend(authed_client, unique_suffix):
         #    be visible to the shell, proving file API and exec share the pod
         #    filesystem.
         await _exec_inside_the_workspace(authed_client, wid)
+
     finally:
         # 3) Teardown: DELETE removes the StatefulSet + Service + Secret + PVC.
         #    Assert the API contract (204 + GET 404) and that kubectl shows no

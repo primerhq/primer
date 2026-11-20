@@ -89,6 +89,7 @@ Reference: [`workspaces__get_workspace_log`](reference/tools/workspaces/get_work
 - An `encoding` other than `text` or `base64` is a `bad-request`.
 - A path that escapes the workspace root is a `bad-request`.
 - From outside, you cannot write under `.state/shared/`. A session coordinates there with its own `workspace__write`.
+- `workspace_log__workspace_log` with `with_files: true` includes per-file line counts. `workspace_log__workspace_show_commit` reads a commit header and patches; full patches require an admin, while other readers receive the header with `files_hidden: true`. Container and Kubernetes workspaces need runtime protocol 1.6 or newer for these details. An older runtime keeps file counts unknown and answers `not-implemented` (HTTP 501) for a diff; rebuild the runtime image to enable it. Oversized inspection output is refused rather than silently truncated.
 - The log covers the `.state` repository only: the platform's commits of session state, not your project's own git history.
 
 ## Related

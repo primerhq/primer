@@ -125,6 +125,13 @@ _RESPONSES_BY_CODE.setdefault(
     },
 )
 
+# Optional backend capabilities can explicitly refuse an otherwise valid request.
+_RESPONSES_BY_CODE.setdefault(501, {
+    "model": ProblemDetails,
+    "description": "Not Implemented",
+    "content": {PROBLEM_JSON_MEDIA_TYPE: {}},
+})
+
 
 def common_responses(*codes: int) -> dict[int, dict[str, Any]]:
     """Return a FastAPI ``responses=`` map for the given status codes.
