@@ -375,3 +375,39 @@ async def test_protocol_1_5_commit_refusal_is_501_without_sending_rpc():
         runtime._send_request.assert_not_awaited()
     finally:
         await runtime.aclose()
+
+
+@pytest.mark.parametrize("bound", ["MAX_INSPECT_BYTES", "MAX_RESULT_BYTES"])
+async def test_runtime_inspection_caps_are_422_on_log_and_diff(tmp_path, monkeypatch, bound):
+    from aiohttp.test_utils import TestServer
+    from primer_runtime import state_inspect
+    from primer_runtime.server import build_app
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+    from primer.workspace.sandbox.state import SandboxStateRepo
+
+    async with TestServer(build_app(token="test", workspace_root=str(tmp_path))) as server:
+        runtime = RuntimeClient(url=str(server.make_url("/")).replace("http:", "ws:"), token="test")
+        await runtime.connect()
+        try:
+            sha = await runtime.state_commit(files={"session.json": b"transcript\n"}, deletes=[], message="turn")
+            sandbox = WSSandbox(runtime_client=runtime, container_id="capped", workspace_root=str(tmp_path))
+            repo = SandboxStateRepo(sandbox, state_path=str(tmp_path / ".state"), workspace_id="w")
+            app, registry = _app("admin")
+            registry.ws._state = repo
+            registry.ws.log = repo.history
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                with monkeypatch.context() as capped:
+                    capped.setattr(state_inspect, bound, 32)
+                    for path in (f"/v1/workspaces/w/commit/{sha}", "/v1/workspaces/w/log?with_files=true"):
+                        response = await client.get(path)
+                        assert response.status_code == 422, response.text
+                        assert response.headers["content-type"] == "application/problem+json"
+                        assert "limit" in response.json()["detail"]
+                # A rejected result must not drop the runtime WebSocket or return
+                # partial success; the same connection can still serve full data.
+                response = await client.get("/v1/workspaces/w/log?with_files=true")
+                assert response.status_code == 200, response.text
+                assert response.json()["commits"][0]["files"][0]["path"] == "session.json"
+        finally:
+            await runtime.aclose()
