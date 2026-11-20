@@ -599,12 +599,12 @@ async def test_commit_lock_exists() -> None:
 
 
 # ---------------------------------------------------------------------------
-# show_commit raises NotImplementedError
+# Older runtime versions refuse show_commit
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_show_commit_raises_not_implemented() -> None:
+async def test_older_runtime_refuses_show_commit() -> None:
     sandbox = _make_mock_sandbox()
     repo = _make_repo(sandbox)
 

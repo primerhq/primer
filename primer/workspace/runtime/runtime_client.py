@@ -339,6 +339,7 @@ class RuntimeClient:
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 50,
+        with_files: bool = False,
     ) -> list[dict]:
         """Return recent commits from the workspace state repo.
 
@@ -350,8 +351,16 @@ class RuntimeClient:
             "session_id": session_id,
             "agent_id": agent_id,
         }
+        if with_files and self._runtime_has((1, 6)):
+            args["with_files"] = True
         result = await self._send_request(OpName.STATE_HISTORY, args)
         return result["commits"]
+
+    async def state_show_commit(self, sha: str) -> dict:
+        """Inspect a state commit only on runtimes advertising protocol 1.6+."""
+        if not self._runtime_has((1, 6)):
+            raise NotImplementedError("State commit diffs require runtime protocol 1.6 or newer")
+        return await self._send_request(OpName.STATE_SHOW_COMMIT, {"sha": sha})
 
     async def archive(self, paths: list[str]) -> AsyncIterator[bytes]:  # type: ignore[override]
         """Stream a tar archive.  Yields raw binary chunks."""

@@ -120,3 +120,21 @@ async def test_state_history_defaults(client: RuntimeClient) -> None:
     _, args = mock.call_args.args
     assert args == {"limit": 50, "session_id": None, "agent_id": None}
     assert result == []
+
+
+@pytest.mark.parametrize("version,supported", [("1.5", False), ("1.6", True), ("1.10", True), ("bad", False)])
+async def test_commit_diff_and_file_counts_are_version_gated(client, version, supported):
+    client._negotiated_version = version
+    mock = AsyncMock(return_value={"commits": []})
+    client._send_request = mock
+    await client.state_history(with_files=True)
+    assert (mock.call_args.args[1].get("with_files") is True) == supported
+    mock.reset_mock()
+    if supported:
+        mock.return_value = {"sha": "a" * 40, "files": []}
+        assert await client.state_show_commit("a" * 40) == mock.return_value
+        mock.assert_awaited_once_with(OpName.STATE_SHOW_COMMIT, {"sha": "a" * 40})
+    else:
+        with pytest.raises(NotImplementedError, match="1.6"):
+            await client.state_show_commit("a" * 40)
+        mock.assert_not_awaited()
