@@ -20,7 +20,7 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 ## How to
 
 1. An admin creates the service and reads its saved identity and name.
-2. Inspect the publish operation and supply a real bundle. List versions and verify the published manifest and file references.
+2. Build a gzipped tar archive containing the app files (and optional `service.yaml`). Call `services__publish_service_version` with `service_id` and `body`: the base64 encoding of those archive bytes, not a file path or a JSON manifest. `activate` defaults to true; use false to stage a version. List versions and verify the published manifest and file references.
 3. Activate the desired version, read its served bytes and verify a representative function if the bundle defines one.
 4. Roll back by activating an existing version. Delete the service only when intended: deletion cascades to its versions and artifacts.
 
