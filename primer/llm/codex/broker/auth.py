@@ -281,8 +281,11 @@ class SignIn:
                             await self._http.revoke(endpoint, item["client_id"], item["refresh_token"])
                         except Exception:
                             continue  # Attempt other distinct sessions too.
-                        self._revocations.remove(item)
-                        self._save_revocations()
+                        remaining = [pending for pending in self._revocations if pending != item]
+                        # Keep the in-process admission fence until persistence
+                        # succeeds, including unknown rename/fsync outcomes.
+                        self._store.write("revocations", {"items": remaining, "identity": self._selected})
+                        self._revocations = remaining
                 require(not self._revocations)
             except Exception:
                 raise BoundaryError("SIWC remote revocation unconfirmed; local credentials disabled") from None

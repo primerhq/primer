@@ -202,6 +202,61 @@ async def test_sse_empty_and_short_lines_bounded_before_decode(monkeypatch, payl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("after", [False, True])
+async def test_uncertain_disposal_completion_fences_same_process_reenrollment(world, tmp_path, monkeypatch, after):
+    await world.login()
+    write = world.store.write
+    attempts = []
+
+    async def revoke(endpoint, client, refresh):
+        attempts.append(refresh)
+
+    def fault(name, value):
+        if name == "revocations" and not value["items"]:
+            if after:
+                write(name, value)
+            raise OSError("uncertain empty queue write")
+        write(name, value)
+
+    monkeypatch.setattr(world.http, "revoke", revoke)
+    with monkeypatch.context() as patch:
+        patch.setattr(world.store, "write", fault)
+        with pytest.raises(BoundaryError):
+            await world.auth.sign_out()
+    # A confirmed network revocation is not confirmation of durable local
+    # cleanup. Both before-replace and unknown-after-write outcomes stay fenced.
+    count = len(world.calls)
+    with pytest.raises(BoundaryError):
+        world.start()
+    with pytest.raises(BoundaryError):
+        world.auth.commit_registration()
+    with pytest.raises(BoundaryError):
+        world.auth.snapshot()
+    with pytest.raises(BoundaryError):
+        await world.auth.credential(world.account)
+    assert len(world.calls) == count
+    assert world.auth._revocations == [{"client_id": "issued-client", "refresh_token": "dedicated-test-refresh"}]
+
+    # Explicit retry reconciles disk and memory before a genuinely NEW token
+    # may be enrolled in the same object. A conservative duplicate is harmless.
+    await world.auth.sign_out()
+    assert attempts == ["dedicated-test-refresh"] * 2
+    assert world.store.read("revocations")["items"] == []
+    world.token_changes = {"access_token": "fresh-second-access", "refresh_token": "fresh-second-refresh"}
+    assert await world.login() == world.account
+    assert (await world.auth.credential(world.account))[0] == "fresh-second-access"
+    world.store.close()
+    world.store = PrivateStore(tmp_path)
+    restored = SignIn(world.store, world.policy, world.http)
+    assert restored.snapshot().account == world.account
+    assert (await restored.credential(world.account))[0] == "fresh-second-access"
+    await restored.sign_out()
+    assert attempts[-1] == "fresh-second-refresh"
+    assert world.store.read("registration")["reauthorization_required"] is True
+    assert world.store.read("revocations")["items"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("one_byte", [False, True])
 async def test_sse_multiline_reset_comments_and_done(monkeypatch, one_byte):
     from primer.llm.codex.broker import http
