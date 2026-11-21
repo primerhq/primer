@@ -69,6 +69,10 @@ the active registration with a disabled marker. On startup a nonempty disposal
 queue disables any coexisting old registration; snapshots, credentials and new
 enrollment refuse until explicit cleanup completes. Only after the disabled
 marker is durable may confirmed revocations remove queue entries. A failure
+to persist a removal also retains the in-memory admission fence, even when the
+remote revocation succeeded or the disk write's outcome is unknown. Same-process
+reenrollment requires explicit cleanup retry before a new credential can commit.
+A failure
 before the first durable disposal write may leave the unchanged active record
 on disk: sign-out has not succeeded and the error must remain visible. Unknown
 rename/fsync completion can leave either old or new atomic files; retry handles
