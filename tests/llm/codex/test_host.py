@@ -815,17 +815,75 @@ def test_standard_managed_thread_can_construct_use_and_dispose(composed):
             assert policy.grant(composed.manifest['account'])[2] == {'model'}
             store.write('client_hint', {'managed': True})
             assert store.read('client_hint') == {'managed': True}
-            completed.append(True)
         except BaseException as exc:
             failures.append(repr(exc))
         finally:
-            if store is not None:
-                store.close()
-            if trust is not None:
-                trust.close()
+            for handle in (store, trust):
+                if handle is not None:
+                    try:
+                        handle.close()
+                        assert handle._fd is None
+                        if handle is store:
+                            assert store._lock is None
+                    except BaseException as exc:
+                        failures.append(repr(exc))
+        if not failures:
+            completed.append(True)
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     thread.join(timeout=1)
     assert not thread.is_alive()
     assert not failures, failures
     assert completed == [True]
+    # The exited worker actually released its flock, not merely Python fields.
+    reopened = PrivateStore(composed.directory)
+    reopened.close()
+
+
+def test_cold_import_on_native_thread_refuses_false_main_owner_before_io(tmp_path):
+    import subprocess
+    import sys
+    script = '''
+import _thread, os, signal, sys
+assert 'threading' not in sys.modules, 'probe must begin before threading import'
+signal.alarm(4)
+done = _thread.allocate_lock()
+done.acquire()
+failures, refused, opened = [], [], []
+def worker():
+    try:
+        import threading
+        assert threading.current_thread() is threading.main_thread()
+        assert threading.get_native_id() != os.getpid()
+        from pathlib import Path
+        from primer.llm.codex.broker import host
+        from primer.llm.codex.broker.security import PrivateStore
+        from primer.llm.codex.boundary import BoundaryError
+        def forbidden(*args, **kwargs):
+            opened.append(True)
+            raise AssertionError('cold-import false main owner opened descriptor')
+        os.open = forbidden
+        host._root_directory = forbidden
+        for factory in (PrivateStore, host.HostTrust):
+            try:
+                factory(Path(sys.argv[1]))
+            except BoundaryError:
+                refused.append(factory.__name__)
+            else:
+                raise AssertionError('false main owner acquired authority')
+    except BaseException as exc:
+        failures.append(repr(exc))
+    finally:
+        done.release()
+_thread.start_new_thread(worker, ())
+assert done.acquire(timeout=3), 'native worker did not finish'
+assert not failures, failures
+assert not opened, opened
+assert refused == ['PrivateStore', 'HostTrust'], refused
+# threading was intentionally initialized on the wrong thread. Avoid its
+# interpreter-shutdown bookkeeping after completing all refusal assertions.
+os._exit(0)
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)],
+                            timeout=5, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
