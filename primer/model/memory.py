@@ -91,6 +91,16 @@ class MemoryJob(Identifiable):
     target_turn: int = 0
     created_at: datetime
     expires_at: datetime
+    # Absent on legacy jobs. Each enqueue (including a same-target renewal)
+    # gets a new occurrence. Only creation/adoption gets a new incarnation.
+    incarnation_id: str | None = None
+    occurrence_id: str | None = None
+    requested_due_at: datetime | None = None
+    retry_count: int = Field(default=0, ge=0)
+    retry_error: str | None = None
+
+    def occurrence_guard(self) -> dict[str, list[str | None]]:
+        return {"agent_id": [self.agent_id], "incarnation_id": [self.incarnation_id], "occurrence_id": [self.occurrence_id]}
 
 
 __all__ = [

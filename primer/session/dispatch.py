@@ -2552,7 +2552,7 @@ async def _mark_turn_completed(session_storage, session_id: str, turn_no: int, d
 async def _memory_hook(deps: "SessionDispatchDeps | None", session, *, ended: bool) -> None:
     """Hand a finished turn, or an ended session, to the memory job queue. Best effort: memory never fails a turn or a release."""
     engine = getattr(deps, "claim_engine", None)
-    if engine is None:
+    if getattr(deps, "storage_provider", None) is None:
         return
     from primer.memory.jobs import on_session_ended, on_turn_completed
 

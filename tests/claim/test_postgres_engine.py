@@ -1404,10 +1404,10 @@ async def test_heartbeat_binds_configured_lease_ttl():
     await engine.heartbeat("worker-A", [(ClaimKind.HARNESS, "c1")])
     assert conn.fetch_calls, "heartbeat did not run a fetch"
     query, args = conn.fetch_calls[-1]
-    # TTL threaded as the last ($4) param; no hardcoded 60s literal remains.
+    # TTL threaded as the last ($5) param; no hardcoded 60s literal remains.
     assert args[-1] == "15"
     assert "'60 seconds'" not in query
-    assert "$4" in query
+    assert "($5 ||" in query
 
 
 @pytest.mark.asyncio

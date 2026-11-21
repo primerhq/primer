@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from typing import Any
@@ -221,6 +222,45 @@ class PostgresClaimEngine(ClaimEngine):
     # delete_lease
     # ------------------------------------------------------------------
 
+    @asynccontextmanager
+    async def hold_memory_claim(self, lease: Lease, *, conn):
+        from primer.model.memory import MemoryJob
+        from primer.storage._locking import require_transaction
+
+        db = require_transaction(conn, self._storage, MemoryJob)
+        owned = await db.fetchval(
+            f"SELECT 1 FROM {self._table} WHERE kind='memory' AND entity_id=$1 AND claimed_by=$2 "
+            "AND memory_claim_id=$3 AND memory_occurrence IS NOT DISTINCT FROM $4 FOR UPDATE",
+            lease.entity_id, lease.claimed_by, lease.memory_claim_id, lease.memory_occurrence,
+        )
+        yield bool(owned)
+
+    async def arm_memory_job(self, job, *, conn) -> None:
+        # Use this provider's already checked-out connection. Acquiring another
+        # pool slot while holding the job lock could starve the entire pool.
+        from primer.model.memory import MemoryJob
+        from primer.storage._locking import require_transaction
+
+        db = require_transaction(conn, self._storage, MemoryJob)
+        changed = await db.fetchval(
+            f"INSERT INTO {self._table} AS le "
+            "(kind, entity_id, memory_occurrence, next_attempt_at, attempt_count, last_error) "
+            "VALUES ('memory', $1, $2, $3, $4, $5) ON CONFLICT (kind, entity_id) DO UPDATE SET "
+            "memory_occurrence = EXCLUDED.memory_occurrence, next_attempt_at = EXCLUDED.next_attempt_at, "
+            "attempt_count = EXCLUDED.attempt_count, last_error = EXCLUDED.last_error "
+            "WHERE le.memory_occurrence IS DISTINCT FROM EXCLUDED.memory_occurrence RETURNING 1",
+            job.id, job.occurrence_id, job.requested_due_at, job.retry_count, job.retry_error,
+        )
+        if changed:
+            await db.execute("SELECT pg_notify('claim_ready', $1)", f"memory:{job.id}")
+
+    async def discard_memory_lease(self, entity_id: str, occurrence: str | None) -> None:
+        async with self._storage.pool.acquire() as conn:
+            await conn.execute(
+                f"DELETE FROM {self._table} WHERE kind = 'memory' AND entity_id = $1 "
+                "AND memory_occurrence IS NOT DISTINCT FROM $2", entity_id, occurrence,
+            )
+
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
         """Remove the lease row for (kind, entity_id).  No-op if missing."""
         async with self._storage.pool.acquire() as conn:
@@ -293,13 +333,14 @@ class PostgresClaimEngine(ClaimEngine):
                 await self._ensure_entity_tables(conn)
             rows = await conn.fetch(
                 f"WITH doomed AS ("
-                f"  SELECT l.entity_id FROM {self._table} l"
+                f"  SELECT l.entity_id, l.memory_occurrence FROM {self._table} l"
                 f"    LEFT JOIN {entity} e ON e.id = l.entity_id"
                 f"   WHERE l.kind = $1"
                 f"     AND (l.claimed_by IS NULL OR l.expires_at < now())"
                 f"     AND (e.id IS NULL OR ({dead})))"
                 f" DELETE FROM {self._table} l USING doomed d"
                 f" WHERE l.kind = $1 AND l.entity_id = d.entity_id"
+                f"   AND l.memory_occurrence IS NOT DISTINCT FROM d.memory_occurrence"
                 f"   AND (l.claimed_by IS NULL OR l.expires_at < now())"
                 f" RETURNING 1",
                 kind.value,
@@ -358,6 +399,7 @@ class PostgresClaimEngine(ClaimEngine):
                         expires_at=r["expires_at"],
                         attempt_count=r["attempt_count"],
                         last_error=r["last_error"],
+                        memory_occurrence=r["memory_occurrence"], memory_claim_id=r["memory_claim_id"],
                     )
                     for r in rows
                 ]
@@ -390,6 +432,7 @@ class PostgresClaimEngine(ClaimEngine):
         self,
         worker_id: str,
         kind_ids: list[tuple[ClaimKind, str]],
+        *, memory_claims: dict[str, str] | None = None,
     ) -> list[tuple[ClaimKind, str]]:
         """Refresh the TTL for every (kind, entity_id) pair we own.
 
@@ -406,16 +449,16 @@ class PostgresClaimEngine(ClaimEngine):
         ids = [eid for _, eid in kind_ids]
         async with self._storage.pool.acquire() as conn:
             rows = await conn.fetch(
-                f"UPDATE {self._table}"
+                f"UPDATE {self._table} AS l"
                 f"   SET last_heartbeat_at = now(),"
-                # TTL parameterised ($4) so the refreshed expiry uses the
+                # TTL parameterised ($5) so the refreshed expiry uses the
                 # configured lease_ttl_seconds, not a hardcoded 60s.
-                f"       expires_at = now() + ($4 || ' seconds')::interval"
-                f" WHERE (kind, entity_id) IN"
-                f"       (SELECT * FROM UNNEST($1::text[], $2::text[]))"
-                f"   AND claimed_by = $3"
-                f" RETURNING kind, entity_id",
-                kinds, ids, worker_id, str(self.lease_ttl_seconds),
+                f"       expires_at = now() + ($5 || ' seconds')::interval"
+                f"  FROM UNNEST($1::text[], $2::text[], $4::text[]) AS h(kind, entity_id, receipt)"
+                f" WHERE l.kind=h.kind AND l.entity_id=h.entity_id AND l.claimed_by=$3"
+                f"   AND (l.kind <> 'memory' OR l.memory_claim_id=h.receipt)"
+                f" RETURNING l.kind, l.entity_id",
+                kinds, ids, worker_id, [(memory_claims or {}).get(eid) for eid in ids], str(self.lease_ttl_seconds),
             )
         return [(ClaimKind(r["kind"]), r["entity_id"]) for r in rows]
 
@@ -447,6 +490,18 @@ class PostgresClaimEngine(ClaimEngine):
         wake_signal = None
         async with self._storage.pool.acquire() as conn:
             async with conn.transaction():
+                if lease.kind == ClaimKind.MEMORY:
+                    row = await conn.fetchrow(
+                        f"SELECT memory_occurrence, memory_claim_id FROM {self._table} "
+                        "WHERE kind = 'memory' AND entity_id = $1 AND claimed_by = $2 FOR UPDATE",
+                        lease.entity_id, lease.claimed_by,
+                    )
+                    if row is None or not lease.memory_claim_id or row["memory_claim_id"] != lease.memory_claim_id:
+                        return
+                    if row["memory_occurrence"] != lease.memory_occurrence:
+                        # The old holder hands back its slot. The new request
+                        # already owns the deadline, attempts and disposition.
+                        outcome = ReleaseOutcome(success=True, entity_noop=True)
                 if outcome.drop_lease:
                     owned = await conn.fetchval(
                         f"DELETE FROM {self._table}"

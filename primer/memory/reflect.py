@@ -230,7 +230,9 @@ async def _skip(deps: Any, agent: Agent, job: MemoryJob, reason: str, detail: st
 
 
 async def _mark_reflected(deps: Any, job: MemoryJob) -> None:
-    await deps.sp.get_storage(MemoryJob).patch_if(job.id, {"reflected_turn": job.target_turn}, where={"agent_id": [job.agent_id]})
+    from primer.memory.scheduling import patch_job_progress
+
+    await patch_job_progress(deps, job, {"reflected_turn": job.target_turn})
 
 
 async def resolve_agent_llm(deps: Any, agent: Agent) -> tuple[Any, Any] | None:

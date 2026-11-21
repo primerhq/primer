@@ -92,7 +92,9 @@ async def test_lower_target_renews_from_supplied_time_and_keeps_identity(provide
     await enqueue(provider, 2)
     final = await rows.get(JOB)
     assert final.target_turn == 9 and final.expires_at == NOW + jobs.JOB_LIFETIME
-    assert final.model_copy(update={'expires_at': original.expires_at}) == original
+    assert final.incarnation_id and final.occurrence_id and final.incarnation_id != final.occurrence_id
+    assert final == original.model_copy(update={"expires_at": NOW + jobs.JOB_LIFETIME, "requested_due_at": NOW,
+                                               "incarnation_id": final.incarnation_id, "occurrence_id": final.occurrence_id})
 
 
 async def test_nested_unit_refuses_without_erasing_caller_work(provider):
@@ -123,7 +125,10 @@ async def test_replacement_before_authoritative_read_is_current(provider, field)
     replacement = job(**{field: {'created_at': NOW + timedelta(seconds=1), 'kind': 'topics', 'session_id': 'new-session'}[field]})
     await rows.create(replacement)
     await enqueue(provider, 9)
-    assert await rows.get(JOB) == replacement.model_copy(update={'target_turn': 9})
+    final = await rows.get(JOB)
+    assert final.incarnation_id and final.occurrence_id
+    assert final == replacement.model_copy(update={"target_turn": 9, "requested_due_at": NOW,
+                                                   "incarnation_id": final.incarnation_id, "occurrence_id": final.occurrence_id})
 
 
 async def test_same_identity_recreation_is_not_a_generation_fence(provider):
@@ -259,15 +264,19 @@ async def test_old_missing_target_default_merge(provider):
 async def test_hook_deadlines_and_claim_io_outside_model_unit(provider, monkeypatch):
     session = await setup_hook(provider)
     engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW)
-    upsert = engine.upsert
+    # Interrupt immediately after the producer's committed model transaction.
+    # Projection has its own short transaction, distinct from the merge.
+    project = jobs.arm_current
+    calls = []
     async def arm(*args, **kwargs):
         assert current_transaction() is None
         if isinstance(provider, SqliteStorageProvider):
             assert provider._txn_task is None and not provider.connection.in_transaction
         if isinstance(provider, _FakeStorageProvider):
             assert provider._guard_task is None
-        return await upsert(*args, **kwargs)
-    monkeypatch.setattr(engine, 'upsert', arm)
+        calls.append(args[2])
+        return await project(*args, **kwargs)
+    monkeypatch.setattr(jobs, "arm_current", arm)
     await jobs.on_turn_completed(provider, engine, session, NOW)
     assert engine._leases[(ClaimKind.MEMORY, JOB)].next_attempt_at == NOW + timedelta(minutes=10)
     ended = NOW + timedelta(minutes=1)
@@ -278,11 +287,12 @@ async def test_hook_deadlines_and_claim_io_outside_model_unit(provider, monkeypa
     assert engine._leases[(ClaimKind.MEMORY, JOB)].next_attempt_at == later + timedelta(minutes=10)
     await jobs.schedule_job(provider, None, kind='topics', agent_id='agent', next_attempt_at=NOW)
     assert (await provider.get_storage(MemoryJob).get('topics:agent')).target_turn == 0
+    assert calls == [JOB, JOB, JOB, "topics:agent"]
 
 
 @pytest.mark.parametrize('no_write', ['foreign_owner', 'create_conflict_disappeared'])
-async def test_existing_no_write_return_still_allows_outer_hook_arm(provider, monkeypatch, no_write):
-    """The existing separate row/lease seam is not durable admission."""
+async def test_no_write_return_cannot_arm_a_foreign_or_missing_job(provider, monkeypatch, no_write):
+    """Only a committed scheduling intent authorizes a lease."""
     rows = provider.get_storage(MemoryJob)
     session = await setup_hook(provider)
     engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW)
@@ -292,7 +302,7 @@ async def test_existing_no_write_return_still_allows_outer_hook_arm(provider, mo
     else:
         install_collision(provider, rows, monkeypatch, job(), True)
     await jobs.on_turn_completed(provider, engine, session, NOW)
-    assert await engine.has_lease(ClaimKind.MEMORY, JOB)
+    assert not await engine.has_lease(ClaimKind.MEMORY, JOB)
     assert await rows.get(JOB) == (original if no_write == 'foreign_owner' else None)
 
 

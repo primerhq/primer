@@ -495,6 +495,7 @@ def _make_lifespan(config: AppConfig):
         stuck_session_sweeper = None
         session_messaging_sweeper = None
         task_ask_reconciler = None
+        memory_schedule_reconciler = None
         tool_wait_reconciler = None
         harness_sweeper = None
         watcher_manager = None
@@ -856,6 +857,7 @@ def _make_lifespan(config: AppConfig):
             # executor's own liveness predicate, so the two cannot drift.
             await sweep_orphaned_tool_call_tasks(claim_engine, storage_provider)
             from primer.bus.scheduler_tasks import (
+                MemoryScheduleReconciler,
                 TaskAskDecisionReconciler,
                 ToolWaitWakeReconciler,
             )
@@ -882,6 +884,8 @@ def _make_lifespan(config: AppConfig):
                 storage_provider=storage_provider,
                 claim_engine=claim_engine,
             )
+            memory_schedule_reconciler = MemoryScheduleReconciler(storage_provider, claim_engine)
+            memory_schedule_reconciler.start(coordinator.leader_elector)
             task_ask_reconciler.start(coordinator.leader_elector)
             tool_wait_reconciler.start(coordinator.leader_elector)
 
@@ -1173,6 +1177,7 @@ def _make_lifespan(config: AppConfig):
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
                 (session_messaging_sweeper, "session_messaging_sweeper"),
+                (memory_schedule_reconciler, "memory_schedule_reconciler"),
                 (task_ask_reconciler, "task_ask_reconciler"),
                 (tool_wait_reconciler, "tool_wait_reconciler"),
                 (timer_scheduler, "timer_scheduler"),

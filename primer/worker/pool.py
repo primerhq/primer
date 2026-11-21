@@ -150,6 +150,7 @@ class WorkerPool:
         # Unified in-flight tracking — one set for all claim kinds.
         # (ClaimKind, entity_id) tuples for all kinds.
         self._in_flight: set[tuple[ClaimKind, str]] = set()
+        self._memory_claims: dict[str, str] = {}
         # Session turns drop their lease before they leave ``_in_flight``.
         # When that release exposes a queued next turn, re-arming it inside
         # the handler lets the claim loop claim the fresh lease while the old
@@ -524,9 +525,12 @@ class WorkerPool:
                             kind_id: self._active_scopes.get(kind_id)
                             for kind_id in self._in_flight
                         }
-                        confirmed = await self._engine.heartbeat(
-                            self._worker_id, list(sent),
-                        )
+                        if self._memory_claims:
+                            confirmed = await self._engine.heartbeat(
+                                self._worker_id, list(sent), memory_claims=self._memory_claims.copy(),
+                            )
+                        else:
+                            confirmed = await self._engine.heartbeat(self._worker_id, list(sent))
                         confirmed_set = set(confirmed)
                         for kind_id, scope in sent.items():
                             if kind_id in confirmed_set or scope is None:
@@ -736,6 +740,8 @@ class WorkerPool:
                 )
                 self._in_flight.discard((lease.kind, lease.entity_id))
                 continue
+            if lease.kind == ClaimKind.MEMORY and lease.memory_claim_id:
+                self._memory_claims[lease.entity_id] = lease.memory_claim_id
             task = asyncio.create_task(
                 self._run_engine(lease, handler),
                 name=f"engine-{lease.kind}-{lease.entity_id}",
@@ -919,6 +925,8 @@ class WorkerPool:
             ).observe(time.monotonic() - task_t0)
             self._active_scopes.pop(key, None)
             self._in_flight.discard(key)
+            if lease.kind == ClaimKind.MEMORY:
+                self._memory_claims.pop(lease.entity_id, None)
             if lease.kind == ClaimKind.SESSION:
                 duplicate = self._deferred_session_duplicate_claims.pop(
                     lease.entity_id, None,
