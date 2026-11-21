@@ -106,10 +106,10 @@ def build_claim_query(
         f"all_cand AS ({union_parts} ORDER BY priority_score, next_attempt_at LIMIT $1) "
         f"UPDATE {leases_table} l "
         f"   SET claimed_by = $2, claimed_at = now(), "
-        f"       last_heartbeat_at = now(), "
+        f"       last_heartbeat_at = now(), memory_claim_id = CASE WHEN l.kind = 'memory' THEN gen_random_uuid()::text END, "
         f"       expires_at = now() + ($3 || ' seconds')::interval "
         f"  FROM all_cand a "
         f" WHERE l.kind = a.kind AND l.entity_id = a.entity_id "
         f"RETURNING l.kind, l.entity_id, l.claimed_at, l.expires_at, "
-        f"          l.attempt_count, l.last_error"
+        f"          l.attempt_count, l.last_error, l.memory_occurrence, l.memory_claim_id"
     )

@@ -41,8 +41,8 @@ def _as(uid: str) -> dict[str, str]:
 
 
 class _Env:
-    def __init__(self, client: httpx.AsyncClient, sp: SqliteStorageProvider, engine: InMemoryClaimEngine) -> None:
-        self.client, self.sp, self.engine = client, sp, engine
+    def __init__(self, app: FastAPI, client: httpx.AsyncClient, sp: SqliteStorageProvider, engine: InMemoryClaimEngine) -> None:
+        self.app, self.client, self.sp, self.engine = app, client, sp, engine
 
     async def put(self, uid: str = ALICE, **body):
         return await self.client.put(URL, headers=_as(uid), json=body)
@@ -85,7 +85,7 @@ async def env(tmp_path: Path) -> AsyncIterator[_Env]:
         app.include_router(compute.agent_access_router, prefix="/v1")
         app.include_router(compute.agent_router, prefix="/v1")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
-            yield _Env(client, sp, engine)
+            yield _Env(app, client, sp, engine)
     finally:
         await sp.aclose()
 
@@ -180,3 +180,28 @@ async def test_deleting_the_agent_removes_memory(env: _Env) -> None:
     assert await env.jobs() == []
     assert not await env.engine.has_lease(ClaimKind.MEMORY, f"topics:{AGENT}")
     assert not await env.engine.has_lease(ClaimKind.MEMORY, f"curate:{AGENT}")
+
+
+@pytest.mark.parametrize("engine_offline", [False, True])
+async def test_settings_put_records_recoverable_initial_deadlines(env, monkeypatch, engine_offline):
+    from primer.memory.scheduling import reconcile_page
+
+    # The owner can configure an agent on an API replica with no claim engine.
+    if engine_offline:
+        async def offline(*args, **kwargs):
+            raise ConnectionError("projection interrupted")
+        with monkeypatch.context() as patch:
+            patch.setattr(env.engine, "arm_memory_job", offline)
+            with pytest.raises(ConnectionError, match="projection interrupted"):
+                await env.put(enabled=True)
+    else:
+        env.app.state.claim_engine = None
+        response = await env.put(enabled=True)
+        assert response.status_code == 200, response.text
+    pending = {job.kind: job for job in await env.jobs()}
+    assert pending["curate"].requested_due_at - pending["topics"].requested_due_at == timedelta(days=1)
+    assert not await env.engine.has_lease(ClaimKind.MEMORY, pending["topics"].id)
+    await reconcile_page(env.sp, env.engine)
+    for job in pending.values():
+        lease = env.engine._leases[ClaimKind.MEMORY, job.id]
+        assert (lease.next_attempt_at, lease.memory_occurrence) == (job.requested_due_at, job.occurrence_id)

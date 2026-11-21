@@ -592,7 +592,9 @@ async def test_create_defaults_and_token_forwarding(provider, monkeypatch):
     await enqueue(provider, 2)
     final = await rows.get(JOB)
     assert len(seen) == 1 and not seen[0].active and not seen[0].rollback_complete
-    assert final == MemoryJob(id=JOB, kind='reflect', agent_id='agent', session_id='session', target_turn=2,
+    assert final.incarnation_id and final.occurrence_id and final.incarnation_id != final.occurrence_id
+    assert final == MemoryJob(incarnation_id=final.incarnation_id, occurrence_id=final.occurrence_id, requested_due_at=NOW,
+                              id=JOB, kind='reflect', agent_id='agent', session_id='session', target_turn=2,
                               created_at=NOW, expires_at=NOW + jobs.JOB_LIFETIME)
     assert final.reflected_turn == 0
 

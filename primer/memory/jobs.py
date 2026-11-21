@@ -1,6 +1,6 @@
 """The memory job queue (agent memory, spec 6.1, 6.2 and 10): the hooks that enqueue, the budget, and the gates every job passes.
 
-A job is a ``MemoryJob`` row (the claim entity) plus its lease on the ``memory`` claim kind. Reflection is debounced by the lease: every completed
+A job is a ``MemoryJob`` row (the claim entity) plus its lease on the ``memory`` claim kind. Reflection is debounced by its durable requested deadline: every completed
 turn re-arms ``next_attempt_at`` to ``idle_minutes`` later, and an ended session makes it due at once. The jobs themselves (reflect, curate, topics)
 are the runners of Tasks 7, 8 and 9 (``run_reflect``, ``run_curate``, ``run_topics``), run behind the same gates.
 """
@@ -10,18 +10,21 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from pydantic_core import to_jsonable_python
 
-from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
+from primer.int.claim import Lease, ReleaseOutcome
 from primer.model.agent import Agent
 from primer.model.chat import Message, ToolCallPart
 from primer.model.except_ import ConflictError
 from primer.memory.reflect import ReflectionTransient, new_turns, turn_starts
 from primer.model.memory import AgentMemory, MemoryJob
+from primer.memory.scheduling import arm_current, locked_occurrence, new_occurrence, patch_job_progress
+from primer.model.scheduler import WorkerConfig
+from primer.worker.turn import compute_backoff
 from primer.storage._locking import LockingTransaction
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,8 @@ class MemoryDeps:
     now: Callable[[], datetime]
     load_messages: Callable[[MemoryJob], Awaitable[list[Message] | None]] | None = None
     describe_log: Callable[[MemoryJob], Awaitable[str]] | None = None
+    worker_config: WorkerConfig = field(default_factory=WorkerConfig)
+    lease: Lease | None = None
 
 
 def reflect_job_id(agent_id: str, session_id: str) -> str:
@@ -82,15 +87,16 @@ async def _memory_agent(sp: Any, session: Any) -> tuple[str, AgentMemory] | None
     return binding.agent_id, settings
 
 
-async def _upsert_job(sp: Any, job_id: str, *, kind: str, agent_id: str, session_id: str | None, target_turn: int, now: datetime) -> None:
+async def _upsert_job(sp: Any, job_id: str, *, kind: str, agent_id: str, session_id: str | None, target_turn: int, now: datetime, due: datetime | None = None) -> bool:
     """Merge the decoded current target while owning its row until unit exit.
 
     Requires the provider's model-locking capability, never a raw/nested unit.
     Only an original create collision with confirmed rollback/cleanup permits
     one fresh winner read. No recovery after new cancellation or uncertain
-    cleanup/commit. This is neither generation fencing nor atomic lease arm.
+    cleanup/commit. Commit the scheduling request here, before projecting its lease.
     """
     expires = now + JOB_LIFETIME
+    schedule = {"occurrence_id": new_occurrence(), "requested_due_at": due or now, "retry_count": 0, "retry_error": None}
     for attempt in range(2):
         create_collision = None
         token = None
@@ -101,25 +107,27 @@ async def _upsert_job(sp: Any, job_id: str, *, kind: str, agent_id: str, session
                 current = await store.get_for_update(job_id, conn=token)
                 if current is None:
                     if attempt:
-                        return  # Preserve a vanished create winner without resurrecting it.
+                        return False  # Preserve a vanished create winner without resurrecting it.
                     try:
                         await store.create(MemoryJob(
                             id=job_id, kind=kind, agent_id=agent_id, session_id=session_id,
                             target_turn=target_turn, created_at=now, expires_at=expires,
+                            incarnation_id=new_occurrence(), **schedule,
                         ), conn=token)
                     except ConflictError as exc:
                         create_collision = exc
                         raise
-                    return
+                    return True
                 if current.agent_id != agent_id:
-                    return  # Preserve the old foreign-owner no-write behavior.
-                patch = {"target_turn": max(current.target_turn, target_turn), "expires_at": expires}
+                    return False  # Preserve the old foreign-owner no-write behavior.
+                patch = {**schedule, "target_turn": max(current.target_turn, target_turn), "expires_at": expires,
+                         "incarnation_id": current.incarnation_id or new_occurrence()}
                 written = await store.patch_if(
                     job_id, to_jsonable_python(patch), where={"agent_id": [agent_id]}, conn=token,
                 )
                 if written is None:
                     raise ConflictError(f"locked memory job {job_id!r} changed during target merge")
-                return
+                return True
         except ConflictError as exc:
             # Class alone cannot identify a collision: COMMIT/reset may raise
             # ConflictError too, and failed cleanup can preserve the body error.
@@ -137,8 +145,9 @@ async def _enqueue_reflect(sp: Any, engine: Any, session: Any, now: datetime, *,
         return
     agent_id, settings = found
     job_id = reflect_job_id(agent_id, session.id)
-    await _upsert_job(sp, job_id, kind="reflect", agent_id=agent_id, session_id=session.id, target_turn=session.completed_turn_no + 1, now=now)
-    await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=due(settings))
+    if await _upsert_job(sp, job_id, kind="reflect", agent_id=agent_id, session_id=session.id,
+                         target_turn=session.completed_turn_no + 1, now=now, due=due(settings)):
+        await arm_current(sp, engine, job_id)
 
 
 async def on_turn_completed(sp: Any, engine: Any, session: Any, now: datetime) -> None:
@@ -151,12 +160,18 @@ async def on_session_ended(sp: Any, engine: Any, session: Any, now: datetime) ->
     await _enqueue_reflect(sp, engine, session, now, due=lambda _s: now)
 
 
-async def schedule_job(sp: Any, engine: Any, *, kind: str, agent_id: str, next_attempt_at: datetime) -> None:
-    """Queue a ``curate`` or ``topics`` job of an agent, due at ``next_attempt_at``."""
+async def record_job(sp: Any, *, kind: str, agent_id: str, next_attempt_at: datetime) -> str | None:
     job_id = {"curate": curate_job_id, "topics": topics_job_id}[kind](agent_id)
-    await _upsert_job(sp, job_id, kind=kind, agent_id=agent_id, session_id=None, target_turn=0, now=datetime.now(UTC))
-    if engine is not None:   # a tool that runs where no engine is wired leaves the row for the daily curator run
-        await engine.upsert(ClaimKind.MEMORY, job_id, next_attempt_at=next_attempt_at)
+    written = await _upsert_job(sp, job_id, kind=kind, agent_id=agent_id, session_id=None,
+                                target_turn=0, now=datetime.now(UTC), due=next_attempt_at)
+    return job_id if written else None
+
+
+async def schedule_job(sp: Any, engine: Any, *, kind: str, agent_id: str, next_attempt_at: datetime) -> None:
+    """Queue a curate or topics job, due at the caller's requested time."""
+    job_id = await record_job(sp, kind=kind, agent_id=agent_id, next_attempt_at=next_attempt_at)
+    if job_id is not None:
+        await arm_current(sp, engine, job_id)
 
 
 # --- the daily reflection budget ---------------------------------------------------------------------------------------------------------------
@@ -210,9 +225,10 @@ async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: A
     if last is not None and now - last < CURATE_EVERY:
         return ReleaseOutcome(success=True, requeue_after=CURATE_EVERY - (now - last))
     jobs = deps.sp.get_storage(MemoryJob)
-    # A prompt edit made where no claim engine is wired left its topics job without a lease: it is taken up here, at the latest a day later.
+    # Legacy tool-created rows had no durable due time. Keep their daily fallback.
+    # Managed topics run only on their own deadline and occurrence.
     pending = await jobs.get(topics_job_id(agent.id))
-    if pending is not None:
+    if pending is not None and pending.occurrence_id is None:
         await run_topics(deps, pending, agent, settings)
     try:
         await curate(deps, agent, settings, now)
@@ -220,15 +236,15 @@ async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: A
         logger.warning("memory job %s: the curator failed", job.id, exc_info=True)
     await deps.sp.get_storage(AgentMemory).patch_if(settings.id, {"last_curated_at": now.isoformat()}, where={"enabled": [settings.enabled]})
     # The job outlives its week, or the daily chain would end with the first expiry.
-    await jobs.patch_if(job.id, to_jsonable_python({"expires_at": now + JOB_LIFETIME}), where={"agent_id": [job.agent_id]})
+    await patch_job_progress(deps, job, to_jsonable_python({"expires_at": now + JOB_LIFETIME}))
     return ReleaseOutcome(success=True, requeue_after=CURATE_EVERY)
 
 
-async def run_topics(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory) -> None:
+async def run_topics(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: AgentMemory, *, lease: Lease | None = None) -> None:
     from primer.memory.topics import derive_topics
 
     await derive_topics(deps, agent, settings)
-    await _forget(deps.sp, job)
+    await _forget(deps.sp, job, engine=deps.engine if lease is not None else None, lease=lease)
 
 
 # --- the gates ---------------------------------------------------------------------------------------------------------------------------------
@@ -282,7 +298,7 @@ async def report_job_error(deps: MemoryDeps, lease: Lease, exc: BaseException) -
     """A job that raised is dropped; its reflection says why (best effort: the row or the recorder may be what failed)."""
     try:
         job = await deps.sp.get_storage(MemoryJob).get(lease.entity_id)
-        if job is not None and job.kind == "reflect":
+        if job is not None and job.kind == "reflect" and job.occurrence_id == lease.memory_occurrence:
             await _skipped(deps, job, "error", f"{type(exc).__name__}: {exc}"[:200])
     except Exception:  # noqa: BLE001 - reporting must not raise out of the handler's cleanup
         logger.warning("memory job %s: could not report its failure", lease.entity_id, exc_info=True)
@@ -293,11 +309,66 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     sp, now = deps.sp, deps.now()
     jobs = sp.get_storage(MemoryJob)
     job = await jobs.get(lease.entity_id)
-    if job is None:
+    if job is None or job.occurrence_id != lease.memory_occurrence:
         return _DROP
+    if job.occurrence_id is not None and job.requested_due_at is None:
+        return _DROP
+    if lease.memory_claim_id is not None:
+        deps = replace(deps, lease=lease)
+        async with locked_occurrence(sp, job, engine=deps.engine, lease=lease) as (current, _):
+            if current is None:
+                return _DROP
+    elif job.occurrence_id is not None:
+        return _DROP
+    try:
+        outcome = await _run(deps, job, lease, now)
+    except Exception:
+        # Existing runner policy drops a failed job. Never retire a newer
+        # request, and leave cancellation recoverable after the lease TTL.
+        await _settle(deps, job, lease, _DROP, now)
+        raise
+    await _settle(deps, job, lease, outcome, now)
+    return outcome
+
+
+async def _settle(deps: MemoryDeps, job: MemoryJob, lease: Lease, outcome: ReleaseOutcome, now: datetime) -> None:
+    """Durably retire or schedule the next attempt before the old lease releases."""
+    if job.occurrence_id is None and outcome.drop_lease:
+        return  # legacy terminal job, no durable intent to retire
+    due = None
+    if not outcome.drop_lease:
+        if not outcome.success and outcome.requeue_after is None:
+            config = deps.worker_config
+            seconds = compute_backoff(attempt=lease.attempt_count + 1, base=config.base_backoff_seconds,
+                                      cap=config.max_backoff_seconds)
+            due = deps.now() + timedelta(seconds=seconds)
+        else:
+            due = now + (outcome.requeue_after or timedelta())
+    async with locked_occurrence(deps.sp, job, engine=deps.engine, lease=lease) as (current, conn):
+        store = deps.sp.get_storage(MemoryJob)
+        if current is None:
+            return
+        if current.occurrence_id is not None and current.requested_due_at is None:
+            return  # another execution already retired this occurrence
+        patch = {
+            "incarnation_id": job.incarnation_id or new_occurrence(),
+            "occurrence_id": job.occurrence_id if due is None else new_occurrence(),
+            "requested_due_at": due,
+            "retry_count": 0 if outcome.success else lease.attempt_count + 1,
+            "retry_error": outcome.last_error,
+        }
+        written = await store.patch_if(job.id, to_jsonable_python(patch), where=job.occurrence_guard(), conn=conn)
+        if written is None:
+            raise ConflictError(f"locked memory job {job.id!r} refused its disposition")
+    if due is not None:
+        await arm_current(deps.sp, deps.engine, job.id)
+
+
+async def _run(deps: MemoryDeps, job: MemoryJob, lease: Lease, now: datetime) -> ReleaseOutcome:
+    sp = deps.sp
     agent = await sp.get_storage(Agent).get(job.agent_id)
     if agent is None:  # the agent is gone: the job goes with it
-        await _forget(sp, job)
+        await _forget(sp, job, engine=getattr(deps, "engine", None), lease=lease)
         return _DROP
     settings = await sp.get_storage(AgentMemory).get(job.agent_id)
     # 1. memory is off (or was never on): nothing is written, the lease is dropped
@@ -309,7 +380,7 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     if now > job.expires_at:
         if job.kind == "reflect":
             await _skipped(deps, job, "expired")
-        await _forget(sp, job)
+        await _forget(sp, job, engine=getattr(deps, "engine", None), lease=lease)
         return _DROP
     if job.kind == "reflect":
         # 3. over today's budget: try again after the UTC midnight
@@ -319,13 +390,13 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
         # 4. a session too small to learn from: marked reflected, no model call
         if (small := await _trivial(deps, job)) is not None:
             await _skipped(deps, job, "too_small", small)
-            await jobs.patch_if(job.id, {"reflected_turn": job.target_turn}, where={"agent_id": [job.agent_id]})
+            await patch_job_progress(deps, job, {"reflected_turn": job.target_turn})
             return _DROP
         settings = await consume_budget(sp, settings, now)
         try:
             await run_reflect(deps, job, agent, settings)
         except ReflectionTransient as exc:
-            # the claim engine's normal backoff retries it; after MAX_ATTEMPTS the reflection is given up on, with its event
+            # the durable deadline uses the worker's configured retry backoff; after MAX_ATTEMPTS the reflection is given up on, with its event
             retrying = lease.attempt_count + 1 < MAX_ATTEMPTS
             await _skipped(deps, job, "llm_unavailable", str(exc)[:200], retrying=retrying)
             if retrying:
@@ -333,22 +404,20 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     elif job.kind == "curate":
         return await run_curate(deps, job, agent, settings) or _DROP
     else:
-        await run_topics(deps, job, agent, settings)
+        await run_topics(deps, job, agent, settings, lease=lease)
     return _DROP
 
 
-async def _forget(sp: Any, job: MemoryJob) -> None:
+async def _forget(sp: Any, job: MemoryJob, *, engine=None, lease: Lease | None = None) -> None:
     """Remove only the decoded job this worker observed, under its row lock.
 
     Compare timestamps as decoded values so readable legacy spellings do not
     permanently refuse cleanup. The current row stays locked through deletion;
-    the scalar delete guard is not a substitute for that lock. This is snapshot
-    protection, not an occurrence/generation fence or durable lease re-arming.
+    the scalar delete guard is not a substitute for that lock. For managed jobs, the snapshot includes the unique incarnation and occurrence.
     """
     try:
-        async with sp.locking_transaction(models=(MemoryJob,)) as conn:
+        async with locked_occurrence(sp, job, engine=engine, lease=lease) as (current, conn):
             jobs = sp.get_storage(MemoryJob)
-            current = await jobs.get_for_update(job.id, conn=conn)
             if current is None or current.model_dump() != job.model_dump():
                 return
             # All decoded fields matched while holding this exact row. Do not

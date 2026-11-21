@@ -85,7 +85,7 @@ async def schedule_topics_on_change(sp: Any, engine: Any, entity: Agent, existin
     """An agent edit that changes its system prompt or tools, for an agent with memory on, queues a topics job a moment later.
 
     Called before the edit is written (the REST pre-update hook and the tool's), hence the delay. With no claim engine (a tool that runs where none
-    is wired) only the job row is made; the daily curator run picks it up (see ``run_curate``).
+    is wired) the persisted request is armed by the memory schedule reconciler.
     """
     if entity.system_prompt == existing.system_prompt and entity.tools == existing.tools:
         return

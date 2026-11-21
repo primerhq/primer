@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -32,6 +34,9 @@ class _LeaseRow:
     # before the awaited entity read and claims only if it is unchanged after: a decision made on a row that moved meanwhile
     # (an expired holder released it, so the entity it read may have changed) is not acted on.
     generation: int = 0
+    memory_occurrence: str | None = None
+    memory_claim_id: str | None = None
+    settling: bool = False
 
 
 def _utc_now() -> datetime:
@@ -101,6 +106,42 @@ class InMemoryClaimEngine(ClaimEngine):
         self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
 
+    @asynccontextmanager
+    async def hold_memory_claim(self, lease: Lease, *, conn):
+        row = self._leases.get((ClaimKind.MEMORY, lease.entity_id))
+        if (row is None or row.claimed_by != lease.claimed_by or not lease.memory_claim_id
+                or row.memory_claim_id != lease.memory_claim_id or row.memory_occurrence != lease.memory_occurrence):
+            yield False
+            return
+        # Skip this lease in claim_due through the entire storage transaction.
+        row.settling = True
+        try:
+            yield True
+        finally:
+            row.settling = False
+
+    async def arm_memory_job(self, job, *, conn) -> None:
+        key = (ClaimKind.MEMORY, job.id)
+        row = self._leases.get(key)
+        if row is not None and row.memory_occurrence == job.occurrence_id:
+            return
+        if row is None:
+            row = _LeaseRow(*key, next_attempt_at=_as_utc(job.requested_due_at))
+            self._leases[key] = row
+        row.memory_occurrence = job.occurrence_id
+        row.next_attempt_at = _as_utc(job.requested_due_at)
+        row.attempt_count = job.retry_count
+        row.last_error = job.retry_error
+        row.generation += 1
+        self._notify_queue.put_nowait(key)
+        self._wake.set()
+
+    async def discard_memory_lease(self, entity_id: str, occurrence: str | None) -> None:
+        key = (ClaimKind.MEMORY, entity_id)
+        row = self._leases.get(key)
+        if row is not None and row.memory_occurrence == occurrence:
+            await self.delete_lease(*key)
+
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
         self._leases.pop((kind, entity_id), None)
         self._read_errors_logged.pop((kind, entity_id), None)
@@ -124,7 +165,9 @@ class InMemoryClaimEngine(ClaimEngine):
                 continue                                  # held: its holder's release owns it
             # ``is_dead`` awaits, and a claim can land meanwhile (claim_due mutates the row in place): decide
             # again after it, with no await between the last check and the delete.
-            if await adapter.is_dead(row.entity_id) and self._leases.get(key) is row and not held(row):
+            occurrence = row.memory_occurrence
+            if (await adapter.is_dead(row.entity_id) and self._leases.get(key) is row
+                    and row.memory_occurrence == occurrence and not held(row)):
                 del self._leases[key]
                 pruned += 1
         return pruned
@@ -139,7 +182,7 @@ class InMemoryClaimEngine(ClaimEngine):
     def _due(row: _LeaseRow, now: datetime) -> bool:
         """The lease half of the claim query: unclaimed or expired, and ``next_attempt_at`` reached (a naive one read as UTC)."""
         return (
-            (row.claimed_by is None or (row.expires_at is not None and row.expires_at < now))
+            not row.settling and (row.claimed_by is None or (row.expires_at is not None and row.expires_at < now))
             and _as_utc(row.next_attempt_at) <= now
         )
 
@@ -216,6 +259,8 @@ class InMemoryClaimEngine(ClaimEngine):
                     continue                              # dropped, claimed, released or re-armed while its entity was read
                 stamp = self._clock()
                 wait = max(0.0, (stamp - _as_utc(row.next_attempt_at)).total_seconds())
+                if row.kind == ClaimKind.MEMORY:
+                    row.memory_claim_id = uuid4().hex
                 row.claimed_by = worker_id
                 row.claimed_at = stamp
                 row.last_heartbeat_at = stamp
@@ -225,6 +270,7 @@ class InMemoryClaimEngine(ClaimEngine):
                     kind=row.kind, entity_id=row.entity_id, claimed_by=worker_id,
                     claimed_at=stamp, expires_at=row.expires_at,
                     attempt_count=row.attempt_count, last_error=row.last_error,
+                    memory_occurrence=row.memory_occurrence, memory_claim_id=row.memory_claim_id,
                 )
                 out.append(lease)
                 _metrics.claim_enqueue_latency_seconds.labels(
@@ -245,11 +291,15 @@ class InMemoryClaimEngine(ClaimEngine):
 
     async def heartbeat(
         self, worker_id: str, kind_ids: list[tuple[ClaimKind, str]],
+        *, memory_claims: dict[str, str] | None = None,
     ) -> list[tuple[ClaimKind, str]]:
         now = self._clock()
         confirmed = []
         for kind, entity_id in kind_ids:
             row = self._leases.get((kind, entity_id))
+            if kind == ClaimKind.MEMORY and (row is None or not row.memory_claim_id
+                                              or row.memory_claim_id != (memory_claims or {}).get(entity_id)):
+                continue
             if row is not None and row.claimed_by == worker_id:
                 row.last_heartbeat_at = now
                 row.expires_at = now + timedelta(seconds=self.lease_ttl_seconds)
@@ -289,6 +339,14 @@ class InMemoryClaimEngine(ClaimEngine):
             wake_signal = await adapter.on_release(
                 conn=None, entity_id=lease.entity_id, outcome=outcome,
             )
+        if lease.kind == ClaimKind.MEMORY:
+            # on_release can suspend. Recheck the current row and holder
+            # before applying the old disposition to this stable key.
+            if (self._leases.get(key) is not row or row.claimed_by != lease.claimed_by
+                    or not lease.memory_claim_id or row.memory_claim_id != lease.memory_claim_id):
+                return
+            if row.memory_occurrence != lease.memory_occurrence:
+                outcome = ReleaseOutcome(success=True, entity_noop=True)
         if outcome.drop_lease:
             self._leases.pop(key, None)
             self._read_errors_logged.pop(key, None)

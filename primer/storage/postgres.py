@@ -324,6 +324,12 @@ class PostgresStorageProvider(StorageProvider):
                 f'  PRIMARY KEY (kind, entity_id)'
                 f')',
             )
+            # Nullable columns preserve all existing leases, including pre-intent memory jobs.
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}"."leases" '
+                'ADD COLUMN IF NOT EXISTS memory_occurrence TEXT, '
+                'ADD COLUMN IF NOT EXISTS memory_claim_id TEXT'
+            )
             # The claim query reads two disjoint kinds of candidate per kind (unclaimed; claimed but expired), each served by its own partial index.
             # They supersede the earlier (priority_score, next_attempt_at) index, which had no kind prefix and could not serve the expired branch.
             await execute_create_idempotent(

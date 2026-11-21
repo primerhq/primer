@@ -26,8 +26,7 @@ to read and steer it. Memory is off until the agent's owner turns it on.
   `topics`) plus its lease on the `memory` claim kind
   (`ClaimKind.MEMORY` -> `MemoryClaimAdapter` over the `memoryjob` table,
   `primer/claim/factory.py:79-81`, `primer/claim/adapters/memory.py`).
-  Reflection is debounced by the lease: every completed turn re-arms
-  `next_attempt_at` to `idle_minutes` later, and an ended session makes it
+  Every completed turn records a reflection deadline of `idle_minutes` later, and an ended session makes it
   due at once (`primer/memory/jobs.py`).
 
 ## 3. Architecture patterns implemented
@@ -59,8 +58,8 @@ is never put back).
 - `primer/api/routers/agent_memory.py` - the REST surface (section 8).
 - `primer/claim/adapters/memory.py` - the `memory` claim kind.
 - `primer/worker/engine_handlers.py` - the worker handler: a job that
-  raises is dropped (its lease released with `drop_lease=True`), never
-  retried in a loop; its trigger re-enqueues it.
+  raises during model work is retired. If settlement itself fails, recovery
+  reads the last committed intent before scheduling work again.
 - `ui/components/agent-memory.jsx` - the console surface (section 8).
 
 ## 5. Data model
@@ -83,7 +82,7 @@ Turning memory on provisions the collection (a search the providers cannot
 serve refuses the whole change) and queues the topics job (now) and the
 curator (in 24 hours, `FIRST_CURATION`); turning it off keeps every entry;
 deleting the agent removes everything (`primer/memory/settings.py`).
-Reflection: the completed-turn hook re-arms the lease's debounce and an
+Reflection: the completed-turn hook persists the debounce deadline and an
 ended session makes the job due at once; the worker then runs the gates in
 order (job row gone - drop; agent gone - delete the job and drop; memory
 disabled - drop; a week-old job - delete and drop; over the daily budget -
@@ -97,7 +96,8 @@ revision; a credit tallies), and only then marks the job reflected
 agent's own model profile, never the session's override; an answer that
 fails validation or carries a scrub hit is dropped whole (one skip event, no
 retry). A transient model failure
-retries on the claim engine's backoff and is given up after `MAX_ATTEMPTS`
+retries from settlement time using the worker's capped exponential backoff
+(`base_backoff_seconds`, `max_backoff_seconds`) and is given up after `MAX_ATTEMPTS`
 (`primer/memory/jobs.py:32`) with its skip record. Curation runs on its own
 job at most once a day (`CURATE_EVERY`): it merges near-duplicates, archives
 entries past `archive_after_days`, keeps the active set under its cap, and
@@ -111,27 +111,54 @@ folders (an agent's searches never reach them).
 The settings row (one per agent), the `memoryjob` rows, and the entries -
 ordinary documents of `mem-<agent id>`, whose titles are the entry names
 and whose search index is what `auto_inject` and the console's search read.
-The lease's `next_attempt_at` is the debounce; nothing else is written back
-by the claim engine (`MemoryClaimAdapter.on_release` is a no-op).
+A new scheduling request commits its absolute `requested_due_at`, target and
+expiry in the same job write. The stable job id still serializes one session's
+reflection (or an agent's topics/curation). Creation assigns a random
+`incarnation_id`. Every request assigns a fresh `occurrence_id`, even for the
+same target and deadline. Completion clears the requested deadline, retaining
+the reflection cursor. A retry, budget delay or next daily pass writes a new
+occurrence and deadline before lease release. Retry count and diagnostic text
+survive loss of an in-process queue.
 
-Job cleanup after topics completion, expiry or a missing agent locks the
-current `MemoryJob` row and compares all its decoded fields with the worker's
-observed snapshot. A changed target, lifetime, owner or other field leaves the
-row intact. An unchanged row is removed with `delete_if` on that same locked
-connection; no unconditional-delete fallback or automatic retry follows a
-refusal or failure. Unsupported locking/deletion capabilities retain the row
-and log the failure. Cancellation propagates. A false deletion result is
-logged; a later cleanup with a fresh snapshot may try again.
+The claim lease projects this request. After commit, `arm_current` locks and
+re-reads the job in a **new** model transaction. A delayed enqueuer or recovery
+scan can only project the latest committed occurrence. In PostgreSQL the engine
+writes on that unit's checked-out connection. In single-process mode it sets
+the in-memory entry while holding the job lock. Repeating a projection leaves
+the holder, deadline and attempt state alone. Neither mode assumes an atomic
+commit across a model transaction and process memory.
 
-Comparison uses decoded timestamps so readable legacy spellings (including
-offsets and epoch values) do not permanently prevent cleanup. The row lock
-spans comparison and deletion; a raw JSON comparison of reserialized dates
-would not provide that compatibility. This is snapshot protection, not an
-occurrence fence: deleting and recreating an identical same-id row cannot be
-distinguished. It also does not make job creation, lease arming and release
-atomic. A refused cleanup still returns the existing drop-lease outcome;
-retaining a renewed row does not prove that its pending work will be re-armed.
-Durable due-time intents and generation-aware release remain separate work.
+The elected memory schedule reconciler starts with the runtime and cycles
+through bounded keyset pages of pending jobs. It retries a failed arm on the
+next pass. A crash after job commit but before notification, or a process
+restart with an empty in-memory queue, preserves the deadline. An unset
+deadline on a managed row means idle. The lease records the scheduled occurrence
+and a fresh random receipt for each acquisition, even when the same worker
+reclaims the same occurrence after expiry. Heartbeat, release and job writes
+from a worker require its current receipt. Renewal keeps the old worker's slot
+occupied until hand-back or expiry. A late release can return that slot without
+applying its own drop, delay or attempt data to the replacement. A duplicate
+release after the next claim has no authority over the new holder.
+
+Topics completion, expiry and missing-agent cleanup still compare the entire
+decoded snapshot under a model row lock, then use guarded deletion. This keeps
+legacy timestamp spellings readable and distinguishes managed jobs recreated
+with otherwise identical data. Progress and expiry updates also match the
+job occurrence. The reconciler prunes unheld, orphaned leases after a pass.
+
+Legacy rows and leases have null occurrence fields. Their existing lease
+deadline remains authoritative until a fresh request or a subsequent retry or
+daily pass supplies a known deadline. Recovery cannot infer a lost deadline
+from a legacy row's creation or expiry time. The pre-intent curator fallback
+remains for legacy topics only. Use a coordinated cutover. Quiesce enqueue traffic and drain and stop every
+old API, worker and reconciler before enabling new writers. Old writers ignore
+the receipt and can delete a renewed lease. PostgreSQL preserves existing lease
+deadlines across this cutover. Drain legacy in-memory work first: an old
+process's lost volatile queue has no recoverable due time. Downgrade requires
+draining managed schedules and holders first. Model calls, budget consumption
+and changes to memory entries can repeat if an execution loses its lease or
+dies before settlement. PostgreSQL initialization adds nullable columns to existing lease tables and
+preserves old job documents.
 
 ## 8. Public surfaces
 
@@ -173,7 +200,7 @@ double-credited by one.
 
 The enqueue helper owns a one-model `locking_transaction(models=(MemoryJob,))`,
 reads the current row with `get_for_update`, decodes it, and patches only the
-maximum of current/requested target plus expiry on the same token. It does not
+maximum of current/requested target, expiry and scheduling intent on the same token. It does not
 compare reconstructed canonical dates or integers against historical raw JSON.
 Every representation readable by the model remains readable; untouched identity
 fields retain their stored representation. Invalid stored rows still fail.
@@ -181,8 +208,7 @@ fields retain their stored representation. Invalid stored rows still fail.
 This helper requires the delivered SQLite/PostgreSQL model-locking capabilities
 (and the test fake). Extension providers/wrappers must implement/forward both
 provider locking and model locked reads. Unsupported or nested ordinary/locking
-units refuse visibly before mutation; there is no unlocked fallback. No claim
-engine or external I/O runs under the model lock.
+units refuse visibly before mutation; there is no unlocked fallback. Projection begins only after this producer transaction exits.
 
 Only the exact original create `ConflictError` may cause one fresh recovery unit,
 after a confirmed body rollback and complete owner/pool cleanup. The recovery
@@ -193,35 +219,28 @@ propagate without retry. Cancelled/failed commit can already be durable and must
 not be reported as a rollback or automatically replayed. PostgreSQL does not gap
 lock a missing row, so two initial creators can genuinely collide.
 
-An existing foreign owner retains the old no-write return. Current creation,
-kind/session identity and reflected progress are preserved, even if a caller's
-requested kind/session differs. Cooperating database writers cannot delete or
-replace the current row between its locked read and patch. A replacement BEFORE
-that read is current state, not a stale snapshot to reject. There is no durable
-incarnation/generation fence: identical-identity ABA, stale producers,
-disable/re-enable and cleanup across separate operations remain outside this
-contract. Older unconditional writers and arbitrary SQL are not fenced. Each
-unit touches one row in canonical lock order; SQLite's writer exclusion is
-broader than PostgreSQL's row lock.
+A foreign owner or vanished create winner leaves both the job and lease
+alone. Readable creation, kind/session identity and reflected progress are
+preserved on a target merge. Cooperating writers are serialized by the job
+row lock. PostgreSQL does not gap-lock a missing row. Request order is the
+order of accepted job writes: a completed turn requests its idle deadline,
+and ending the session requests immediate work. The expiry is still the
+caller's time plus seven days.
 
-Expiry remains caller `now + seven days`, even when an older caller shortens it.
-Creation defaults, job kinds and due-time policy are unchanged.
-
-Lease arming remains a separate operation after the row merge. Turn completion
-still debounces by `idle_minutes`; session end still requests immediate work.
-The existing owner-mismatch and vanished-create-winner no-write returns can
-still be followed by a lease arm. This fix does not make those seams durable or
-atomic, change due-time policy, fence cleanup/recreation, or recover lost enqueue
-intent. The outer session hook remains best effort and logs a failure rather
-than failing the completed turn.
-
-The target writer and the snapshot-guarded cleanup in section 7 use the same
-`MemoryJob` row-lock unit. Cleanup rechecks its snapshot after a target merge
-finishes: a committed change retains the row, while a confirmed rollback can
-leave the unchanged snapshot eligible for deletion. A renewed row retained by
-an expiry worker still does not prove that its dropped lease was re-armed.
+These guarantees start at the committed job request. Session hooks remain
+best effort, and changing agent settings and creating its initial jobs are
+separate domain operations. Model calls, memory-document effects and job
+completion remain at-least-once across process loss or lease expiry. The
+occurrence fence protects the queue, progress marker and cleanup across a
+renewal; it cannot retract an external side effect already in flight.
 
 ## 10. Testing patterns
+
+`tests/claim/test_memory_intent.py` exercises projection, restart, release and
+recreation on both claim engines. Its required PostgreSQL cases include process
+exit immediately after intent commit, both lock-queue orders of release
+versus replacement arm, same-worker reacquisition and migration of old leases. The memory settings API tests verify the exact two
+deadlines from an accepted owner request on a replica without an engine.
 
 `tests/memory/test_job_target.py` covers controlled SQLite/fake/PostgreSQL
 locked target races, current identity/disappearance, expiry and hook deadlines.

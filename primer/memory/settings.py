@@ -11,14 +11,14 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from primer.int.claim import ClaimKind
 from primer.memory.collection import delete_memory_collection, ensure_memory_collection
-from primer.memory.jobs import schedule_job
+from primer.memory.jobs import record_job
+from primer.memory.scheduling import arm_current
 from primer.model.agent import Agent
 from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.memory import AgentMemory, MemoryJob
-from primer.model.storage import OffsetPage
+from primer.model.storage import OffsetPage, Op, OrderBy
 from primer.storage.q import Q
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,12 @@ async def save_settings(sp: Any, registries: Any, agent: Agent, new: AgentMemory
             saved = written
         if turning_on:
             now, engine = datetime.now(UTC), registries.claim_engine
-            await schedule_job(sp, engine, kind="topics", agent_id=agent.id, next_attempt_at=now)
-            await schedule_job(sp, engine, kind="curate", agent_id=agent.id, next_attempt_at=now + FIRST_CURATION)
+            # A failure publishing the first lease must leave both jobs recoverable.
+            topics = await record_job(sp, kind="topics", agent_id=agent.id, next_attempt_at=now)
+            curate = await record_job(sp, kind="curate", agent_id=agent.id, next_attempt_at=now + FIRST_CURATION)
+            for job_id in (topics, curate):
+                if job_id is not None:
+                    await arm_current(sp, engine, job_id)
         return saved
     raise ConflictError(f"the memory settings of agent {agent.id!r} kept changing while they were being saved; retry")
 
@@ -80,17 +84,19 @@ async def delete_agent_memory(sp: Any, ssr: Any, engine: Any, agent_id: str) -> 
     """Remove an agent's memory: its collection with every entry, its settings row, its queued jobs and their leases. Idempotent."""
     await delete_memory_collection(sp, ssr, agent_id)
     jobs = sp.get_storage(MemoryJob)
+    last_id = None
     while True:
-        page = await jobs.find(Q(MemoryJob).where("agent_id", agent_id).build(), OffsetPage(offset=0, length=100))
+        query = Q(MemoryJob).where("agent_id", agent_id)
+        if last_id is not None:
+            query.where("id", last_id, Op.GT)
+        page = await jobs.find(query.build(), OffsetPage(offset=0, length=100), order_by=[OrderBy(field="id")])
         if not page.items:
             break
         for job in page.items:
-            if engine is not None:
-                await engine.delete_lease(ClaimKind.MEMORY, job.id)
-            try:
-                await jobs.delete(job.id)
-            except NotFoundError:
-                pass
+            deleted = await jobs.delete_if(job.id, where=job.occurrence_guard())
+            if deleted and engine is not None:
+                await engine.discard_memory_lease(job.id, job.occurrence_id)
+        last_id = page.items[-1].id
     try:
         await sp.get_storage(AgentMemory).delete(agent_id)
     except NotFoundError:
