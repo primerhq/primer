@@ -1340,9 +1340,10 @@ class RefusalDelta(BaseModel):
     Reachable only through :class:`ExtendedEvent`. OpenAI Responses streams
     refusal text separately from regular content via
     ``response.refusal.delta`` / ``response.refusal.done`` events; the
-    adapter surfaces those fragments here. Other providers signal refusal
-    only via :class:`Done` with ``stop_reason="content_filter"`` and never
-    emit this event.
+    adapter surfaces those fragments here, using final text only when no
+    nonempty fragment was emitted for that block. Chat Completions adapters
+    also surface nonempty ``ChoiceDelta.refusal`` here. Other providers can
+    signal refusal via :class:`Done` with ``stop_reason="content_filter"``.
     """
 
     type: Literal["refusal_delta"] = Field(default="refusal_delta")

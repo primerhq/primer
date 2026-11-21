@@ -20,6 +20,7 @@ import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypeVar
+from weakref import WeakSet
 
 _T = TypeVar("_T")
 
@@ -38,9 +39,11 @@ def _protect_sdk_response_close(sdk_stream: Any) -> None:
     if close is None:
         return
     task = None
+    cancelled_callers = WeakSet()
 
     async def joined_close():
         nonlocal task
+        caller = asyncio.current_task()
         if task is None:
             task = asyncio.create_task(close())
         cancelled = None
@@ -49,12 +52,17 @@ def _protect_sdk_response_close(sdk_stream: Any) -> None:
                 await asyncio.shield(task)
             except asyncio.CancelledError as exc:
                 cancelled = exc
+                cancelled_callers.add(caller)
             except Exception:
                 break
-        if cancelled is not None:
+        if cancelled is not None or caller in cancelled_callers:
             if not task.cancelled():
                 task.exception()
-            raise cancelled
+            # HTTPX can unwind into an SDK finally that closes this response
+            # again in the same task. Its cached close error must not replace
+            # the cancellation already propagating through that task. Other
+            # callers still observe an uncancelled close failure normally.
+            raise cancelled if cancelled is not None else asyncio.CancelledError()
         task.result()
 
     response.aclose = joined_close

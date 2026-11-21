@@ -436,6 +436,7 @@ class _StreamState:
     item_call_id: dict[str, str] = field(default_factory=dict)
     item_call_name: dict[str, str] = field(default_factory=dict)
     saw_function_call: bool = False
+    refusal_emitted: set[int] = field(default_factory=set)
 
 
 def _resolve_index(
@@ -603,14 +604,23 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
             )
         ]
 
-    if etype == "response.refusal.delta":
+    if etype in {"response.refusal.delta", "response.refusal.done"}:
         item_id = getattr(event, "item_id", "") or ""
         ci = getattr(event, "content_index", 0)
         idx = _resolve_index(state, item_id, ci)
+        if etype == "response.refusal.done":
+            if idx in state.refusal_emitted:
+                return []  # The final text repeats the already-streamed fragments.
+            text = getattr(event, "refusal", "") or ""
+            state.refusal_emitted.add(idx)
+        else:
+            text = getattr(event, "delta", "") or ""
+            if text:
+                state.refusal_emitted.add(idx)
         return [
             ExtendedEvent(
                 extended=RefusalDelta(
-                    text=getattr(event, "delta", "") or "", index=idx
+                    text=text, index=idx
                 )
             )
         ]

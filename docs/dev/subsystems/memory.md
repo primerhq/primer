@@ -294,6 +294,8 @@ stop-sequence, unknown or other incomplete completions preserve progress with
 `compaction_incomplete`; a terminal token ceiling uses `compaction_output_limit`.
 Typed refusal deltas also refuse the whole call, including a parseable text
 prefix followed by refusal and a provider's nominal completed/stop event.
+This includes Chat Completions refusal fields through OpenChat/OpenRouter and
+Responses refusal completion events received without an earlier refusal delta.
 Only a normally completed malformed verdict uses the existing invalid-output
 watermark rule. Parseable prefixes are not completion evidence.
 

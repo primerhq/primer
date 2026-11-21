@@ -245,3 +245,41 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await client.close()
+
+
+async def test_nested_close_preserves_only_the_cancelled_callers_outcome():
+    """SDK finally re-entry cannot replace cancellation with cached close error."""
+    from primer.llm._timeout import _protect_sdk_response_close
+    closing, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+    async def close():
+        nonlocal calls
+        calls += 1
+        closing.set()
+        await release.wait()
+        raise RuntimeError("offline close failure")
+    response = NS(aclose=close)
+    _protect_sdk_response_close(NS(response=response))
+    async def nested():
+        try:
+            await response.aclose()
+        finally:
+            await response.aclose()  # SDK finally following HTTPX's finally
+    caller = asyncio.create_task(nested())
+    try:
+        async with asyncio.timeout(5):
+            await closing.wait()
+            caller.cancel()
+            await asyncio.sleep(0)
+            assert not caller.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            # A different, uncancelled caller must still see the close failure.
+            with pytest.raises(RuntimeError, match="offline close failure"):
+                await response.aclose()
+        assert calls == 1
+    finally:
+        release.set()
+        caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
