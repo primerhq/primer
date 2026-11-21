@@ -73,7 +73,12 @@ async def test_serialized_arm_reads_after_waiting_for_older_arm(pg_storage):
             await blocker.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
             task = asyncio.create_task(engine.upsert(ClaimKind.SESSION, "s"))
             async with asyncio.timeout(3):
-                while not await blocker.fetchval("SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted LIMIT 1"):
+                while not await blocker.fetchval(
+                    "SELECT 1 FROM pg_locks waiting JOIN pg_locks held "
+                    "USING (locktype, database, classid, objid, objsubid) "
+                    "WHERE held.pid=pg_backend_pid() AND held.locktype='advisory' "
+                    "AND held.granted AND NOT waiting.granted LIMIT 1"
+                ):
                     await asyncio.sleep(.01)
             await blocker.execute(f'UPDATE "{pg_storage.schema}"."sessions" SET data=$1::jsonb WHERE id=\'s\'', json.dumps({"priority": 7}))
         await asyncio.wait_for(task, 3)
