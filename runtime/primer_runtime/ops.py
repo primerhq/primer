@@ -424,13 +424,17 @@ async def read_file(
 
 
 async def capture_service_bundle(args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None) -> dict:
-    from primer_runtime.directory_bundle import capture_directory
+    from primer_runtime.directory_bundle import CaptureBusyError, capture_bounded
 
     path, reserved = args.get("path"), args.get("reserved")
     if not isinstance(path, str) or not isinstance(reserved, list) or not all(isinstance(p, str) for p in reserved):
         raise OpError(ErrorCode.EPROTOCOL, "expected a directory path and reserved workspace paths")
     try:
-        data = await asyncio.to_thread(capture_directory, workspace_root, path, tuple(reserved))
+        data = await capture_bounded(workspace_root, path, tuple(reserved))
+    except CaptureBusyError as exc:
+        raise OpError(ErrorCode.EBUSY, str(exc)) from exc
+    except TimeoutError as exc:
+        raise OpError(ErrorCode.ETIMEDOUT, "workspace bundle capture timed out") from exc
     except (ValueError, OSError) as exc:
         raise OpError(ErrorCode.EACCES, f"could not capture bundle directory: {exc}") from exc
     return {"content_b64": base64.b64encode(data).decode("ascii")}

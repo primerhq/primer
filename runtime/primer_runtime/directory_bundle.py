@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import stat
 import tarfile
+import threading
+import time
 from contextlib import ExitStack
 from pathlib import PurePosixPath
 
@@ -17,7 +20,46 @@ MAX_MEMBERS = 1000
 MAX_ARCHIVE_BYTES = MAX_BYTES + 2 * 1024 * 1024
 
 
-def capture_directory(root: str | os.PathLike[str], path: str, reserved: tuple[str, ...]) -> bytes:
+CAPTURE_TIMEOUT_SECONDS = 30.0
+_capture_slot = threading.Lock()
+
+
+class CaptureBusyError(Exception):
+    """The process still owns an earlier directory capture."""
+
+
+async def capture_bounded(root: str | os.PathLike[str], path: str, reserved: tuple[str, ...]) -> bytes:
+    # The filesystem thread owns the slot through completion. A cancelled caller or
+    # lost runtime connection must not free it while that thread is blocked in I/O.
+    if not _capture_slot.acquire(blocking=False):
+        raise CaptureBusyError("another workspace bundle capture is still running")
+    deadline = time.monotonic() + CAPTURE_TIMEOUT_SECONDS
+    abandoned = threading.Event()
+
+    def capture() -> bytes:
+        try:
+            return capture_directory(root, path, reserved, deadline=deadline, abandoned=abandoned)
+        finally:
+            _capture_slot.release()
+
+    try:
+        future = asyncio.get_running_loop().run_in_executor(None, capture)
+    except BaseException:
+        _capture_slot.release()
+        raise
+    try:
+        async with asyncio.timeout(CAPTURE_TIMEOUT_SECONDS):
+            return await asyncio.shield(future)
+    finally:
+        abandoned.set()
+        # After caller timeout/cancellation, observe any later filesystem exception.
+        future.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+
+
+def capture_directory(
+    root: str | os.PathLike[str], path: str, reserved: tuple[str, ...], *,
+    deadline: float | None = None, abandoned: threading.Event | None = None,
+) -> bytes:
     """Tar the contents of a dedicated workspace subdirectory, relative to its root.
 
     Open each component beneath a pinned parent descriptor. Never follow a link
@@ -40,12 +82,19 @@ def capture_directory(root: str | os.PathLike[str], path: str, reserved: tuple[s
     members = files = total = 0
     output = io.BytesIO()
 
+    def check_deadline() -> None:
+        if (abandoned is not None and abandoned.is_set()) or (deadline is not None and time.monotonic() >= deadline):
+            raise TimeoutError("workspace bundle capture expired")
+
+    check_deadline()
+
     def walk(parent: int, prefix: str, depth: int, archive: tarfile.TarFile) -> None:
         nonlocal members, files, total
         if depth > 64:
             raise ValueError("bundle directory nesting exceeds 64 levels")
         with os.scandir(parent) as entries:
             for entry in entries:
+                check_deadline()
                 members += 1
                 if members > MAX_MEMBERS:
                     raise ValueError(f"bundle exceeds {MAX_MEMBERS} members")
@@ -81,6 +130,7 @@ def capture_directory(root: str | os.PathLike[str], path: str, reserved: tuple[s
         parent = os.open(root, dir_flags)
         stack.callback(os.close, parent)
         for part in directory.parts:
+            check_deadline()
             parent = os.open(part, dir_flags, dir_fd=parent)
             stack.callback(os.close, parent)
         with tarfile.open(fileobj=output, mode="w:gz", compresslevel=1) as archive:

@@ -13,6 +13,7 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 ## Concepts
 
 - Service management and publishing have generated route-backed tools. Workspace sessions also offer `system__publish_service`. The browser `Primer.tool` API remains planned.
+- Directory capture can take up to 30 seconds. If a prior capture is still reading the workspace, a new attempt returns a conflict. Capture failures occur before a service or version is created.
 - Read the exact publish schema before supplying the manifest and file payloads. A successful publish creates a new immutable version; activating an earlier version is a rollback, not a rewrite of historical artifact bytes.
 - Each artifact retains its storage-provider identity. Changing the active artifact store routes new writes there; reads of existing DB or filesystem versions still use their original provider.
 - Service assets and bundle functions use their native routes. A binary asset or function response must be consumed in its actual format; listing the service does not exercise either path.

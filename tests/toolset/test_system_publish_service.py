@@ -204,3 +204,66 @@ async def test_failed_second_artifact_leaves_no_active_version_or_partial_files(
     assert result.is_error and "artifact storage unavailable" in result.output
     assert not blobs.stored and len(blobs.deleted) == 1
     assert (await service_named(sp, "my-app")).active_version_id is None
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
+async def test_runtime_capture_abandonment_preserves_health_and_precedes_all_writes(publication, monkeypatch, cancel):
+    import asyncio
+    from types import SimpleNamespace
+
+    from primer.workspace import directory_bundle
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+
+    sp, toolset, workspace, blobs = publication
+    client = RuntimeClient(url="ws://unused", token="offline")
+    client._negotiated_version = "1.7"
+    sent = asyncio.Event()
+    captures = []
+
+    async def send(frame):
+        req = json.loads(frame)
+        if req["op"] == "health":
+            client._dispatch_text(json.dumps({"req_id": req["req_id"], "ok": True, "result": {}}))
+        else:
+            assert req["op"] == "capture_service_bundle" and req["args"]["path"] == "site"
+            captures.append(req["req_id"])
+            sent.set()  # The peer accepts this request and keeps answering health, but never returns the archive.
+
+    client._ws = SimpleNamespace(closed=False, send_str=send)
+    client._connected.set()
+    monkeypatch.setattr(directory_bundle, "CAPTURE_TIMEOUT_SECONDS", .12)
+    monkeypatch.setattr(workspace, "capture_service_bundle", lambda path: client.capture_service_bundle(path, ()))
+    task = asyncio.create_task(call(toolset, context()))
+    try:
+        await asyncio.wait_for(sent.wait(), 2)
+        await client.ping()
+        assert set(client._pending) == set(captures)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            result = await asyncio.wait_for(task, 2)
+            assert result.is_error and json.loads(result.output)["type"] == "provider-error"
+            assert "timed out" in result.output
+        client._dispatch_text(json.dumps({"req_id": captures[0], "ok": True, "result": {"content_b64": ""}}))
+        assert not client._pending and not blobs.stored
+        assert await service_named(sp, "my-app") is None
+        await client.ping()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_disconnected_runtime_capture_deadline_covers_connection_wait(monkeypatch):
+    import asyncio
+    from primer.model.except_ import ProviderError
+    from primer.workspace import directory_bundle
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+
+    client = RuntimeClient(url="ws://unused", token="offline")
+    client._negotiated_version = "1.7"
+    monkeypatch.setattr(directory_bundle, "CAPTURE_TIMEOUT_SECONDS", .03)
+    with pytest.raises(ProviderError, match="timed out"):
+        await asyncio.wait_for(client.capture_service_bundle("site", ()), 1)
+    assert not client._pending

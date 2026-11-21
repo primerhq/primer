@@ -1,3 +1,5 @@
+import pytest
+
 from primer.workspace.runtime.protocol import OpName, PROTOCOL_VERSION
 import primer_runtime.protocol as rt_protocol
 
@@ -43,3 +45,53 @@ def test_capture_implementation_is_identical_in_the_standalone_runtime():
 
     assert OpName.CAPTURE_SERVICE_BUNDLE == rt_protocol.OpName.CAPTURE_SERVICE_BUNDLE
     assert Path(platform.__file__).read_bytes() == Path(runtime.__file__).read_bytes()
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "disconnect"])
+async def test_runtime_capture_keeps_slot_until_abandoned_worker_finishes(tmp_path, monkeypatch, cancel):
+    import asyncio
+    import base64
+    import threading
+
+    from primer_runtime import directory_bundle
+    from primer_runtime.ops import OpError, capture_service_bundle
+
+    started, unblock = threading.Event(), threading.Event()
+    calls = []
+
+    def capture(*args, **kwargs):
+        calls.append(args)
+        started.set()
+        assert unblock.wait(3)
+        if len(calls) == 1:
+            assert kwargs["abandoned"].is_set()
+            raise OSError("late read failure")
+        return b"next"
+
+    monkeypatch.setattr(directory_bundle, "capture_directory", capture)
+    monkeypatch.setattr(directory_bundle, "CAPTURE_TIMEOUT_SECONDS", .15)
+    args = {"path": "site", "reserved": []}
+    request = asyncio.create_task(capture_service_bundle(args, str(tmp_path)))
+    try:
+        async with asyncio.timeout(1):
+            while not started.is_set():
+                await asyncio.sleep(.005)
+        if cancel:
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        else:
+            with pytest.raises(OpError) as expired:
+                await asyncio.wait_for(request, 1)
+            assert expired.value.code == rt_protocol.ErrorCode.ETIMEDOUT
+        with pytest.raises(OpError) as busy:
+            await capture_service_bundle(args, str(tmp_path))
+        assert busy.value.code == rt_protocol.ErrorCode.EBUSY and len(calls) == 1
+    finally:
+        unblock.set()
+        await asyncio.gather(request, return_exceptions=True)
+        async with asyncio.timeout(1):
+            while directory_bundle._capture_slot.locked():
+                await asyncio.sleep(.005)
+    result = await capture_service_bundle(args, str(tmp_path))
+    assert base64.b64decode(result["content_b64"]) == b"next" and len(calls) == 2

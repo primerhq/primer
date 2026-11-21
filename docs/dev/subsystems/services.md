@@ -126,7 +126,16 @@ operation inside workspace runtime protocol 1.7. Older runtimes refuse this
 operation. The producer bounds traversal to 1,000 members, 200 files and 10 MiB
 of regular file content, and rejects special files, linked files, Git metadata
 and overlap with reserved workspace directories. Finish writing the directory
-before calling; capture reads individual files without a tree-wide snapshot.
+before calling. Capture reads individual files without a tree-wide snapshot.
+
+Capture has a 30-second deadline before publication writes. On the runtime
+client this includes waiting for the connection and its response. Each local
+platform process or standalone workspace runtime accepts one capture at a time.
+A timeout or disconnect abandons the result. The filesystem thread retains its
+slot until it exits, even if a filesystem read outlasts the caller. A concurrent
+attempt returns a conflict. Traversal checks for abandonment between entries.
+The deadline applies to capture and leaves the existing publication write
+and approval behavior intact.
 
 The tool uses the same bundle validator, manifest grant lookup, artifact store
 and version publisher as the REST upload. A new name gets console authentication.
