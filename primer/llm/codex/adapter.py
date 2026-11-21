@@ -1,6 +1,7 @@
 """Unregistered LLM foundation over an admitted executor-free bridge."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -10,6 +11,8 @@ from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
 from primer.llm.codex.bridge import ModelOnlyBridge
 from primer.llm.codex.request import prepare_request
+from primer.llm.codex.lifecycle import OwnedStream
+from primer.llm.codex.boundary import BoundaryError
 from primer.model.chat import Error, Message, StreamEvent, Tool, ToolChoice
 from primer.model.except_ import TokenCounterUnavailable, UnsupportedContentError
 
@@ -28,8 +31,26 @@ class CodexFoundationLLM(LLM):
         self._limiter = rate_limiter
         self._key = f"llm:{provider_id}"
         self._concurrency = max_concurrency
+        self._active: set[OwnedStream] = set()
+        self._closed = False
 
-    async def stream(self, *, model: str, messages: list[Message],
+    def stream(self, *, model: str, messages: list[Message],
+                     temperature: float | None = None, top_p: float | None = None,
+                     max_output_tokens: int | None = None, stop: list[str] | None = None,
+                     response_format: type[BaseModel] | dict[str, Any] | None = None,
+                     tools: list[Tool] | None = None, tool_choice: ToolChoice | None = None,
+                     extended: dict[str, Any] | None = None) -> OwnedStream:
+        if self._closed:
+            raise BoundaryError("Codex adapter is closed")
+        stream = OwnedStream(self._stream(
+            model=model, messages=messages, temperature=temperature, top_p=top_p,
+            max_output_tokens=max_output_tokens, stop=stop, response_format=response_format,
+            tools=tools, tool_choice=tool_choice, extended=extended,
+        ), on_close=self._active.discard)
+        self._active.add(stream)
+        return stream
+
+    async def _stream(self, *, model: str, messages: list[Message],
                      temperature: float | None = None, top_p: float | None = None,
                      max_output_tokens: int | None = None, stop: list[str] | None = None,
                      response_format: type[BaseModel] | dict[str, Any] | None = None,
@@ -56,4 +77,13 @@ class CodexFoundationLLM(LLM):
         raise TokenCounterUnavailable("Codex native token counter is not available")
 
     async def aclose(self) -> None:
-        await self._bridge.aclose()
+        self._closed = True
+        if any(s._pending is asyncio.current_task() for s in self._active):
+            raise BoundaryError("Codex owner cannot close inside its own advancement")
+        results = await asyncio.gather(*(s.aclose() for s in tuple(self._active)), return_exceptions=True)
+        try:
+            await self._bridge.aclose()
+        finally:
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result

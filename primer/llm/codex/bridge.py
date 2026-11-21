@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from typing import Protocol
 
+from primer.llm.codex.lifecycle import OwnedStream, drain
 from primer.llm.codex.boundary import BoundaryError, BridgeConfig, PolicyAuthority, PolicySnapshot
 from primer.llm.codex.request import ModelRequest, alias, compact, decode
 from primer.model.chat import Done, ReasoningDelta, StreamEvent, TextDelta, ToolCallEnd, ToolCallStart, Usage
@@ -232,7 +233,7 @@ class ModelOnlyBridge:
         self._authority = authority
         self._account = account
         self._factory = transport_factory
-        self._active: set[asyncio.Task] = set()
+        self._active: set[OwnedStream] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
 
@@ -243,76 +244,71 @@ class ModelOnlyBridge:
             raise BoundaryError("Codex policy changed; start a fresh admitted step")
         return policy
 
-    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+    def stream(self, request: ModelRequest) -> OwnedStream:
+        if self._closed:
+            raise BoundaryError("Codex bridge is closed")
+        if len(self._active) >= self.config.max_active_steps:
+            raise BoundaryError("Codex bridge step capacity exceeded")
+        stream = OwnedStream(self._stream(request), on_close=self._active.discard,
+                             timeout=self.config.deadline_seconds)
+        self._active.add(stream)
+        return stream
+
+    async def _stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         loop = asyncio.get_running_loop()
         if self._loop is None:
             self._loop = loop
         if self._closed or self._loop is not loop:
             raise BoundaryError("Codex bridge is closed or belongs to another event loop")
-        task = asyncio.current_task()
-        if task in self._active or len(self._active) >= self.config.max_active_steps:
-            raise BoundaryError("Codex bridge step capacity exceeded")
-        self._active.add(task)
         channel = None
         terminal: list[StreamEvent] = []
+        wire = _validate_request(request, self.config)
         try:
-            wire = _validate_request(request, self.config)
-            try:
-                async with asyncio.timeout(self.config.deadline_seconds):
-                    policy = await self._policy(wire["model"])
-                    # No await between admission and construction. Request was
-                    # validated before the only model-I/O constructor.
-                    channel = self._factory(wire)
-                    translator = _Translator(request, self.config)
-                    async for frame in channel:
-                        await self._policy(wire["model"], policy)
-                        events = translator.accept(frame)
-                        if translator.complete:
-                            terminal = events
-                            break
-                        for event in events:
-                            yield event
-                    if not translator.complete:
-                        raise BoundaryError("Codex stream ended without a terminal response")
-            finally:
-                if channel is not None:
-                    await self._close_channel(channel)
-            # Cleanup can yield while account/policy changes. Re-admit before
-            # offering calls, and remain owned by aclose through this await.
+            policy = await self._policy(wire["model"])
+            if self._closed:
+                raise BoundaryError("Codex bridge closed during admission")
+            # No await between admission and construction.
+            channel = self._factory(wire)
+            translator = _Translator(request, self.config)
+            async for frame in channel:
+                await self._policy(wire["model"], policy)
+                if self._closed:
+                    raise BoundaryError("Codex bridge closed before delivery")
+                events = translator.accept(frame)
+                if translator.complete:
+                    terminal = events
+                    break
+                for event in events:
+                    yield event
+            if not translator.complete:
+                raise BoundaryError("Codex stream ended without a terminal response")
+        finally:
+            if channel is not None:
+                await self._close_channel(channel)
+        # Every yield is a suspension point. Authorization linearizes per
+        # event immediately before yielding, never once for an entire batch.
+        # Primer still needs independent execution-time tool authorization.
+        for event in terminal:
             async with asyncio.timeout(self.config.cleanup_seconds):
                 await self._policy(wire["model"], policy)
             if self._closed:
                 raise BoundaryError("Codex bridge closed before delivery")
-            # There is no callback that executes a Primer tool in this bridge.
-            for event in terminal:
-                yield event
-        finally:
-            self._active.discard(task)
+            yield event
 
     async def _close_channel(self, channel: ModelChannel) -> None:
         async def close() -> None:
             async with asyncio.timeout(self.config.cleanup_seconds):
                 await channel.aclose()
         cleanup = asyncio.create_task(close())
-        cancelled = False
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                cancelled = True
-        # Observe errors before considering successful completion. Repeated
-        # caller cancellation cannot detach a still-running cleanup task.
-        try:
-            cleanup.result()
-        finally:
-            if cancelled:
-                raise asyncio.CancelledError
+        await drain(cleanup)
 
     async def aclose(self) -> None:
         self._closed = True
-        current = asyncio.current_task()
-        tasks = [task for task in self._active if task is not current]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if any(s._pending is asyncio.current_task() for s in self._active):
+            raise BoundaryError("Codex owner cannot close inside its own advancement")
+        # Close every retained stream, including idle generators whose last
+        # anext consumer has already finished. Gather all cleanup attempts.
+        results = await asyncio.gather(*(s.aclose() for s in tuple(self._active)), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result

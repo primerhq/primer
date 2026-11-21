@@ -81,13 +81,24 @@ One fresh channel serves each step. A channel receives only the snapshotted
 request, not other steps' history. Text/reasoning stream incrementally. Complete
 function calls are correlated with the terminal response, checked against the
 step's namespace, tool IDs and choice, and offered to Primer only AFTER channel
-close succeeds. There is no tool-execution callback inside the bridge. Unknown
+close succeeds. Each terminal event rechecks current policy and closure after
+consumer suspension; authorization linearizes immediately before that event's
+yield, not once for the entire call batch. Previously delivered events cannot
+be retracted, and Primer must still authorize tools at execution time. There is
+no tool-execution callback inside the bridge. Unknown
 native outputs cause failure as defense in depth, not the prevention boundary.
 Usage and exactly one successful terminal event follow; truncated streams,
 changed calls and failed cleanup cannot report success.
 
 Deadline, capacity, output-size and event-loop checks are executable. Channel
-cleanup survives repeated caller cancellation. Timeouts rely on cooperative
+cleanup survives repeated caller cancellation. Bridge and adapter own retained
+stream objects, including idle streams advanced by completed temporary tasks.
+Closing the adapter closes those scopes and releases their rate slots. Only one
+advance per iterator is allowed. Trusted callbacks cannot recursively close their
+own advancing owner; refusal unwinds that advance through normal cleanup. The
+absolute step deadline includes consumer idle time and is checked on the next
+advance; owners must explicitly close abandoned idle streams. No timeout context
+spans an async-generator yield. Timeouts rely on cooperative
 Python transport/authority implementations: this is not an OS sandbox, does
 not preempt a blocking Python constructor, and cannot kill an implementation
 that swallows cancellation forever. A future broker must add process ownership,
