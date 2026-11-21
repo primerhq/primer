@@ -830,23 +830,6 @@ def assert_harness_kinds_registered() -> None:
     )
 
 
-async def warm_chat_channels(channel_registry) -> None:
-    """Warm the enabled chat-channel adapters at startup.
-
-    Session channels start on the first outbound park, but a chat is
-    user-initiated and has no other start trigger, so warm the enabled
-    chat-channel adapters. Only the inbound-owning process calls this: warming
-    opens an inbound listener, and a worker-only process must not open a second
-    competing inbound connection.
-    """
-    try:
-        warmed = await channel_registry.warm_chat_channels()
-        if warmed:
-            logger.info("warmed %d chat-channel adapter(s)", warmed)
-    except Exception:
-        logger.exception("warm_chat_channels failed during startup")
-
-
 async def sample_claim_gauges_once(claim_engine) -> None:
     """One sampling pass: set ``claim_queue_depth`` and ``claim_active_count`` for every kind.
 

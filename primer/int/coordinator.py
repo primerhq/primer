@@ -38,6 +38,7 @@ class InvalidationTopic(str, Enum):
     CROSS_ENCODER_PROVIDER = "cross_encoder_provider"
     TOOLSET = "toolset"
     SEMANTIC_SEARCH_PROVIDER = "semantic_search_provider"
+    CHANNEL = "channel"
     CHANNEL_PROVIDER = "channel_provider"
     WORKSPACE_PROVIDER = "workspace_provider"
     WEB_SEARCH_PROVIDER = "web_search_provider"

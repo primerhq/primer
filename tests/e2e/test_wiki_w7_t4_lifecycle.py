@@ -39,7 +39,7 @@ SPECS = {
 ALLOWED = {
     "system__wiki_read", "system__describe_tool", "system__create_channel_provider",
     "system__get_channel_provider", "system__list_channel_providers",
-    "system__create_channel", "system__get_channel", "system__create_channel_binding",
+    "system__create_channel", "system__update_channel", "system__get_channel", "system__create_channel_binding",
     "system__list_channel_bindings", "system__delete_channel_binding",
     "system__set_reply_binding", "system__clear_reply_binding",
     "trigger__create", "trigger__get", "trigger__list", "trigger__fire_now", "trigger__delete",
@@ -253,7 +253,7 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                     target = await call("workspaces__create_workspace", {"id": workspace, "template_id": "w7-template"})
                     assert target["access"]["owners"] == [trace["identities"]["owner"]]
                     room_body = {"id": channel, "provider_id": provider, "provider": "slack", "external_id": external,
-                                 "label": "Private T4 room", "config": {"chats": {"enabled": True}}}
+                                 "label": "Private T4 room", "config": {"chats": {"enabled": False}}}
                     room = await call("system__create_channel", {"entity": room_body})
                     assert room["access"]["owners"] == [trace["identities"]["owner"]]
                     trace["room"] = room
@@ -361,13 +361,19 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                     response = await admin.post("/__fixture__/channel-event/" + channel, json=raw)
                     assert response.status_code == 409  # no lazy adapter construction by the injection fixture
                     activation_before = response.status_code
-                    response = await owner.put("/v1/channels/" + channel, json=room_body)
-                    assert response.status_code == 200 and response.json()["access"]["owners"] == room["access"]["owners"], response.text
-                    trace["activation"] = {"pre_http": activation_before, "save_http": response.status_code, "saved": response.json()}
-                    trace["checks"]["human_activation_required"] = True
+                    enabled = {**room_body, "config": {"chats": {"enabled": True}}}
+                    saved = await call("system__update_channel", {"id": channel, "entity": enabled})
+                    assert saved["config"]["chats"]["enabled"] and saved["access"]["owners"] == room["access"]["owners"]
                     unmatched = {**raw, "ts": "1731600002.000002", "thread_ts": "1731600002.000001", "text": "not a help request"}
-                    response = await admin.post("/__fixture__/channel-event/" + channel, json=unmatched)
+                    async with asyncio.timeout(45):
+                        while True:
+                            response = await admin.post("/__fixture__/channel-event/" + channel, json=unmatched)
+                            if response.status_code != 409:
+                                break
+                            await asyncio.sleep(.1)
                     assert response.status_code == 200 and response.json()["routed"] is True
+                    trace["activation"] = {"pre_http": activation_before, "receive_http": response.status_code, "saved": saved}
+                    trace["checks"]["tool_activated_listener"] = True
                     assert await session_list() == [] and not [q for q in wire.requests if q["method"] == "chat.postMessage"]
                     trace["unmatched"] = {"event": unmatched, "sessions": [], "posts": []}
                     trace["checks"]["nonmatching_message_has_no_effect"] = True
@@ -516,8 +522,13 @@ def require_evidence(trace: dict, source: str, page_hash: str) -> None:
     assert incoming["row"]["metadata"]["reply_binding"]["anchor"] == trace["inbound"]["thread_ts"]
     assert all(p["thread_ts"] == trace["inbound"]["thread_ts"] for p in incoming["posts"])
     assert trace["standing"]["channel_id"] == trace["channel"]
-    assert trace["activation"]["pre_http"] == 409 and trace["activation"]["save_http"] == 200
+    assert trace["activation"]["pre_http"] == 409 and trace["activation"]["receive_http"] == 200
     assert trace["activation"]["saved"]["id"] == trace["channel"] and trace["activation"]["saved"]["access"]["owners"] == [ids["owner"]]
+    assert trace["activation"]["saved"]["config"]["chats"]["enabled"] is True
+    edits = [call for call in trace["calls"] if call["scoped_id"] == "system__update_channel"]
+    assert len(edits) == 1 and edits[0]["actor"] == "owner" and edits[0]["envelope"]["ok"] is True
+    assert edits[0]["arguments"]["id"] == trace["channel"] and edits[0]["arguments"]["entity"]["config"]["chats"]["enabled"] is True
+    assert json.loads(edits[0]["envelope"]["output"]) == trace["activation"]["saved"]
     assert trace["unmatched"]["sessions"] == trace["unmatched"]["posts"] == []
     assert not trace["unmatched"]["event"]["text"].startswith("help:")
     readers = [c for c in trace["calls"] if c["actor"] == "reader"]
@@ -533,6 +544,6 @@ def require_evidence(trace: dict, source: str, page_hash: str) -> None:
     assert len(trace["cleanup"]) == 3 and all(c["delete_http"] == 204 and c["get_http"] == 404 for c in trace["cleanup"])
     assert not trace["manual_session"]["row"]["metadata"].get("reply_binding")
     assert all(p.get("thread_ts") and p["thread_ts"] != trace["inbound"]["thread_ts"] for p in trace["manual_session"]["posts"])
-    assert set(trace["checks"]) == {"human_activation_required", "nonmatching_message_has_no_effect", "reader_writes_refused",
+    assert set(trace["checks"]) == {"tool_activated_listener", "nonmatching_message_has_no_effect", "reader_writes_refused",
                                     "binding_removed", "trigger_deleted", "standing_cleared", "owned_fixtures_deleted", "default_preserved"}
     assert all(v is True for v in trace["checks"].values())

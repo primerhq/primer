@@ -120,11 +120,22 @@ class _TelegramConnectionRegistry:
                 cfg = provider.config
                 assert isinstance(cfg, TelegramChannelProviderConfig)
                 app = _build_application(cfg)
-                await app.initialize()
-                if inbound:
-                    await app.start()
-                    # Start long-polling.
-                    await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
+                try:
+                    await app.initialize()
+                    if inbound:
+                        await app.start()
+                        await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
+                except BaseException:
+                    try:
+                        if app.updater.running:
+                            await app.updater.stop()
+                    finally:
+                        try:
+                            if app.running:
+                                await app.stop()
+                        finally:
+                            await app.shutdown()
+                    raise
                 entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds, inbound=inbound)
                 self._entries[provider.id] = entry
                 logger.info(

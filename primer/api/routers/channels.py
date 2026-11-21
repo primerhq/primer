@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 
@@ -15,6 +13,7 @@ from primer.api.routers.access import make_access_router
 from primer.access.person import person_from_request
 from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.common.entity_checks import EntityCheckError
+from primer.int.coordinator import InvalidationTopic
 from primer.model.channel import (
     Channel,
     ChannelProvider,
@@ -22,8 +21,6 @@ from primer.model.channel import (
 from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import ConflictError
 
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -40,13 +37,7 @@ def _get_channel_storage(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Warm-adapter invalidation hooks
-#
-# Channel / ChannelProvider adapters warm once and cache their live gateway
-# (Discord/Slack WS, Telegram poller). A config edit through these routers must
-# flush the warm adapter so the next inbound/relay rebuilds it lazily with the
-# new config; otherwise the running process keeps serving the stale connection
-# until restart.
+# Post-commit hints wake registries after the authorized storage operation.
 # ---------------------------------------------------------------------------
 
 
@@ -56,70 +47,16 @@ def _channel_registry(request: Request):
     return getattr(request.app.state, "channel_registry", None)
 
 
-def _owns_inbound(request: Request) -> bool:
-    """True when this process owns inbound channel gateways and may therefore
-    open one live.
-
-    Opening a chat adapter starts its inbound listener (Telegram long-poll /
-    Slack socket / Discord gateway). A worker-only process must NOT do that --
-    it would be a SECOND inbound connection competing with the API's (Telegram
-    409, duplicate Slack/Discord deliveries); worker-only processes relay
-    outbound over the bus instead. Mirrors the ``owns_inbound`` gate that
-    ``_app_lifespan`` uses for the startup ``warm_chat_channels`` call. When the
-    config is absent (minimal test apps) default to True so the re-warm path is
-    exercised under test."""
-    config = getattr(request.app.state, "config", None)
-    mode = getattr(config, "runtime_mode", None) if config is not None else None
-    if mode is None:
-        return True
-    from primer.model.scheduler import RuntimeMode
-
-    return mode in (RuntimeMode.API, RuntimeMode.API_PLUS_WORKER)
-
-
-async def _invalidate_channel(entity_id: str, request: Request) -> None:
-    """Flush the warm adapter for the edited/deleted channel so it rebuilds
-    lazily with the new config.
-
-    Used as the DELETE hook: the row is going away, so we only close any warm
-    adapter (no re-warm). The UPDATE hook is :func:`_invalidate_and_rewarm_channel`,
-    which additionally brings a newly chat-enabled channel online live."""
+async def _channel_changed(entity_id: str, request: Request) -> None:
     registry = _channel_registry(request)
     if registry is not None:
-        await registry.invalidate(channel_id=entity_id)
+        await registry.changed(InvalidationTopic.CHANNEL, entity_id)
 
 
-async def _invalidate_and_rewarm_channel(entity_id: str, request: Request) -> None:
-    """Channel UPDATE hook: flush the stale warm adapter, then -- if the
-    freshly-saved row now has ``config.chats.enabled`` -- re-warm its inbound
-    gateway live so enabling chats no longer needs a server restart.
-
-    A chat is user-initiated, so unlike a session channel there is no outbound
-    park to lazily warm it; ``warm_chat_channels`` (boot only) was previously
-    the sole trigger. Re-warming here closes that gap. Best-effort: the registry
-    helper logs and swallows build failures so the CRUD response never fails;
-    the re-warm is also gated to inbound-owning processes (:func:`_owns_inbound`)
-    so a worker-only process never opens a competing inbound connection."""
-    registry = _channel_registry(request)
-    if registry is None:
-        return
-    # Invalidate first so a config edit on an already-warm channel still drops
-    # the stale gateway (the 2fa4338f behaviour); the re-warm then rebuilds it
-    # fresh against the new config when chats are enabled.
-    await registry.invalidate(channel_id=entity_id)
-    if not _owns_inbound(request):
-        return
-    await registry.rewarm_if_chat_enabled(entity_id)
-
-
-async def _invalidate_provider_channels(entity_id: str, request: Request) -> None:
-    """A provider edit (e.g. rotated bot token) affects every channel that
-    shares its connection: close that provider's adapters and, in a process
-    that owns inbound, rewarm its chat-enabled channels so they do not go deaf
-    until a restart. Other providers' adapters are untouched (W34)."""
+async def _provider_changed(entity_id: str, request: Request) -> None:
     registry = _channel_registry(request)
     if registry is not None:
-        await registry.invalidate_provider(entity_id, rewarm=_owns_inbound(request))
+        await registry.changed(InvalidationTopic.CHANNEL_PROVIDER, entity_id)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +107,9 @@ def make_channel_provider_router() -> APIRouter:
         tag="channel_providers",
         on_pre_create=_channel_provider_on_pre_create,
         on_pre_update=_channel_provider_on_pre_update,
-        on_update=_invalidate_provider_channels,
-        on_delete=_invalidate_provider_channels,
+        on_create=_provider_changed,
+        on_update=_provider_changed,
+        on_delete=_provider_changed,
         references=[
             # Cascade-block: a ChannelProvider must not be deleted while a
             # Channel still references it via ``provider_id`` (§3 invariant).
@@ -255,8 +193,9 @@ def make_channel_router() -> APIRouter:
         tag="channels",
         on_pre_create=_channel_on_pre_create,
         on_pre_update=_channel_on_pre_update,
-        on_update=_invalidate_and_rewarm_channel,
-        on_delete=_invalidate_channel,
+        on_create=_channel_changed,
+        on_update=_channel_changed,
+        on_delete=_channel_changed,
         owned=True,
     )
 

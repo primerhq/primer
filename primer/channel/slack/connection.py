@@ -95,7 +95,11 @@ class _SlackConnectionRegistry:
                 cfg = provider.config
                 assert isinstance(cfg, SlackChannelProviderConfig)
                 conn = _build_app_and_handler(cfg) if inbound else _build_outbound_app(cfg)
-                await conn.start_async()
+                try:
+                    await conn.start_async()
+                except BaseException:
+                    await conn.close_async()
+                    raise
                 entry = _Entry(conn=conn, refcount=0)
                 self._entries[provider.id] = entry
                 logger.info(

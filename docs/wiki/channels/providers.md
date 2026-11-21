@@ -18,14 +18,14 @@ A channel provider is one messaging integration: one Slack app, one Telegram bot
 - **Secrets are write-only.** A read shows every token masked. An update that sends a mask back unchanged keeps the stored token. A create that carries a mask is refused: send the real tokens. A mask for a secret that was never stored (a Slack `signing_secret` you never set) is refused too, and the error names the field.
 - **Platform settings primer cannot make.** Slack: the scopes `chat:write`, `channels:read` and `channels:history`, and the `message.channels` event. Discord: the MESSAGE CONTENT intent. Telegram: turn privacy mode off in BotFather, or make the bot a group admin, so it reads group messages.
 - **One connection per provider.** Every channel of a provider shares the bot's connection.
-- **The running bot.** The bot runs in the API process. A tool may run in another process, so these tools do not restart the bot: a new token, or a deleted provider, takes effect after a restart. A person who saves the provider in the console drops the old connections at once.
+- **The running bot.** The listening API applies provider changes made through tools and the console. Rooms sharing the provider reconnect with its new credentials.
 - None of these tools is approval-gated by default.
 
 ## How to
 1. Create the app or bot on the platform, set the platform settings above, and get its tokens from a person. Never put a token in a message, a file or a session transcript.
 2. Create the provider with `system__create_channel_provider`. Keep its `id`.
 3. Add a channel for each room the bot works in ([channels](channels/channels)).
-4. To rotate a token, update the provider with the new token, then ask a person to restart primer or save the provider in the console.
+4. To rotate a token, update the provider with the new token, then verify delivery in an authorized room after its listener reconnects.
 5. To remove a provider, delete its channels first, then the provider.
 
 ## Tool calls
@@ -102,7 +102,7 @@ Reference: [`system__delete_channel_provider`](reference/tools/system/delete_cha
 - A token in the wrong field, or in the wrong shape, is a `validation-error`: a Slack bot token in `app_token` fails the `xapp-` check, and a Discord token with the `Bot ` prefix is refused.
 - A provider that a channel still uses cannot be deleted (`conflict`). Delete its channels first.
 - No tool tests a token. A wrong token shows only when the bot connects: the room stays silent and the error is in the server log. Ask a person to check.
-- The tools do not reach the running bot. After a token change or a delete, ask a person to restart primer.
+- A successful write confirms the provider row. Check the credentials and API logs if the bot stays offline.
 - An update replaces the whole row. Send every config field: one you leave out falls back to its default.
 - Never echo a token back to a person or into a file. Ask the person to paste it into the console instead when they can.
 

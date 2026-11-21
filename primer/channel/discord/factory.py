@@ -371,7 +371,11 @@ async def _discord_factory(
     await adapter.initialize()
     conn = DISCORD_CONNECTIONS.entry(provider.id)
     if conn is not None and owns_inbound:  # none on a posting-only connection (W7)
-        _install_handlers(provider.id, conn.client, channel)
+        try:
+            _install_handlers(provider.id, conn.client, channel)
+        except BaseException:
+            await adapter.aclose()
+            raise
     return adapter
 
 
