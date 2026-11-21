@@ -98,6 +98,9 @@ on an actual reviewed supervisor and administrative recovery procedure.
 
 Open trust/store handles are mandatory for every authorization/read/write and
 socket operation. Both handles belong to their constructing process and thread;
+construction accepts only the main thread or an exact standard `threading.Thread`.
+Unmanaged native threads (including persistent dummy-thread wrappers) and custom
+Thread subclasses refuse before opening files. Within supported managed lifetimes,
 thread object identity prevents recycled numeric thread IDs from acquiring access.
 Foreign-thread use and close refuse; the public APIs are deliberately not a
 cross-thread ledger service. Sibling ledgers share the same single owner thread,

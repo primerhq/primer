@@ -23,6 +23,18 @@ def require(condition: bool) -> None:
         raise BoundaryError("Broker security validation refused")
 
 
+def managed_owner_thread() -> threading.Thread:
+    """Only standard threading-managed lifetimes may own broker authority.
+
+    Alien native threads use persistent DummyThread objects which may survive
+    ident reuse. Custom Thread subclasses can also replace lifecycle handling.
+    Reject both before opening any authority or credential descriptors.
+    """
+    owner = threading.current_thread()
+    require(owner is threading.main_thread() or type(owner) is threading.Thread)
+    return owner
+
+
 def text(value: object, maximum: int = 4096) -> str:
     require(type(value) is str and 0 < len(value) <= maximum and all(ord(c) >= 32 for c in value))
     return value
@@ -41,7 +53,7 @@ class PrivateStore:
     """
     def __init__(self, directory: Path):
         self._owner_pid = os.getpid()
-        self._owner_thread = threading.current_thread()
+        self._owner_thread = managed_owner_thread()
         self._fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         self._lock = None
         try:
@@ -66,7 +78,7 @@ class PrivateStore:
         return name + ".json"
 
     def require_live(self) -> None:
-        # Thread object identity avoids permitting a recycled thread identifier.
+        # Construction permits only standard managed thread lifetimes.
         # Fork retains descriptors/flock but never retains authorization.
         require(os.getpid() == self._owner_pid and threading.current_thread() is self._owner_thread)
         # dir_fd=None otherwise silently falls back to cwd.
