@@ -16,6 +16,61 @@ from primer.llm.codex.broker.security import PrivateStore, SignedPolicy
 from primer.llm.codex.request import compact
 
 
+def _run_ready_host_child(script, *arguments):
+    """Bound cold imports separately from the three-second security operation.
+
+    A dedicated pipe marks readiness; stdout/stderr cannot spoof it or fill a
+    pipe while imports run. Every failure kills/reaps the owned child. These
+    probes spawn no descendants. No provider, model or credential is activated.
+    """
+    import select
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        ready_read, ready_write = os.pipe()
+        process = None
+        phase = 'startup/import readiness (20s)'
+        failure = None
+        prefix = (
+            'import os as _probe_os\n'
+            'def _operation_ready():\n'
+            f'    _probe_os.write({ready_write}, b"R")\n'
+            f'    _probe_os.close({ready_write})\n'
+        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, '-c', prefix + script, *(str(arg) for arg in arguments)],
+                pass_fds=(ready_write,), stdout=stdout, stderr=stderr,
+            )
+            os.close(ready_write)
+            ready_write = None
+            assert select.select([ready_read], [], [], 20)[0], 'readiness deadline exceeded'
+            assert os.read(ready_read, 1) == b'R', 'child exited before readiness'
+            phase = 'security operation, cleanup and exit (3s)'
+            process.wait(timeout=3)
+            assert process.returncode == 0, f'child exit code {process.returncode}'
+        except BaseException as exc:
+            failure = exc
+        finally:
+            # Reap before reading diagnostics; deadline failures cannot leave
+            # the probe running. Descriptor cleanup also runs if reaping fails.
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+            finally:
+                os.close(ready_read)
+                if ready_write is not None:
+                    os.close(ready_write)
+        if failure is not None:
+            stderr.seek(0)
+            detail = stderr.read(16384).decode(errors='replace')
+            raise AssertionError(f'{phase}: {failure}\n{detail}') from failure
+
+
 @pytest.fixture(autouse=True)
 def independent_interpreter_fence(monkeypatch):
     # Each test models its own interpreter; recompositions within a test share
@@ -432,8 +487,6 @@ def test_closed_handles_refuse_before_io(manifest, tmp_path, ledger, monkeypatch
 
 
 def test_private_fifo_refusal_in_bounded_child(tmp_path):
-    import subprocess
-    import sys
     tmp_path.chmod(0o700)
     os.mkfifo(tmp_path / 'policy_ledger.json', mode=0o600)
     script = '''
@@ -441,6 +494,7 @@ import sys
 from pathlib import Path
 from primer.llm.codex.broker.security import PrivateStore
 from primer.llm.codex.boundary import BoundaryError
+_operation_ready()
 store = PrivateStore(Path(sys.argv[1]))
 try:
     try:
@@ -452,9 +506,7 @@ try:
 finally:
     store.close()
 '''
-    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)], timeout=3,
-                            capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    _run_ready_host_child(script, tmp_path)
 
 
 @pytest.fixture
@@ -534,8 +586,6 @@ async def test_composed_fsync_uncertainty_survives_close_reopen(composed, monkey
 
 @pytest.mark.asyncio
 async def test_closed_host_requires_explicit_recovery_even_in_fresh_process(composed):
-    import subprocess
-    import sys
     world = composed
     async with host.host_broker(world.root):
         pass
@@ -549,8 +599,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from primer.llm.codex.broker.host import PolicyLedger
 from primer.llm.codex.broker.security import PrivateStore
 from primer.llm.codex.boundary import BoundaryError
-store = PrivateStore(Path(sys.argv[1]))
 key = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+_operation_ready()
+store = PrivateStore(Path(sys.argv[1]))
 try:
     assert store.read('policy_session')['state'] == 'active'
     try:
@@ -563,9 +614,7 @@ try:
 finally:
     store.close()
 """
-    result = subprocess.run([sys.executable, '-c', script, str(world.directory), world.identity],
-                            timeout=3, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    _run_ready_host_child(script, world.directory, world.identity)
 
 
 @pytest.mark.asyncio
@@ -841,12 +890,10 @@ def test_standard_managed_thread_can_construct_use_and_dispose(composed):
 
 
 def test_cold_import_on_native_thread_refuses_false_main_owner_before_io(tmp_path):
-    import subprocess
-    import sys
     script = '''
 import _thread, os, signal, sys
 assert 'threading' not in sys.modules, 'probe must begin before threading import'
-signal.alarm(4)
+signal.alarm(25)  # Backstop covers setup; parent enforces 3s after readiness.
 done = _thread.allocate_lock()
 done.acquire()
 failures, refused, opened = [], [], []
@@ -867,6 +914,7 @@ def worker():
             raise AssertionError('cold-import false main owner opened descriptor')
         os.open = forbidden
         host._root_directory = forbidden
+        _operation_ready()  # Imports remain on this real unmanaged thread.
         for factory in (PrivateStore, host.HostTrust):
             try:
                 factory(Path(sys.argv[1]))
@@ -879,17 +927,21 @@ def worker():
     finally:
         done.release()
 _thread.start_new_thread(worker, ())
-assert done.acquire(timeout=3), 'native worker did not finish'
-assert not failures, failures
-assert not opened, opened
-assert refused == ['PrivateStore', 'HostTrust'], refused
+try:
+    # The parent allows bounded cold setup, then only 3s for refusal, thread
+    # completion, all assertions and process exit. No operation timeout expands.
+    assert done.acquire(timeout=23), 'native worker did not finish'
+    assert not failures, failures
+    assert not opened, opened
+    assert refused == ['PrivateStore', 'HostTrust'], refused
+except BaseException as exc:
+    print(repr(exc), file=sys.stderr, flush=True)
+    os._exit(1)
 # threading was intentionally initialized on the wrong thread. Avoid its
-# interpreter-shutdown bookkeeping after completing all refusal assertions.
+# interpreter-shutdown bookkeeping on BOTH success and assertion failure.
 os._exit(0)
 '''
-    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)],
-                            timeout=5, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    _run_ready_host_child(script, tmp_path)
 
 
 @pytest.mark.parametrize('target', ['lock', 'directory', 'trust'])
