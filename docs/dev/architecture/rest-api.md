@@ -224,7 +224,7 @@ design still validates, because the registry's canonical provider map is
 read, not `get_toolset`), an unknown id raises `ConfigError` and fails boot,
 and an app without a registry fails closed. No production module imports the
 inventory script or reads the reviewed manifest JSON: the freeze digests
-(406 operation identities, 489 scoped tool ids, 263 generated declared ids,
+(407 operation identities, 491 scoped tool ids, 264 generated declared ids,
 the 135 canonically sorted curated pairs, the 8 reviewed skips and the empty
 aggregation set) and the non-vacuous meta-tool and core-kit prompt budgets
 are pinned against the live inventory in
@@ -251,13 +251,16 @@ of one REST operation carry the same mapping; curated tools without a
 REST owner and user-defined tools carry null. The frozen 406-operation
 projection supplies the mapping, not a manifest or a UI table.
 
-W3 restamps the M5 surface with exactly two generated authenticated welcome
-writes, `auth__acknowledge_welcome` and `auth__reopen_welcome`: 406 operations,
-275 paths, 489 reviewed tools, 263 generated mappings, 135 curated mappings,
-eight skips and zero gaps. The manifest keeps its original M0 `base_commit`
-and adds `reviewed_surface_revision: wiki-first-w3-welcome`; the operation,
-tool and generated-id digests are restamped. Curated/skip digests, the empty
-aggregation set and both fixed prompt byte caps are unchanged.
+The workspace publisher restamps the reviewed tool inventory with exactly
+`system__publish_service`: 407 operations, 276 paths, 491 reviewed tools,
+264 generated mappings, 135 curated route mappings, eight skips and zero gaps.
+The manifest retains the original M0 `base_commit` and uses
+`reviewed_surface_revision: workspace-service-publisher-v1`. Removing that one
+new ID reproduces the previous 490-ID digest. The publisher is admin-only and
+requires the calling workspace, so its MCP exposure record is `needs_workspace`.
+REST-operation, generated-ID, curated/skip digests, the empty aggregation set and
+fixed prompt byte caps are unchanged. This inventory does not grant execution;
+the shipped required admin approval and the workspace access check still apply.
 
 The existing built-in item list remains unfiltered by role for picker
 compatibility. New operation mappings for admin REST operations are omitted

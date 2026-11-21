@@ -1,11 +1,11 @@
 """M5 frozen contract: the reviewed Tools Universal universe, digested.
 
-Restamped for W3 welcome (base ``6fe6f03d7``): exactly two new generated
-operations; curated/skip/aggregation/core-kit contracts are unchanged. From the live
+Restamped for workspace publication: exactly one curated tool descriptor added;
+REST operations, generated ids, curated route mappings and skips are unchanged. From the live
 production projection and the reviewed manifest:
 
 * 407 operation identities (operationId, method, path)
-* 490 scoped tool ids (exact set, from the reviewed tool catalogue)
+* 491 scoped tool ids (exact set, from the reviewed tool catalogue)
 * 264 generated declared ids
 * the 135 curated pairs (operation -> canonically sorted ids)
 * the 8 skips (method, path, skip_code), cross-checked against the manifest's
@@ -40,7 +40,8 @@ BASE_COMMIT = "fb18c24b92bec57131bc5e49959344a4d7d97960"
 
 # Frozen digests (sha256 over canonical JSON of the sorted values).
 IDENTITIES_407_SHA256 = "495473987d4a6db1d31f5fc7f4b08791ecbc8e3bd7b673cb02e5f6162916862b"
-TOOLS_490_SHA256 = "92c82e578e8e345ebcfbbf3930e6425f96b1e51bd6e2f2b5597809ce7316e9f7"
+TOOLS_491_SHA256 = "ef5c4ee79ee60787daaac54cebeebd3d27f8b6a1bee371f290c230c466ad2695"
+PRE_PUBLISHER_TOOLS_490_SHA256 = "92c82e578e8e345ebcfbbf3930e6425f96b1e51bd6e2f2b5597809ce7316e9f7"
 GENERATED_264_SHA256 = "1aa65d250b41f173af758dfb2a2b5f36c7d8d80d5dbaead5b15e219c0e081cac"
 CURATED_PAIRS_135_SHA256 = "c4e02bffd013b8b430467a2ac8c5a6132cd6fd86d4c70ac82861524f58172d7e"
 SKIPS_8_SHA256 = "48dce3e34e1e74800dfba42fb9130d43d0bc0b75d0387c7bd252ef7622099abf"
@@ -85,10 +86,16 @@ def test_operation_identity_is_frozen(projection) -> None:
 
 def test_the_stable_tool_id_set_is_frozen(manifest, live_catalogue) -> None:
     ids = [tool.scoped_id for tool in live_catalogue]
-    assert len(ids) == len(set(ids)) == 490
+    assert len(ids) == len(set(ids)) == 491
     assert all(item.count("__") == 1 for item in ids)
-    assert _digest(ids) == TOOLS_490_SHA256
+    assert _digest(ids) == TOOLS_491_SHA256
+    assert "system__publish_service" in ids
+    assert _digest([item for item in ids if item != "system__publish_service"]) == PRE_PUBLISHER_TOOLS_490_SHA256
     assert set(ids) == {tool["scoped_id"] for tool in manifest["tool_catalogue"]}
+    assert next(tool for tool in manifest["tool_catalogue"] if tool["scoped_id"] == "system__publish_service") == {
+        "bare_id": "publish_service", "exposable": False, "exposure_reason": "needs_workspace",
+        "required_role": "admin", "scoped_id": "system__publish_service", "toolset_id": "system",
+    }
 
 
 def test_the_generated_declared_ids_are_frozen(projection, built_app) -> None:
@@ -142,17 +149,17 @@ def test_the_aggregation_set_is_frozen_empty(projection) -> None:
 def test_the_manifest_baseline_is_frozen(manifest) -> None:
     assert manifest["schema_version"] == 1
     assert manifest["base_commit"] == BASE_COMMIT
-    assert manifest["reviewed_surface_revision"] == "wiki-first-w3-welcome"
+    assert manifest["reviewed_surface_revision"] == "workspace-service-publisher-v1"
     assert manifest["expected_operation_count"] == 407
     assert manifest["expected_path_count"] == 276
 
 
 def test_every_tool_has_exactly_one_reference_path(live_catalogue) -> None:
-    """Reference-path freeze: unique reference/tools/<toolset>/<tool> for all 490."""
+    """Reference-path freeze: unique reference/tools/<toolset>/<tool> for all 491."""
     paths = []
     for tool in live_catalogue:
         path = reference_path(tool.toolset_id, tool.bare_id)
         assert re.fullmatch(r"reference/tools/[^/]+/[^/]+", path)
         assert tool.scoped_id == f"{tool.toolset_id}__{tool.bare_id}"
         paths.append(path)
-    assert len(set(paths)) == 490
+    assert len(set(paths)) == 491

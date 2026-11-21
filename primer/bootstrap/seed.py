@@ -55,6 +55,39 @@ async def policy_rows_for(store, toolset_id: str, tool_name: str, *, length: int
     return list(rows.values())
 
 
+async def ensure_workspace_publisher_policy(storage_provider) -> None:
+    """Critical publisher-only seed before any runtime owner is started."""
+    store = storage_provider.get_storage(ToolApprovalPolicy)
+    if await policy_rows_for(store, "system", "publish_service", length=1):
+        return
+    policy_id = default_policy_id("system", "publish_service")
+    try:
+        await store.create(ToolApprovalPolicy(
+            id=policy_id, toolset_id="system", tool_name="publish_service", enabled=True,
+            approval=shipped_gate("system", "publish_service"),
+            approvers=shipped_approvers("system", "publish_service"),
+        ))
+    except ConflictError:
+        # Only a winner on the semantic key establishes a gate. Never overwrite
+        # or treat an unrelated deterministic-ID occupant as approval policy.
+        if not await policy_rows_for(store, "system", "publish_service", length=1):
+            raise
+
+
+async def require_workspace_publisher_policy(storage_provider) -> None:
+    """Refuse startup without an explicit publisher policy after critical seed.
+
+    The schema stamp does not prove fresh seeding succeeded. Disabled/custom
+    operator rows are intentional choices and count under either system spelling.
+    A read failure also propagates: inability to verify is not permission to run.
+    """
+    rows = await policy_rows_for(
+        storage_provider.get_storage(ToolApprovalPolicy), "system", "publish_service", length=1,
+    )
+    if not rows:
+        raise RuntimeError("workspace publisher approval policy is missing; repair approval seeding before startup")
+
+
 async def ensure_crud_approval_policies(storage_provider) -> list[str]:
     """Ensure one approval policy per default-gated tool (``DEFAULT_GATED_TOOLS``), the gate ``shipped_gate`` names.
 

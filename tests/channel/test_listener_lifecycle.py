@@ -63,14 +63,22 @@ async def test_worker_tool_writes_reach_owner_and_drop_stale_outbound_without_du
         assert not (await _call(tools, "update_channel_provider", id="cp", entity={
             **PROVIDER, "config": {**PROVIDER["config"], "bot_token": "xoxb-rotated"},
         }))[0]
-        await until(lambda: first._closed and outbound._closed and owner.peek_adapter("room"))
+        await until(lambda: first._closed and outbound._closed
+                    and worker.peek_adapter("room") is None
+                    and owner.peek_adapter("room") is not None
+                    and owner.peek_adapter("room") is not first
+                    and not owner.peek_adapter("room")._closed)
         second = owner.peek_adapter("room")
         assert second.owns_inbound and worker.peek_adapter("room") is None
-        assert builds[-1][1].get_secret_value() == "xoxb-rotated"
+        second_builds = [token for _, token, adapter in builds if adapter is second]
+        assert len(second_builds) == 1
+        assert second_builds[0].get_secret_value() == "xoxb-rotated"
+        assert len(builds) == 3  # original owner, original outbound, rotated owner
         await owner.reconcile()
         assert owner.peek_adapter("room") is second
+        assert len(builds) == 3
         assert not (await _call(tools, "update_channel", id="room", entity={**ROOM, "config": {"chats": {"enabled": False}}}))[0]
-        await until(lambda: second._closed)
+        await until(lambda: second._closed and owner.peek_adapter("room") is None)
         assert owner.peek_adapter("room") is None
         parked = await owner.get_adapter("room")
         assert not (await _call(tools, "delete_channel", id="room"))[0]
@@ -83,6 +91,50 @@ async def test_worker_tool_writes_reach_owner_and_drop_stale_outbound_without_du
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await worker.aclose()
+        await owner.aclose()
+
+
+async def test_rotation_does_not_complete_at_closed_but_still_cached_adapter(world, builds, monkeypatch):
+    storage, _, _ = world
+    providers = storage.get_storage(ChannelProvider)
+    await providers.create(ChannelProvider(**PROVIDER))
+    await storage.get_storage(Channel).create(Channel(**ROOM))
+    owner = registry(storage, True)
+    await owner.reconcile()
+    first = owner.peek_adapter("room")
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_close = first.aclose
+
+    async def closing():
+        await original_close()
+        entered.set()
+        await release.wait()  # deterministic closed-before-cache-removal interval
+
+    monkeypatch.setattr(first, 'aclose', closing)
+    await providers.update(ChannelProvider(**{
+        **PROVIDER, "config": {**PROVIDER["config"], "bot_token": "xoxb-rotated"},
+    }))
+    rotation = asyncio.create_task(owner.reconcile())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        # The old completion predicate accepted this state even though no new
+        # adapter existed. Real get_adapter callers wait behind the registry lock.
+        assert first._closed and owner.peek_adapter("room") is first
+        assert not rotation.done() and len(builds) == 1
+        release.set()
+        assert await asyncio.wait_for(rotation, 3) == 1
+        second = owner.peek_adapter("room")
+        assert second is not first and not second._closed and second.owns_inbound
+        assert [(token.get_secret_value(), adapter is second) for _, token, adapter in builds] == [
+            ('xoxb-original', False), ('xoxb-rotated', True),
+        ]
+        assert await owner.reconcile() == 0
+        assert owner.peek_adapter("room") is second and len(builds) == 2
+    finally:
+        release.set()
+        if not rotation.done():
+            rotation.cancel()
+        await asyncio.gather(rotation, return_exceptions=True)
         await owner.aclose()
 
 

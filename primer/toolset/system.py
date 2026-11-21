@@ -1812,6 +1812,10 @@ def build_system_toolset(
         make_wait_for_event_handler(storage_provider),
     )
 
+    from primer.toolset._system_services import publish_service_tool
+
+    registry["publish_service"] = publish_service_tool(toolset_id, storage_provider, workspace_registry, artifact_storage_registry)
+
     # ---- read_doc_content (workspace-only document -> text) ----------
     # Only wired when the workspace layer is available (it resolves the
     # live workspace from ctx.workspace_id to read the file). When

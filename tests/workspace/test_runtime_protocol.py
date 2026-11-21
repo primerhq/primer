@@ -6,7 +6,7 @@ from primer.workspace.runtime.protocol import (
 
 def test_op_names_complete():
     expected = {"hello", "health", "read_file", "write_file", "append_line",
-                "list_dir", "stat", "delete", "archive",
+                "list_dir", "stat", "delete", "archive", "capture_service_bundle",
                 "exec", "exec_cancel", "watch_start", "watch_cancel",
                 "events_subscribe",
                 "state_commit", "state_read", "state_history", "state_show_commit",
@@ -17,7 +17,7 @@ def test_op_names_complete():
 
 def test_error_codes_complete():
     expected = {"ENOENT", "EACCES", "EISDIR", "ENOTDIR", "EEXIST",
-                "ETIMEDOUT", "EUNSUPPORTED", "EPROTOCOL", "EINTERNAL"}
+                "EBUSY", "ETIMEDOUT", "EUNSUPPORTED", "EPROTOCOL", "EINTERNAL"}
     actual = {e.value for e in ErrorCode}
     assert actual == expected
 
