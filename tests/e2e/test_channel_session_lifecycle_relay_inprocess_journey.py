@@ -30,7 +30,6 @@ from pydantic import SecretStr
 
 from primer.bus.in_memory import InMemoryEventBus
 from primer.channel.dispatcher import ChannelDispatcher
-from primer.channel.null_adapter import NullChannelAdapter
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.int.claim import ClaimKind, Lease
 from primer.model.chat import Done, TextDelta
@@ -45,6 +44,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
+from tests._support.channel_offline import OfflineChannelRegistry
 
 
 pytestmark = pytest.mark.skipif(
@@ -127,35 +127,6 @@ class _SilentExecutor:
         yield Done(stop_reason="stop", raw_reason="stop")
 
 
-class _Registry:
-    """Stub registry borrowing the real ``for_session`` resolution path."""
-
-    def __init__(self) -> None:
-        self._storage_provider = None
-        self.adapters: dict[str, NullChannelAdapter] = {}
-
-    def bind(self, storage_provider) -> None:
-        self._storage_provider = storage_provider
-
-    async def get_adapter(self, channel_id: str) -> NullChannelAdapter:
-        adapter = self.adapters.get(channel_id)
-        if adapter is None:
-            adapter = NullChannelAdapter()
-            await adapter.initialize()
-            self.adapters[channel_id] = adapter
-        return adapter
-
-    async def route_for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.route_for_session(self, session)
-
-    async def for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.for_session(self, session)
-
-
 @pytest.mark.asyncio
 async def test_channel_session_lifecycle_relay_journey() -> None:
     from tests.conftest import _FakeStorageProvider
@@ -190,8 +161,7 @@ async def test_channel_session_lifecycle_relay_journey() -> None:
     )
     await sp.get_storage(WorkspaceSession).create(session)
 
-    registry = _Registry()
-    registry.bind(sp)
+    registry = OfflineChannelRegistry(sp)
     dispatcher = ChannelDispatcher(registry=registry)
 
     bus = InMemoryEventBus()
@@ -268,8 +238,7 @@ async def test_silent_session_in_bound_workspace_opens_no_thread() -> None:
     )
     await sp.get_storage(WorkspaceSession).create(session)
 
-    registry = _Registry()
-    registry.bind(sp)
+    registry = OfflineChannelRegistry(sp)
     dispatcher = ChannelDispatcher(registry=registry)
 
     bus = InMemoryEventBus()

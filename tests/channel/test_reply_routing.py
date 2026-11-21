@@ -36,6 +36,7 @@ from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRun
 from primer.model.workspace_session import AgentSessionBinding, PendingSessionMessage, SessionStatus, WorkspaceSession
 from primer.storage.q import Q
 from primer.storage.sqlite import SqliteStorageProvider
+from tests._support.channel_offline import OfflineChannelRegistry
 from tests.trigger.conftest import _FakeClaimEngine, _FakeWorkspaceRegistry
 
 ADMIN = PrincipalRef(type="user", id="u-root", display="root", role="admin", source="local")
@@ -261,7 +262,6 @@ async def test_discord_posts_every_message_of_a_thread_mapped_session_into_its_t
     """The same path on Discord, with a fake client: the binding's anchor is the thread id, and no thread of the session's own is opened.
     An anchor that is not a Discord id (a Slack thread ts) no longer fails the post: the session's own thread is used."""
     pytest.importorskip("discord")
-    from primer.api.registries.channel_registry import ChannelRegistry
     from primer.channel.dispatcher import ChannelDispatcher
     from primer.channel.discord.adapter import DiscordChannelAdapter
 
@@ -288,20 +288,8 @@ async def test_discord_posts_every_message_of_a_thread_mapped_session_into_its_t
     adapter = DiscordChannelAdapter(provider=provider, channel=channel, inbox=None)
     adapter._client = client
 
-    class _Registry:
-        """The real binding resolution over a session's own binding, handing out the one adapter."""
-
-        def __init__(self) -> None:
-            self._storage_provider = SimpleNamespace(get_storage=lambda _model: SimpleNamespace(get=AsyncMock(return_value=None)))
-
-        async def get_adapter(self, _channel_id):
-            return adapter
-
-        async def route_for_session(self, session):
-            return await ChannelRegistry.route_for_session(self, session)
-
-        async def for_session(self, session):
-            return await ChannelRegistry.for_session(self, session)
+    storage = SimpleNamespace(get_storage=lambda _model: SimpleNamespace(get=AsyncMock(return_value=None)))
+    registry = OfflineChannelRegistry(storage, {channel.id: adapter})
 
     from primer.model.envelope import PromptEnvelope
 
@@ -313,7 +301,7 @@ async def test_discord_posts_every_message_of_a_thread_mapped_session_into_its_t
             kind=kind, workspace_id="ws-1", session_id=session_id, tool_call_id="tc-1", prompt=text,
             response_schema=None, choices=None, timeout_at_iso=None,
         )
-        return ChannelDispatcher(registry=_Registry()).dispatch_prompt(envelope=envelope, session=session)
+        return ChannelDispatcher(registry=registry).dispatch_prompt(envelope=envelope, session=session)
 
     for kind, text in (("ask_user", "Which currency?"), ("inform", "half way there")):
         results = await _post(kind, text, session_id="s-dc", anchor="777")
@@ -330,7 +318,6 @@ async def test_discord_a_shared_anchor_question_opens_the_sessions_own_thread() 
     """Round 2, finding 1, on Discord: an ask_user on a shared anchor (an explicit reply target) opens the session's own thread;
     every other post goes into the shared anchor."""
     pytest.importorskip("discord")
-    from primer.api.registries.channel_registry import ChannelRegistry
     from primer.channel.dispatcher import ChannelDispatcher
     from primer.channel.discord.adapter import DiscordChannelAdapter
 
@@ -357,14 +344,8 @@ async def test_discord_a_shared_anchor_question_opens_the_sessions_own_thread() 
     adapter = DiscordChannelAdapter(provider=provider, channel=channel, inbox=None)
     adapter._client = client
 
-    class _Registry:
-        _storage_provider = SimpleNamespace(get_storage=lambda _model: SimpleNamespace(get=AsyncMock(return_value=None)))
-
-        async def get_adapter(self, _channel_id):
-            return adapter
-
-        async def route_for_session(self, session):
-            return await ChannelRegistry.route_for_session(self, session)
+    storage = SimpleNamespace(get_storage=lambda _model: SimpleNamespace(get=AsyncMock(return_value=None)))
+    registry = OfflineChannelRegistry(storage, {channel.id: adapter})
 
     from primer.model.envelope import PromptEnvelope
 
@@ -380,7 +361,7 @@ async def test_discord_a_shared_anchor_question_opens_the_sessions_own_thread() 
             response_schema=None, choices=None, timeout_at_iso=None,
         )
 
-    dispatcher = ChannelDispatcher(registry=_Registry())
+    dispatcher = ChannelDispatcher(registry=registry)
     # The question opens the session's own thread off the room, not the shared one.
     results = await dispatcher.dispatch_prompt(envelope=_envelope("ask_user", "Which currency?", "s-sh"), session=_session("s-sh"))
     assert all("error" not in r for r in results), results

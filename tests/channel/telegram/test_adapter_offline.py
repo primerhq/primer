@@ -16,6 +16,7 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     TelegramChannelProviderConfig,
 )
+from tests._support.channel_offline import stub_connection
 
 
 class _CapturingInbox(ChannelInbox):
@@ -61,10 +62,7 @@ def _channel() -> Channel:
 @pytest.mark.asyncio
 async def test_verify_calls_get_me_and_get_chat(monkeypatch):
     app = _StubApp()
-    async def _acquire(_): return app
-    async def _release(_): pass
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
     inbox = _CapturingInbox()
     adapter = TelegramChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -79,10 +77,7 @@ async def test_verify_calls_get_me_and_get_chat(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_ask_user_sends_message_with_token(monkeypatch):
     app = _StubApp()
-    async def _acquire(_): return app
-    async def _release(_): pass
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
     inbox = _CapturingInbox()
     adapter = TelegramChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -111,10 +106,7 @@ async def test_post_ask_user_sends_message_with_token(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_inform_plain_message(monkeypatch):
     app = _StubApp()
-    async def _acquire(_): return app
-    async def _release(_): pass
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
     inbox = _CapturingInbox()
     adapter = TelegramChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -141,10 +133,7 @@ async def test_post_inform_plain_message(monkeypatch):
 @pytest.mark.asyncio
 async def test_resolve_tag_from_cache_after_post(monkeypatch):
     app = _StubApp()
-    async def _acquire(_): return app
-    async def _release(_): pass
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
     inbox = _CapturingInbox()
     adapter = TelegramChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -167,10 +156,7 @@ async def test_resolve_tag_from_cache_after_post(monkeypatch):
 @pytest.mark.asyncio
 async def test_handle_decision_publishes_envelope(monkeypatch):
     app = _StubApp()
-    async def _acquire(_): return app
-    async def _release(_): pass
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
     inbox = _CapturingInbox()
     adapter = TelegramChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,

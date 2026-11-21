@@ -15,6 +15,7 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     SlackChannelProviderConfig,
 )
+from tests._support.channel_offline import stub_connection
 
 
 class _CapturingInbox(ChannelInbox):
@@ -75,11 +76,7 @@ async def test_verify_calls_auth_test_and_conversations_info(monkeypatch):
         lambda conn: conn.client,
     )
     conn = _StubConnection()
-    async def _acquire(provider):
-        return conn
-    async def _release(provider): pass
-    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, SLACK_CONNECTIONS, conn)
     inbox = _CapturingInbox()
     adapter = SlackChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -100,10 +97,7 @@ async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
         "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
-    async def _acquire(provider): return conn
-    async def _release(provider): pass
-    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, SLACK_CONNECTIONS, conn)
     inbox = _CapturingInbox()
     adapter = SlackChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -134,10 +128,7 @@ async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
 async def test_post_inform_threaded_plain_message(monkeypatch):
     conn = _StubConnection()
     monkeypatch.setattr("primer.channel.slack.adapter._get_web_client", lambda c: c.client)
-    async def _acquire(p): return conn
-    async def _release(p): pass
-    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, SLACK_CONNECTIONS, conn)
     adapter = SlackChannelAdapter(provider=_provider(), channel=_channel(), inbox=_CapturingInbox())
     await adapter.initialize()
     try:
@@ -161,10 +152,7 @@ async def test_post_prompt_reuses_one_thread_per_session(monkeypatch):
     monkeypatch.setattr(
         "primer.channel.slack.adapter._get_web_client", lambda conn: conn.client,
     )
-    async def _acquire(provider): return conn
-    async def _release(provider): pass
-    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, SLACK_CONNECTIONS, conn)
     adapter = SlackChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=_CapturingInbox(),
     )
@@ -197,10 +185,7 @@ async def test_handle_decision_publishes_to_inbox(monkeypatch):
         "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
-    async def _acquire(provider): return conn
-    async def _release(provider): pass
-    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, SLACK_CONNECTIONS, conn)
     inbox = _CapturingInbox()
     adapter = SlackChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -226,10 +211,7 @@ async def test_handle_text_reply_publishes_ask_user(monkeypatch):
         "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
-    async def _acquire(provider): return conn
-    async def _release(provider): pass
-    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, SLACK_CONNECTIONS, conn)
     inbox = _CapturingInbox()
     adapter = SlackChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
