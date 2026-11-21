@@ -35,6 +35,18 @@ class SignIn:
         self._lock = asyncio.Lock()
         self._record = store.read("registration")
         self._selected = None
+        self._continuation = store.read("client_hint")
+        if self._continuation is not None:
+            require(set(self._continuation) == {"client_id"})
+            require(text(self._continuation["client_id"]) != "dynamic_agent_client")
+        revocations = store.read("revocations") or {"items": []}
+        require(set(revocations) == {"items"} and type(revocations["items"]) is list
+                and len(revocations["items"]) <= 32)
+        self._revocations = revocations["items"]
+        for item in self._revocations:
+            require(type(item) is dict and set(item) == {"client_id", "refresh_token"})
+            text(item["client_id"])
+            text(item["refresh_token"], 65536)
         if self._record is not None:
             if self._record.get("reauthorization_required") is True:
                 require(set(self._record) == {"reauthorization_required", "subject", "client_id", "account"})
@@ -65,7 +77,7 @@ class SignIn:
 
     def begin(self, callback_uri: str) -> str:
         self._policy.grant()  # Before even constructing an authorization URL.
-        require(not self._lock.locked())
+        require(not self._lock.locked() and self._candidate is None and not self._revocations)
         uri = urlsplit(callback_uri)
         require(uri.scheme == "http" and uri.hostname == "127.0.0.1"
                 and uri.netloc == f"127.0.0.1:{uri.port}" and uri.port is not None
@@ -73,9 +85,8 @@ class SignIn:
         pending = {"state": secrets.token_urlsafe(32), "nonce": secrets.token_urlsafe(32),
                    "verifier": secrets.token_urlsafe(48), "redirect": callback_uri,
                    "expires": time.monotonic() + 300,
-                   "client": self._selected["client_id"] if self._selected else None}
+                   "client": (self._selected or self._continuation or {}).get("client_id")}
         self._pending = pending
-        self._candidate = None
         params = {"client_id": pending["client"] or "dynamic_agent_client", "ext_agent_host_id": self._host,
                   "response_type": "code", "redirect_uri": callback_uri, "scope": " ".join(sorted(SCOPES)),
                   "resource": RESOURCE, "state": pending["state"], "nonce": pending["nonce"],
@@ -145,25 +156,33 @@ class SignIn:
 
     async def _complete(self, callback_query: str) -> dict:
         async with self._lock:
-            pending, self._pending = self._pending, None  # Single-use, including failure.
+            pending = self._pending
             require(pending is not None and pending["expires"] > time.monotonic())
             require(len(callback_query) <= 16384)
             values = parse_qs(callback_query, keep_blank_values=True, strict_parsing=True, max_num_fields=8)
             require(not set(values) - {"state", "code", "client_id", "scope", "error", "error_description"}
                     and all(len(v) == 1 for v in values.values()))
             require(secrets.compare_digest(values.get("state", [""])[0], pending["state"]))
+            # Only a well-formed matching callback consumes the attempt. This
+            # precedes denial handling and all exchange I/O: replay is refused.
+            self._pending = None
             require("error" not in values)
             client = values.get("client_id", [pending["client"]])[0]
             text(client)
             require(client != "dynamic_agent_client" and (pending["client"] is None or client == pending["client"]))
             self._policy.grant()
+            if self._selected is None:
+                # Continuation is NOT verified identity or an authority grant.
+                # Persist before exchange so invalid_grant/restart can reuse it.
+                self._continuation = {"client_id": client}
+                self._store.write("client_hint", self._continuation)
             result = await self._http.json(TOKEN, form={"grant_type": "authorization_code", "client_id": client,
                 "code": text(values.get("code", [None])[0]), "code_verifier": pending["verifier"],
                 "redirect_uri": pending["redirect"], "resource": RESOURCE})
             record = await self._tokens(result, client, pending["nonce"])
-            self._policy.grant()  # Enrollment authority is still required.
             self._candidate = record
             self._candidate_deadline = time.monotonic() + 300
+            self._policy.grant()  # If revoked, candidate remains for explicit disposal.
             return {"issuer": ISSUER, **{key: record[key] for key in ("subject", "client_id", "account")}}
 
     def commit_registration(self) -> str:
@@ -178,8 +197,8 @@ class SignIn:
                 and self._candidate["expires_at"] > time.time())
         record = self._candidate
         self._policy.grant(record["account"])
-        self._candidate = None
         self._store.write("registration", record)
+        self._candidate = None
         self._record = record
         self._selected = {key: record[key] for key in ("subject", "client_id", "account")}
         return record["account"]
@@ -215,19 +234,41 @@ class SignIn:
             return record["access_token"], record["generation"]
 
     async def sign_out(self) -> None:
-        """Invalidate locally first, then attempt renewable-session revocation.
+        """Disable locally and revoke active AND staged renewable sessions.
 
-        Failure is visible and never restores local tokens. A host must also
-        close active model connections; their next policy check now refuses.
+        Failed/unconfirmed revocations remain in a private, non-authorizing
+        queue for explicit retry. New enrollment refuses until disposal is
+        confirmed. Verified registration identity survives sign-out/restart.
         """
         async with self._lock:
-            record, self._record = self._record, None
-            self._pending = None
-            self._candidate = None
+            record, candidate = self._record, self._candidate
+            self._record = self._candidate = self._pending = None
+            if self._selected is None and candidate is not None:
+                self._selected = {key: candidate[key] for key in ("subject", "client_id", "account")}
+            for source in (record, candidate):
+                if source is not None:
+                    item = {key: source[key] for key in ("client_id", "refresh_token")}
+                    if item not in self._revocations:
+                        self._revocations.append(item)
             if self._selected is not None:
                 self._store.write("registration", {"reauthorization_required": True, **self._selected})
-            if record is not None:
-                metadata = await self._http.json(DISCOVERY)
-                require(metadata.get("issuer") == ISSUER)
-                endpoint = text(metadata.get("revocation_endpoint"))
-                await self._http.revoke(endpoint, record["client_id"], record["refresh_token"])
+            self._store.write("revocations", {"items": self._revocations})
+            if not self._revocations:
+                return
+            try:
+                # Absolute bound includes metadata and every revocation, not
+                # just each socket read. Cancellation leaves the queue intact.
+                async with asyncio.timeout(10):
+                    metadata = await self._http.json(DISCOVERY)
+                    require(metadata.get("issuer") == ISSUER)
+                    endpoint = text(metadata.get("revocation_endpoint"))
+                    for item in tuple(self._revocations):
+                        try:
+                            await self._http.revoke(endpoint, item["client_id"], item["refresh_token"])
+                        except Exception:
+                            continue  # Attempt other distinct sessions too.
+                        self._revocations.remove(item)
+                        self._store.write("revocations", {"items": self._revocations})
+                require(not self._revocations)
+            except Exception:
+                raise BoundaryError("SIWC remote revocation unconfirmed; local credentials disabled") from None
