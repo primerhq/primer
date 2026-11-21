@@ -141,7 +141,7 @@ def _build_arbitrary_message(
     return "\n".join(lines)
 
 
-def _map_commit_dict(raw: dict) -> CommitInfo:
+def _map_commit_dict(raw: dict, *, with_files: bool = False) -> CommitInfo:
     """Map a raw commit dict (from state_history) to :class:`CommitInfo`.
 
     Handles two wire shapes:
@@ -156,6 +156,8 @@ def _map_commit_dict(raw: dict) -> CommitInfo:
       returns, so we must handle it first.
 
     The flat shape takes priority; the nested shape acts as a fallback.
+    File counts are parsed only when explicitly requested and supported.
+    Legacy transports may include bare filenames in header-only responses.
     """
     ts_raw = raw.get("committed_at") or raw.get("timestamp") or raw.get("ts")
     if isinstance(ts_raw, (int, float)):
@@ -203,7 +205,7 @@ def _map_commit_dict(raw: dict) -> CommitInfo:
         op=op,
         tool=tool,
         call_id=call_id,
-        files=raw.get("files"),
+        files=raw.get("files") if with_files else None,
     )
 
 
@@ -655,18 +657,19 @@ class SandboxStateRepo:
         from primer.workspace.runtime.runtime_client import RuntimeError
         from primer.workspace.runtime.protocol import ErrorCode
 
+        include_files = with_files and _parse_version(sandbox.protocol_version) >= (1, 6)
         try:
             raw_commits = await sandbox.state_history(
                 session_id=session_id,
                 agent_id=agent_id,
                 limit=limit,
-                **({"with_files": True} if with_files and _parse_version(sandbox.protocol_version) >= (1, 6) else {}),
+                **({"with_files": True} if include_files else {}),
             )
         except RuntimeError as exc:
             if exc.code == ErrorCode.EPROTOCOL:
                 raise ValidationError(str(exc)) from exc
             raise
-        return [_map_commit_dict(c) for c in raw_commits]
+        return [_map_commit_dict(c, with_files=include_files) for c in raw_commits]
 
     # ------------------------------------------------------------------
     # show_commit
