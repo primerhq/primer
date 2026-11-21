@@ -343,10 +343,6 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                         error = await call(scoped, args, role="reader", error="tool_failed")
                         assert "forbidden" in error["error"]["message"]
                     assert len(await call("system__list_channel_bindings", {"trigger_id": trigger})) == 1
-                    await call("system__set_reply_binding", {"workspace_id": workspace, "channel_id": channel})
-                    target = await call("workspaces__get_workspace", {"id": workspace})
-                    assert target["reply_binding"]["channel_id"] == channel
-                    trace["standing"] = target["reply_binding"]
                     diagnostic = await call("trigger__fire_now", {"id": trigger})
                     assert diagnostic["results"] and all(r["skipped"] and r["error_code"] == "skipped_no_match" for r in diagnostic["results"])
                     trace["manual_fire"] = diagnostic
@@ -373,6 +369,10 @@ async def test_user_onboards_channel_and_receives_real_worker_replies(mock_llm, 
                             await asyncio.sleep(.1)
                     assert response.status_code == 200 and response.json()["routed"] is True
                     trace["activation"] = {"pre_http": activation_before, "receive_http": response.status_code, "saved": saved}
+                    await call("system__set_reply_binding", {"workspace_id": workspace, "channel_id": channel})
+                    target = await call("workspaces__get_workspace", {"id": workspace})
+                    assert target["reply_binding"]["channel_id"] == channel
+                    trace["standing"] = target["reply_binding"]
                     trace["checks"]["tool_activated_listener"] = True
                     assert await session_list() == [] and not [q for q in wire.requests if q["method"] == "chat.postMessage"]
                     trace["unmatched"] = {"event": unmatched, "sessions": [], "posts": []}

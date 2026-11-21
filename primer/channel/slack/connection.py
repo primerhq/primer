@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from primer.channel.retirement import check_available, retire, retire_failed_start
 from primer.model.channel import ChannelProvider, SlackChannelProviderConfig
 
 
@@ -90,6 +91,7 @@ class _SlackConnectionRegistry:
         mode and later ones share it; a process has one ChannelRegistry, so one mode.
         """
         async with self._lock:
+            check_available(self, provider.id)
             entry = self._entries.get(provider.id)
             if entry is None:
                 cfg = provider.config
@@ -98,7 +100,7 @@ class _SlackConnectionRegistry:
                 try:
                     await conn.start_async()
                 except BaseException:
-                    await conn.close_async()
+                    await retire_failed_start(self, provider.id, conn.close_async)
                     raise
                 entry = _Entry(conn=conn, refcount=0)
                 self._entries[provider.id] = entry
@@ -108,26 +110,19 @@ class _SlackConnectionRegistry:
             entry.refcount += 1
             return entry.conn
 
-    async def release(self, provider: ChannelProvider) -> None:
-        """Decrement the refcount; close on zero."""
+    async def release(self, provider: ChannelProvider, *, expected: Any = None) -> None:
         async with self._lock:
             entry = self._entries.get(provider.id)
-            if entry is None:
+            if entry is None or (expected is not None and entry.conn is not expected):
                 return
             entry.refcount -= 1
-            if entry.refcount <= 0:
-                try:
-                    await entry.conn.close_async()
-                except Exception:
-                    logger.exception(
-                        "slack: connection close failed for %s", provider.id,
-                    )
-                del self._entries[provider.id]
-                if self.on_close is not None:
-                    self.on_close(provider.id)
-                logger.info(
-                    "slack: connection closed for provider %s", provider.id,
-                )
+            if entry.refcount:
+                return
+            del self._entries[provider.id]
+            closing = retire(self, provider.id, entry.conn.close_async)
+            if self.on_close is not None:
+                self.on_close(provider.id)
+        await asyncio.shield(closing)
 
     def entry(self, provider_id: str) -> _Entry | None:
         return self._entries.get(provider_id)

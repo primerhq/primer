@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.channel.retirement import finish_cleanup, retry_cleanup
 from primer.channel.adapter import APPROVAL_ROUTED_NOTICE, refusal_notice
 from primer.channel.gate_tag import split_gate_suffix
 from primer.channel.factory import register_adapter_factory
@@ -338,7 +339,7 @@ async def _slack_factory(
         try:
             _install_handlers(provider.id, conn.conn.app)
         except BaseException:
-            await adapter.aclose()
+            await finish_cleanup(retry_cleanup(adapter.aclose, f"channel adapter {channel.id}"))
             raise
     return adapter
 

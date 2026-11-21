@@ -80,10 +80,10 @@ class DiscordChannelAdapter(ChannelAdapter):
 
     async def aclose(self) -> None:
         entry = DISCORD_CONNECTIONS.entry(self._provider.id)
-        if entry is not None:
-            entry.adapters_by_channel_id.pop(str(self._channel.external_id), None)
+        if entry is not None and entry.adapters_by_channel_id.get(str(self._channel.external_id)) is self:
+            del entry.adapters_by_channel_id[str(self._channel.external_id)]
         if self._client is not None:
-            await DISCORD_CONNECTIONS.release(self._provider)
+            await DISCORD_CONNECTIONS.release(self._provider, expected=self._client)
             self._client = None
 
     async def verify(self) -> None:

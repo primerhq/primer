@@ -8,11 +8,16 @@ from typing import TYPE_CHECKING
 
 from primer.channel.adapter import ChannelAdapter
 from primer.channel.factory import build_adapter
+from primer.channel.retirement import drain_retirements, finish_cleanup
 from primer.int.storage import Storage
 from primer.model.channel import (
     Channel,
     ChannelProvider,
 )
+from primer.model.channel_correlation import ChannelCorrelation
+from primer.model.workspace import Workspace
+from primer.model.workspace_session import WorkspaceSession
+from primer.storage.q import Q
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
 from primer.int.coordinator import InvalidationTopic
@@ -154,6 +159,10 @@ class ChannelRegistry:
             return binding, []          # reply_target "none": nothing is posted, and no adapter is built for it
         try:
             adapter = await self.get_adapter(binding.channel_id)
+            snapshot = self._rows.get(binding.channel_id)
+            if not self.owns_inbound and snapshot is not None and not snapshot[0].config.chats.enabled:
+                # The owner can reconstruct this destination from the persisted binding.
+                await self.changed(InvalidationTopic.CHANNEL, binding.channel_id)
         except Exception as exc:
             logger.warning(
                 "ChannelRegistry: build_adapter failed for %s: %s",
@@ -191,6 +200,39 @@ class ChannelRegistry:
         _binding, adapters = await self.route_for_workspace(workspace_id)
         return adapters
 
+    async def _reply_rooms(self, candidates: list[str]) -> set[str]:
+        """Find cold disabled rooms with durable reply routes, in bounded groups."""
+        needed = set()
+        for i in range(0, len(candidates), 200):
+            remaining = set(candidates[i:i + 200])
+            correlations = self._storage_provider.get_storage(ChannelCorrelation)
+            needed.update(await correlations.count_by("channel_id", sorted(remaining)))
+            remaining -= needed
+            # A standing or ephemeral binding may carry an approval without a thread mapping.
+            for model, path in ((Workspace, "reply_binding.channel_id"),
+                                (WorkspaceSession, "metadata.reply_binding.channel_id")):
+                if not remaining:
+                    break
+                query = Q(model)
+                if model is WorkspaceSession:
+                    query = Q.or_(query.where_null("metadata.reply_binding.silent"),
+                                  Q(model).where("metadata.reply_binding.silent", False))
+                predicate = query.where_in(path, sorted(remaining)).build()
+                offset = 0
+                while remaining:
+                    page = await self._storage_provider.get_storage(model).find(
+                        predicate, OffsetPage(offset=offset, length=200, want_total=False),
+                    )
+                    for row in page.items:
+                        cid = (row.metadata["reply_binding"]["channel_id"] if model is WorkspaceSession
+                               else row.reply_binding.channel_id)
+                        needed.add(cid)
+                        remaining.discard(cid)
+                    if len(page.items) < 200:
+                        break
+                    offset += len(page.items)
+        return needed
+
     async def reconcile(self) -> int:
         """Close stale adapters before warming rooms. Nonowners only inspect their outbound cache."""
         if self._storage_provider is None:
@@ -224,18 +266,20 @@ class ChannelRegistry:
 
             for cid in self._retry.keys() - channels.keys():
                 del self._retry[cid]
-            missing = [cid for cid, row in channels.items()
-                       if self.owns_inbound and row.config.chats.enabled and cid not in self._adapters]
+            missing = [cid for cid in channels if self.owns_inbound and cid not in self._adapters]
 
+        reply_rooms = await self._reply_rooms([cid for cid in missing if not channels[cid].config.chats.enabled])
         started = 0
         for cid in missing:
+            if not channels[cid].config.chats.enabled and cid not in reply_rooms:
+                continue
             # Release the registry between starts. The list above can now be stale; a
             # deleted, disabled or reassigned room must never be warmed from that snapshot.
             async with self._lock:
                 if not self.owns_inbound or cid in self._adapters:
                     continue
                 row = await self._channels.get(cid)
-                if row is None or not row.config.chats.enabled:
+                if row is None or (not row.config.chats.enabled and cid not in reply_rooms):
                     continue
                 provider = await self._providers.get(row.provider_id)
                 if provider is None:
@@ -294,7 +338,8 @@ class ChannelRegistry:
         self._wake_watchers()
         if self._bus is not None:
             try:
-                await self._bus.publish(topic, key)
+                async with asyncio.timeout(1):
+                    await self._bus.publish(topic, key)
             except Exception:
                 logger.warning("channel change notification failed for %s; periodic reconciliation will retry", key)
 
@@ -305,7 +350,7 @@ class ChannelRegistry:
             if self.owns_inbound != enabled or self._draining:
                 self.owns_inbound = False
                 self._draining = True
-                await self._drain_locked()
+                await finish_cleanup(self._drain_locked())
                 self.owns_inbound = enabled
                 logger.info("channel listener ownership %s", "acquired" if enabled else "released")
         self._wake_watchers()
@@ -313,8 +358,13 @@ class ChannelRegistry:
     async def _drain_locked(self) -> None:
         # On a close failure the registry stays outbound and refuses cached clients
         # until the next reconciliation finishes this transition.
-        for cid in list(self._adapters):
-            await self._close_locked(cid)
+        results = await asyncio.gather(
+            *(self._close_locked(cid) for cid in list(self._adapters)), return_exceptions=True,
+        )
+        await drain_retirements()
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
         self._retry.clear()
         self._draining = False
 

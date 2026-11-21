@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 from primer.bus.scheduler_tasks import _BackgroundTask
+from primer.channel.retirement import finish_cleanup, retry_cleanup
 
 
 if TYPE_CHECKING:
@@ -22,4 +23,4 @@ class ChannelListenerOwner(_BackgroundTask):
             await self._registry.watch(inbound=True)
         finally:
             # The supervisor drains this cleanup before releasing its lease.
-            await self._registry.set_inbound(False)
+            await finish_cleanup(retry_cleanup(lambda: self._registry.set_inbound(False), self.role))

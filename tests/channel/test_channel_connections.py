@@ -42,11 +42,16 @@ class _BoltApp:
     def __init__(self, token: str) -> None:
         self.token = token
         self.handlers: list[tuple[str, tuple]] = []
+        self.callbacks: dict[tuple, object] = {}
         self.client = SimpleNamespace(token=token)
 
     def _record(self, kind):
         def deco(*a, **_k):
-            return lambda f: (self.handlers.append((kind, a)), f)[1]
+            def register(callback):
+                self.handlers.append((kind, a))
+                self.callbacks[(kind, *a)] = callback
+                return callback
+            return register
         return deco
 
     def __getattr__(self, name):
@@ -456,3 +461,147 @@ async def test_W38_the_slack_web_client_retries_rate_limited_calls_twice():
     conn = _build_outbound_app(_slack_provider().config)
     rate = [h for h in conn.app.client.retry_handlers if isinstance(h, AsyncRateLimitErrorRetryHandler)]
     assert len(rate) == 1 and rate[0].max_retry_count == 2
+
+
+async def test_disabled_room_follower_post_and_owner_transfer_route_the_persisted_gate(tmp_path, monkeypatch, slack):
+    from contextvars import ContextVar
+    from unittest.mock import AsyncMock
+
+    from primer.bus.in_memory import InMemoryEventBus
+    from primer.coordinator.in_memory import InMemoryInvalidationBus
+    from primer.channel.correlation import CorrelationStore
+    from primer.channel.dispatcher import ChannelDispatcher
+    from primer.channel.slack import adapter as adapter_mod
+    from primer.model.envelope import PromptEnvelope
+    from primer.model.workspace_session import WorkspaceSession
+    from tests.api.test_gate_fence import G1, _ask_user_session
+
+    sp = await _sqlite(tmp_path)
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    inbox = ChannelInbox(event_bus=bus, storage_provider=sp)
+    owner, follower, successor = (_registry(sp, owns_inbound=False) for _ in range(3))
+    successor._inbox = inbox
+    sub = bus.subscribe()
+    hints = InMemoryInvalidationBus()
+    await owner.bind_invalidation_bus(hints)
+    await follower.bind_invalidation_bus(hints)
+    initial_scan = asyncio.Event()
+    scan = owner.reconcile
+
+    async def observed_scan():
+        result = await scan()
+        initial_scan.set()
+        return result
+
+    monkeypatch.setattr(owner, "reconcile", observed_scan)
+    pools = ContextVar("slack_test_pool", default=slack.conn_mod.SLACK_CONNECTIONS)
+
+    class ProcessPool:
+        def __getattr__(self, name):
+            return getattr(pools.get(), name)
+
+    monkeypatch.setattr(adapter_mod, "SLACK_CONNECTIONS", ProcessPool())
+    monkeypatch.setattr(slack.factory_mod, "SLACK_CONNECTIONS", ProcessPool())
+    watch = None
+    cp = _slack_provider()
+    room = Channel(id="disabled", provider="slack", provider_id=cp.id, external_id="C1")
+    assert not room.config.chats.enabled
+    web = SimpleNamespace(chat_postMessage=AsyncMock(return_value={"ok": True, "ts": "10.2"}))
+    monkeypatch.setattr(adapter_mod, "_get_web_client", lambda conn: web)
+    try:
+        await sp.get_storage(ChannelProvider).create(cp)
+        await sp.get_storage(Channel).create(room)
+        await owner.set_inbound(True)
+        watch = asyncio.create_task(owner.watch(inbound=True))
+        await asyncio.wait_for(initial_scan.wait(), 2)
+        assert owner.peek_adapter(room.id) is None
+        parked = _ask_user_session(session_id="waiting", tool_call_id="tc-1", gate_id=G1)
+        parked.metadata["reply_binding"] = {"channel_id": room.id, "anchor": "10.1"}
+        await sp.get_storage(WorkspaceSession).create(parked)
+        # Isolate the follower's process-global SDK pool while it sends through the real dispatcher.
+        token = pools.set(slack.conn_mod._SlackConnectionRegistry())
+        try:
+            posted = await ChannelDispatcher(registry=follower).dispatch_prompt(session=parked, envelope=PromptEnvelope(
+                kind="ask_user", workspace_id=parked.workspace_id, session_id=parked.id, tool_call_id="tc-1",
+                prompt="Which currency?", response_schema=None, choices=None, timeout_at_iso=None, gate_id=G1,
+            ))
+            assert posted[0]["thread_ts"] == "10.1" and not follower.peek_adapter(room.id).owns_inbound
+            await follower.aclose()
+        finally:
+            pools.reset(token)
+        # The first owner reconstructs the destination. The next owner must do so even after a binding edit.
+        async with asyncio.timeout(2):  # faster than the periodic pass
+            while owner.peek_adapter(room.id) is None:
+                await asyncio.sleep(.005)
+        watch.cancel()
+        await asyncio.gather(watch, return_exceptions=True)
+        rec = await CorrelationStore(sp).lookup(room.id, "10.1")
+        assert rec.tool_call_id == "tc-1" and rec.gate_id == G1
+        parked.metadata.clear()
+        await sp.get_storage(WorkspaceSession).update(parked)
+        await owner.set_inbound(False)
+        await successor.set_inbound(True)
+        assert await successor.reconcile() == 1
+        assert len(slack.connected) == 2 and len(slack.closed) == 2  # outbound client plus old owner
+        # Registered SDK callback only. The fixture does not lazily build a receiving adapter.
+        callback = slack.apps[-1].callbacks[("event", "message")]
+        await callback({"channel": "C1", "thread_ts": "10.1", "user": "U1", "text": "EUR"}, web, {})
+        event = await asyncio.wait_for(anext(sub), 1)
+        assert event.event_key == parked.parked_event_key
+        assert event.payload["response"] == "EUR" and event.payload["__yield_gate_id__"] == G1
+        assert (await CorrelationStore(sp).lookup(room.id, "10.1")).tool_call_id is None
+        assert not (await sp.get_storage(Channel).get(room.id)).config.chats.enabled
+    finally:
+        if watch is not None:
+            watch.cancel()
+            await asyncio.gather(watch, return_exceptions=True)
+        await successor.aclose()
+        await owner.aclose()
+        await sub.aclose()
+        await bus.aclose()
+        await sp.aclose()
+
+
+@pytest.mark.parametrize("platform", ["slack", "telegram"])
+async def test_shared_sdk_final_close_is_retained_until_failed_stages_finish(slack, telegram, monkeypatch, platform):
+    from primer.channel import retirement
+    from primer.channel.telegram.factory import _telegram_factory
+    from primer.model.except_ import ProviderError
+
+    monkeypatch.setattr(retirement, "_RETRY_SECONDS", .01)
+    cp, factory = (_slack_provider(), slack.factory_mod._slack_factory) if platform == "slack" else (_tg_provider(), _telegram_factory)
+    rooms = [Channel(id=f"room-{i}", provider=platform, provider_id=cp.id, external_id=str(i)) for i in (1, 2)]
+    first, last = [await factory(cp, room, None) for room in rooms]
+    await first.aclose()
+    attempts = 0
+    release = asyncio.Event()
+
+    async def stop():
+        nonlocal attempts
+        attempts += 1
+        if not release.is_set():
+            raise ConnectionError("offline")
+
+    if platform == "slack":
+        monkeypatch.setattr(last._conn, "close_async", stop)
+    else:
+        monkeypatch.setattr(telegram[0].updater, "stop", stop)
+    closing = asyncio.create_task(last.aclose())
+    try:
+        async with asyncio.timeout(2):
+            while not attempts:
+                await asyncio.sleep(.005)
+        assert not closing.done()
+        with pytest.raises(ProviderError, match="still closing"):
+            await factory(cp, rooms[0], None)
+        if platform == "telegram":
+            assert telegram[0].calls[-2:] == ["stop", "shutdown"]
+    finally:
+        release.set()
+        await asyncio.wait_for(closing, 2)
+    assert attempts >= 2
+    if platform == "telegram":
+        assert telegram[0].calls.count("stop") == telegram[0].calls.count("shutdown") == 1
+    replacement = await factory(cp, rooms[0], None)
+    await replacement.aclose()
