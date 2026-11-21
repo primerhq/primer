@@ -103,3 +103,13 @@ def test_a_pending_questions_answer_button_is_tap_sized(
 
     width, height = _size(page, "nv-ask-submit")
     assert min(width, height) >= TAP_MIN, f"the answer button is {width}x{height}"
+
+    page.get_by_test_id("nv-session-overflow").click()
+    page.get_by_test_id("nv-session-priority").click()
+    value = page.get_by_test_id("dialog-input")
+    expect(value).to_be_focused()
+    expect(value).to_have_value("0")
+    with page.expect_response(lambda r: r.request.method == "PUT" and r.url.endswith(f"/{sid}/priority")) as saved:
+        value.press("Enter")
+    assert saved.value.status == 200
+    expect(page.get_by_test_id("nv-ask-submit")).to_be_visible()

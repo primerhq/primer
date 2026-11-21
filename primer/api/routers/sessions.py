@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_core import to_jsonable_python
 
 from primer.model.workspace import Workspace
+from primer.model.work_priority import WorkPriority, WORK_PRIORITY_MAX
+from primer.session.parked_priority import parked_priority_token, set_parked_priority
 from primer.storage.q import Q
 from primer.model.storage import MAX_OFFSET
 from primer.model.external_tool import (
@@ -287,6 +289,50 @@ async def resume_session(
         # turn's person (the helper writes nothing when the row already has one).
         by=PrincipalRef.from_principal(request.state.actor) if getattr(request.state, "actor", None) is not None else None,
     )
+
+
+class ParkedPriorityBody(BaseModel, extra="forbid"):
+    priority: WorkPriority
+    generation: str = Field(pattern="^[a-f0-9]{64}$", description="parked_priority_token from session detail")
+
+
+def _parked_priority_deps(storage_provider):
+    # Same server-owned cutover policy as session creation. This operation
+    # never acquires a lease, enqueues a session or opens a workspace.
+    from primer.workspace.session_factory import SessionFactoryDeps
+
+    return SessionFactoryDeps(storage_provider=storage_provider, scheduler=None, claim_engine=None)
+
+
+@nested_session_router.put(
+    "/workspaces/{workspace_id}/sessions/{session_id}/priority",
+    response_model=WorkspaceSession, summary="Set priority for the observed session park",
+    responses=common_responses(403, 404, 409, 422, 503),
+)
+@route_tool(scoped_id="sessions__set_parked_session_priority")
+async def set_parked_session_priority(
+    request: Request, workspace_id: str, session_id: str, body: ParkedPriorityBody,
+    storage_provider=Depends(get_storage_provider), event_bus=Depends(get_event_bus),
+) -> WorkspaceSession:
+    """Apply to the current park only. Read session detail again after a conflict."""
+    from primer.api.route_tools import calling_session_id, calling_turn_no
+    from primer.session.persistence import publish_tick
+
+    caller = calling_session_id(request)
+    token_id = getattr(getattr(request.state, "api_token", None), "id", None)
+    if token_id is None and caller is None:
+        from primer.mcp.server import current_api_token_id
+
+        token_id = current_api_token_id.get()
+    row = await set_parked_priority(
+        _parked_priority_deps(storage_provider), workspace_id=workspace_id, session_id=session_id,
+        generation=body.generation, priority=body.priority, person=person_from_request(request),
+        caller_id=caller, caller_turn=calling_turn_no(request), token_id=token_id,
+        account_epoch=(getattr(getattr(request.state, "user", None), "session_epoch", None)
+                       if token_id is None and caller is None else None),
+    )
+    await publish_tick(event_bus, row.id, row.last_seq)
+    return row
 
 
 @nested_session_router.post(
@@ -874,6 +920,9 @@ class SessionDetail(WorkspaceSession):
     change. Only ever constructed for a response, never stored.
     """
 
+    parked_priority_token: str | None = Field(default=None, description="Opaque precondition for editing this park.")
+    parked_priority_max: WorkPriority = Field(default=0, description="Largest currently admitted parked priority.")
+
     pending_messages: list[PendingSessionMessage] = Field(
         default_factory=list,
         description=(
@@ -1097,6 +1146,8 @@ async def get_session_by_id(
 
     return SessionDetail(
         **s.model_dump(), pending_messages=pending,
+        parked_priority_token=parked_priority_token(s),
+        parked_priority_max=WORK_PRIORITY_MAX if _parked_priority_deps(storage_provider).nonzero_priority_available else 0,
         usage=usage, context_length=context_length,
     )
 

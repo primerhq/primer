@@ -2266,3 +2266,63 @@ async def test_rename_session_clears_the_name_for_a_whitespace_only_value(sessio
 
     assert patched.status_code == 200, patched.text
     assert patched.json()["name"] is None
+
+
+async def test_parked_priority_rest_and_generated_tool_share_caller_fences(
+    sessions_client, seeded_workspace, app, monkeypatch,
+):
+    import json
+    from dataclasses import replace
+
+    from primer.api.routers import sessions as routes
+    from primer.model.principal import PrincipalRef
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+    from primer.model.yield_ import ToolContext
+
+    rows = app.state.storage_provider.get_storage(WorkspaceSession)
+    now = datetime.now(timezone.utc)
+    row = await rows.create(WorkspaceSession(
+        id="park-priority", workspace_id=seeded_workspace.id, status=SessionStatus.RUNNING, turn_no=4,
+        created_at=now, binding=AgentSessionBinding(agent_id="ag"), parked_status="parked",
+        parked_at=now, parked_event_key="timer:park-priority:ready", parked_state={},
+    ))
+    principal = (await sessions_client.get("/v1/auth/status")).json()["principal"]
+    actor = PrincipalRef.model_validate(principal)
+    await rows.create(row.model_copy(update={"id": "tool-caller", "initiated_by": actor, "priority": 9,
+                                             "parked_at": None, "parked_status": None}))
+    detail = await sessions_client.get(f"/v1/sessions/{row.id}")
+    assert detail.status_code == 200, detail.text
+    token = detail.json()["parked_priority_token"]
+    assert len(token) == 64 and detail.json()["parked_priority_max"] == 0
+    path = f"/v1/workspaces/{row.workspace_id}/sessions/{row.id}/priority"
+    for malformed in (True, "0", -1, 1_000_001):
+        bad = await sessions_client.put(path, json={"priority": malformed, "generation": token})
+        assert bad.status_code == 422, bad.text
+    response = await sessions_client.put(path, json={"priority": 1, "generation": token})
+    assert response.status_code == 503, response.text
+    response = await sessions_client.put(path, json={"priority": 0, "generation": token},
+                                         headers={"primer.route_tool_session_id": "tool-caller"})
+    assert response.status_code == 200 and response.json()["priority"] == 0
+    assert "priority_revision" not in response.json()
+    deps_for = routes._parked_priority_deps
+    monkeypatch.setattr(routes, "_parked_priority_deps",
+                        lambda sp: replace(deps_for(sp), nonzero_priority_available=True))
+    ctx = ToolContext(tool_call_id="p1", session_id="tool-caller", workspace_id=row.workspace_id,
+                      turn_no=4, initiated_by=actor)
+    tools = app.state.generated_route_toolsets.providers["sessions"]
+
+    async def call(value):
+        return await tools.call(tool_name="set_parked_session_priority", ctx=ctx, arguments={
+            "workspace_id": row.workspace_id, "session_id": row.id, "body": {"priority": value, "generation": token},
+        })
+
+    denied = await call(8)
+    assert denied.is_error and json.loads(denied.output)["status"] == 403
+    allowed = await call(9)
+    assert not allowed.is_error, allowed.output
+    assert json.loads(allowed.output)["priority"] == 9
+    stale = await sessions_client.put(path, json={"priority": 0, "generation": token})
+    assert stale.status_code == 409, stale.text
+    refreshed = (await sessions_client.get(f"/v1/sessions/{row.id}")).json()
+    assert refreshed["parked_priority_token"] != token and refreshed["parked_priority_max"] == 1_000_000
+    assert (await rows.get(row.id)).parked_status == "parked"

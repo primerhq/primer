@@ -34,7 +34,7 @@ def _caller_version(row: WorkspaceSession | None, turn_no: int | None):
         or row.completed_turn_no == row.turn_no
         or (turn_no is not None and row.turn_no != turn_no)
     ):
-        raise ConflictError("calling session is no longer active for this creation")
+        raise ConflictError("calling session is no longer active for this operation")
     return (
         row.workspace_id, row.created_at, row.responder_epoch, row.binding_epoch,
         row.turn_no, row.status, row.turn_status, row.parked_status, row.parked_at,

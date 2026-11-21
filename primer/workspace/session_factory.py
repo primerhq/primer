@@ -65,6 +65,8 @@ class SessionFactoryDeps:
     claim_engine: Any
     scheduler: Any
     workspace_registry: Any | None = None
+    # No production caller enables this before coordinated writer/worker cutover.
+    nonzero_priority_available: bool = False
 
 
 async def start_workspace_session(
