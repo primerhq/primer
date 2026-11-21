@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from primer.llm.codex.boundary import BoundaryError
 from primer.llm.codex.request import compact, decode
-from .security import MAX_RECORD, PrivateStore, SignedPolicy, require, text
+from .security import MAX_RECORD, PrivateStore, SignedPolicy, managed_owner_thread, require, text
 
 
 def _parts(path: Path) -> tuple[str, ...]:
@@ -211,7 +211,7 @@ class HostTrust:
     """
     def __init__(self, directory: Path):
         self._owner_pid = os.getpid()
-        self._owner_thread = threading.current_thread()
+        self._owner_thread = managed_owner_thread()
         self._fd = _root_directory(directory)
         try:
             doc = _root_json(self._fd, 'host.json')

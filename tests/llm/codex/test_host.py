@@ -625,7 +625,7 @@ def test_foreign_thread_cannot_use_sibling_handles_or_close_owner(composed, monk
     sibling = SignedPolicy(trust._keys, 'test', host.PolicyLedger(
         store, identity=trust.identity, keys=trust._keys, audience='test',
         floors=trust._floors, load=trust._policy_bundle, guard=trust._live))
-    failures, refused = [], []
+    failures, refused, io_hits = [], [], []
     operations = [lambda: policy.grant(composed.manifest['account']),
                   lambda: sibling.grant(composed.manifest['account']),
                   lambda: store.read('policy_ledger'), lambda: store.write('registration', {}),
@@ -642,6 +642,7 @@ def test_foreign_thread_cannot_use_sibling_handles_or_close_owner(composed, monk
             else:
                 failures.append('foreign operation succeeded')
     def forbidden(*args, **kwargs):
+        io_hits.append(True)
         raise AssertionError('foreign owner reached filesystem/socket IO')
     try:
         with monkeypatch.context() as patch:
@@ -654,6 +655,7 @@ def test_foreign_thread_cannot_use_sibling_handles_or_close_owner(composed, monk
             thread.join(timeout=1)
             assert not thread.is_alive()
         assert failures == [] and refused == list(range(len(operations)))
+        assert io_hits == []
         # Denied foreign close did not destroy the legitimate owner or its lock.
         assert policy.grant(composed.manifest['account'])[2] == {'model'}
         assert sibling.grant(composed.manifest['account'])[2] == {'model'}
@@ -703,7 +705,9 @@ pid = os.fork()
 if pid == 0:
     signal.alarm(2)
     try:
+        io_hits = []
         def forbidden(*args, **kwargs):
+            io_hits.append(True)
             raise AssertionError('inherited authorization reached IO')
         original_open, original_stat = os.open, os.fstat
         os.open = os.fstat = forbidden
@@ -716,6 +720,7 @@ if pid == 0:
                 pass
             else:
                 raise AssertionError('fork child inherited authority')
+        assert not io_hits, io_hits
         os.open, os.fstat = original_open, original_stat
         store.close()
         trust.close()
@@ -743,3 +748,84 @@ finally:
     result = subprocess.run([sys.executable, '-c', script, str(tmp_path)], timeout=5,
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('kind', ['unmanaged', 'subclass'])
+def test_unsupported_thread_owners_refuse_before_descriptor_open(tmp_path, kind):
+    import subprocess
+    import sys
+    script = '''
+import _thread, os, signal, sys, threading
+from pathlib import Path
+from primer.llm.codex.broker import host
+from primer.llm.codex.broker.security import PrivateStore
+from primer.llm.codex.boundary import BoundaryError
+signal.alarm(3)
+done = threading.Event()
+failures, refused, opened = [], [], []
+def forbidden(*args, **kwargs):
+    opened.append(True)
+    raise AssertionError('unsupported owner opened authority descriptor')
+os.open = forbidden
+host._root_directory = forbidden
+def worker():
+    try:
+        owner = threading.current_thread()
+        if sys.argv[1] == 'unmanaged':
+            assert type(owner).__name__ == '_DummyThread'
+        else:
+            assert type(owner).__name__ == 'CustomThread'
+        for factory in (PrivateStore, host.HostTrust):
+            try:
+                factory(Path(sys.argv[2]))
+            except BoundaryError:
+                refused.append(factory.__name__)
+            else:
+                raise AssertionError('unsupported owner acquired authority')
+    except BaseException as exc:
+        failures.append(repr(exc))
+    finally:
+        done.set()
+if sys.argv[1] == 'unmanaged':
+    _thread.start_new_thread(worker, ())
+else:
+    class CustomThread(threading.Thread):
+        pass
+    thread = CustomThread(target=worker, daemon=True)
+    thread.start()
+assert done.wait(1), 'thread did not finish'
+assert not failures, failures
+assert not opened, opened
+assert refused == ['PrivateStore', 'HostTrust'], refused
+signal.alarm(0)
+'''
+    result = subprocess.run([sys.executable, '-c', script, kind, str(tmp_path)],
+                            timeout=5, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_standard_managed_thread_can_construct_use_and_dispose(composed):
+    import threading
+    failures, completed = [], []
+    def worker():
+        trust = store = None
+        try:
+            trust = host.HostTrust(composed.root)
+            store, policy = trust.open_policy_store()
+            assert policy.grant(composed.manifest['account'])[2] == {'model'}
+            store.write('client_hint', {'managed': True})
+            assert store.read('client_hint') == {'managed': True}
+            completed.append(True)
+        except BaseException as exc:
+            failures.append(repr(exc))
+        finally:
+            if store is not None:
+                store.close()
+            if trust is not None:
+                trust.close()
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert not failures, failures
+    assert completed == [True]
