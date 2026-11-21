@@ -724,3 +724,17 @@ Integration smokes live under `tests/integration/test_<provider>_smoke.py`, each
 - **The `LLMProvider._coerce_config_to_provider` validator and `OpenRouterConfig`'s `extra="forbid"` solve the same union-disambiguation problem at two layers.** Why: `OpenResponsesConfig` and `OpenChatConfig` are nominally identical (`_HttpApiKeyConfig` plus overlapping flavor values) so the provider enum is the natural discriminator, and `OpenRouterConfig` has no distinguishing field beyond the shared `api_key`. Spec: docs/superpowers/specs/2026-05-30-openchat-llm-provider-design.md.
 - **The cross-encoder reranker family landed after the shared-architecture spec and is held to the same no-local-semaphore invariant.** Why: rerankers are a third model family that reuses the adapter contract (validate, lazy load, shared `RateLimiter`, classify) and the source-level pin keeps new adapters on the post-spec design. Spec: docs/superpowers/specs/2026-05-27-backend-architecture-audit.md.
 - **A fresh `claude` process runs per model step rather than one warm process per conversation.** Why: a Claude Code process holds exactly one conversation and sits at about 200 MB resident between turns, so a worker serving many active sessions (and every agent node of a running graph) would hold one process apiece and run out of memory; the warm-process approach was rejected in favour of the per-step cost of about 2.2 s from spawn to first result and older history reaching the model as rendered text. Spec: docs/superpowers/specs/2026-11-14-claude-code-llm-provider-design.md (section 5, approach A over B).
+
+## Codex / ChatGPT plan foundation (not registered)
+
+`primer/llm/codex/` contains an executor-free, offline-tested model bridge
+foundation. It is not a selectable provider and has no live authentication
+acceptance. The unregistered `broker/` candidate implements protected credential
+storage, signed policy intersection, dedicated SIWC authentication/refresh and
+peer-checked model IPC, with synthetic offline evidence only. Genuine policy
+provenance and OS isolation remain deployment gates. Its integration uses the public
+Sign-in-with-ChatGPT Responses flow, not a stock Codex app-server with disabled
+tool flags. Primer still owns replay and tool execution; a separately reviewed
+broker must own credentials and enforce policy before activation. See the
+[boundary contract](../../../primer/llm/codex/README.md) and
+[broker candidate and remaining gates](../../../primer/llm/codex/broker/README.md).

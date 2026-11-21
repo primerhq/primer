@@ -1,0 +1,1161 @@
+"""Offline filesystem/crypto/socket proofs, NOT cross-user provisioning evidence."""
+import base64
+import hashlib
+import os
+import socket
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from primer.llm.codex.boundary import BoundaryError
+from primer.llm.codex.broker import host
+from primer.llm.codex.broker.security import PrivateStore, SignedPolicy
+from primer.llm.codex.request import compact
+
+
+def _run_ready_host_child(script, *arguments):
+    """Bound cold imports separately from the three-second security operation.
+
+    A dedicated pipe marks readiness; stdout/stderr cannot spoof it or fill a
+    pipe while imports run. Every failure kills/reaps the owned child. These
+    probes spawn no descendants. No provider, model or credential is activated.
+    """
+    import select
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        ready_read, ready_write = os.pipe()
+        process = None
+        phase = 'startup/import readiness (20s)'
+        failure = None
+        prefix = (
+            'import os as _probe_os\n'
+            'def _operation_ready():\n'
+            f'    _probe_os.write({ready_write}, b"R")\n'
+            f'    _probe_os.close({ready_write})\n'
+        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, '-c', prefix + script, *(str(arg) for arg in arguments)],
+                pass_fds=(ready_write,), stdout=stdout, stderr=stderr,
+            )
+            os.close(ready_write)
+            ready_write = None
+            assert select.select([ready_read], [], [], 20)[0], 'readiness deadline exceeded'
+            assert os.read(ready_read, 1) == b'R', 'child exited before readiness'
+            phase = 'security operation, cleanup and exit (3s)'
+            process.wait(timeout=3)
+            assert process.returncode == 0, f'child exit code {process.returncode}'
+        except BaseException as exc:
+            failure = exc
+        finally:
+            # Reap before reading diagnostics; deadline failures cannot leave
+            # the probe running. Descriptor cleanup also runs if reaping fails.
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+            finally:
+                os.close(ready_read)
+                if ready_write is not None:
+                    os.close(ready_write)
+        if failure is not None:
+            stderr.seek(0)
+            detail = stderr.read(16384).decode(errors='replace')
+            raise AssertionError(f'{phase}: {failure}\n{detail}') from failure
+
+
+@pytest.fixture(autouse=True)
+def independent_interpreter_fence(monkeypatch):
+    # Each test models its own interpreter; recompositions within a test share
+    # the real process-wide set. Temporary inode recycling must not couple cases.
+    monkeypatch.setattr(host, '_UNCERTAIN_STORES', set())
+
+
+@pytest.fixture
+def ledger(tmp_path):
+    tmp_path.chmod(0o700)
+    store = PrivateStore(tmp_path)
+    key = Ed25519PrivateKey.generate()
+    keys = {'admin': key.public_key().public_bytes_raw()}
+    doc = {'audience': 'test', 'revision': '1', 'expires_at': time.time() + 3600,
+           'accounts': ['account'], 'models': ['model'], 'required_native_effects': [],
+           'suspended': False, 'enrollment': True}
+    def sign():
+        raw = compact(doc).encode()
+        return {'admin': {'payload': raw.decode(), 'signature': base64.b64encode(key.sign(raw)).decode()}}
+    bundle = sign()
+    state = {'identity': 'host', 'conflicts': [], 'revisions': {'admin': {'revision': '1',
+             'sha256': hashlib.sha256(bundle['admin']['payload'].encode()).hexdigest()}}}
+    store.write('policy_ledger', state)
+    store.write('policy_session', {'identity': 'host', 'state': 'ready'})
+    def reopen():
+        return host.PolicyLedger(store, identity='host', keys=keys, audience='test',
+                                 floors={'admin': '1'}, load=lambda: bundle)
+    subject = reopen()
+    policy = SignedPolicy(keys, 'test', subject)
+    yield SimpleNamespace(store=store, doc=doc, bundle=bundle, sign=sign, subject=subject,
+                          policy=policy, reopen=reopen)
+    store.close()
+
+
+def advance(world, **changes):
+    world.doc.update(changes)
+    world.bundle.update(world.sign())
+
+
+def test_verified_revision_survives_reconstruction(ledger):
+    assert ledger.policy.grant('account')[2] == {'model'}
+    old = dict(ledger.bundle)
+    advance(ledger, revision='2')
+    ledger.policy.grant('account')
+    ledger.bundle.update(old)
+    with pytest.raises(BoundaryError):
+        ledger.reopen()()
+
+
+def test_denial_is_recorded_before_grant_and_cannot_be_rolled_back(ledger):
+    old = dict(ledger.bundle)
+    advance(ledger, revision='2', suspended=True)
+    with pytest.raises(BoundaryError):
+        ledger.policy.grant('account')
+    assert ledger.store.read('policy_ledger')['revisions']['admin']['revision'] == '2'
+    ledger.bundle.update(old)
+    with pytest.raises(BoundaryError):
+        ledger.policy.grant('account')
+
+
+def test_same_revision_different_payload_refused(ledger):
+    advance(ledger, models=['other'])
+    with pytest.raises(BoundaryError):
+        ledger.policy.grant('account')
+
+
+@pytest.mark.parametrize('kind', ['bad_signature', 'wrong_audience', 'extra_authority', 'bad_revision'])
+def test_invalid_bundle_cannot_poison_high_water(ledger, kind):
+    before = ledger.store.read('policy_ledger')
+    advance(ledger, revision='2')
+    if kind == 'bad_signature':
+        ledger.bundle['admin']['signature'] = base64.b64encode(b'x' * 64).decode()
+    elif kind == 'wrong_audience':
+        advance(ledger, audience='other')
+    elif kind == 'extra_authority':
+        ledger.bundle['extra'] = ledger.bundle['admin']
+    else:
+        advance(ledger, revision='02')
+    with pytest.raises(Exception):
+        ledger.subject()
+    assert ledger.store.read('policy_ledger') == before
+
+
+@pytest.mark.parametrize('after', [False, True])
+def test_uncertain_persistence_fences_even_newer_grant(ledger, monkeypatch, after):
+    original = ledger.store.write
+    def fail(name, value):
+        if after:
+            original(name, value)
+        raise OSError('synthetic fsync uncertainty')
+    monkeypatch.setattr(ledger.store, 'write', fail)
+    advance(ledger, revision='2')
+    with pytest.raises(BoundaryError):
+        ledger.policy.grant('account')
+    monkeypatch.setattr(ledger.store, 'write', original)
+    advance(ledger, revision='3')
+    with pytest.raises(BoundaryError):
+        ledger.policy.grant('account')
+
+
+def test_missing_ledger_never_bootstraps(ledger):
+    os.unlink('policy_ledger.json', dir_fd=ledger.store._fd)
+    with pytest.raises(BoundaryError):
+        ledger.reopen()
+
+
+def test_manifest_identity_change_requires_explicit_reprovisioning(ledger):
+    state = ledger.store.read('policy_ledger')
+    state['identity'] = 'other host'
+    ledger.store.write('policy_ledger', state)
+    with pytest.raises(BoundaryError):
+        ledger.reopen()
+
+
+@pytest.mark.parametrize('hazard', ['symlink', 'writable', 'wrong_owner', 'safe'])
+def test_descriptor_walk_checks_every_component(tmp_path, monkeypatch, hazard):
+    # Simulate root ownership only. Real directory descriptors, symlinks, modes
+    # and relative openat traversal exercise the production implementation.
+    root = tmp_path / 'root'
+    root.mkdir(mode=0o755)
+    child = root / 'child'
+    child.mkdir(mode=0o755)
+    (child / 'leaf').mkdir(mode=0o755)
+    if hazard == 'symlink':
+        (root / 'alias').symlink_to(child, target_is_directory=True)
+    if hazard == 'writable':
+        child.chmod(0o777)
+    original_open, original_stat = os.open, os.fstat
+    def open_(path, flags, *args, **kwargs):
+        return original_open(root if path == '/' else path, flags, *args, **kwargs)
+    inode = child.stat().st_ino
+    def fstat(fd):
+        info = original_stat(fd)
+        fields = list(info)
+        fields[4] = 123 if hazard == 'wrong_owner' and info.st_ino == inode else 0
+        return os.stat_result(fields)
+    monkeypatch.setattr(host.os, 'open', open_)
+    monkeypatch.setattr(host.os, 'fstat', fstat)
+    path = Path('/alias/leaf' if hazard == 'symlink' else '/child/leaf')
+    if hazard == 'safe':
+        fd = host._root_directory(path)
+        os.close(fd)
+    else:
+        with pytest.raises((BoundaryError, OSError)):
+            host._root_directory(path)
+
+
+@pytest.mark.parametrize('hazard', ['symlink', 'hardlink', 'writable', 'fifo', 'oversize'])
+def test_root_record_refuses_unsafe_objects(tmp_path, monkeypatch, hazard):
+    path = tmp_path / 'host.json'
+    path.write_text('{}')
+    if hazard == 'symlink':
+        path.rename(tmp_path / 'target')
+        path.symlink_to(tmp_path / 'target')
+    elif hazard == 'hardlink':
+        os.link(path, tmp_path / 'link')
+    elif hazard == 'writable':
+        path.chmod(0o666)
+    elif hazard == 'fifo':
+        path.unlink()
+        os.mkfifo(path)
+    else:
+        path.write_bytes(b'x' * (host.MAX_RECORD + 1))
+    original = os.fstat
+    def fstat(fd):
+        i = original(fd)
+        fields = list(i)
+        fields[4] = 0
+        return os.stat_result(fields)
+    monkeypatch.setattr(host.os, 'fstat', fstat)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises((BoundaryError, OSError)):
+            host._root_json(fd, 'host.json')
+    finally:
+        os.close(fd)
+
+
+@pytest.fixture
+def manifest(tmp_path, monkeypatch):
+    key = Ed25519PrivateKey.generate()
+    uid = os.geteuid()
+    doc = {'audience': 'test', 'broker_uid': uid, 'primer_uid': uid + 1,
+           'account': 'a' * 64, 'store': str(tmp_path / 'private'),
+           'socket': str(tmp_path / 'model.sock'),
+           'authorities': {'admin': {'key': base64.b64encode(key.public_key().public_bytes_raw()).decode(),
+                                     'minimum_revision': '1'}}}
+    # Trusted-owner fixture for composition only; provenance walked separately.
+    monkeypatch.setattr(host, '_root_directory', lambda p: os.open(p, os.O_RDONLY | os.O_DIRECTORY))
+    monkeypatch.setattr(host, '_root_json', lambda fd, name: doc.copy())
+    return doc
+
+
+def test_distinct_principals_required_before_store_construction(manifest, tmp_path):
+    manifest['primer_uid'] = manifest['broker_uid']
+    with pytest.raises(BoundaryError):
+        host.HostTrust(tmp_path)
+    assert not (tmp_path / 'private').exists()
+
+
+def test_wrong_process_identity_cannot_open_credentials(manifest, tmp_path, monkeypatch):
+    trust = host.HostTrust(tmp_path)
+    monkeypatch.setattr(host.os, 'geteuid', lambda: manifest['primer_uid'])
+    try:
+        with pytest.raises(BoundaryError):
+            trust.open_policy_store()
+        assert not (tmp_path / 'private').exists()
+    finally:
+        trust.close()
+
+
+@pytest.mark.parametrize('wrong_peer', [False, True])
+def test_real_socket_peer_checked_before_any_request(manifest, tmp_path, monkeypatch, wrong_peer):
+    actual_uid = os.geteuid()
+    if wrong_peer:
+        manifest['broker_uid'] = actual_uid + 2
+    trust = host.HostTrust(tmp_path)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(manifest['socket'])
+    os.chmod(manifest['socket'], 0o660)
+    listener.listen(1)
+    original_stat = os.stat
+    def stat_(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if str(path) == 'model.sock':
+            fields = list(info)
+            fields[4] = manifest['broker_uid']
+            return os.stat_result(fields)
+        return info
+    monkeypatch.setattr(host.os, 'stat', stat_)
+    monkeypatch.setattr(host.os, 'geteuid', lambda: manifest['primer_uid'])
+    client = None
+    try:
+        if wrong_peer:
+            with pytest.raises(BoundaryError):
+                trust.connect_model_socket()
+        else:
+            client = trust.connect_model_socket()
+            assert not client.getblocking()
+        accepted, _ = listener.accept()
+        with accepted:
+            accepted.settimeout(0.05)
+            if wrong_peer:
+                assert accepted.recv(1) == b''
+            else:
+                with pytest.raises(TimeoutError):
+                    accepted.recv(1)
+    finally:
+        if client:
+            client.close()
+        listener.close()
+        trust.close()
+
+
+@pytest.mark.asyncio
+async def test_host_composition_refuses_before_http_or_auth(manifest, tmp_path, monkeypatch):
+    from primer.llm.codex.broker import http
+    constructed = []
+    monkeypatch.setattr(http, 'FixedHTTP', lambda: constructed.append(True))
+    monkeypatch.setattr(host.os, 'geteuid', lambda: manifest['primer_uid'])
+    with pytest.raises(BoundaryError):
+        async with host.host_broker(tmp_path):
+            pytest.fail('untrusted process admitted')
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+async def test_host_composition_wires_live_policy_and_releases_store(manifest, tmp_path, monkeypatch):
+    # Actual store, signature validation, SignIn, FixedHTTP and BrokerServer.
+    # Only root-owned provisioning is simulated; no HTTP request is made.
+    key = Ed25519PrivateKey.generate()
+    manifest['authorities']['admin']['key'] = base64.b64encode(key.public_key().public_bytes_raw()).decode()
+    document = {'audience': 'test', 'revision': '1', 'expires_at': time.time() + 3600,
+                'accounts': [manifest['account']], 'models': ['model'], 'required_native_effects': [],
+                'suspended': False, 'enrollment': False}
+    def sign():
+        raw = compact(document).encode()
+        return {'admin': {'payload': raw.decode(), 'signature': base64.b64encode(key.sign(raw)).decode()}}
+    bundle = sign()
+    monkeypatch.setattr(host, '_root_json', lambda fd, name: manifest.copy() if name == 'host.json' else bundle)
+    directory = Path(manifest['store'])
+    directory.mkdir(mode=0o700)
+    store = PrivateStore(directory)
+    store.write('policy_ledger', {'identity': host.manifest_identity(manifest), 'conflicts': [],
+                'revisions': {'admin': {'revision': '1', 'sha256': hashlib.sha256(bundle['admin']['payload'].encode()).hexdigest()}}})
+    store.write('policy_session', {'identity': host.manifest_identity(manifest), 'state': 'ready'})
+    store.close()
+    async with host.host_broker(tmp_path) as server:
+        assert server._uid == manifest['primer_uid']
+        assert server._account == manifest['account']
+        policy = server._broker._auth._policy
+        assert policy.grant(manifest['account'])[2] == {'model'}
+        document.update(revision='2', suspended=True)
+        bundle.update(sign())
+        with pytest.raises(BoundaryError):
+            policy.grant(manifest['account'])
+    reopened = PrivateStore(directory)
+    try:
+        assert reopened.read('policy_ledger')['revisions']['admin']['revision'] == '2'
+    finally:
+        reopened.close()
+
+
+def test_duplicate_authority_key_refused_before_store(manifest, tmp_path):
+    manifest['authorities']['second'] = dict(manifest['authorities']['admin'])
+    with pytest.raises(BoundaryError):
+        host.HostTrust(tmp_path)
+    assert not Path(manifest['store']).exists()
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('tamper', [False, True])
+def test_mixed_revision_retains_new_denial_after_full_authentication(tmp_path, reverse, tamper):
+    tmp_path.chmod(0o700)
+    store = PrivateStore(tmp_path)
+    signers = {name: Ed25519PrivateKey.generate() for name in ('a', 'b')}
+    keys = {name: signers[name].public_key().public_bytes_raw() for name in (('b', 'a') if reverse else ('a', 'b'))}
+    def envelope(name, revision, *, suspended=False, models=None):
+        doc = {'audience': 'test', 'revision': revision, 'expires_at': expiry,
+               'accounts': ['account'], 'models': models or ['common', name],
+               'required_native_effects': [], 'suspended': suspended, 'enrollment': False}
+        raw = compact(doc).encode()
+        return {'payload': raw.decode(), 'signature': base64.b64encode(signers[name].sign(raw)).decode()}
+    expiry = time.time() + 3600
+    initial = {name: envelope(name, '2') for name in keys}
+    state = {'identity': 'host', 'conflicts': [], 'revisions': {name: {
+        'revision': '2', 'sha256': hashlib.sha256(item['payload'].encode()).hexdigest()}
+        for name, item in initial.items()}}
+    store.write('policy_ledger', state)
+    store.write('policy_session', {'identity': 'host', 'state': 'ready'})
+    bundle = dict(initial)
+    def ledger_():
+        return host.PolicyLedger(store, identity='host', keys=keys, audience='test',
+                                 floors={name: '1' for name in keys}, load=lambda: bundle)
+    try:
+        subject = ledger_()
+        policy = SignedPolicy(keys, 'test', subject)
+        assert policy.grant('account')[2] == {'common'}
+        # A second, already constructed handle must also observe durable updates.
+        other = SignedPolicy(keys, 'test', ledger_())
+        bundle.update(a=envelope('a', '1'), b=envelope('b', '3', suspended=True))
+        if tamper:
+            bundle['a']['signature'] = base64.b64encode(b'x' * 64).decode()
+        with pytest.raises(BoundaryError):
+            policy.grant('account')
+        persisted = store.read('policy_ledger')
+        assert persisted['revisions']['a'] == state['revisions']['a']
+        assert persisted['revisions']['b']['revision'] == ('2' if tamper else '3')
+        bundle.update(initial)
+        reconstructed = SignedPolicy(keys, 'test', ledger_())
+        for retained in (policy, other, reconstructed):
+            if tamper:
+                assert retained.grant('account')[2] == {'common'}
+            else:
+                with pytest.raises(BoundaryError):
+                    retained.grant('account')
+    finally:
+        store.close()
+
+
+def test_equivocation_is_durable_refusal(ledger):
+    old = dict(ledger.bundle)
+    advance(ledger, models=['other'])
+    with pytest.raises(BoundaryError):
+        ledger.policy.grant('account')
+    assert ledger.store.read('policy_ledger')['conflicts'] == ['admin']
+    ledger.bundle.update(old)
+    with pytest.raises(BoundaryError):
+        ledger.reopen()
+
+
+def test_manifest_reorder_has_same_live_and_restart_identity(manifest, tmp_path):
+    first = host.HostTrust(tmp_path)
+    expected = first.identity
+    reordered = dict(reversed(list(manifest.items())))
+    manifest.clear()
+    manifest.update(reordered)
+    try:
+        first._manifest_current()
+        second = host.HostTrust(tmp_path)
+        try:
+            assert second.identity == expected
+        finally:
+            second.close()
+        # Dictionary equality would accept 1000.0 == 1000. Strict reload must not.
+        manifest['broker_uid'] = float(manifest['broker_uid'])
+        with pytest.raises(BoundaryError):
+            first._manifest_current()
+        with pytest.raises(BoundaryError):
+            host.HostTrust(tmp_path)
+    finally:
+        first.close()
+
+
+def test_closed_handles_refuse_before_io(manifest, tmp_path, ledger, monkeypatch):
+    trust = host.HostTrust(tmp_path)
+    trust.close()
+    ledger.store.close()
+    def forbidden(*args, **kwargs):
+        pytest.fail('closed handle attempted filesystem/socket IO')
+    # Restore process-global functions before pytest capture/reporting runs.
+    with monkeypatch.context() as patch:
+        patch.setattr(host, '_root_json', forbidden)
+        patch.setattr(host, '_root_directory', forbidden)
+        patch.setattr(os, 'open', forbidden)
+        patch.setattr(os, 'fstat', forbidden)
+        patch.setattr(socket, 'socket', forbidden)
+        for operation in (trust._policy_bundle, trust.open_policy_store, trust.connect_model_socket,
+                          lambda: trust.account, lambda: ledger.policy.grant('account'),
+                          lambda: ledger.store.read('registration'),
+                          lambda: ledger.store.write('registration', {})):
+            with pytest.raises(BoundaryError):
+                operation()
+
+
+def test_private_fifo_refusal_in_bounded_child(tmp_path):
+    tmp_path.chmod(0o700)
+    os.mkfifo(tmp_path / 'policy_ledger.json', mode=0o600)
+    script = '''
+import sys
+from pathlib import Path
+from primer.llm.codex.broker.security import PrivateStore
+from primer.llm.codex.boundary import BoundaryError
+_operation_ready()
+store = PrivateStore(Path(sys.argv[1]))
+try:
+    try:
+        store.read('policy_ledger')
+    except BoundaryError:
+        pass
+    else:
+        raise AssertionError('FIFO accepted')
+finally:
+    store.close()
+'''
+    _run_ready_host_child(script, tmp_path)
+
+
+@pytest.fixture
+def composed(manifest, tmp_path, monkeypatch):
+    key = Ed25519PrivateKey.generate()
+    manifest['authorities']['admin']['key'] = base64.b64encode(key.public_key().public_bytes_raw()).decode()
+    doc = {'audience': 'test', 'revision': '1', 'expires_at': time.time() + 3600,
+           'accounts': [manifest['account']], 'models': ['model'], 'required_native_effects': [],
+           'suspended': False, 'enrollment': False}
+    def sign():
+        raw = compact(doc).encode()
+        return {'admin': {'payload': raw.decode(), 'signature': base64.b64encode(key.sign(raw)).decode()}}
+    bundle = sign()
+    monkeypatch.setattr(host, '_root_json', lambda fd, name: manifest.copy() if name == 'host.json' else bundle)
+    directory = Path(manifest['store'])
+    directory.mkdir(mode=0o700)
+    identity = host.manifest_identity(manifest)
+    store = PrivateStore(directory)
+    store.write('policy_ledger', {'identity': identity, 'conflicts': [], 'revisions': {'admin': {
+        'revision': '1', 'sha256': hashlib.sha256(bundle['admin']['payload'].encode()).hexdigest()}}})
+    store.write('policy_session', {'identity': identity, 'state': 'ready'})
+    store.close()
+    return SimpleNamespace(manifest=manifest, directory=directory, identity=identity,
+                           doc=doc, bundle=bundle, sign=sign, root=tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['initial', 'during_use'])
+@pytest.mark.parametrize('where', ['file', 'directory'])
+async def test_composed_fsync_uncertainty_survives_close_reopen(composed, monkeypatch, phase, where):
+    import stat
+    from primer.llm.codex.broker import http
+    world = composed
+    original_write, original_sync = PrivateStore.write, os.fsync
+    calls = []
+    def faulty_write(store, name, value):
+        if name != 'policy_ledger':
+            return original_write(store, name, value)
+        def sync(fd):
+            directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+            if directory == (where == 'directory'):
+                calls.append(where)
+                raise OSError('synthetic fsync failure')
+            original_sync(fd)
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'fsync', sync)
+            return original_write(store, name, value)
+    monkeypatch.setattr(PrivateStore, 'write', faulty_write)
+    if phase == 'initial':
+        advance(world, revision='2')
+        with pytest.raises(BoundaryError):
+            async with host.host_broker(world.root):
+                pytest.fail('initial uncertainty authorized construction')
+    else:
+        async with host.host_broker(world.root) as server:
+            policy = server._broker._auth._policy
+            advance(world, revision='2')
+            with pytest.raises(BoundaryError):
+                policy.grant(world.manifest['account'])
+            with pytest.raises(BoundaryError):
+                policy.grant(world.manifest['account'])
+    assert calls == [where]
+    monkeypatch.setattr(PrivateStore, 'write', original_write)
+    # Even restoring a ready marker cannot clear this interpreter's uncertainty.
+    store = PrivateStore(world.directory)
+    try:
+        store.write('policy_session', {'identity': world.identity, 'state': 'ready'})
+    finally:
+        store.close()
+    def forbidden():
+        pytest.fail('recomposed uncertain store constructed HTTP')
+    monkeypatch.setattr(http, 'FixedHTTP', forbidden)
+    with pytest.raises(BoundaryError):
+        async with host.host_broker(world.root):
+            pytest.fail('recomposition cleared uncertainty')
+
+
+@pytest.mark.asyncio
+async def test_closed_host_requires_explicit_recovery_even_in_fresh_process(composed):
+    world = composed
+    async with host.host_broker(world.root):
+        pass
+    with pytest.raises(BoundaryError):
+        async with host.host_broker(world.root):
+            pytest.fail('closed session silently recovered')
+    script = """
+import sys
+from pathlib import Path
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from primer.llm.codex.broker.host import PolicyLedger
+from primer.llm.codex.broker.security import PrivateStore
+from primer.llm.codex.boundary import BoundaryError
+key = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+_operation_ready()
+store = PrivateStore(Path(sys.argv[1]))
+try:
+    assert store.read('policy_session')['state'] == 'active'
+    try:
+        PolicyLedger(store, identity=sys.argv[2], keys={'admin': key}, audience='test',
+                     floors={'admin': '1'}, load=lambda: (_ for _ in ()).throw(AssertionError('policy observed')))
+    except BoundaryError:
+        pass
+    else:
+        raise AssertionError('active session admitted in new process')
+finally:
+    store.close()
+"""
+    _run_ready_host_child(script, world.directory, world.identity)
+
+
+@pytest.mark.asyncio
+async def test_initial_session_marker_failure_prevents_observation_and_recomposition(composed, monkeypatch):
+    world = composed
+    original = PrivateStore.write
+    observed = []
+    def failed_marker(store, name, value):
+        if name == 'policy_session':
+            raise OSError('marker never durably written')
+        return original(store, name, value)
+    monkeypatch.setattr(PrivateStore, 'write', failed_marker)
+    monkeypatch.setattr(host.HostTrust, '_policy_bundle', lambda self: observed.append(True))
+    with pytest.raises(OSError):
+        async with host.host_broker(world.root):
+            pytest.fail('failed marker admitted')
+    monkeypatch.setattr(PrivateStore, 'write', original)
+    with pytest.raises(BoundaryError):
+        async with host.host_broker(world.root):
+            pytest.fail('same-process marker retry admitted')
+    assert observed == []
+
+
+def test_distinct_manifest_keys_are_admitted(manifest, tmp_path):
+    second = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    manifest['authorities']['second'] = {'key': base64.b64encode(second).decode(), 'minimum_revision': '1'}
+    trust = host.HostTrust(tmp_path)
+    try:
+        assert set(trust._keys) == {'admin', 'second'}
+    finally:
+        trust.close()
+
+
+@pytest.mark.parametrize('owner', ['trust', 'store'])
+def test_each_closed_owner_refuses_retained_policy_before_private_io(composed, monkeypatch, owner):
+    trust = host.HostTrust(composed.root)
+    store, policy = trust.open_policy_store()
+    try:
+        (trust if owner == 'trust' else store).close()
+        def forbidden(*args, **kwargs):
+            pytest.fail('closed owner permitted private/trust IO')
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'open', forbidden)
+            patch.setattr(os, 'fstat', forbidden)
+            patch.setattr(host, '_root_json', forbidden)
+            with pytest.raises(BoundaryError):
+                policy.grant(composed.manifest['account'])
+    finally:
+        store.close()
+        trust.close()
+
+
+def test_foreign_thread_cannot_use_sibling_handles_or_close_owner(composed, monkeypatch):
+    import threading
+    trust = host.HostTrust(composed.root)
+    store, policy = trust.open_policy_store()
+    sibling = SignedPolicy(trust._keys, 'test', host.PolicyLedger(
+        store, identity=trust.identity, keys=trust._keys, audience='test',
+        floors=trust._floors, load=trust._policy_bundle, guard=trust._live))
+    failures, refused, io_hits = [], [], []
+    operations = [lambda: policy.grant(composed.manifest['account']),
+                  lambda: sibling.grant(composed.manifest['account']),
+                  lambda: store.read('policy_ledger'), lambda: store.write('registration', {}),
+                  store.close, trust._policy_bundle, trust.open_policy_store,
+                  trust.connect_model_socket, trust.close]
+    def worker():
+        for index, operation in enumerate(operations):
+            try:
+                operation()
+            except BoundaryError:
+                refused.append(index)
+            except BaseException as exc:
+                failures.append(type(exc).__name__)
+            else:
+                failures.append('foreign operation succeeded')
+    def forbidden(*args, **kwargs):
+        io_hits.append(True)
+        raise AssertionError('foreign owner reached filesystem/socket IO')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'open', forbidden)
+            patch.setattr(os, 'fstat', forbidden)
+            patch.setattr(host, '_root_json', forbidden)
+            patch.setattr(socket, 'socket', forbidden)
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            thread.join(timeout=1)
+            assert not thread.is_alive()
+        assert failures == [] and refused == list(range(len(operations)))
+        assert io_hits == []
+        # Denied foreign close did not destroy the legitimate owner or its lock.
+        assert policy.grant(composed.manifest['account'])[2] == {'model'}
+        assert sibling.grant(composed.manifest['account'])[2] == {'model'}
+        with pytest.raises(BoundaryError):
+            PrivateStore(composed.directory)
+    finally:
+        store.close()
+        trust.close()
+
+
+def test_forked_handles_refuse_but_child_disposal_preserves_parent(tmp_path):
+    import subprocess
+    import sys
+    script = '''
+import base64, hashlib, os, signal, sys, time
+from pathlib import Path
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from primer.llm.codex.broker import host
+from primer.llm.codex.broker.security import PrivateStore
+from primer.llm.codex.boundary import BoundaryError
+from primer.llm.codex.request import compact
+root = Path(sys.argv[1])
+private = root / 'private'
+private.mkdir(mode=0o700)
+key = Ed25519PrivateKey.generate()
+manifest = {'audience': 'test', 'broker_uid': os.geteuid(), 'primer_uid': os.geteuid()+1,
+    'account': 'a'*64, 'store': str(private), 'socket': str(root/'model.sock'),
+    'authorities': {'admin': {'key': base64.b64encode(key.public_key().public_bytes_raw()).decode(),
+                             'minimum_revision': '1'}}}
+doc = {'audience': 'test', 'revision': '1', 'expires_at': time.time()+3600,
+       'accounts': [manifest['account']], 'models': ['model'], 'required_native_effects': [],
+       'suspended': False, 'enrollment': False}
+raw = compact(doc).encode()
+bundle = {'admin': {'payload': raw.decode(), 'signature': base64.b64encode(key.sign(raw)).decode()}}
+# Simulate root provisioning only; fork/descriptors/flock/signatures are real.
+host._root_directory = lambda p: os.open(p, os.O_RDONLY | os.O_DIRECTORY)
+host._root_json = lambda fd, name: manifest if name == 'host.json' else bundle
+identity = host.manifest_identity(manifest)
+store = PrivateStore(private)
+store.write('policy_ledger', {'identity': identity, 'conflicts': [], 'revisions': {
+    'admin': {'revision': '1', 'sha256': hashlib.sha256(raw).hexdigest()}}})
+store.write('policy_session', {'identity': identity, 'state': 'ready'})
+store.close()
+trust = host.HostTrust(root)
+store, policy = trust.open_policy_store()
+pid = os.fork()
+if pid == 0:
+    signal.alarm(2)
+    try:
+        io_hits = []
+        def forbidden(*args, **kwargs):
+            io_hits.append(True)
+            raise AssertionError('inherited authorization reached IO')
+        original_open, original_stat = os.open, os.fstat
+        os.open = os.fstat = forbidden
+        for op in (lambda: store.read('registration'), lambda: store.write('registration', {}),
+                   lambda: policy.grant(manifest['account']), trust.open_policy_store,
+                   trust.connect_model_socket, trust._policy_bundle):
+            try:
+                op()
+            except BoundaryError:
+                pass
+            else:
+                raise AssertionError('fork child inherited authority')
+        assert not io_hits, io_hits
+        os.open, os.fstat = original_open, original_stat
+        store.close()
+        trust.close()
+    except BaseException:
+        os._exit(1)
+    os._exit(0)
+signal.alarm(3)
+try:
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert policy.grant(manifest['account'])[2] == {'model'}
+    store.write('client_hint', {'retained_parent': True})
+    assert store.read('client_hint') == {'retained_parent': True}
+    try:
+        PrivateStore(private)
+    except BoundaryError:
+        pass
+    else:
+        raise AssertionError('child disposal released parent flock')
+finally:
+    store.close()
+    trust.close()
+    signal.alarm(0)
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)], timeout=5,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('kind', ['unmanaged', 'subclass'])
+def test_unsupported_thread_owners_refuse_before_descriptor_open(tmp_path, kind):
+    import subprocess
+    import sys
+    script = '''
+import _thread, os, signal, sys, threading
+from pathlib import Path
+from primer.llm.codex.broker import host
+from primer.llm.codex.broker.security import PrivateStore
+from primer.llm.codex.boundary import BoundaryError
+signal.alarm(3)
+done = threading.Event()
+failures, refused, opened = [], [], []
+def forbidden(*args, **kwargs):
+    opened.append(True)
+    raise AssertionError('unsupported owner opened authority descriptor')
+os.open = forbidden
+host._root_directory = forbidden
+def worker():
+    try:
+        owner = threading.current_thread()
+        if sys.argv[1] == 'unmanaged':
+            assert type(owner).__name__ == '_DummyThread'
+        else:
+            assert type(owner).__name__ == 'CustomThread'
+        for factory in (PrivateStore, host.HostTrust):
+            try:
+                factory(Path(sys.argv[2]))
+            except BoundaryError:
+                refused.append(factory.__name__)
+            else:
+                raise AssertionError('unsupported owner acquired authority')
+    except BaseException as exc:
+        failures.append(repr(exc))
+    finally:
+        done.set()
+if sys.argv[1] == 'unmanaged':
+    _thread.start_new_thread(worker, ())
+else:
+    class CustomThread(threading.Thread):
+        pass
+    thread = CustomThread(target=worker, daemon=True)
+    thread.start()
+assert done.wait(1), 'thread did not finish'
+assert not failures, failures
+assert not opened, opened
+assert refused == ['PrivateStore', 'HostTrust'], refused
+signal.alarm(0)
+'''
+    result = subprocess.run([sys.executable, '-c', script, kind, str(tmp_path)],
+                            timeout=5, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_standard_managed_thread_can_construct_use_and_dispose(composed):
+    import threading
+    failures, completed = [], []
+    def worker():
+        trust = store = None
+        try:
+            trust = host.HostTrust(composed.root)
+            store, policy = trust.open_policy_store()
+            assert policy.grant(composed.manifest['account'])[2] == {'model'}
+            store.write('client_hint', {'managed': True})
+            assert store.read('client_hint') == {'managed': True}
+        except BaseException as exc:
+            failures.append(repr(exc))
+        finally:
+            for handle in (store, trust):
+                if handle is not None:
+                    try:
+                        handle.close()
+                        assert handle._fd is None
+                        if handle is store:
+                            assert store._lock is None
+                    except BaseException as exc:
+                        failures.append(repr(exc))
+        if not failures:
+            completed.append(True)
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert not failures, failures
+    assert completed == [True]
+    # The exited worker actually released its flock, not merely Python fields.
+    reopened = PrivateStore(composed.directory)
+    reopened.close()
+
+
+def test_cold_import_on_native_thread_refuses_false_main_owner_before_io(tmp_path):
+    script = '''
+import _thread, os, signal, sys
+assert 'threading' not in sys.modules, 'probe must begin before threading import'
+signal.alarm(25)  # Backstop covers setup; parent enforces 3s after readiness.
+done = _thread.allocate_lock()
+done.acquire()
+failures, refused, opened = [], [], []
+def worker():
+    try:
+        import threading
+        if sys.version_info < (3, 13):
+            assert threading.current_thread() is threading.main_thread()
+        # Newer CPython may already classify this importer as unmanaged.
+        # Either registry behavior must refuse the real non-leader before IO.
+        assert threading.get_native_id() != os.getpid()
+        from pathlib import Path
+        from primer.llm.codex.broker import host
+        from primer.llm.codex.broker.security import PrivateStore
+        from primer.llm.codex.boundary import BoundaryError
+        def forbidden(*args, **kwargs):
+            opened.append(True)
+            raise AssertionError('cold-import false main owner opened descriptor')
+        os.open = forbidden
+        host._root_directory = forbidden
+        _operation_ready()  # Imports remain on this real unmanaged thread.
+        for factory in (PrivateStore, host.HostTrust):
+            try:
+                factory(Path(sys.argv[1]))
+            except BoundaryError:
+                refused.append(factory.__name__)
+            else:
+                raise AssertionError('false main owner acquired authority')
+    except BaseException as exc:
+        failures.append(repr(exc))
+    finally:
+        done.release()
+_thread.start_new_thread(worker, ())
+try:
+    # The parent allows bounded cold setup, then only 3s for refusal, thread
+    # completion, all assertions and process exit. No operation timeout expands.
+    assert done.acquire(timeout=23), 'native worker did not finish'
+    assert not failures, failures
+    assert not opened, opened
+    assert refused == ['PrivateStore', 'HostTrust'], refused
+except BaseException as exc:
+    print(repr(exc), file=sys.stderr, flush=True)
+    os._exit(1)
+# threading was intentionally initialized on the wrong thread. Avoid its
+# interpreter-shutdown bookkeeping on BOTH success and assertion failure.
+os._exit(0)
+'''
+    _run_ready_host_child(script, tmp_path)
+
+
+@pytest.mark.parametrize('target', ['lock', 'directory', 'trust'])
+def test_late_close_error_revokes_authority_and_never_retries_reused_fd(composed, monkeypatch, target):
+    trust = host.HostTrust(composed.root)
+    store, policy = trust.open_policy_store()
+    handle = trust if target == 'trust' else store
+    victim = trust._fd if target == 'trust' else (store._lock if target == 'lock' else store._fd)
+    expected = [trust._fd] if target == 'trust' else [store._lock, store._fd]
+    original_close = os.close
+    attempts, reused = [], []
+    def late_error(fd):
+        attempts.append(fd)
+        original_close(fd)
+        if fd == victim:
+            # Reproduce Linux's released-descriptor/late-error semantics, then
+            # deliberately reuse that number to detect a dangerous close retry.
+            replacement = os.open('/dev/null', os.O_RDONLY)
+            if replacement != fd:
+                os.dup2(replacement, fd)
+                original_close(replacement)
+            reused.append(fd)
+            raise OSError('simulated late descriptor close error')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'close', late_error)
+            with pytest.raises(OSError, match='late descriptor close'):
+                handle.close()
+            assert attempts == expected
+            assert handle._fd is None
+            if handle is store:
+                assert store._lock is None
+            with pytest.raises(BoundaryError):
+                policy.grant(composed.manifest['account'])
+            handle.close()
+            assert attempts == expected, 'second disposal retried a recycled descriptor'
+            os.fstat(victim)  # The independently owned replacement is still open.
+    finally:
+        for fd in reused:
+            original_close(fd)
+        store.close()
+        trust.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('trust_also_fails', [False, True])
+async def test_host_cleanup_attempts_trust_after_store_close_error(composed, monkeypatch, trust_also_fails):
+    trust = host.HostTrust(composed.root)
+    original_close = os.close
+    attempts, expected, failing = [], [], set()
+    def late_error(fd):
+        if fd in expected:
+            attempts.append(fd)
+        original_close(fd)
+        if fd in failing:
+            raise OSError(f'simulated late close {fd}')
+    with monkeypatch.context() as patch:
+        patch.setattr(host, 'HostTrust', lambda directory: trust)
+        error_type = BaseExceptionGroup if trust_also_fails else OSError
+        with pytest.raises(error_type) as raised:
+            async with host.host_broker(composed.root) as server:
+                store = server._broker._auth._store
+                policy = server._broker._auth._policy
+                expected[:] = [store._lock, store._fd, trust._fd]
+                failing.add(store._lock)
+                if trust_also_fails:
+                    failing.add(trust._fd)
+                patch.setattr(os, 'close', late_error)
+        assert attempts == expected
+        assert store._lock is None and store._fd is None and trust._fd is None
+        if trust_also_fails:
+            assert len(raised.value.exceptions) == 2
+            assert all(isinstance(exc, OSError) for exc in raised.value.exceptions)
+        with pytest.raises(BoundaryError):
+            policy.grant(composed.manifest['account'])
+        store.close()
+        trust.close()
+        assert attempts == expected
+
+
+@pytest.mark.parametrize('child_close_fails', [False, True])
+@pytest.mark.parametrize('old_released', [False, True])
+def test_root_walk_close_error_releases_new_child_without_retrying_old_fd(tmp_path, monkeypatch, child_close_fails, old_released):
+    import stat
+    real_open, real_close, real_stat = os.open, os.close, os.fstat
+    opened, closed, reused = [], [], []
+    def recording_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+    def late_close(fd):
+        closed.append(fd)
+        if fd == opened[0] and not old_released:
+            reused.append(fd)  # Known-open synthetic error, not safe to retry.
+            raise OSError('old parent close refused before release')
+        real_close(fd)
+        if fd == opened[0]:
+            replacement = real_open('/dev/null', os.O_RDONLY)
+            if replacement != fd:
+                os.dup2(replacement, fd)
+                real_close(replacement)
+            reused.append(fd)
+            raise OSError('old parent late close error')
+        if child_close_fails:
+            raise OSError('child late close error')
+    try:
+        with monkeypatch.context() as patch:
+            # Simulate ownership only; walk, descriptor acquisition/release and
+            # numeric FD reuse are real and bounded to the first path hop.
+            patch.setattr(os, 'fstat', lambda fd: SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o700))
+            patch.setattr(os, 'open', recording_open)
+            patch.setattr(os, 'close', late_close)
+            error = BaseExceptionGroup if child_close_fails else OSError
+            with pytest.raises(error) as raised:
+                host._root_directory(tmp_path)
+            assert len(opened) == 2 and closed == opened
+            real_stat(reused[0])
+            with pytest.raises(OSError):
+                real_stat(opened[1])
+            if child_close_fails:
+                assert len(raised.value.exceptions) == 2
+    finally:
+        for fd in reused:
+            real_close(fd)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('store_close_fails', [False, True])
+async def test_parent_close_failure_disposes_unreturned_policy_store(composed, monkeypatch, store_close_fails):
+    trust = host.HostTrust(composed.root)
+    real_directory, real_close = host._root_directory, os.close
+    stores, parents, closed, store_fds = [], [], [], []
+    def directory(path):
+        fd = real_directory(path)
+        parents.append(fd)
+        return fd
+    def store_factory(path):
+        store = PrivateStore(path)
+        stores.append(store)
+        store_fds.extend([store._lock, store._fd])
+        return store
+    def late_close(fd):
+        closed.append(fd)
+        real_close(fd)
+        if fd in parents:
+            raise OSError('parent disposal failed after release')
+        if store_close_fails and fd == store_fds[0]:
+            raise OSError('store disposal also failed')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(host, '_root_directory', directory)
+            patch.setattr(host, 'PrivateStore', store_factory)
+            patch.setattr(host, 'HostTrust', lambda path: trust)
+            patch.setattr(os, 'close', late_close)
+            error = BaseExceptionGroup if store_close_fails else OSError
+            with pytest.raises(error) as raised:
+                async with host.host_broker(composed.root):
+                    pytest.fail('parent disposal failure transferred ownership')
+            if store_close_fails:
+                assert len(raised.value.exceptions) == 2
+            assert trust._fd is None
+            assert all(closed.count(fd) == 1 for fd in store_fds)
+            assert len(parents) == 1 and closed.count(parents[0]) == 1
+            assert len(stores) == 1
+            assert stores[0]._fd is None and stores[0]._lock is None
+            with pytest.raises(BoundaryError):
+                stores[0].read('policy_ledger')
+        # A return displaced by parent cleanup must not strand the flock.
+        reopened = PrivateStore(composed.directory)
+        reopened.close()
+    finally:
+        for store in stores:
+            store.close()
+        trust.close()
+
+
+def test_socket_parent_close_failure_disposes_unreturned_connection(manifest, tmp_path, monkeypatch):
+    trust = host.HostTrust(tmp_path)
+    original_socket, real_close, real_directory = socket.socket, os.close, host._root_directory
+    listener = original_socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(manifest['socket'])
+    os.chmod(manifest['socket'], 0o660)
+    listener.listen(1)
+    listener.settimeout(0.5)
+    parents, clients, closed = [], [], []
+    def directory(path):
+        fd = real_directory(path)
+        parents.append(fd)
+        return fd
+    def socket_factory(*args, **kwargs):
+        client = original_socket(*args, **kwargs)
+        clients.append(client)
+        return client
+    def late_close(fd):
+        closed.append(fd)
+        real_close(fd)
+        if fd in parents:
+            raise OSError('socket parent late close error')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(host.os, 'geteuid', lambda: manifest['primer_uid'])
+            patch.setattr(host, '_root_directory', directory)
+            patch.setattr(socket, 'socket', socket_factory)
+            patch.setattr(os, 'close', late_close)
+            with pytest.raises(BoundaryError):
+                trust.connect_model_socket()
+        assert len(parents) == 1 and closed.count(parents[0]) == 1
+        assert len(clients) == 1 and clients[0].fileno() == -1
+        accepted, _ = listener.accept()
+        with accepted:
+            accepted.settimeout(0.5)
+            assert accepted.recv(1) == b''  # Connection closed without request bytes.
+    finally:
+        for client in clients:
+            client.close()
+        listener.close()
+        trust.close()
