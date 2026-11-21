@@ -126,21 +126,7 @@ Reference: [`crud__create_trigger`](reference/tools/crud/create_trigger)
 
 Reference: [`crud__update_trigger`](reference/tools/crud/update_trigger)
 
-## Gotchas
-- An update cannot change `config.kind` (`trigger_kind_immutable`). Delete the trigger and create a new one.
-- An update that sends `config` replaces all of it. An omitted `timezone` falls back to `UTC` and `catchup` to `one`. An omitted `hmac_secret` clears the secret: send the `**********` a read shows to keep it. The webhook `token` is kept unless you send a new one.
-- A delete also removes a session's wait on the trigger. That session stays parked until its wait times out.
-- A `delayed` trigger fires once. Enabling it again does not fire it again: create a new one.
-- A taken slug answers `trigger_slug_conflict`, and a slug outside the pattern `validation-error`. A bad cron or timezone answers `cron_invalid` or `timezone_invalid`.
-- `catchup` decides what happens to the ticks a trigger missed (the server was down, or the fire came late): `none` skips them, `one` fires the most recent one, `all` fires each (at most 64, oldest first). Then the tick that is due fires once, in every policy. Each fire carries its own tick as `scheduled_for`. A trigger enabled again catches up nothing for the time it was disabled. Use `one` unless every tick must run.
-- A fire is at least once. A worker that dies in the middle of a fire may deliver it again. A trigger is claimed like other work, so a busy deployment fires late.
-- An accepted edit makes you the owner its runs act as, so it moves its runs to your rank (sharing is unchanged). When a save changes who a webhook trigger runs as, the server mints a new token and the old URL stops working.
-
-## Related
-[subscriptions](triggers/subscriptions), [fire a trigger now](triggers/fire-now), [waiting for events](triggers/waiting-for-events), [channel bindings](channels/bindings), [roles and approvals](start-here/roles-and-approvals).
-
-
-## Receive a webhook through a tool
+### Receive a webhook through a tool
 
 `webhooks__receive_webhook` takes the webhook `token`, optional base64 `body`,
 optional `signature` and optional string-valued `query` object. For example,
@@ -155,3 +141,16 @@ The tool sends `application/octet-stream` and does not expose arbitrary custom
 headers. Trigger enablement, token and HMAC checks still apply, along with the
 tool's exposure and effective approval policy. An external MCP call cannot park
 for approval. Each accepted call is a separate delivery; retries can fire twice.
+
+## Gotchas
+- An update cannot change `config.kind` (`trigger_kind_immutable`). Delete the trigger and create a new one.
+- An update that sends `config` replaces all of it. An omitted `timezone` falls back to `UTC` and `catchup` to `one`. An omitted `hmac_secret` clears the secret: send the `**********` a read shows to keep it. The webhook `token` is kept unless you send a new one.
+- A delete also removes a session's wait on the trigger. That session stays parked until its wait times out.
+- A `delayed` trigger fires once. Enabling it again does not fire it again: create a new one.
+- A taken slug answers `trigger_slug_conflict`, and a slug outside the pattern `validation-error`. A bad cron or timezone answers `cron_invalid` or `timezone_invalid`.
+- `catchup` decides what happens to the ticks a trigger missed (the server was down, or the fire came late): `none` skips them, `one` fires the most recent one, `all` fires each (at most 64, oldest first). Then the tick that is due fires once, in every policy. Each fire carries its own tick as `scheduled_for`. A trigger enabled again catches up nothing for the time it was disabled. Use `one` unless every tick must run.
+- A fire is at least once. A worker that dies in the middle of a fire may deliver it again. A trigger is claimed like other work, so a busy deployment fires late.
+- An accepted edit makes you the owner its runs act as, so it moves its runs to your rank (sharing is unchanged). When a save changes who a webhook trigger runs as, the server mints a new token and the old URL stops working.
+
+## Related
+[subscriptions](triggers/subscriptions), [fire a trigger now](triggers/fire-now), [waiting for events](triggers/waiting-for-events), [channel bindings](channels/bindings), [roles and approvals](start-here/roles-and-approvals).
