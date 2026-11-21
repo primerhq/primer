@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import os
 import stat
+import threading
 import time
 from pathlib import Path
 
@@ -39,6 +40,8 @@ class PrivateStore:
     Same-UID code is trusted, not isolated by file modes.
     """
     def __init__(self, directory: Path):
+        self._owner_pid = os.getpid()
+        self._owner_thread = threading.current_thread()
         self._fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         self._lock = None
         try:
@@ -63,6 +66,9 @@ class PrivateStore:
         return name + ".json"
 
     def require_live(self) -> None:
+        # Thread object identity avoids permitting a recycled thread identifier.
+        # Fork retains descriptors/flock but never retains authorization.
+        require(os.getpid() == self._owner_pid and threading.current_thread() is self._owner_thread)
         # dir_fd=None otherwise silently falls back to cwd.
         require(self._fd is not None and self._lock is not None)
 
@@ -114,6 +120,10 @@ class PrivateStore:
                 pass
 
     def close(self) -> None:
+        # A fork child may dispose only its descriptor copies. Never LOCK_UN:
+        # flock's open-file description is shared with the still-live parent.
+        if os.getpid() == self._owner_pid:
+            require(threading.current_thread() is self._owner_thread)
         if self._lock is not None:
             os.close(self._lock)
             self._lock = None

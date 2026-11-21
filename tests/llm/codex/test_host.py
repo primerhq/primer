@@ -597,3 +597,149 @@ def test_distinct_manifest_keys_are_admitted(manifest, tmp_path):
         assert set(trust._keys) == {'admin', 'second'}
     finally:
         trust.close()
+
+
+@pytest.mark.parametrize('owner', ['trust', 'store'])
+def test_each_closed_owner_refuses_retained_policy_before_private_io(composed, monkeypatch, owner):
+    trust = host.HostTrust(composed.root)
+    store, policy = trust.open_policy_store()
+    try:
+        (trust if owner == 'trust' else store).close()
+        def forbidden(*args, **kwargs):
+            pytest.fail('closed owner permitted private/trust IO')
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'open', forbidden)
+            patch.setattr(os, 'fstat', forbidden)
+            patch.setattr(host, '_root_json', forbidden)
+            with pytest.raises(BoundaryError):
+                policy.grant(composed.manifest['account'])
+    finally:
+        store.close()
+        trust.close()
+
+
+def test_foreign_thread_cannot_use_sibling_handles_or_close_owner(composed, monkeypatch):
+    import threading
+    trust = host.HostTrust(composed.root)
+    store, policy = trust.open_policy_store()
+    sibling = SignedPolicy(trust._keys, 'test', host.PolicyLedger(
+        store, identity=trust.identity, keys=trust._keys, audience='test',
+        floors=trust._floors, load=trust._policy_bundle, guard=trust._live))
+    failures, refused = [], []
+    operations = [lambda: policy.grant(composed.manifest['account']),
+                  lambda: sibling.grant(composed.manifest['account']),
+                  lambda: store.read('policy_ledger'), lambda: store.write('registration', {}),
+                  store.close, trust._policy_bundle, trust.open_policy_store,
+                  trust.connect_model_socket, trust.close]
+    def worker():
+        for index, operation in enumerate(operations):
+            try:
+                operation()
+            except BoundaryError:
+                refused.append(index)
+            except BaseException as exc:
+                failures.append(type(exc).__name__)
+            else:
+                failures.append('foreign operation succeeded')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('foreign owner reached filesystem/socket IO')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'open', forbidden)
+            patch.setattr(os, 'fstat', forbidden)
+            patch.setattr(host, '_root_json', forbidden)
+            patch.setattr(socket, 'socket', forbidden)
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            thread.join(timeout=1)
+            assert not thread.is_alive()
+        assert failures == [] and refused == list(range(len(operations)))
+        # Denied foreign close did not destroy the legitimate owner or its lock.
+        assert policy.grant(composed.manifest['account'])[2] == {'model'}
+        assert sibling.grant(composed.manifest['account'])[2] == {'model'}
+        with pytest.raises(BoundaryError):
+            PrivateStore(composed.directory)
+    finally:
+        store.close()
+        trust.close()
+
+
+def test_forked_handles_refuse_but_child_disposal_preserves_parent(tmp_path):
+    import subprocess
+    import sys
+    script = '''
+import base64, hashlib, os, signal, sys, time
+from pathlib import Path
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from primer.llm.codex.broker import host
+from primer.llm.codex.broker.security import PrivateStore
+from primer.llm.codex.boundary import BoundaryError
+from primer.llm.codex.request import compact
+root = Path(sys.argv[1])
+private = root / 'private'
+private.mkdir(mode=0o700)
+key = Ed25519PrivateKey.generate()
+manifest = {'audience': 'test', 'broker_uid': os.geteuid(), 'primer_uid': os.geteuid()+1,
+    'account': 'a'*64, 'store': str(private), 'socket': str(root/'model.sock'),
+    'authorities': {'admin': {'key': base64.b64encode(key.public_key().public_bytes_raw()).decode(),
+                             'minimum_revision': '1'}}}
+doc = {'audience': 'test', 'revision': '1', 'expires_at': time.time()+3600,
+       'accounts': [manifest['account']], 'models': ['model'], 'required_native_effects': [],
+       'suspended': False, 'enrollment': False}
+raw = compact(doc).encode()
+bundle = {'admin': {'payload': raw.decode(), 'signature': base64.b64encode(key.sign(raw)).decode()}}
+# Simulate root provisioning only; fork/descriptors/flock/signatures are real.
+host._root_directory = lambda p: os.open(p, os.O_RDONLY | os.O_DIRECTORY)
+host._root_json = lambda fd, name: manifest if name == 'host.json' else bundle
+identity = host.manifest_identity(manifest)
+store = PrivateStore(private)
+store.write('policy_ledger', {'identity': identity, 'conflicts': [], 'revisions': {
+    'admin': {'revision': '1', 'sha256': hashlib.sha256(raw).hexdigest()}}})
+store.write('policy_session', {'identity': identity, 'state': 'ready'})
+store.close()
+trust = host.HostTrust(root)
+store, policy = trust.open_policy_store()
+pid = os.fork()
+if pid == 0:
+    signal.alarm(2)
+    try:
+        def forbidden(*args, **kwargs):
+            raise AssertionError('inherited authorization reached IO')
+        original_open, original_stat = os.open, os.fstat
+        os.open = os.fstat = forbidden
+        for op in (lambda: store.read('registration'), lambda: store.write('registration', {}),
+                   lambda: policy.grant(manifest['account']), trust.open_policy_store,
+                   trust.connect_model_socket, trust._policy_bundle):
+            try:
+                op()
+            except BoundaryError:
+                pass
+            else:
+                raise AssertionError('fork child inherited authority')
+        os.open, os.fstat = original_open, original_stat
+        store.close()
+        trust.close()
+    except BaseException:
+        os._exit(1)
+    os._exit(0)
+signal.alarm(3)
+try:
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert policy.grant(manifest['account'])[2] == {'model'}
+    store.write('client_hint', {'retained_parent': True})
+    assert store.read('client_hint') == {'retained_parent': True}
+    try:
+        PrivateStore(private)
+    except BoundaryError:
+        pass
+    else:
+        raise AssertionError('child disposal released parent flock')
+finally:
+    store.close()
+    trust.close()
+    signal.alarm(0)
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)], timeout=5,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

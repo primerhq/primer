@@ -13,6 +13,7 @@ import re
 import socket
 import stat
 import struct
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -131,15 +132,23 @@ def _policy_session(store: PrivateStore, identity: str) -> None:
 class PolicyLedger:
     """Persist each highest authenticated decision before considering a grant."""
     def __init__(self, store: PrivateStore, *, identity: str, keys: dict[str, bytes],
-                 audience: str, floors: dict[str, str], load):
+                 audience: str, floors: dict[str, str], load, guard=None):
         require(bool(keys) and len(set(keys.values())) == len(keys))
         self._store, self._identity, self._load = store, identity, load
+        self._guard = guard
+        self._require_live()
         self._keys = {k: Ed25519PublicKey.from_public_bytes(v) for k, v in keys.items()}
         self._audience, self._floors = audience, floors
         _policy_session(store, identity)
         self._read_state()
 
+    def _require_live(self):
+        self._store.require_live()
+        if self._guard is not None:
+            self._guard()
+
     def _read_state(self):
+        self._require_live()
         self._state = self._store.read('policy_ledger')
         require(type(self._state) is dict and set(self._state) == {'identity', 'revisions', 'conflicts'}
                 and self._state['identity'] == self._identity and self._state['conflicts'] == []
@@ -151,6 +160,7 @@ class PolicyLedger:
             require(type(item['sha256']) is str and re.fullmatch(r'[0-9a-f]{64}', item['sha256']) is not None)
 
     def __call__(self):
+        self._require_live()
         inode = self._store.identity
         require(inode not in _UNCERTAIN_STORES)
         self._read_state()
@@ -200,6 +210,8 @@ class HostTrust:
     Root, the broker UID, interpreter/dependencies and local kernel are trusted.
     """
     def __init__(self, directory: Path):
+        self._owner_pid = os.getpid()
+        self._owner_thread = threading.current_thread()
         self._fd = _root_directory(directory)
         try:
             doc = _root_json(self._fd, 'host.json')
@@ -211,6 +223,7 @@ class HostTrust:
             raise BoundaryError('Host trust unavailable') from None
 
     def _live(self):
+        require(os.getpid() == self._owner_pid and threading.current_thread() is self._owner_thread)
         require(self._fd is not None)
 
     def _manifest_current(self):
@@ -248,7 +261,7 @@ class HostTrust:
             store = PrivateStore(Path(f'/proc/self/fd/{parent}') / path.name)
             ledger = PolicyLedger(store, identity=self.identity, keys=self._keys,
                                   audience=self._document['audience'], floors=self._floors,
-                                  load=self._policy_bundle)
+                                  load=self._policy_bundle, guard=self._live)
             policy = SignedPolicy(self._keys, self._document['audience'], ledger)
             policy.grant(self.account)
             return store, policy
@@ -290,6 +303,8 @@ class HostTrust:
             os.close(parent)
 
     def close(self):
+        if os.getpid() == self._owner_pid:
+            require(threading.current_thread() is self._owner_thread)
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
