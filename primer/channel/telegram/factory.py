@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.channel.retirement import finish_cleanup, retry_cleanup
 from primer.channel.adapter import BUTTON_EXPIRED_NOTICE, refusal_notice
 from primer.channel.factory import register_adapter_factory
 from primer.channel.telegram.adapter import TelegramChannelAdapter
@@ -305,7 +306,11 @@ async def _telegram_factory(
     await adapter.initialize()
     conn = TELEGRAM_CONNECTIONS.entry(provider.id)
     if conn is not None and owns_inbound:  # none on a posting-only connection (W7)
-        _install_handlers(provider.id, conn.app)
+        try:
+            _install_handlers(provider.id, conn.app)
+        except BaseException:
+            await finish_cleanup(retry_cleanup(adapter.aclose, f"channel adapter {channel.id}"))
+            raise
     return adapter
 
 

@@ -14,12 +14,12 @@ A channel is one room on a [channel provider](channels/providers): a Slack chann
 - **One room, one channel.** The pair `provider_id` and `external_id` belongs to one channel only.
 - **`config.chats`** has one key and no others: `enabled` (default `false`).
 - **`chats.enabled: true` lets a message in the room start a session.** With `false`, the [bindings](channels/bindings) that start a session (`agent_fresh_session`, `graph_fresh_session`) do not fire for the room. A `session_append` binding still feeds its session, a session waiting on a channel event still wakes, and a thread mapped to a session still feeds it.
-- **Listening.** The bot hears a room only while the room's listener runs. It shares one connection per provider, but it drops a message from a room with no listener. A room with `chats.enabled: true` gets its listener when primer starts, and when a person saves the channel in the console. Any room also gets one the first time a session posts to it. So after a restart, a room with `chats.enabled: false` is not heard at all until a session posts there.
+- **Listening.** The listening API shares one platform connection across a provider's rooms. It opens chat-enabled rooms and rooms needed for a saved reply destination or conversation. A person can answer an existing session with `chats.enabled` off. Turn that setting on when the room should start fresh sessions. Before moving or removing the only reply binding for a shared Slack or Discord thread, resolve pending approvals there or use the session’s approval controls in the console. The button identifies its session, but after a listener restart a chat-disabled room needs a surviving binding or saved conversation for the button to reach Primer.
 - **The channel does not pick the agent.** A message starts the agent or graph that a [binding](channels/bindings) on a `channel` trigger names, so one room can route to different agents by rule.
 - **How much a conversation hears back** is set by the `interactive` flag of the channel trigger ([inbound bindings](channels/bindings)). The room has no setting for it.
 - **A DM is a room too.** A direct message with the bot needs its own channel, with the DM's id as `external_id` (for Telegram, the person's user id).
 - **One channel serves many workspaces.** Inbound bindings and the [reply bindings](channels/reply-binding) of any number of workspaces can share it.
-- **The running bot.** The listeners run in the API process, and a tool may run in another one. So a new channel, a changed one, or `chats.enabled` turned on is heard after a restart, or after a person saves the channel in the console.
+- **The running bot.** A tool or console save wakes the listening API. It reads the saved configuration and retries failed starts; a successful save confirms the row was stored.
 - None of these tools is approval-gated by default.
 
 ## How to
@@ -27,7 +27,7 @@ A channel is one room on a [channel provider](channels/providers): a Slack chann
 2. Get the room's id from the platform.
 3. Check the room has no channel yet: `system__find_channels` on `external_id`.
 4. Create the channel with `system__create_channel`. Set `chats.enabled: true` when messages there should start sessions.
-5. Ask a person to restart primer, or to save the channel in the console, so the bot starts listening.
+5. Allow the listener to connect. Verify actual inbound delivery in the intended room.
 6. Route messages with a [binding](channels/bindings), or send a workspace's questions here with a [reply binding](channels/reply-binding).
 
 ## Tool calls
@@ -97,9 +97,9 @@ Reference: [`system__delete_channel`](reference/tools/system/delete_channel)
 - A `provider` that is not the provider's platform is a `validation-error` naming both platforms. So is a `provider_id` that names no provider.
 - A pair that another channel holds is a `conflict` naming that channel.
 - An unknown key in `config.chats`, such as the retired `default_agent`, `allowed_agents` or `relay_mode`, is a `validation-error`. Stored rooms lost `relay_mode` when primer upgraded.
-- An update replaces the whole row. Leave out `config` and `chats.enabled` falls back to `false`: after the next restart the bot no longer listens there until a session posts to the room.
+- An update replaces the whole row. Leave out `config` and `chats.enabled` falls back to `false`: the listening API closes the stale adapter on reconciliation.
 - `chats.enabled: false` stops new sessions only. A room that a session posts to is heard again, and its threads, `session_append` bindings and channel-event waits work. To stop those too, disable the `channel` trigger or delete the binding.
-- The tools do not reach the running listener. A deleted channel's room can still be heard until a restart.
+- Deleting a channel tells the listening API to close its adapter. Changes take effect as the registry reconciles.
 - Nothing blocks deleting a channel that a workspace's reply binding or a `channel` trigger still names. The reply binding then posts nothing (a server log line only), and the trigger never fires. Clear the reply binding and fix the trigger first.
 
 ## Related

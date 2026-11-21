@@ -1,19 +1,4 @@
-"""The tool descriptors of the entities whose warm adapters a tool edit does NOT refresh say so (task 01a111d1, D5 phase 2c, option 3).
-
-An edit through the REST route drops the warm adapter cached for a channel provider or a channel (``ChannelRegistry.invalidate``), and
-re-warms a newly chat-enabled channel. The system tools cannot do the same: that registry invalidates only the cache of the PROCESS it
-lives in, the warm inbound adapters live in the API process, and a tool runs in whichever process executes the session (in the k3s split,
-a worker). Mirroring the REST hooks in the tools would look like parity and do nothing where it matters, so the lead ruled to document the
-gap instead (and to ticket the bus binding, 01a11358). An agent reading a descriptor must therefore learn that its edit takes effect after
-the next restart or after the row is edited through the REST route, and why.
-
-The artifact-storage half of 01a11358 is done (plan 09, Task 3): ``ArtifactStorageRegistry`` publishes on the ``artifact_storage_provider``
-topic and every process evicts its own copy, so the artifact-storage tools no longer carry the caveat and are listed among the negative
-controls below. The channel half stays open.
-
-Negative controls: the entities whose invalidation IS cluster-wide (the provider registry and the artifact-storage registry publish on the
-invalidation bus), and an entity with no cache at all, must not carry the caveat.
-"""
+"""The system tools describe asynchronous channel listener reconciliation."""
 
 from __future__ import annotations
 
@@ -29,17 +14,16 @@ async def _description(toolset, tool_id: str) -> str:
     return descriptions[tool_id]
 
 
-@pytest.mark.parametrize("verb", ["update", "delete"])
+@pytest.mark.parametrize("verb", ["create", "update", "delete"])
 @pytest.mark.parametrize("entity", AFFECTED)
 @pytest.mark.asyncio
-async def test_a_tool_edit_says_it_does_not_refresh_the_warm_adapter(world, entity, verb) -> None:
+async def test_channel_write_explains_listener_ownership_and_retries(world, entity, verb) -> None:
     _, toolset, _ = world
 
     text = await _description(toolset, f"{verb}_{entity}")
 
-    assert "does NOT" in text, "the descriptor does not say the warm adapter is left alone"
-    assert "restart" in text and "REST route" in text, "the descriptor does not say when the change takes effect"
-    assert "process" in text, "the descriptor does not give the reason (the invalidation is local to one process)"
+    assert "owns inbound" in text and "saved channel" in text
+    assert "starting or retrying" in text
 
 
 @pytest.mark.parametrize(

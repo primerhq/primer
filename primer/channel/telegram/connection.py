@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from primer.channel.retirement import check_available, retire, retire_failed_start
 from primer.model.channel import (
     ChannelProvider, TelegramChannelProviderConfig,
 )
@@ -96,7 +97,50 @@ class _Entry:
     refcount: int = 0
     adapters_by_chat_id: dict[str, Any] = field(default_factory=dict)
     poll_timeout: int = 25
-    inbound: bool = True
+    updater_needs_stop: bool = False
+    app_needs_stop: bool = False
+    shutdown_done: bool = False
+    closed_init_requests: set = field(default_factory=set, repr=False)
+
+    async def stop_partial_init(self) -> None:
+        # PTB can fail in getMe before Application.shutdown takes ownership.
+        # Bot exposes only its API request publicly; the pair also owns getUpdates.
+        error = None
+        for request in self.app.bot._request:
+            if request in self.closed_init_requests:
+                continue
+            try:
+                # Our builder uses PTB's HTTPXRequest for both. HTTPX marks a
+                # client closed before draining transports. A subsequent no-op
+                # shutdown cannot establish that an interrupted close finished.
+                if request._client.is_closed:
+                    raise RuntimeError("Telegram HTTP transport teardown is uncertain")
+                await request.shutdown()
+            except Exception as exc:
+                error = exc
+            else:
+                self.closed_init_requests.add(request)
+        if error is not None:
+            raise error
+        await self.stop()
+
+    async def stop(self) -> None:
+        # Attempt independent stages even if an earlier one failed; retry only
+        # unfinished stages. Both PTB stop methods clear running BEFORE draining.
+        # Only a successful stop can release an attempted start's obligation.
+        try:
+            if self.updater_needs_stop:
+                await self.app.updater.stop()
+                self.updater_needs_stop = False
+        finally:
+            try:
+                if self.app_needs_stop:
+                    await self.app.stop()
+                    self.app_needs_stop = False
+            finally:
+                if not self.shutdown_done:
+                    await self.app.shutdown()
+                    self.shutdown_done = True
 
 
 class _TelegramConnectionRegistry:
@@ -115,17 +159,26 @@ class _TelegramConnectionRegistry:
         ChannelRegistry, so one mode.
         """
         async with self._lock:
+            check_available(self, provider.id)
             entry = self._entries.get(provider.id)
             if entry is None:
                 cfg = provider.config
                 assert isinstance(cfg, TelegramChannelProviderConfig)
                 app = _build_application(cfg)
-                await app.initialize()
-                if inbound:
-                    await app.start()
-                    # Start long-polling.
-                    await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
-                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds, inbound=inbound)
+                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds)
+                initialized = False
+                try:
+                    await app.initialize()
+                    initialized = True
+                    if inbound:
+                        entry.app_needs_stop = True
+                        await app.start()
+                        entry.updater_needs_stop = True
+                        await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
+                except BaseException:
+                    close = entry.stop if initialized else entry.stop_partial_init
+                    await retire_failed_start(self, provider.id, close)
+                    raise
                 self._entries[provider.id] = entry
                 logger.info(
                     "telegram: application started for provider %s", provider.id,
@@ -133,28 +186,19 @@ class _TelegramConnectionRegistry:
             entry.refcount += 1
             return entry.app
 
-    async def release(self, provider: ChannelProvider) -> None:
+    async def release(self, provider: ChannelProvider, *, expected: Any = None) -> None:
         async with self._lock:
             entry = self._entries.get(provider.id)
-            if entry is None:
+            if entry is None or (expected is not None and entry.app is not expected):
                 return
             entry.refcount -= 1
-            if entry.refcount <= 0:
-                try:
-                    if entry.inbound:
-                        await entry.app.updater.stop()
-                        await entry.app.stop()
-                    await entry.app.shutdown()
-                except Exception:
-                    logger.exception(
-                        "telegram: shutdown failed for %s", provider.id,
-                    )
-                del self._entries[provider.id]
-                if self.on_close is not None:
-                    self.on_close(provider.id)
-                logger.info(
-                    "telegram: application stopped for provider %s", provider.id,
-                )
+            if entry.refcount:
+                return
+            del self._entries[provider.id]
+            closing = retire(self, provider.id, entry.stop)
+            if self.on_close is not None:
+                self.on_close(provider.id)
+        await asyncio.shield(closing)
 
     def entry(self, provider_id: str) -> _Entry | None:
         return self._entries.get(provider_id)

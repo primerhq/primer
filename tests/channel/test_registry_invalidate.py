@@ -20,6 +20,7 @@ from primer.channel.factory import (
     register_adapter_factory,
 )
 from primer.channel.inbox import ChannelInbox
+from primer.int.coordinator import InvalidationTopic
 from primer.channel.null_adapter import NullChannelAdapter
 from primer.model.channel import (
     Channel,
@@ -76,11 +77,11 @@ async def _seed(p: SqliteStorageProvider, *, external_id: str = "C1") -> None:
     ))
 
 
-def _build_registry(p: SqliteStorageProvider) -> ChannelRegistry:
+def _build_registry(p: SqliteStorageProvider, *, owns_inbound: bool = True) -> ChannelRegistry:
     return ChannelRegistry(
         channel_storage=p.get_storage(Channel),
         channel_provider_storage=p.get_storage(ChannelProvider),
-        inbox=ChannelInbox(event_bus=None),
+        inbox=ChannelInbox(event_bus=None), owns_inbound=owns_inbound,
         storage_provider=p,
     )
 
@@ -147,11 +148,8 @@ class _FakeRegistry:
     def __init__(self) -> None:
         self.calls: list = []
 
-    async def invalidate(self, *, channel_id):
-        self.calls.append(channel_id)
-
-    async def invalidate_provider(self, provider_id, *, rewarm):
-        self.calls.append((provider_id, rewarm))
+    async def changed(self, topic, key):
+        self.calls.append((topic, key))
 
 
 class _FakeRequest:
@@ -162,25 +160,13 @@ class _FakeRequest:
 
 @pytest.mark.asyncio
 async def test_channel_router_hooks_invalidate_the_registry():
-    """The on_update / on_delete hooks wired into the channel router target the
-    single edited channel; the provider hook targets that provider's channels
-    and rewarms them only in a process that owns inbound (W34)."""
-    from primer.api.routers.channels import (
-        _invalidate_channel,
-        _invalidate_provider_channels,
-    )
+    from primer.api.routers.channels import _channel_changed, _provider_changed
 
     reg = _FakeRegistry()
     req = _FakeRequest(reg)
-    await _invalidate_channel("ch-1", req)
-    await _invalidate_provider_channels("cp-1", req)
-    assert reg.calls == ["ch-1", ("cp-1", True)]
-
-    worker = _FakeRegistry()
-    worker_req = _FakeRequest(worker)
-    worker_req.app.state.config = type("_Cfg", (), {"runtime_mode": RuntimeMode.WORKER})()
-    await _invalidate_provider_channels("cp-1", worker_req)
-    assert worker.calls == [("cp-1", False)]
+    await _channel_changed("ch-1", req)
+    await _provider_changed("cp-1", req)
+    assert reg.calls == [(InvalidationTopic.CHANNEL, "ch-1"), (InvalidationTopic.CHANNEL_PROVIDER, "cp-1")]
 
 
 async def _seed_two_providers(p: SqliteStorageProvider) -> None:
@@ -204,18 +190,22 @@ async def _seed_two_providers(p: SqliteStorageProvider) -> None:
 async def test_W34_a_provider_edit_invalidates_only_its_channels_and_rewarms_the_chat_enabled_ones(tmp_path: Path, mode):
     """Editing cp-1 closes cp-1's adapters (its channels read from storage), rebuilds the chat-enabled ones when the
     process owns inbound, and leaves cp-2's adapter alone."""
-    from primer.api.routers.channels import _invalidate_provider_channels
+    from primer.api.routers.channels import _provider_changed
 
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
     try:
         _register_recording_factory()
         await _seed_two_providers(p)
-        reg = _build_registry(p)
+        reg = _build_registry(p, owns_inbound=mode == RuntimeMode.API)
         try:
             a1, a2, a3 = [await reg.get_adapter(cid) for cid in ("ch-1", "ch-2", "ch-3")]
 
-            await _invalidate_provider_channels("cp-1", _StubRequest(reg, runtime_mode=mode))
+            providers = p.get_storage(ChannelProvider)
+            row = await providers.get("cp-1")
+            await providers.update(row.model_copy(update={"config": SlackChannelProviderConfig(app_token="xapp-v2", bot_token="xoxb-v2")}))
+            await _provider_changed("cp-1", _FakeRequest(reg))
+            await reg.reconcile()
 
             assert a1._closed and a2._closed
             assert reg.peek_adapter("ch-2") is None                  # chats off: not rewarmed
@@ -235,15 +225,15 @@ async def test_W34_a_provider_edit_invalidates_only_its_channels_and_rewarms_the
 async def test_invalidation_hooks_noop_without_registry():
     """No channel_registry on app.state (minimal apps) -> hooks are a no-op."""
     from primer.api.routers.channels import (
-        _invalidate_channel,
-        _invalidate_provider_channels,
+        _channel_changed,
+        _provider_changed,
     )
 
     req = type("_R", (), {})()
     req.app = type("_App", (), {"state": type("_S", (), {})()})()
     # No channel_registry attribute set -> getattr(..., None) returns None.
-    await _invalidate_channel("ch-1", req)
-    await _invalidate_provider_channels("cp-1", req)
+    await _channel_changed("ch-1", req)
+    await _provider_changed("cp-1", req)
 
 
 @pytest.mark.asyncio
@@ -326,8 +316,8 @@ async def test_rewarm_if_chat_enabled_builds_adapter(tmp_path: Path):
         reg = _build_registry(p)
         try:
             assert reg.peek_adapter("ch-1") is None  # dark before re-warm
-            warmed = await reg.rewarm_if_chat_enabled("ch-1")
-            assert warmed is True
+            warmed = await reg.reconcile()
+            assert warmed == 1
             # The inbound adapter is now live (cached) without any outbound park.
             assert reg.peek_adapter("ch-1") is not None
         finally:
@@ -347,10 +337,10 @@ async def test_rewarm_if_chat_disabled_is_noop(tmp_path: Path):
         await _seed_with_chats(p, enabled=False)
         reg = _build_registry(p)
         try:
-            assert await reg.rewarm_if_chat_enabled("ch-1") is False
+            assert await reg.reconcile() == 0
             assert reg.peek_adapter("ch-1") is None
             # Unknown id never raises.
-            assert await reg.rewarm_if_chat_enabled("nope") is False
+            assert reg.peek_adapter("nope") is None
         finally:
             await reg.aclose()
     finally:
@@ -365,70 +355,7 @@ async def test_rewarm_noop_without_storage_provider():
         channel_provider_storage=None,  # type: ignore[arg-type]
         inbox=ChannelInbox(event_bus=None),
     )
-    assert await reg.rewarm_if_chat_enabled("ch-1") is False
-
-
-class _StubRegistry:
-    """Records invalidate / rewarm calls so the router-hook tests can assert
-    ordering and gating without a live adapter."""
-
-    def __init__(self) -> None:
-        self.invalidated: list[str | None] = []
-        self.rewarmed: list[str] = []
-
-    async def invalidate(self, *, channel_id):
-        self.invalidated.append(channel_id)
-
-    async def rewarm_if_chat_enabled(self, channel_id: str) -> bool:
-        self.rewarmed.append(channel_id)
-        return True
-
-
-class _StubRequest:
-    def __init__(self, registry, *, runtime_mode=None) -> None:
-        self.app = type("_App", (), {"state": type("_S", (), {})()})()
-        self.app.state.channel_registry = registry
-        if runtime_mode is not None:
-            self.app.state.config = type(
-                "_Cfg", (), {"runtime_mode": runtime_mode},
-            )()
-
-
-@pytest.mark.asyncio
-async def test_update_hook_invalidates_then_rewarms_live():
-    """The channel UPDATE hook flushes the stale adapter THEN re-warms the
-    channel live (in that order) so enabling chats needs no restart."""
-    from primer.api.routers.channels import _invalidate_and_rewarm_channel
-
-    reg = _StubRegistry()
-    req = _StubRequest(reg, runtime_mode=RuntimeMode.API)
-    await _invalidate_and_rewarm_channel("ch-1", req)
-    # Invalidate runs before re-warm (drop stale gateway, then rebuild fresh).
-    assert reg.invalidated == ["ch-1"]
-    assert reg.rewarmed == ["ch-1"]
-
-
-@pytest.mark.asyncio
-async def test_update_hook_does_not_rewarm_in_worker_only_mode():
-    """A worker-only process must not open a competing inbound gateway: the
-    UPDATE hook still invalidates but skips the live re-warm."""
-    from primer.api.routers.channels import _invalidate_and_rewarm_channel
-
-    reg = _StubRegistry()
-    req = _StubRequest(reg, runtime_mode=RuntimeMode.WORKER)
-    await _invalidate_and_rewarm_channel("ch-1", req)
-    assert reg.invalidated == ["ch-1"]
-    assert reg.rewarmed == []  # gated out by _owns_inbound
-
-
-@pytest.mark.asyncio
-async def test_update_hook_noop_without_registry():
-    """No channel_registry on app.state -> the update hook is a no-op."""
-    from primer.api.routers.channels import _invalidate_and_rewarm_channel
-
-    req = type("_R", (), {})()
-    req.app = type("_App", (), {"state": type("_S", (), {})()})()
-    await _invalidate_and_rewarm_channel("ch-1", req)  # must not raise
+    assert await reg.reconcile() == 0
 
 
 @pytest.mark.asyncio
@@ -438,7 +365,7 @@ async def test_channel_update_enabling_chats_warms_adapter_end_to_end(
     """End-to-end GAP-10: a chats-disabled channel is dark; after the operator
     flips chats.enabled true and the UPDATE hook runs, the inbound adapter is
     live WITHOUT a restart (no warm_chat_channels / boot involved)."""
-    from primer.api.routers.channels import _invalidate_and_rewarm_channel
+    from primer.api.routers.channels import _channel_changed
 
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
@@ -446,7 +373,7 @@ async def test_channel_update_enabling_chats_warms_adapter_end_to_end(
         _register_recording_factory()
         await _seed_with_chats(p, enabled=False)
         reg = _build_registry(p)
-        req = _StubRequest(reg, runtime_mode=RuntimeMode.API)
+        req = _FakeRequest(reg)
         try:
             # Before: chats disabled, nothing warm.
             assert reg.peek_adapter("ch-1") is None
@@ -459,7 +386,8 @@ async def test_channel_update_enabling_chats_warms_adapter_end_to_end(
                     chats=ChatConfig(enabled=True),
                 ),
             }))
-            await _invalidate_and_rewarm_channel("ch-1", req)
+            await _channel_changed("ch-1", req)
+            await reg.reconcile()
 
             # After: the inbound gateway is online live.
             assert reg.peek_adapter("ch-1") is not None

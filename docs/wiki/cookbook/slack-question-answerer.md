@@ -47,7 +47,7 @@ Response:
 {"id": "ops-help", "provider_id": "slack-ops", "provider": "slack", "external_id": "C0123ABC456", "label": "#ops-help"}
 ```
 
-`external_id` is the Slack channel id (the last segment of the channel's Copy link), not the room's name. `chats.enabled: true` lets a message in the room start a session: with `false`, the session-starting binding in step 6 never fires for it. Thread the channel `id` into the trigger below. Ask a person to restart primer, or to save the channel in the console, so the bot starts listening.
+`external_id` is the Slack channel id (the last segment of the channel's Copy link), not the room's name. `chats.enabled: true` lets a message in the room start a session: with `false`, the session-starting binding in step 6 never fires for it. Thread the channel `id` into the trigger below. The listening API picks up the saved room automatically.
 
 ### 3. Create the workspace
 `workspaces__create_workspace` materialises the workspace the sessions run in.

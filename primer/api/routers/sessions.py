@@ -171,24 +171,15 @@ async def create_session(
 ) -> WorkspaceSession:
     """Create a session bound to an agent or graph on this workspace.
 
-    Steps (per spec §11.4):
+    Creation requires full workspace access and a valid agent or graph binding.
+    Reserve the child ID, allocate its workspace slot, and flush any initial
+    instructions before publishing the session. A graph's holder slot uses
+    the synthetic agent ID ``graph:<graph_id>`` for its node agents' workspace tools.
 
-    1. 404 when the workspace doesn't exist.
-    2. 422 when the agent / graph referenced by the binding can't be
-       resolved (binding-level semantic validation failure).
-    3. Persist the row with ``status=CREATED``.
-    4. Allocate the on-disk session slot inside the workspace via
-       :meth:`Workspace.start_session` so the scheduler-visible Session
-       row and the workspace's ``.state/sessions/<sid>/`` directory
-       share the same id (spec §11.4 step 5). Agent bindings get a
-       slot keyed by the resolved agent. Graph bindings get a *holder*
-       slot whose synthetic agent_id is ``graph:<graph_id>`` - the
-       graph executor (primer/worker/pool.py) looks the holder up via
-       :meth:`Workspace.get_session` and composes the workspace's
-       tools into every per-node ``ToolExecutionManager``. Without the
-       holder, graph-bound sessions cannot access workspace tools.
-    5. If ``auto_start``: bump status to ``RUNNING``, stamp
-       ``started_at``, and enqueue with the scheduler.
+    One transaction commits the creation receipt and inserts the session in
+    its initial state. With ``auto_start=True``, it inserts a running, claimable
+    session with its start time. Scheduler notification and claim registration
+    follow commit. With ``auto_start=False``, it inserts a created, idle session.
     """
     # Access (P2 Task 3): creating a session is a full act in the target
     # workspace: a stranger answers its missing-row text, a reader a 403.
@@ -223,7 +214,12 @@ async def create_session(
     binding = await resolve_initial_binding(
         requested=body.binding, storage_provider=storage_provider,
     )
+    from primer.api.route_tools import calling_session_id, calling_turn_no
+
     return await start_workspace_session(
+        workspace_person=person_from_request(request),
+        calling_session_id=calling_session_id(request),
+        calling_turn_no=calling_turn_no(request),
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=body.initial_instructions,

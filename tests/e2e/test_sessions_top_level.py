@@ -146,6 +146,9 @@ async def test_t0042_top_level_get_session_works_without_workspace_context(
                     top_body = top.json()
                     assert top_body["id"] == session_id
                     assert top_body["workspace_id"] == workspace_id
+                    for row in (session_row, top_body):
+                        assert row["status"] == "created" and row["turn_status"] == "idle"
+                        assert row["started_at"] is None
                     # Binding identity is preserved
                     assert top_body["binding"]["kind"] == "agent"
                     assert top_body["binding"]["agent_id"] == agent_id

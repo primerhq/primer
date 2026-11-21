@@ -627,6 +627,9 @@ class SandboxWorkspace(Workspace):
             raise NotFoundError(f"{path!r} not found")
         return self._file_entry_from_stat(info, target)
 
+    async def capture_service_bundle(self, path: str) -> bytes:
+        return await self._sandbox.capture_service_bundle(path, (self._template.state_path, self._template.tmp_path))
+
     async def download_archive(
         self, paths: list[str] | None = None,
     ) -> AsyncIterator[bytes]:

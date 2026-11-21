@@ -13,6 +13,7 @@ review A-20).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 from typing import Any
 
@@ -21,9 +22,7 @@ import pytest
 from primer.api.registries import WorkspaceRegistry
 from primer.mcp.server import current_actor
 from primer.model.access import Access
-from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import Principal, PrincipalRef
-from primer.model.storage import OffsetPage, OffsetPageResponse
 from primer.model.workspace import (
     LocalWorkspaceConfig,
     Workspace,
@@ -37,88 +36,6 @@ from primer.toolset.workspaces import build_workspaces_toolset
 # ===========================================================================
 # In-memory fakes (minimal subset copied from tests/toolset/test_workspaces.py)
 # ===========================================================================
-
-
-class _Storage:
-    def __init__(self) -> None:
-        self._data: dict[str, Any] = {}
-
-    async def get(self, id):
-        return self._data.get(id)
-
-    async def create(self, e):
-        if e.id in self._data:
-            raise ConflictError(f"id {e.id!r} already exists")
-        self._data[e.id] = e
-        return e
-
-    async def update(self, e):
-        if e.id not in self._data:
-            raise NotFoundError(f"no entity with id {e.id!r}")
-        self._data[e.id] = e
-        return e
-
-    async def update_unless(
-        self,
-        e,
-        *,
-        field,
-        forbidden,
-        conn=None,
-    ):
-        current = self._data.get(e.id)
-        if current is None:
-            raise NotFoundError(f"no entity with id {e.id!r}")
-        if getattr(current, field, None) == forbidden:
-            return None
-        self._data[e.id] = e
-        return e
-
-    async def patch_if(self, id, patch=None, *, where, set_paths=None, conn=None):
-        # The storage contract's guarded field write (a wake arms its turn with one: audit G7-03), with the reference semantics.
-        from tests.storage._patch_reference import patch_model
-
-        current = self._data.get(id)
-        if current is None:
-            raise NotFoundError(f"no entity with id {id!r}")
-        updated = patch_model(current, patch, where=where, set_paths=set_paths)
-        if updated is not None:
-            self._data[id] = updated
-        return updated
-
-    async def delete(self, id):
-        if id not in self._data:
-            raise NotFoundError(f"no entity with id {id!r}")
-        del self._data[id]
-
-    async def list(self, page, *, order_by=None):
-        items = list(self._data.values())
-        if isinstance(page, OffsetPage):
-            return OffsetPageResponse(
-                offset=page.offset,
-                length=len(items[page.offset : page.offset + page.length]),
-                total=len(items),
-                items=items[page.offset : page.offset + page.length],
-            )
-        return OffsetPageResponse(
-            offset=0, length=len(items), total=len(items), items=items
-        )
-
-    async def find(self, predicate, page, *, order_by=None):
-        return await self.list(page, order_by=order_by)
-
-
-class _SP:
-    async def get_system_state(self):
-        from primer.model.system_state import SystemState
-
-        return SystemState()
-
-    def __init__(self) -> None:
-        self._stores: dict[type, _Storage] = {}
-
-    def get_storage(self, cls):
-        return self._stores.setdefault(cls, _Storage())
 
 
 class _LiveWorkspace:
@@ -219,8 +136,8 @@ def _actor():
 
 
 @pytest.fixture
-def sp() -> _SP:
-    return _SP()
+def sp(fake_storage_provider):
+    return fake_storage_provider
 
 
 @pytest.fixture
@@ -281,10 +198,16 @@ async def seeded(session_toolset, sp):
 
 @pytest.mark.asyncio
 async def test_create_session_stamps_ctx_initiated_by(
-    session_toolset,
+    sp, session_toolset,
     seeded,
 ) -> None:
     """A ctx carrying a per-call identity stamps the child row from it."""
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="sess-parent", workspace_id=seeded, status=SessionStatus.RUNNING, created_at=datetime.now(UTC),
+        binding=AgentSessionBinding(agent_id="code-reviewer"),
+    ))
     ctx = ToolContext(
         tool_call_id="tc-1",
         session_id="sess-parent",
@@ -353,3 +276,29 @@ async def test_a_session_started_over_mcp_runs_as_the_token_account(
     assert not result.is_error, result.output
     body = json.loads(result.output)
     assert body["initiated_by"]["id"] == "tok-9" and body["initiated_by"]["user_id"] == "u-9"
+
+
+async def test_previous_turn_cannot_start_a_child(session_toolset, sp, seeded):
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+
+    store = sp.get_storage(WorkspaceSession)
+    caller = await store.create(WorkspaceSession(
+        id="zz-caller", workspace_id=seeded, status=SessionStatus.RUNNING, created_at=datetime.now(UTC),
+        binding=AgentSessionBinding(agent_id="code-reviewer"), turn_no=2,
+    ))
+    ctx = ToolContext(
+        tool_call_id="call", session_id=caller.id, workspace_id=seeded, turn_no=1,
+        initiated_by=PrincipalRef(type="user", id="u-1", user_id="u-1", role="user", source="local", display="u1"),
+    )
+    args = {"workspace_id": seeded, "binding": {"kind": "agent", "agent_id": "code-reviewer"},
+            "parent_session_id": "unrelated-lineage", "auto_start": False}
+    stale = await session_toolset.call(tool_name="create_workspace_session", arguments=args, ctx=ctx)
+    assert stale.is_error and json.loads(stale.output)["type"] == "conflict"
+
+    from dataclasses import replace
+
+    result = await session_toolset.call(tool_name="create_workspace_session", arguments=args, ctx=replace(ctx, turn_no=2))
+    assert not result.is_error, result.output
+    child = await store.get(json.loads(result.output)["id"])
+    assert child.id < caller.id and child.parent_session_id == "unrelated-lineage"
+    assert child.status == SessionStatus.CREATED and child.turn_status == "idle"

@@ -114,3 +114,43 @@ async def test_list_session_ids_empty_history() -> None:
         sandbox, state_path="/workspace/.state", workspace_id="ws-1",
     )
     assert await repo.list_session_ids() == []
+
+
+@pytest.mark.parametrize("version,with_files", [("1.5", False), ("1.5", True), ("1.6", False)])
+@pytest.mark.parametrize("files", [["session.json"], [{"path": "session.json", "additions": 1}]])
+async def test_history_ignores_unrequested_or_unsupported_file_metadata(version, with_files, files):
+    sandbox = _make_mock_sandbox(version)
+    sandbox.state_history.return_value = [
+        {"sha": "a" * 40, "session_id": "sess-a", "agent_id": "agent-a", "files": files},
+    ]
+    repo = SandboxStateRepo(sandbox, state_path="/workspace/.state", workspace_id="ws-1")
+    commits = await repo.history(with_files=with_files)
+    assert len(commits) == 1
+    assert commits[0].session_id == "sess-a"
+    assert commits[0].files is None
+    sandbox.state_history.assert_awaited_once_with(session_id=None, agent_id=None, limit=100)
+    assert await repo.list_session_ids() == ["sess-a"]
+
+
+async def test_history_maps_requested_supported_file_counts():
+    sandbox = _make_mock_sandbox("1.6")
+    sandbox.state_history.return_value = [{
+        "sha": "a" * 40, "session_id": "sess-a",
+        "files": [{"path": "session.json", "additions": 3, "deletions": 2, "binary": False}],
+    }]
+    repo = SandboxStateRepo(sandbox, state_path="/workspace/.state", workspace_id="ws-1")
+    commits = await repo.history(with_files=True)
+    assert len(commits) == 1
+    assert commits[0].files is not None
+    assert [file.model_dump() for file in commits[0].files] == sandbox.state_history.return_value[0]["files"]
+    sandbox.state_history.assert_awaited_once_with(session_id=None, agent_id=None, limit=100, with_files=True)
+
+
+async def test_requested_file_metadata_still_rejects_invalid_rows():
+    from pydantic import ValidationError
+
+    sandbox = _make_mock_sandbox("1.6")
+    sandbox.state_history.return_value = [{"sha": "a" * 40, "files": ["session.json"]}]
+    repo = SandboxStateRepo(sandbox, state_path="/workspace/.state", workspace_id="ws-1")
+    with pytest.raises(ValidationError, match="files.0"):
+        await repo.history(with_files=True)

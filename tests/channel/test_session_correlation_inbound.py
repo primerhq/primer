@@ -34,6 +34,7 @@ from primer.model.channel import (
 )
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
+from tests._support.channel_offline import stub_connection
 
 
 class _CapturingInbox(ChannelInbox):
@@ -225,7 +226,7 @@ class _DCClient:
 
 @pytest.mark.asyncio
 async def test_discord_ask_user_writes_store_and_reply_resolves(
-    tmp_path: Path, async_closers,
+    tmp_path: Path, async_closers, monkeypatch,
 ) -> None:
     from primer.channel.discord.adapter import DiscordChannelAdapter
     from primer.channel.discord.connection import DISCORD_CONNECTIONS
@@ -235,18 +236,13 @@ async def test_discord_ask_user_writes_store_and_reply_resolves(
     thread = _DCThread(tid=1000)
     dc_client = _DCClient(thread=thread)
 
-    async def _acquire(_): return dc_client
-    async def _release(_): pass
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, dc_client)
 
     adapter = DiscordChannelAdapter(
         provider=_discord_provider(), channel=_discord_channel(),
         inbox=inbox, storage_provider=sp,
     )
 
-    orig_acquire = DISCORD_CONNECTIONS.acquire
-    orig_release = DISCORD_CONNECTIONS.release
-    DISCORD_CONNECTIONS.acquire = _acquire
-    DISCORD_CONNECTIONS.release = _release
     try:
         await adapter.initialize()
         env = PromptEnvelope(
@@ -294,8 +290,6 @@ async def test_discord_ask_user_writes_store_and_reply_resolves(
         kept = await CorrelationStore(sp).lookup("ch-dc", str(thread_id))
         assert kept is not None and kept.session_id == "s-dc" and kept.tool_call_id is None
     finally:
-        DISCORD_CONNECTIONS.acquire = orig_acquire
-        DISCORD_CONNECTIONS.release = orig_release
         await adapter.aclose()
 
 
@@ -335,7 +329,7 @@ class _TGApp:
 
 @pytest.mark.asyncio
 async def test_telegram_ask_user_writes_store_and_reply_resolves(
-    tmp_path: Path, async_closers,
+    tmp_path: Path, async_closers, monkeypatch,
 ) -> None:
     from primer.channel.telegram.adapter import TelegramChannelAdapter
     from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
@@ -344,17 +338,12 @@ async def test_telegram_ask_user_writes_store_and_reply_resolves(
     inbox = _CapturingInbox()
     app = _TGApp()
 
-    async def _acquire(_): return app
-    async def _release(_): pass
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
 
     adapter = TelegramChannelAdapter(
         provider=_tg_provider(), channel=_tg_channel(),
         inbox=inbox, storage_provider=sp,
     )
-    orig_acquire = TELEGRAM_CONNECTIONS.acquire
-    orig_release = TELEGRAM_CONNECTIONS.release
-    TELEGRAM_CONNECTIONS.acquire = _acquire
-    TELEGRAM_CONNECTIONS.release = _release
     try:
         await adapter.initialize()
         env = PromptEnvelope(
@@ -404,8 +393,6 @@ async def test_telegram_ask_user_writes_store_and_reply_resolves(
         # Store cleared.
         assert await CorrelationStore(sp).lookup("ch-tg", str(message_id)) is None
     finally:
-        TELEGRAM_CONNECTIONS.acquire = orig_acquire
-        TELEGRAM_CONNECTIONS.release = orig_release
         await adapter.aclose()
 
 
@@ -415,7 +402,7 @@ async def test_telegram_ask_user_writes_store_and_reply_resolves(
 
 @pytest.mark.asyncio
 async def test_telegram_reject_reason_still_uses_reply_targets(
-    tmp_path: Path, async_closers,
+    tmp_path: Path, async_closers, monkeypatch,
 ) -> None:
     """The Reject-button follow-up text (rejection reason) continues to use
     _reply_targets since it is NOT a session gate and has no store correlation.
@@ -427,17 +414,12 @@ async def test_telegram_reject_reason_still_uses_reply_targets(
     inbox = _CapturingInbox()
     app = _TGApp()
 
-    async def _acquire(_): return app
-    async def _release(_): pass
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
 
     adapter = TelegramChannelAdapter(
         provider=_tg_provider(), channel=_tg_channel(),
         inbox=inbox, storage_provider=sp,
     )
-    orig_acquire = TELEGRAM_CONNECTIONS.acquire
-    orig_release = TELEGRAM_CONNECTIONS.release
-    TELEGRAM_CONNECTIONS.acquire = _acquire
-    TELEGRAM_CONNECTIONS.release = _release
     try:
         await adapter.initialize()
         # Directly populate _reply_targets as the _on_callback reject path does.
@@ -452,6 +434,4 @@ async def test_telegram_reject_reason_still_uses_reply_targets(
         assert target["kind"] == "reject"
         assert target["workspace_id"] == "ws-r"
     finally:
-        TELEGRAM_CONNECTIONS.acquire = orig_acquire
-        TELEGRAM_CONNECTIONS.release = orig_release
         await adapter.aclose()

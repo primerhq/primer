@@ -23,7 +23,7 @@ class _Payload(BaseModel):
 
 def _ctx(session_id):
     return ToolContext(
-        tool_call_id="call", session_id=session_id, workspace_id="workspace",
+        tool_call_id="call", session_id=session_id, workspace_id="workspace", turn_no=4,
         initiated_by=PrincipalRef.system(),
     )
 
@@ -43,7 +43,7 @@ def _probe(hook=None):
             await hook(request)
         person = route_tools.trusted_route_tool_person(request.scope)
         return {
-            "caller": before, "after": route_tools.calling_session_id(request),
+            "caller": before, "after": route_tools.calling_session_id(request), "turn": route_tools.calling_turn_no(request),
             "target": session_id, "body": body.model_dump(), "parent": parent_session_id,
             "header": claimed_session, "role": person.role if person else None,
         }
@@ -67,7 +67,7 @@ async def test_generated_call_uses_context_not_arguments(session_id):
     })
     assert not result.is_error
     assert data == {
-        "caller": session_id, "after": session_id, "target": "path-target",
+        "caller": session_id, "after": session_id, "turn": 4 if session_id else None, "target": "path-target",
         "body": {"session_id": "body-caller", "parent_session_id": "body-parent"},
         "parent": "chosen-parent", "header": "header-caller", "role": "system",
     }
@@ -88,11 +88,11 @@ async def test_external_http_cannot_forge_scope_marker_or_session():
             "primer.route_tool_session_id": "body-scope",
         }, headers={
             "primer.route_tool_session_id": "header-caller",
-            "primer.route_tool_dispatch": "true", "x-primer-session-id": "alternate-header",
+            "primer.route_tool_dispatch": "true", "primer.route_tool_turn_no": "4", "x-primer-session-id": "alternate-header",
         })
     assert response.status_code == 200
     data = response.json()
-    assert data["caller"] is None and data["after"] is None and data["role"] is None
+    assert data["caller"] is None and data["after"] is None and data["role"] is None and data["turn"] is None
     assert data["target"] == "path-caller" and data["header"] == "header-caller"
 
 

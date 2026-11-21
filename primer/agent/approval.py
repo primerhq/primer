@@ -28,7 +28,7 @@ from primer.common.preview_paths import closed_set_names
 from primer.common.toolset_ids import canonical_toolset_id, toolset_id_spellings
 from primer.int.coordinator import InvalidationTopic
 from primer.int.storage import Storage
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import CursorPage, FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.yield_ import GATE_ID_KEY, new_gate_id
 from primer.model.tool_approval import (
     ApprovalType,
@@ -140,7 +140,8 @@ def effective_approvers(
 _CARD_BASELINES: dict[tuple[str, str], str] = {("system", "update_tool_approval_policy"): "id"}
 
 # How many enabled candidates for one (toolset_id, tool_name) the resolver reads. One is the rule; more than one is a leftover
-# duplicate, and a handful is already pathological, so this is a bound on the read and not a limit anyone should meet.
+# duplicate, and a handful is already pathological. Publisher semantic reads use this as the page size instead,
+# because disabled rows must not hide a later enabled policy or malformed row.
 _CANDIDATES = 50
 
 
@@ -278,7 +279,10 @@ def approval_resume_metadata(
 def _policy_predicate(toolset_id: str, tool_name: str) -> Predicate:
     """The lookup of the ENABLED policies of one ``(toolset_id, tool_name)``, spelled exactly as stored.
 
-    ``(toolset_id == X AND tool_name == Y) AND enabled == True``. The outer shape lets callers (including test fakes) navigate:
+    Normally ``(toolset_id == X AND tool_name == Y) AND enabled == True``.
+    The publisher selects only by tool identity: its enabled value is decoded
+    by the storage model, then filtered in the resolver.
+    For other tools the outer shape lets callers (including test fakes) navigate:
     ``predicate.left.left.right.value`` is the toolset_id value and ``predicate.left.right.right.value`` the tool_name value.
     """
     toolset_pred = Predicate(
@@ -296,15 +300,15 @@ def _policy_predicate(toolset_id: str, tool_name: str) -> Predicate:
         op=Op.AND,
         right=tool_pred,
     )
-    enabled_pred = Predicate(
-        left=FieldRef(name="enabled"),
-        op=Op.EQ,
-        right=Value(value=True),
-    )
+    if canonical_toolset_id(toolset_id) == "system" and tool_name == "publish_service":
+        # Match startup's typed lookup. Raw boolean SQL equality can exclude
+        # readable values (for example JSON "true" on SQLite), silently losing
+        # an active gate. Decode even disabled rows so corruption refuses lookup.
+        return key_pred
     return Predicate(
         left=key_pred,
         op=Op.AND,
-        right=enabled_pred,
+        right=Predicate(left=FieldRef(name="enabled"), op=Op.EQ, right=Value(value=True)),
     )
 
 
@@ -363,14 +367,31 @@ class ApprovalResolver:
 
     async def _load(self, key: tuple[str, str], toolset_id: str, tool_name: str) -> ToolApprovalPolicy | None:
         generation = self._generation
-        # One read per spelling (one, for a toolset with no retired id), each the same lookup as always, so a backend needs no new operator. Keyed by id: a row is
-        # one policy however many of the reads returned it (a storage that ignores the predicate returns it every time).
+        # Key by id so a row is one policy even if several reads return it.
         candidates: dict[str, ToolApprovalPolicy] = {}
+        publisher = toolset_id == "system" and tool_name == "publish_service"
         for spelling in toolset_id_spellings(toolset_id):
-            page = await self._storage.find(
-                _policy_predicate(spelling, tool_name), OffsetPage(offset=0, length=_CANDIDATES),
-            )
-            candidates.update((row.id, row) for row in page.items)
+            predicate = _policy_predicate(spelling, tool_name)
+            if publisher:
+                # Disabled rows must not exhaust the enabled-candidate budget.
+                # Read every semantic row under both names, including malformed
+                # later rows: decode errors propagate before any answer is cached.
+                # Stable cursor pages avoid offset shifts when a row is deleted.
+                cursor = None
+                while True:
+                    page = await self._storage.find(
+                        predicate, CursorPage(cursor=cursor, length=_CANDIDATES),
+                        order_by=[OrderBy(field="id")],
+                    )
+                    candidates.update((row.id, row) for row in page.items if row.enabled)
+                    cursor = page.next_cursor
+                    if cursor is None:
+                        break
+            else:
+                page = await self._storage.find(
+                    predicate, OffsetPage(offset=0, length=_CANDIDATES),
+                )
+                candidates.update((row.id, row) for row in page.items)
         policy = _choose_policy(list(candidates.values()), toolset_id=toolset_id, tool_name=tool_name)
         if generation == self._generation:  # not if an invalidate landed while the read was out: that answer may predate the edit
             self._cache[key] = (time.monotonic() + self._ttl, policy)

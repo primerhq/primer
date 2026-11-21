@@ -1,7 +1,7 @@
 """The ``memory`` claim kind: ``MemoryJob`` rows are the claim entity table (agent memory, spec 6.1).
 
 A job is claimable for as long as its row exists (a job whose agent or row is gone is dropped by ``run_memory_job``, which holds the gates). The row
-carries no state the claim engine writes back, so ``on_release`` has nothing to do; the lease's own ``next_attempt_at`` is the debounce.
+carries no state the claim engine writes back, so ``on_release`` has nothing to do; managed leases project the durable job occurrence and its deadline.
 """
 
 from __future__ import annotations
@@ -20,6 +20,14 @@ class MemoryClaimAdapter(ClaimAdapter):
     def __init__(self, *, storage: Storage | None) -> None:
         self._storage = storage
 
+    def work_priority_sql(self, *, schema: str | None = None) -> str:
+        from primer.claim.work_priority import priority_sql
+        return priority_sql()
+
+    async def work_priority(self, entity_id: str) -> int:
+        from primer.claim.work_priority import read_priority
+        return await read_priority(self._storage, entity_id)
+
     def eligibility_sql(self) -> str:
         return "TRUE"
 
@@ -28,6 +36,13 @@ class MemoryClaimAdapter(ClaimAdapter):
         if self._storage is None:
             return True
         return await read_for_eligibility(self._storage, entity_id) is not None
+
+    def dead_lease_sql(self) -> str:
+        # The engine includes missing entities. Existing jobs are never garbage.
+        return "FALSE"
+
+    async def is_dead(self, entity_id: str) -> bool:
+        return self._storage is not None and await self._storage.get(entity_id) is None
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         return None

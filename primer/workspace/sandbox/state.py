@@ -48,6 +48,7 @@ from primer.workspace.state_helpers import (
     trailer_line,
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
+    validate_sha as _validate_sha,
 )
 
 if TYPE_CHECKING:
@@ -99,6 +100,7 @@ class _StateCapableSandbox(Protocol):
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 50,
+        with_files: bool = False,
     ) -> list[dict]: ...
 
 
@@ -139,7 +141,7 @@ def _build_arbitrary_message(
     return "\n".join(lines)
 
 
-def _map_commit_dict(raw: dict) -> CommitInfo:
+def _map_commit_dict(raw: dict, *, with_files: bool = False) -> CommitInfo:
     """Map a raw commit dict (from state_history) to :class:`CommitInfo`.
 
     Handles two wire shapes:
@@ -154,6 +156,8 @@ def _map_commit_dict(raw: dict) -> CommitInfo:
       returns, so we must handle it first.
 
     The flat shape takes priority; the nested shape acts as a fallback.
+    File counts are parsed only when explicitly requested and supported.
+    Legacy transports may include bare filenames in header-only responses.
     """
     ts_raw = raw.get("committed_at") or raw.get("timestamp") or raw.get("ts")
     if isinstance(ts_raw, (int, float)):
@@ -201,6 +205,7 @@ def _map_commit_dict(raw: dict) -> CommitInfo:
         op=op,
         tool=tool,
         call_id=call_id,
+        files=raw.get("files") if with_files else None,
     )
 
 
@@ -640,38 +645,55 @@ class SandboxStateRepo:
         limit: int = 100,
         with_files: bool = False,
     ) -> list[CommitInfo]:
-        """Return commits, optionally filtered by session or agent. Newest first.
+        """Return headers and optional file counts (runtime 1.6+).
 
-        ``with_files`` is accepted for Protocol conformance but has no effect:
-        the sandbox transport (``state_history``) returns commit headers only,
-        and this backend already 501s on ``show_commit`` for the same reason.
-        Every ``CommitInfo.files`` therefore stays ``None`` -- "this backend
-        cannot tell you", which is exactly what None means and why it is not
-        ``[]``. Silently returning empty lists would have the console draw
-        "0 files changed" over every commit in a container workspace.
+        Older runtimes keep files=None, never a fabricated empty file list.
         """
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
         if not isinstance(self._sandbox, _StateCapableSandbox):
             return []
         sandbox = self._state_sandbox()
-        raw_commits = await sandbox.state_history(
-            session_id=session_id,
-            agent_id=agent_id,
-            limit=limit,
-        )
-        return [_map_commit_dict(c) for c in raw_commits]
+        from primer.workspace.runtime.runtime_client import RuntimeError
+        from primer.workspace.runtime.protocol import ErrorCode
+
+        include_files = with_files and _parse_version(sandbox.protocol_version) >= (1, 6)
+        try:
+            raw_commits = await sandbox.state_history(
+                session_id=session_id,
+                agent_id=agent_id,
+                limit=limit,
+                **({"with_files": True} if include_files else {}),
+            )
+        except RuntimeError as exc:
+            if exc.code == ErrorCode.EPROTOCOL:
+                raise ValidationError(str(exc)) from exc
+            raise
+        return [_map_commit_dict(c, with_files=include_files) for c in raw_commits]
 
     # ------------------------------------------------------------------
     # show_commit
     # ------------------------------------------------------------------
 
     async def show_commit(self, sha: str) -> dict:
-        """Not supported on the sandbox backend.
+        """Inspect a state commit through the version-gated runtime transport."""
+        from primer.workspace.runtime.runtime_client import RuntimeError
+        from primer.workspace.runtime.protocol import ErrorCode
 
-        Raises :class:`NotImplementedError` so the API layer returns HTTP 501.
-        """
-        raise NotImplementedError(
-            "show_commit is not supported on the sandbox/container/k8s backend"
-        )
+        _validate_sha(sha)
+        show = getattr(self._sandbox, "state_show_commit", None)
+        if show is None or _parse_version(getattr(self._sandbox, "protocol_version", "0.0")) < (1, 6):
+            raise NotImplementedError("State commit diffs require runtime protocol 1.6 or newer")
+        try:
+            return await show(sha)
+        except RuntimeError as exc:
+            if exc.code == ErrorCode.ENOENT:
+                raise FileNotFoundError(str(exc)) from exc
+            if exc.code == ErrorCode.EUNSUPPORTED:
+                raise NotImplementedError(str(exc)) from exc
+            if exc.code == ErrorCode.EPROTOCOL:
+                raise ValidationError(str(exc)) from exc
+            raise
 
     # ------------------------------------------------------------------
     # load helpers

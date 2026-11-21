@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION: str = "1.5"
+PROTOCOL_VERSION: str = "1.7"
 
 
 class OpName(StrEnum):
@@ -30,6 +30,7 @@ class OpName(StrEnum):
     STAT = "stat"
     DELETE = "delete"
     ARCHIVE = "archive"
+    CAPTURE_SERVICE_BUNDLE = "capture_service_bundle"
     EXEC = "exec"
     # Single-shot control request (protocol 1.4) carrying ``target_req_id``, as WATCH_CANCEL and PTY_CLOSE do: cancels the
     # in-flight EXEC with that req_id (an exec still queued on the workspace write lock never starts). A client sends it
@@ -41,6 +42,7 @@ class OpName(StrEnum):
     STATE_COMMIT = "state_commit"
     STATE_READ = "state_read"
     STATE_HISTORY = "state_history"
+    STATE_SHOW_COMMIT = "state_show_commit"
     # Interactive PTY ops (Studio integrated terminal). PTY_OPEN is a
     # long-lived streaming op (emits pty_open / data / exit events) keyed by
     # its req_id; PTY_STDIN / PTY_RESIZE / PTY_CLOSE are single-shot control
@@ -57,6 +59,7 @@ class ErrorCode(StrEnum):
     EISDIR = "EISDIR"
     ENOTDIR = "ENOTDIR"
     EEXIST = "EEXIST"
+    EBUSY = "EBUSY"
     ETIMEDOUT = "ETIMEDOUT"
     EUNSUPPORTED = "EUNSUPPORTED"
     EPROTOCOL = "EPROTOCOL"

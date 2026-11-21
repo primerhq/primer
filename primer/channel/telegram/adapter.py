@@ -100,10 +100,10 @@ class TelegramChannelAdapter(ChannelAdapter):
 
     async def aclose(self) -> None:
         entry = TELEGRAM_CONNECTIONS.entry(self._provider.id)
-        if entry is not None:
-            entry.adapters_by_chat_id.pop(str(self._channel.external_id), None)
+        if entry is not None and entry.adapters_by_chat_id.get(str(self._channel.external_id)) is self:
+            del entry.adapters_by_chat_id[str(self._channel.external_id)]
         if self._app is not None:
-            await TELEGRAM_CONNECTIONS.release(self._provider)
+            await TELEGRAM_CONNECTIONS.release(self._provider, expected=self._app)
             self._app = None
 
     async def verify(self) -> None:

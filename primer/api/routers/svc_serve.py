@@ -105,6 +105,13 @@ async def svc_root_redirect(name: str) -> RedirectResponse:
 @svc_serve_router.post(
     "/svc/{name}/_gateway/functions/{fn}",
     summary="Call a bundle function in the python-runner sandbox",
+    # Declare the raw JSON contract without changing handler validation/auth order.
+    openapi_extra={"requestBody": {
+        "required": True,
+        "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": True,
+        }}},
+    }},
 )
 @route_tool(scoped_id="svc__svc_gateway_function")
 async def svc_gateway_function(

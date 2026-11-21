@@ -77,10 +77,10 @@ def test_worked_subscription_consumes_actual_event_text_and_separates_reply_scop
 
 def test_runbook_requires_listener_activation_and_actual_inbound_answer():
     page = repo_wiki().pages[PAGE].body
-    assert "Tool writes do not refresh or warm" in page
+    assert "tool save requests listener refresh automatically" in page
     assert "skipped_no_match" in page and "no ChannelEvent" in page
     assert "do not remove the matcher" in page
     assert "actual transcript" in page and "correct room/thread" in page
     assert "served mask" in page and "Credentials are deliberately absent" in page
     assert "does not itself prove a live listener" in page
-    assert "Channel listener activation" in repo_wiki().pages["not-agent-callable"].body
+    assert "Live channel diagnostics" in repo_wiki().pages["not-agent-callable"].body

@@ -126,6 +126,22 @@ Reference: [`crud__create_trigger`](reference/tools/crud/create_trigger)
 
 Reference: [`crud__update_trigger`](reference/tools/crud/update_trigger)
 
+### Receive a webhook through a tool
+
+`webhooks__receive_webhook` takes the webhook `token`, optional base64 `body`,
+optional `signature` and optional string-valued `query` object. For example,
+`body: "eyJldmVudCI6InBpbmcifQ=="` sends the bytes `{"event":"ping"}`; a query
+such as `{"source":"mcp"}` is delivered to templates as `webhook_query`.
+For an HMAC-protected trigger, compute `sha256=<hex>` over the exact original
+body bytes, then base64-encode those same bytes for `body`. The tool preserves
+whitespace and byte encoding; changing either invalidates the signature.
+Omitting the body sends empty bytes. The decoded-body limit is 1 MiB.
+
+The tool sends `application/octet-stream` and does not expose arbitrary custom
+headers. Trigger enablement, token and HMAC checks still apply, along with the
+tool's exposure and effective approval policy. An external MCP call cannot park
+for approval. Each accepted call is a separate delivery; retries can fire twice.
+
 ## Gotchas
 - An update cannot change `config.kind` (`trigger_kind_immutable`). Delete the trigger and create a new one.
 - An update that sends `config` replaces all of it. An omitted `timezone` falls back to `UTC` and `catchup` to `one`. An omitted `hmac_secret` clears the secret: send the `**********` a read shows to keep it. The webhook `token` is kept unless you send a new one.

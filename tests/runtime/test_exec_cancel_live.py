@@ -82,7 +82,7 @@ async def live(tmp_path: Path) -> AsyncIterator[tuple[RuntimeClient, Path]]:
 async def test_the_client_reports_a_runtime_that_has_exec_cancel(live) -> None:
     client, _ = live
 
-    assert client.negotiated_version == "1.5"
+    assert client.negotiated_version == "1.7"
 
 
 async def test_cancelling_the_clients_exec_stops_the_command_in_the_runtime_and_frees_the_write_lock(live) -> None:
@@ -136,3 +136,31 @@ async def test_a_runtime_that_reported_an_older_version_is_not_sent_the_op_and_s
         await asyncio.gather(waiter, return_exceptions=True)
     finally:
         _kill(child)
+
+
+async def test_workspace_bundle_capture_over_the_runtime_connection(live):
+    from primer.model.except_ import BadRequestError
+    from primer.service.bundle import validate_bundle
+
+    client, root = live
+    app = root / "app"
+    app.mkdir()
+    (app / "index.html").write_bytes(b"hello")
+    raw = await client.capture_service_bundle("app", (".state", ".tmp"))
+    assert validate_bundle(raw).files == {"index.html": b"hello"}
+    (app / "linked").symlink_to(app / "index.html")
+    with pytest.raises(BadRequestError):
+        await client.capture_service_bundle("app", (".state", ".tmp"))
+
+
+async def test_old_runtime_refuses_directory_capture_before_request(monkeypatch):
+    from unittest.mock import AsyncMock
+    from primer.model.except_ import BadRequestError
+
+    client = RuntimeClient(url="ws://unused", token="test")
+    client._negotiated_version = "1.6"
+    request = AsyncMock()
+    monkeypatch.setattr(client, "_send_request", request)
+    with pytest.raises(BadRequestError, match="1.7"):
+        await client.capture_service_bundle("app", (".state", ".tmp"))
+    request.assert_not_awaited()

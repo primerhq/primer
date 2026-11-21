@@ -47,7 +47,7 @@ Response:
 {"id": "personal-dm", "provider_id": "tg-personal", "provider": "telegram", "external_id": "987654321", "label": "personal DM"}
 ```
 
-`external_id` is your numeric user id, not a group id: binding a single private user keeps the bot from acting on group messages. `chats.enabled: true` lets a message in the room start a session. Thread the channel `id` into the trigger below. Ask a person to restart primer, or to save the channel in the console, so the bot starts listening.
+`external_id` is your numeric user id, not a group id: binding a single private user keeps the bot from acting on group messages. `chats.enabled: true` lets a message in the room start a session. Thread the channel `id` into the trigger below. The listening API picks up the saved room automatically.
 
 ### 3. Create the workspace
 `workspaces__create_workspace` materialises the workspace the sessions run in.

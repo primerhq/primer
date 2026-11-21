@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -57,8 +58,10 @@ def _deps(sp, engine, *, now=NOW, load_messages=None) -> MemoryDeps:
     )
 
 
-def _lease(job_id: str) -> Lease:
-    return Lease(ClaimKind.MEMORY, job_id, "w1", NOW, NOW + timedelta(minutes=1), 0, None)
+async def _lease(engine, job_id: str, *, attempts: int = 0) -> Lease:
+    lease, = await engine.claim_due("w1", max_count=1)
+    assert lease.entity_id == job_id
+    return replace(lease, attempt_count=attempts)
 
 
 def _due(engine, job_id) -> datetime:
@@ -67,7 +70,7 @@ def _due(engine, job_id) -> datetime:
 
 @pytest.fixture
 def engine() -> InMemoryClaimEngine:
-    return InMemoryClaimEngine(adapters={}, clock=lambda: NOW)
+    return InMemoryClaimEngine(adapters={}, clock=lambda: NOW + timedelta(minutes=10))
 
 
 @pytest.fixture
@@ -159,7 +162,7 @@ async def test_over_budget_requeues_to_next_utc_midnight(fake_storage_provider, 
     await _agent(fake_storage_provider, daily_reflections=2, reflections_day=NOW.date(), reflections_count=2)
     job_id = await _queued(fake_storage_provider, engine)
     deps = _deps(fake_storage_provider, engine)
-    out = await run_memory_job(deps, _lease(job_id))
+    out = await run_memory_job(deps, await _lease(engine, job_id))
     assert out.drop_lease is False and out.requeue_after == datetime(2026, 11, 2, tzinfo=UTC) - NOW
     assert ran == []
     assert [(e[0], e[1]["reason"], e[1]["retrying"]) for e in deps.recorder.events] == [("memory.reflection.skipped", "budget", True)]
@@ -179,7 +182,7 @@ async def test_expired_job_is_dropped(fake_storage_provider, engine, ran):
     await _agent(fake_storage_provider)
     job_id = await _queued(fake_storage_provider, engine, expires_at=NOW - timedelta(seconds=1))
     deps = _deps(fake_storage_provider, engine)
-    out = await run_memory_job(deps, _lease(job_id))
+    out = await run_memory_job(deps, await _lease(engine, job_id))
     assert out.drop_lease is True and ran == []
     assert [e[1]["reason"] for e in deps.recorder.events] == ["expired"]
 
@@ -195,7 +198,7 @@ async def test_agent_deleted_or_memory_disabled_drops_lease(fake_storage_provide
         await store.update((await store.get("a1")).model_copy(update={"enabled": False}))
     else:
         await fake_storage_provider.get_storage(MemoryJob).delete(job_id)
-    out = await run_memory_job(_deps(fake_storage_provider, engine), _lease(job_id))
+    out = await run_memory_job(_deps(fake_storage_provider, engine), await _lease(engine, job_id))
     assert out.drop_lease is True and ran == []
 
 
@@ -204,7 +207,9 @@ async def test_trivial_session_skipped_without_model_call(fake_storage_provider,
     # fewer than two turns since the last reflection
     await on_turn_completed(fake_storage_provider, engine, _session(turns=1), NOW)
     deps = _deps(fake_storage_provider, engine)
-    out = await run_memory_job(deps, _lease("reflect:a1:s1"))
+    lease = await _lease(engine, "reflect:a1:s1")
+    out = await run_memory_job(deps, lease)
+    await engine.release(lease, outcome=out)
     job = await fake_storage_provider.get_storage(MemoryJob).get("reflect:a1:s1")
     assert out.drop_lease is True and job.reflected_turn == 1 and ran == []
     assert [(e[1]["reason"], "fewer than" in e[1]["detail"]) for e in deps.recorder.events] == [("too_small", True)]
@@ -215,7 +220,7 @@ async def test_trivial_session_skipped_without_model_call(fake_storage_provider,
 
     job_id = await _queued(fake_storage_provider, engine)
     deps = _deps(fake_storage_provider, engine, load_messages=only_chat)
-    out = await run_memory_job(deps, _lease(job_id))
+    out = await run_memory_job(deps, await _lease(engine, job_id))
     job = await fake_storage_provider.get_storage(MemoryJob).get(job_id)
     assert out.drop_lease is True and job.reflected_turn == 3 and ran == []
     assert "0 of 2 messages" in deps.recorder.events[0][1]["detail"] and "user,assistant" in deps.recorder.events[0][1]["detail"]
@@ -232,7 +237,7 @@ async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_pro
         ]
 
     job_id = await _queued(fake_storage_provider, engine)
-    await run_memory_job(_deps(fake_storage_provider, engine, load_messages=worked), _lease(job_id))
+    await run_memory_job(_deps(fake_storage_provider, engine, load_messages=worked), await _lease(engine, job_id))
     assert ran == ["reflect"]
     settings = await fake_storage_provider.get_storage(AgentMemory).get("a1")
     assert settings.reflections_count == 1, "the budget is spent as the model call is about to happen"
@@ -253,7 +258,7 @@ async def test_an_unreachable_model_is_retried_twice_then_skipped(fake_storage_p
     monkeypatch.setattr(jobs, "run_reflect", down)
     deps = _deps(fake_storage_provider, engine, load_messages=worked)
     job_id = await _queued(fake_storage_provider, engine)
-    lease = Lease(ClaimKind.MEMORY, job_id, "w1", NOW, NOW + timedelta(minutes=1), attempts, None)
+    lease = await _lease(engine, job_id, attempts=attempts)
     out = await run_memory_job(deps, lease)
     if retried:
         assert out.success is False and not out.drop_lease and "refused" in out.last_error
@@ -269,7 +274,7 @@ async def test_schedule_job_makes_a_curate_or_topics_job_with_its_lease(fake_sto
     await schedule_job(fake_storage_provider, engine, kind="curate", agent_id="a1", next_attempt_at=later)
     await schedule_job(fake_storage_provider, engine, kind="topics", agent_id="a1", next_attempt_at=NOW)
     assert _due(engine, "curate:a1") == later and _due(engine, "topics:a1") == NOW
-    await run_memory_job(_deps(fake_storage_provider, engine), _lease("topics:a1"))
+    await run_memory_job(_deps(fake_storage_provider, engine), await _lease(engine, "topics:a1"))
     assert ran == ["topics"]
 
 
@@ -285,7 +290,7 @@ async def test_a_topics_job_derives_the_topics_and_leaves_no_row(fake_storage_pr
     monkeypatch.setattr(topics, "derive_topics", derive)
     await _agent(fake_storage_provider)
     await schedule_job(fake_storage_provider, engine, kind="topics", agent_id="a1", next_attempt_at=NOW)
-    out = await run_memory_job(_deps(fake_storage_provider, engine), _lease("topics:a1"))
+    out = await run_memory_job(_deps(fake_storage_provider, engine), await _lease(engine, "topics:a1"))
     assert out.drop_lease and derived == ["a1"]
     assert await fake_storage_provider.get_storage(MemoryJob).get("topics:a1") is None
 
@@ -342,6 +347,6 @@ async def test_a_job_that_raises_reports_it_instead_of_going_quiet(fake_storage_
     await _agent(fake_storage_provider)
     job_id = await _queued(fake_storage_provider, engine)
     deps = _deps(fake_storage_provider, engine)
-    await jobs.report_job_error(deps, _lease(job_id), KeyError("boom"))
+    await jobs.report_job_error(deps, await _lease(engine, job_id), KeyError("boom"))
     [(event, payload)] = deps.recorder.events
     assert event == "memory.reflection.skipped" and payload["reason"] == "error" and payload["detail"].startswith("KeyError")

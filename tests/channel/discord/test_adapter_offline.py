@@ -17,6 +17,7 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     DiscordChannelProviderConfig,
 )
+from tests._support.channel_offline import stub_connection
 
 
 class _CapturingInbox(ChannelInbox):
@@ -89,10 +90,7 @@ def _channel() -> Channel:
 @pytest.mark.asyncio
 async def test_verify_resolves_channel(monkeypatch):
     client = _StubClient()
-    async def _acquire(_): return client
-    async def _release(_): pass
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, client)
     inbox = _CapturingInbox()
     adapter = DiscordChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -107,10 +105,7 @@ async def test_verify_resolves_channel(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_tool_approval_attaches_view(monkeypatch):
     client = _StubClient()
-    async def _acquire(_): return client
-    async def _release(_): pass
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, client)
     inbox = _CapturingInbox()
     adapter = DiscordChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -152,10 +147,7 @@ def test_format_approval_content_uses_tool_name_and_pretty_args():
 @pytest.mark.asyncio
 async def test_post_inform_goes_to_thread_without_buttons(monkeypatch):
     client = _StubClient()
-    async def _acquire(_): return client
-    async def _release(_): pass
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, client)
     adapter = DiscordChannelAdapter(provider=_provider(), channel=_channel(), inbox=_CapturingInbox())
     await adapter.initialize()
     try:
@@ -174,10 +166,7 @@ async def test_post_inform_goes_to_thread_without_buttons(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_ask_user_creates_thread_and_caches_ids(monkeypatch):
     client = _StubClient()
-    async def _acquire(_): return client
-    async def _release(_): pass
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, client)
     inbox = _CapturingInbox()
     adapter = DiscordChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,
@@ -201,10 +190,7 @@ async def test_post_ask_user_creates_thread_and_caches_ids(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_reuses_one_thread_per_session(monkeypatch):
     client = _StubClient()
-    async def _acquire(_): return client
-    async def _release(_): pass
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, client)
     adapter = DiscordChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=_CapturingInbox(),
     )
@@ -231,10 +217,7 @@ async def test_post_reuses_one_thread_per_session(monkeypatch):
 @pytest.mark.asyncio
 async def test_handle_decision_publishes(monkeypatch):
     client = _StubClient()
-    async def _acquire(_): return client
-    async def _release(_): pass
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, DISCORD_CONNECTIONS, client)
     inbox = _CapturingInbox()
     adapter = DiscordChannelAdapter(
         provider=_provider(), channel=_channel(), inbox=inbox,

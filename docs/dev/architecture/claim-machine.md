@@ -264,3 +264,56 @@ The `WorkerPool` is the consumer: a single `_engine_claim_loop` computes `free =
 - **The graph resume ready-set fix was reverted from the 7a arc and redone as one design.** Why: four consecutive point patches to the resume dispatch-set expression each introduced a new regression (two of them reachable with the flag off), so the arc reverted to merge-base semantics and the work moved to a single task that maintains the ready set incrementally (add on admission, discard on settle) instead of subtracting an accumulating set at read time. Spec: docs/superpowers/2026-09-08-7a-gate-verdict.md.
 - **The 7a arc ships exactly one flag-off behaviour change, deliberately.** Why: `persist_resume_tool_result_record_for_graph` sits on the classic human-approval graph resume path and seeded its writer from a stale in-memory session, duplicating transcript seq numbers and rolling `last_seq` backwards on a multi-reply drain; the fix seeds from a fresh storage read, and reverting it would restore a strictly worse bug. Spec: docs/superpowers/2026-09-08-7a-gate-verdict.md.
 - **The executor half of 7a was absent until BPF wave 1.** Why: the original arc landed the seam, park, entity, adapter, wake and resume without the pool handler. BPF wave 1 (2026-10-27) added `run_engine_tool_call` (registered unconditionally), the shared liveness predicate, the retry cap and the boot sweep, so standalone non-gated agent batches run; A2 later added resolved gate consumption. S0 now reserves that human-gate machinery until responder ordering P3: approval and yielding calls stay classic, task decision routes are disabled, and requesting the human-task-gate capability is a configuration error. S4.3 reserves authenticated REST decisions on those classic session gates. An ask_user answer projects its responder; a tool approval records its decider for audit while preserving the parked execution person. Generic projection refuses approval reservations. Automated and channel wakes create no responder reservation, and task gates remain disabled. Exact terminal-batch wake reconciliation is now implemented. The ordinary claims flag remains off because graph binding and cancel fan-out are unsupported, nested topology is cut, and live flag-on coverage is absent. Source: the 7a spec-versus-main audit of 2026-10-04.
+
+## Work-priority groundwork (not activated)
+
+The claim engines have an internal `work_priority_enabled=False` constructor
+capability. The production factory leaves it off; there is no config, REST,
+MCP or UI switch. Existing deployments continue ordering internal scores as
+before. The additive session and memory-job `priority` fields default to zero
+and do not yet implement public session priority controls or reserved capacity.
+
+With the internal capability enabled, adapters derive a strict integer
+`work_priority` snapshot when a lease is armed. Sessions and memory jobs use
+their own row; tool tasks use their parent session; platform work defaults to
+zero. Missing legacy fields mean zero; missing or malformed sources refuse the
+arm. Both generic arm paths and the separate durable memory-occurrence
+projection carry the snapshot. Ordinary requeue preserves it; a new arm reads
+again. A returned Lease is immutable, even if a new memory occurrence projects
+its replacement priority while an older claim completes.
+
+Eligible unlocked candidates are ordered by work priority, internal score and
+due time within each capacity class. An optional internal ceiling filters both
+unclaimed and expired branches before limiting. Concurrent SKIP LOCKED claims
+are not a global FIFO; running work is not preempted and continuous foreground
+traffic can starve background work. `claim_work_priority_total` records claims
+by kind and the bounded foreground/background class only when this capability
+is enabled. It is not a reservation/readiness metric.
+
+Priority-enabled generic Postgres arms serialize by entity advisory transaction
+lock before reading their statement snapshot. They do not invert the existing
+lease-to-entity release lock order. Memory keeps its job-to-lease occurrence
+protocol. In-memory arms re-read after a concurrent lease generation change.
+A per-key mutation epoch survives an intervening arm and deletion while readers
+are suspended, including pruning and drop-release; it is reclaimed when the last
+reader completes or is cancelled. Claim candidates capture row identity and
+generation at selection, before any eligibility read can suspend. A row changed
+while an earlier candidate is read is deferred to the next poll; the final
+synchronous check also enforces the ceiling before stamping ownership.
+
+`primer.claim.priority_migration` contains explicitly invoked offline preparation
+helpers, not a startup migration or activation API. A bounded keyset page
+backfills snapshots transactionally and returns its last key; failure rolls back
+that page, and retry uses the input cursor. The index helper retains old indexes,
+uses versioned names, repairs an invalid index, and rolls back on bounded lock or
+statement timeouts. Neither helper changes ownership, deadlines or retry state.
+They refuse claimed leases. Large stores exceeding the bounded offline index
+build need a separate migration, not an unbounded startup retry.
+
+Before any future nonzero activation, all old writers must be quiesced/fenced,
+validated backfill and both branch query plans must be checked, and source,
+park/wake, authorization and public controls must be completed. Advisory locks
+and a migration cursor do not fence an old binary. Rollback requires quiescence
+as well. Provider headroom additionally needs authoritative physical capacity
+and uncertainty accounting; neither the ceiling nor expiring rate leases proves
+it. No active-worker or live-provider safety claim is made by this groundwork.

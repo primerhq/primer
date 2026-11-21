@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -24,6 +25,9 @@ class Lease:
     expires_at: datetime
     attempt_count: int
     last_error: str | None
+    memory_occurrence: str | None = None
+    memory_claim_id: str | None = None
+    work_priority: int = 0
 
 
 @dataclass(frozen=True)
@@ -212,6 +216,14 @@ class ClaimAdapter(ABC):
     kind: ClaimKind
     entity_table: str
 
+    def work_priority_sql(self, *, schema: str | None = None) -> str:
+        """SQL over entity alias e; NULL refuses an invalid/missing source."""
+        return "0"
+
+    async def work_priority(self, entity_id: str) -> int:
+        """Authoritative snapshot at arm time; platform work defaults to zero."""
+        return 0
+
     @abstractmethod
     def eligibility_sql(self) -> str: ...
 
@@ -318,6 +330,7 @@ class ClaimEngine(ABC):
     @abstractmethod
     async def claim_due(
         self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
+        max_work_priority: int | None = None,
     ) -> list[Lease]:
         """Claim up to ``max_count`` due leases and return them.
 
@@ -336,6 +349,7 @@ class ClaimEngine(ABC):
     @abstractmethod
     async def heartbeat(
         self, worker_id: str, kind_ids: list[tuple[ClaimKind, str]],
+        *, memory_claims: dict[str, str] | None = None,
     ) -> list[tuple[ClaimKind, str]]: ...
 
     @abstractmethod
@@ -364,6 +378,18 @@ class ClaimEngine(ABC):
         self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_FRESH,
         next_attempt_at: datetime | None = None,
     ) -> None: ...
+
+    def hold_memory_claim(self, lease: Lease, *, conn) -> AbstractAsyncContextManager[bool]:
+        """Hold the current acquisition through a locked memory job disposition."""
+        raise NotImplementedError("memory execution requires acquisition fencing")
+
+    async def arm_memory_job(self, job, *, conn) -> None:
+        """Project the locked, committed MemoryJob into this engine; repeating an occurrence is a no-op."""
+        raise NotImplementedError("memory scheduling requires occurrence-aware lease arming")
+
+    async def discard_memory_lease(self, entity_id: str, occurrence: str | None) -> None:
+        """Remove only the projection observed by a memory cleanup."""
+        raise NotImplementedError("memory cleanup requires occurrence-aware leases")
 
     @abstractmethod
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None: ...

@@ -3377,7 +3377,7 @@ async def workspace_log(
 @log_router.get(
     "/workspaces/{workspace_id}/commit/{sha}",
     summary="Show one commit: header + per-file unified diff",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 422, 500, 501),
 )
 @route_tool(scoped_id="workspace_log__workspace_show_commit")
 async def workspace_show_commit(
@@ -3398,7 +3398,7 @@ async def workspace_show_commit(
     """
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    state_repo = getattr(ws, "_state", None)
+    state_repo = ws.state_repo
     show = getattr(state_repo, "show_commit", None) if state_repo else None
     if show is None:
         raise HTTPException(
@@ -3407,8 +3407,7 @@ async def workspace_show_commit(
                 "error": "not_implemented",
                 "message": (
                     "Backend does not expose a state-repo show_commit "
-                    "hook. Only local + container-state backends support "
-                    "diff inspection today."
+                    "hook. Upgrade the backend to support diff inspection."
                 ),
             },
         )
@@ -3416,6 +3415,11 @@ async def workspace_show_commit(
         detail = await show(sha)
     except FileNotFoundError as exc:
         raise NotFoundError(str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={"error": "not_implemented", "message": str(exc)},
+        ) from exc
     if not _is_admin(user):
         detail = {**detail, "files": [], "files_hidden": True}
     return detail

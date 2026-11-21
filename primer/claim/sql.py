@@ -5,10 +5,11 @@
 eligibility), unions them with ``UNION ALL``, then drives a single
 ``UPDATE … RETURNING`` to atomically claim all rows.
 
-The returned SQL uses numbered bind parameters ($1–$3):
+The returned SQL uses numbered bind parameters ($1–$3, optionally $4):
   $1  max_count  (integer)
   $2  worker_id  (text)
   $3  ttl_seconds (text, e.g. ``"60"``)
+  $4  optional priority ceiling (only with the internal priority capability)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ def build_claim_query(
     leases_table: str,
     *,
     schema: str | None = None,
+    work_priority_enabled: bool = False,
 ) -> str:
     """Compose CTEs + UNION ALL + final UPDATE returning claimed leases.
 
@@ -35,6 +37,11 @@ def build_claim_query(
         When None, entity tables are referenced without schema prefix
         (works only when Postgres search_path includes the schema).
     """
+    order_prefix = "work_priority, " if work_priority_enabled else ""
+    qualified_prefix = "l.work_priority, " if work_priority_enabled else ""
+    ceiling = " AND ($4::integer IS NULL OR l.work_priority <= $4)" if work_priority_enabled else ""
+    empty_ceiling = "AND $4::integer IS NULL " if work_priority_enabled else ""
+    returned_priority = "l.work_priority" if work_priority_enabled else "0 AS work_priority"
     if not adapters:
         # No adapters → produce a valid but no-op UPDATE that always
         # returns zero rows. This keeps claim_due safe when called with
@@ -48,7 +55,7 @@ def build_claim_query(
         return (
             f"WITH all_cand AS ("
             f"  SELECT kind, entity_id, priority_score, next_attempt_at "
-            f"  FROM {leases_table} WHERE FALSE LIMIT $1"
+            f"  FROM {leases_table} WHERE FALSE {empty_ceiling}LIMIT $1"
             f") "
             f"UPDATE {leases_table} l "
             f"   SET claimed_by = $2, claimed_at = now(), "
@@ -57,7 +64,7 @@ def build_claim_query(
             f"  FROM all_cand a "
             f" WHERE l.kind = a.kind AND l.entity_id = a.entity_id "
             f"RETURNING l.kind, l.entity_id, l.claimed_at, l.expires_at, "
-            f"          l.attempt_count, l.last_error"
+            f"          l.attempt_count, l.last_error, {returned_priority}"
         )
 
     def _entity_ref(entity_table: str) -> str:
@@ -74,15 +81,15 @@ def build_claim_query(
             # Each branch is locked in its own FROM-subquery: FOR UPDATE cannot be applied to a UNION. ``claim_state`` is one of the two disjoint
             # conditions below, each served by its own partial index (leases_unclaimed_by_kind / leases_expiry_by_kind).
             return (
-                f"SELECT kind, entity_id, priority_score, next_attempt_at FROM ("
-                f"  SELECT l.kind, l.entity_id, l.priority_score, l.next_attempt_at"
+                f"SELECT kind, entity_id, {order_prefix}priority_score, next_attempt_at FROM ("
+                f"  SELECT l.kind, l.entity_id, {qualified_prefix}l.priority_score, l.next_attempt_at"
                 f"    FROM {leases_table} l"
                 f"    JOIN {entity_ref} e ON e.id = l.entity_id"
                 f"   WHERE l.kind = '{kind}'"
                 f"     AND {claim_state}"
-                f"     AND l.next_attempt_at <= now()"
+                f"     AND l.next_attempt_at <= now(){ceiling}"
                 f"     AND ({adapter.eligibility_sql()})"
-                f"   ORDER BY l.priority_score, l.next_attempt_at"
+                f"   ORDER BY {qualified_prefix}l.priority_score, l.next_attempt_at"
                 f"   LIMIT $1 FOR UPDATE OF l SKIP LOCKED"
                 f") {alias}"
             )
@@ -103,13 +110,13 @@ def build_claim_query(
 
     return (
         f"WITH {', '.join(ctes)}, "
-        f"all_cand AS ({union_parts} ORDER BY priority_score, next_attempt_at LIMIT $1) "
+        f"all_cand AS ({union_parts} ORDER BY {order_prefix}priority_score, next_attempt_at LIMIT $1) "
         f"UPDATE {leases_table} l "
         f"   SET claimed_by = $2, claimed_at = now(), "
-        f"       last_heartbeat_at = now(), "
+        f"       last_heartbeat_at = now(), memory_claim_id = CASE WHEN l.kind = 'memory' THEN gen_random_uuid()::text END, "
         f"       expires_at = now() + ($3 || ' seconds')::interval "
         f"  FROM all_cand a "
         f" WHERE l.kind = a.kind AND l.entity_id = a.entity_id "
         f"RETURNING l.kind, l.entity_id, l.claimed_at, l.expires_at, "
-        f"          l.attempt_count, l.last_error"
+        f"          l.attempt_count, l.last_error, l.memory_occurrence, l.memory_claim_id, {returned_priority}"
     )

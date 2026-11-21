@@ -117,6 +117,7 @@ async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> N
             load_messages=session_message_loader(pool._storage, read_log),
             describe_log=session_log_shapes(pool._storage, read_log),
             now=lambda: datetime.now(timezone.utc),
+            worker_config=pool.config,
         )
         outcome = await run_memory_job(deps, engine_lease)
     except Exception as exc:

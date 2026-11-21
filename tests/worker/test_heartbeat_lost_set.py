@@ -203,3 +203,22 @@ async def test_a_sent_key_with_no_scope_yet_is_caught_on_the_next_tick():
         assert h.cancels.get("kept", 0) == 0
         h.pool._in_flight.discard(key)
         h.pool._active_scopes.pop(key, None)
+
+
+async def test_memory_heartbeat_uses_the_dispatched_acquisition_after_same_worker_reclaim():
+    async with _Harness() as h:
+        kind, job_id = ClaimKind.MEMORY, "topics:test"
+        h.pool._dispatch[kind] = h._handler
+        # Use the real engine, including the pool's captured receipt.
+        del h.engine.heartbeat
+        await h.engine.upsert(kind, job_id)
+        first, = await h.engine.claim_due(h.pool._worker_id, max_count=1)
+        h.pool._reserve_and_dispatch([first])
+        row = h.engine._leases[kind, job_id]
+        await _until(lambda: row.expires_at > first.expires_at, "active memory receipt did not renew")
+        row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        second, = await h.engine.claim_due(h.pool._worker_id, max_count=1)
+        h.pool._reserve_and_dispatch([second])
+        await _until(lambda: h.cancels.get(job_id) == 1, "stale memory execution survived receipt loss")
+        assert h.started[job_id] == 1 and row.expires_at == second.expires_at
+        assert second.memory_claim_id != first.memory_claim_id

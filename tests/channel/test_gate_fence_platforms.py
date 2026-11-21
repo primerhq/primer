@@ -30,6 +30,7 @@ from primer.channel.telegram.render import compute_tag
 from primer.model.channel import Channel, ChannelProvider, ChannelProviderType, TelegramChannelProviderConfig
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
+from tests._support.channel_offline import stub_connection
 from tests.channel.slack.test_factory import _FakeEntry as _SlackEntry
 from tests.channel.slack.test_factory import _install as _slack_install
 from tests.channel.slack.test_factory import _mock_adapter as _slack_adapter
@@ -90,14 +91,7 @@ class _Bot:
 def _tg_adapter(monkeypatch):
     app = SimpleNamespace(bot=_Bot())
 
-    async def _acquire(_):
-        return app
-
-    async def _release(_):
-        return None
-
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
-    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    stub_connection(monkeypatch, TELEGRAM_CONNECTIONS, app)
     provider = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456")),

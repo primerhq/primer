@@ -35,6 +35,7 @@ from pydantic_core import to_jsonable_python
 from primer.int.coordinator import (
     ROLE_HARNESS_SWEEPER,
     ROLE_SESSION_RETENTION,
+    ROLE_MEMORY_SCHEDULE_RECONCILER,
     ROLE_SESSION_MESSAGING_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
@@ -237,6 +238,29 @@ class TimerScheduler(_BackgroundTask):
                 await emit_session_wake(self._sp, self._bus, event_key, {})
             else:
                 await self._bus.publish(event_key, payload={})
+
+
+class MemoryScheduleReconciler(_BackgroundTask):
+    """Repair one bounded page per tick, wrapping to revisit failed arms."""
+
+    role = ROLE_MEMORY_SCHEDULE_RECONCILER
+
+    def __init__(self, storage_provider, claim_engine, *, poll_seconds=DEFAULT_SWEEPER_POLL_SECONDS):
+        super().__init__(name="memory-schedule-reconciler")
+        self._sp = storage_provider
+        self._engine = claim_engine
+        self._poll = poll_seconds
+
+    async def _run(self):
+        from primer.memory.scheduling import reconcile_page
+
+        cursor = None
+        while not self._stopping:
+            try:
+                cursor = await reconcile_page(self._sp, self._engine, cursor)
+            except Exception:
+                logger.exception("memory schedule reconciliation tick failed")
+            await asyncio.sleep(self._poll)
 
 
 class ToolWaitWakeReconciler(_BackgroundTask):
@@ -726,6 +750,12 @@ class SessionMessagingSweeper(_BackgroundTask):
 
         Returns how many sessions were woken from their queue.
         """
+        from primer.workspace.session_creation import recover_preparations
+
+        try:
+            await recover_preparations(self._sp)
+        except Exception:
+            logger.exception("session-messaging-sweeper: creation receipt recovery failed")
         await self._trim_peer_ledger()
         if self._claim_engine is None:
             return 0

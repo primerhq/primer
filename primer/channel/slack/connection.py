@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from primer.channel.retirement import ListenerCallbacks, check_available, retire, retire_failed_start
 from primer.model.channel import ChannelProvider, SlackChannelProviderConfig
 
 
@@ -29,6 +30,12 @@ class _Conn:
     def __init__(self, app: Any, handler: Any) -> None:
         self.app = app
         self.handler = handler
+        self._messages = ListenerCallbacks()
+        if handler is not None:
+            # Socket Mode spawns this coroutine independently for every envelope,
+            # including disconnect/reconnect notifications.
+            client = handler.client
+            client.run_message_listeners = self._messages.guard(client.run_message_listeners)
 
     async def start_async(self) -> None:
         if self.handler is not None:
@@ -36,7 +43,12 @@ class _Conn:
 
     async def close_async(self) -> None:
         if self.handler is not None:
+            await self._messages.begin_close()
             await self.handler.close_async()
+            # The aiohttp Socket Mode client cancels these loops without joining them.
+            client = self.handler.client
+            loops = (client.message_processor, client.current_session_monitor, client.message_receiver)
+            await asyncio.gather(*(task for task in loops if task is not None), return_exceptions=True)
 
 
 def _build_app(cfg: SlackChannelProviderConfig) -> Any:
@@ -71,6 +83,7 @@ class _Entry:
     conn: Any
     refcount: int = 0
     adapters_by_channel_id: dict[str, Any] = field(default_factory=dict)
+    callbacks: ListenerCallbacks | None = None
 
 
 class _SlackConnectionRegistry:
@@ -90,12 +103,17 @@ class _SlackConnectionRegistry:
         mode and later ones share it; a process has one ChannelRegistry, so one mode.
         """
         async with self._lock:
+            check_available(self, provider.id)
             entry = self._entries.get(provider.id)
             if entry is None:
                 cfg = provider.config
                 assert isinstance(cfg, SlackChannelProviderConfig)
                 conn = _build_app_and_handler(cfg) if inbound else _build_outbound_app(cfg)
-                await conn.start_async()
+                try:
+                    await conn.start_async()
+                except BaseException:
+                    await retire_failed_start(self, provider.id, conn.close_async)
+                    raise
                 entry = _Entry(conn=conn, refcount=0)
                 self._entries[provider.id] = entry
                 logger.info(
@@ -104,26 +122,19 @@ class _SlackConnectionRegistry:
             entry.refcount += 1
             return entry.conn
 
-    async def release(self, provider: ChannelProvider) -> None:
-        """Decrement the refcount; close on zero."""
+    async def release(self, provider: ChannelProvider, *, expected: Any = None) -> None:
         async with self._lock:
             entry = self._entries.get(provider.id)
-            if entry is None:
+            if entry is None or (expected is not None and entry.conn is not expected):
                 return
             entry.refcount -= 1
-            if entry.refcount <= 0:
-                try:
-                    await entry.conn.close_async()
-                except Exception:
-                    logger.exception(
-                        "slack: connection close failed for %s", provider.id,
-                    )
-                del self._entries[provider.id]
-                if self.on_close is not None:
-                    self.on_close(provider.id)
-                logger.info(
-                    "slack: connection closed for provider %s", provider.id,
-                )
+            if entry.refcount:
+                return
+            del self._entries[provider.id]
+            closing = retire(self, provider.id, entry.conn.close_async, callbacks=entry.callbacks)
+            if self.on_close is not None:
+                self.on_close(provider.id)
+        await asyncio.shield(closing)
 
     def entry(self, provider_id: str) -> _Entry | None:
         return self._entries.get(provider_id)

@@ -3,9 +3,7 @@
 The router validates (via :func:`primer.service.bundle.validate_bundle`
 plus storage-dependent checks like toolset grants); this module persists:
 artifact rows for every file, the version row, the active pointer, and
-retention pruning. The REST publish route is its current caller. A
-planned phase-4 system tool can reuse the same persistence path, but no
-``publish_service`` tool is implemented today.
+retention pruning. The raw REST upload and workspace publish tool share this path.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import mimetypes
 from primer.int.artifact_storage import ArtifactStorage
 from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.providers.toolset import Toolset
 from primer.model.service import Service, ServiceVersion
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.service.bundle import ValidatedBundle
@@ -63,6 +62,25 @@ async def _all_versions(
         offset += 100
 
 
+async def missing_toolset(sp: StorageProvider, bundle: ValidatedBundle) -> str | None:
+    """The first unresolved toolset grant. Individual tool names are reserved for future dispatch."""
+    toolsets = sp.get_storage(Toolset)
+    for grant in bundle.manifest.tools:
+        if await toolsets.get(grant.toolset_id) is None:
+            return grant.toolset_id
+    return None
+
+
+async def service_named(sp: StorageProvider, name: str) -> Service | None:
+    page = await sp.get_storage(Service).find(
+        Predicate(left=FieldRef(name="name"), op=Op.EQ, right=Value(value=name)),
+        OffsetPage(offset=0, length=2),
+    )
+    if len(page.items) > 1:
+        raise ConflictError(f"ambiguous service name {name!r}")
+    return page.items[0] if page.items else None
+
+
 async def publish_version(
     sp: StorageProvider,
     artifacts: ArtifactStorage,
@@ -83,12 +101,11 @@ async def publish_version(
     :data:`RETAINED_VERSIONS`, never touching the active version.
     """
     files: dict[str, str] = {}
-    for path, data in bundle.files.items():
-        files[path] = await artifacts.put(
-            data=data, mime_type=_mime_for(path), filename=path
-        )
-
     try:
+        for path, data in bundle.files.items():
+            files[path] = await artifacts.put(
+                data=data, mime_type=_mime_for(path), filename=path
+            )
         created = await _create_next_version(sp, service, bundle, files)
     except Exception:
         # The version row did not land, so nothing references the
@@ -189,15 +206,17 @@ async def activate_version(
 
 async def _point_at(sp: StorageProvider, service: Service, version_id: str) -> Service:
     """Write ONLY ``active_version_id`` (a field-scoped patch), so a ``viewer_auth`` or description edit that landed since ``service`` was read
-    survives (GS-26). Guarded on the pointer read just before, re-read and retried when another publish moved it first."""
+    survives (GS-26). Retry a concurrent pointer move. Refuse to activate for a renamed or newly harness-managed target."""
     storage = sp.get_storage(Service)
     for _ in range(_POINTER_ATTEMPTS):
         current = await storage.get(service.id)
         if current is None:
             raise NotFoundError(f"Service {service.id!r} does not exist")
+        if (current.name, current.harness_id) != (service.name, service.harness_id):
+            raise ConflictError("service name or harness ownership changed during publication")
         written = await storage.patch_if(
             service.id, {"active_version_id": version_id},
-            where={"active_version_id": [raw_generation(current, "active_version_id")]},
+            where={key: [raw_generation(current, key)] for key in ("active_version_id", "name", "harness_id")},
         )
         if written is not None:
             service.active_version_id = written.active_version_id     # callers hold this object: its pointer follows the row

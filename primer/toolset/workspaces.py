@@ -1975,6 +1975,9 @@ def build_workspaces_toolset(
         )
         try:
             session = await start_workspace_session(
+                workspace_person=person_for_tool(ctx),
+                calling_session_id=ctx.session_id if ctx is not None else None,
+                calling_turn_no=ctx.turn_no if ctx is not None else None,
                 workspace_id=args.workspace_id,
                 binding=args.binding,
                 initial_instructions=args.initial_instructions,
@@ -1998,6 +2001,10 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         except PrimerValidationError as exc:
             return _err_from_primer(exc, error_type="validation-error")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        except AccessDeniedError as exc:
+            return _err_from_primer(exc, error_type="forbidden")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
         return _ok(session)

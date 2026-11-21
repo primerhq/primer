@@ -270,6 +270,31 @@ class RuntimeClient:
         data = base64.b64decode(result["content_b64"])
         return data[offset:] if offset else data
 
+    async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
+        from primer.model.except_ import BadRequestError, ConflictError, ProviderError
+        from primer.workspace.directory_bundle import CAPTURE_TIMEOUT_SECONDS, MAX_ARCHIVE_BYTES
+
+        if not self._runtime_has((1, 7)):
+            raise BadRequestError("workspace directory publishing requires runtime protocol 1.7")
+        try:
+            result = await self._send_request(
+                OpName.CAPTURE_SERVICE_BUNDLE, {"path": path, "reserved": list(reserved)}, timeout=CAPTURE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise ProviderError("workspace bundle capture timed out") from exc
+        except RuntimeError as exc:
+            if exc.code == ErrorCode.EACCES:
+                raise BadRequestError(exc.message) from exc
+            if exc.code == ErrorCode.EBUSY:
+                raise ConflictError("another workspace bundle capture is still running") from exc
+            if exc.code == ErrorCode.ETIMEDOUT:
+                raise ProviderError("workspace bundle capture timed out") from exc
+            raise ProviderError("workspace runtime could not capture the bundle") from exc
+        encoded = result["content_b64"]
+        if len(encoded) > 4 * ((MAX_ARCHIVE_BYTES + 2) // 3):
+            raise BadRequestError("workspace returned an oversized service archive")
+        return base64.b64decode(encoded, validate=True)
+
     async def write_file(
         self, path: str, content: bytes, *, mode: int | None = None
     ) -> None:
@@ -339,6 +364,7 @@ class RuntimeClient:
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 50,
+        with_files: bool = False,
     ) -> list[dict]:
         """Return recent commits from the workspace state repo.
 
@@ -350,8 +376,16 @@ class RuntimeClient:
             "session_id": session_id,
             "agent_id": agent_id,
         }
+        if with_files and self._runtime_has((1, 6)):
+            args["with_files"] = True
         result = await self._send_request(OpName.STATE_HISTORY, args)
         return result["commits"]
+
+    async def state_show_commit(self, sha: str) -> dict:
+        """Inspect a state commit only on runtimes advertising protocol 1.6+."""
+        if not self._runtime_has((1, 6)):
+            raise NotImplementedError("State commit diffs require runtime protocol 1.6 or newer")
+        return await self._send_request(OpName.STATE_SHOW_COMMIT, {"sha": sha})
 
     async def archive(self, paths: list[str]) -> AsyncIterator[bytes]:  # type: ignore[override]
         """Stream a tar archive.  Yields raw binary chunks."""

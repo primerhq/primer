@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -9,6 +11,7 @@ from primer.int.claim import (
     ReleaseOutcome,
 )
 from primer.observability import tracing as _tracing
+from primer.model.work_priority import validate_work_priority
 import primer.observability.metrics as _metrics
 
 logger = logging.getLogger(__name__)
@@ -26,12 +29,23 @@ class _LeaseRow:
     last_heartbeat_at: datetime | None = None
     expires_at: datetime | None = None
     priority_score: int = CLAIM_PRIORITY_FRESH
+    work_priority: int = 0
     attempt_count: int = 0
     last_error: str | None = None
     # Bumped by every write to the row (a claim, a heartbeat, a release, an upsert, a mark_resumable). ``claim_due`` reads it
     # before the awaited entity read and claims only if it is unchanged after: a decision made on a row that moved meanwhile
     # (an expired holder released it, so the entity it read may have changed) is not acted on.
     generation: int = 0
+    memory_occurrence: str | None = None
+    memory_claim_id: str | None = None
+    settling: bool = False
+
+
+@dataclass
+class _PriorityReads:
+    # Exists only while this key has suspended readers: no permanent tombstones.
+    generation: int = 0
+    readers: int = 0
 
 
 def _utc_now() -> datetime:
@@ -65,10 +79,13 @@ class InMemoryClaimEngine(ClaimEngine):
         adapters: dict[ClaimKind, ClaimAdapter],
         lease_ttl_seconds: int = 60,
         clock: Callable[[], datetime] = _utc_now,
+        work_priority_enabled: bool = False,
     ) -> None:
         self._adapters = adapters
+        self._work_priority_enabled = work_priority_enabled
         self._clock = clock
         self._leases: dict[tuple[ClaimKind, str], _LeaseRow] = {}
+        self._priority_reads: dict[tuple[ClaimKind, str], _PriorityReads] = {}
         # The rows whose eligibility read failed, with the error types already logged for each: a bad row is logged once per
         # error type, not once per poll, until a read of it succeeds again.
         self._read_errors_logged: dict[tuple[ClaimKind, str], set[type[BaseException]]] = {}
@@ -86,24 +103,97 @@ class InMemoryClaimEngine(ClaimEngine):
         next_attempt_at: datetime | None = None,
     ) -> None:
         key = (kind, entity_id)
+        work_priority = await self._priority_snapshot(kind, entity_id)
         existing = self._leases.get(key)
         if existing is not None:
             existing.priority_score = priority
+            existing.work_priority = work_priority
             if next_attempt_at is not None:
                 existing.next_attempt_at = _as_utc(next_attempt_at)
             existing.generation += 1
         else:
             self._leases[key] = _LeaseRow(
-                kind=kind, entity_id=entity_id, priority_score=priority,
+                kind=kind, entity_id=entity_id, priority_score=priority, work_priority=work_priority,
                 next_attempt_at=_as_utc(next_attempt_at) if next_attempt_at is not None else self._clock(),
             )
+        self._priority_changed(key)
         # Every upsert, new row or re-arm, tells the watcher (Postgres: pg_notify on every call), so a re-armed lease is not left to the next poll (CV-6).
         self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
 
+    async def _priority_snapshot(self, kind: ClaimKind, entity_id: str) -> int:
+        if not self._work_priority_enabled:
+            return 0
+        adapter = self._adapters[kind]
+        key = (kind, entity_id)
+        reads = self._priority_reads.setdefault(key, _PriorityReads())
+        reads.readers += 1
+        try:
+            while True:
+                before = self._leases.get(key)
+                generation = before.generation if before is not None else None
+                mutation = reads.generation
+                value = validate_work_priority(await adapter.work_priority(entity_id))
+                # Keep the per-key epoch alive across absence -> row -> absence.
+                # Row identity alone cannot detect that ABA; row generation still
+                # fences claims/heartbeats/requeues of a surviving row.
+                if (reads.generation == mutation and self._leases.get(key) is before
+                        and (before is None or before.generation == generation)):
+                    return value
+        finally:
+            reads.readers -= 1
+            if not reads.readers:
+                del self._priority_reads[key]
+
+    def _priority_changed(self, key: tuple[ClaimKind, str]) -> None:
+        reads = self._priority_reads.get(key)
+        if reads is not None:
+            reads.generation += 1
+
+    @asynccontextmanager
+    async def hold_memory_claim(self, lease: Lease, *, conn):
+        row = self._leases.get((ClaimKind.MEMORY, lease.entity_id))
+        if (row is None or row.claimed_by != lease.claimed_by or not lease.memory_claim_id
+                or row.memory_claim_id != lease.memory_claim_id or row.memory_occurrence != lease.memory_occurrence):
+            yield False
+            return
+        # Skip this lease in claim_due through the entire storage transaction.
+        row.settling = True
+        try:
+            yield True
+        finally:
+            row.settling = False
+
+    async def arm_memory_job(self, job, *, conn) -> None:
+        work_priority = validate_work_priority(job.priority) if self._work_priority_enabled else 0
+        key = (ClaimKind.MEMORY, job.id)
+        row = self._leases.get(key)
+        if row is not None and row.memory_occurrence == job.occurrence_id:
+            return
+        if row is None:
+            row = _LeaseRow(*key, next_attempt_at=_as_utc(job.requested_due_at))
+            self._leases[key] = row
+        row.work_priority = work_priority
+        row.memory_occurrence = job.occurrence_id
+        row.next_attempt_at = _as_utc(job.requested_due_at)
+        row.attempt_count = job.retry_count
+        row.last_error = job.retry_error
+        row.generation += 1
+        self._priority_changed(key)
+        self._notify_queue.put_nowait(key)
+        self._wake.set()
+
+    async def discard_memory_lease(self, entity_id: str, occurrence: str | None) -> None:
+        key = (ClaimKind.MEMORY, entity_id)
+        row = self._leases.get(key)
+        if row is not None and row.memory_occurrence == occurrence:
+            await self.delete_lease(*key)
+
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
-        self._leases.pop((kind, entity_id), None)
-        self._read_errors_logged.pop((kind, entity_id), None)
+        key = (kind, entity_id)
+        self._leases.pop(key, None)
+        self._priority_changed(key)
+        self._read_errors_logged.pop(key, None)
 
     async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         return (kind, entity_id) in self._leases
@@ -124,8 +214,11 @@ class InMemoryClaimEngine(ClaimEngine):
                 continue                                  # held: its holder's release owns it
             # ``is_dead`` awaits, and a claim can land meanwhile (claim_due mutates the row in place): decide
             # again after it, with no await between the last check and the delete.
-            if await adapter.is_dead(row.entity_id) and self._leases.get(key) is row and not held(row):
+            occurrence = row.memory_occurrence
+            if (await adapter.is_dead(row.entity_id) and self._leases.get(key) is row
+                    and row.memory_occurrence == occurrence and not held(row)):
                 del self._leases[key]
+                self._priority_changed(key)
                 pruned += 1
         return pruned
 
@@ -139,7 +232,7 @@ class InMemoryClaimEngine(ClaimEngine):
     def _due(row: _LeaseRow, now: datetime) -> bool:
         """The lease half of the claim query: unclaimed or expired, and ``next_attempt_at`` reached (a naive one read as UTC)."""
         return (
-            (row.claimed_by is None or (row.expires_at is not None and row.expires_at < now))
+            not row.settling and (row.claimed_by is None or (row.expires_at is not None and row.expires_at < now))
             and _as_utc(row.next_attempt_at) <= now
         )
 
@@ -176,6 +269,7 @@ class InMemoryClaimEngine(ClaimEngine):
 
     async def claim_due(
         self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
+        max_work_priority: int | None = None,
     ) -> list[Lease]:
         """Claim up to ``max_count`` leases that are due AND whose kind says their entity is eligible.
 
@@ -184,38 +278,51 @@ class InMemoryClaimEngine(ClaimEngine):
         :meth:`~primer.int.claim.ClaimAdapter.is_eligible`, the twin of the ``eligibility_sql`` the query joins in), so a
         released lease whose entity is not due (a parked session, a finished harness operation, a trigger before its tick,
         a finished tool call) is not claimed again. Eligibility is decided before ``max_count`` is applied, in
-        ``(priority_score, next_attempt_at)`` order, as the query's per-kind filter runs before its ``LIMIT``.
+        ``(priority_score, next_attempt_at)`` order (prefixed by work priority when enabled), as the query's per-kind
+        filter runs before its ``LIMIT``.
 
         Reading an entity awaits, and another claim or a release can run meanwhile, so each row is checked again after its
-        read, with no await between that check and the stamp: it must still be this engine's row, unwritten since the read
-        began (its ``generation``: an expired holder's release in between may have changed the entity the read saw), and
+        read, with no await between that check and the stamp: it must still be this engine's row, unwritten since candidate
+        selection (its ``generation`` also fences changes while an earlier candidate's read awaited), and
         still due. The decision is made at ``now``, the claim's start; the stamps (``claimed_at``, ``expires_at``) are read
         from the clock when they are written.
         """
+        if max_work_priority is not None:
+            validate_work_priority(max_work_priority)
+            if not self._work_priority_enabled:
+                raise ValueError("work priority is not enabled")
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
             now = self._clock()
             kind_set = None if kinds is None else set(kinds)
             candidates = [
-                row for row in self._leases.values()
+                (row, row.generation) for row in self._leases.values()
                 if self._due(row, now) and (kind_set is None or row.kind in kind_set)
+                and (max_work_priority is None or row.work_priority <= max_work_priority)
             ]
-            candidates.sort(key=lambda r: (r.priority_score, _as_utc(r.next_attempt_at)))
+            candidates.sort(key=lambda candidate: (
+                candidate[0].work_priority if self._work_priority_enabled else 0,
+                candidate[0].priority_score, _as_utc(candidate[0].next_attempt_at),
+            ))
             out: list[Lease] = []
-            for row in candidates:
+            for row, generation in candidates:
                 if len(out) >= max_count:
                     break
-                generation = row.generation
+                if self._leases.get((row.kind, row.entity_id)) is not row or row.generation != generation:
+                    continue  # An earlier candidate awaited while this one's admission/order changed.
                 if not await self._eligible(row, now):
                     continue
                 if (
                     self._leases.get((row.kind, row.entity_id)) is not row
                     or row.generation != generation
                     or not self._due(row, now)
+                    or (max_work_priority is not None and row.work_priority > max_work_priority)
                 ):
                     continue                              # dropped, claimed, released or re-armed while its entity was read
                 stamp = self._clock()
                 wait = max(0.0, (stamp - _as_utc(row.next_attempt_at)).total_seconds())
+                if row.kind == ClaimKind.MEMORY:
+                    row.memory_claim_id = uuid4().hex
                 row.claimed_by = worker_id
                 row.claimed_at = stamp
                 row.last_heartbeat_at = stamp
@@ -225,11 +332,17 @@ class InMemoryClaimEngine(ClaimEngine):
                     kind=row.kind, entity_id=row.entity_id, claimed_by=worker_id,
                     claimed_at=stamp, expires_at=row.expires_at,
                     attempt_count=row.attempt_count, last_error=row.last_error,
+                    memory_occurrence=row.memory_occurrence, memory_claim_id=row.memory_claim_id,
+                    work_priority=row.work_priority if self._work_priority_enabled else 0,
                 )
                 out.append(lease)
                 _metrics.claim_enqueue_latency_seconds.labels(
                     lease.kind.value
                 ).observe(wait)
+                if self._work_priority_enabled:
+                    _metrics.claim_work_priority_total.labels(
+                        lease.kind.value, "foreground" if lease.work_priority == 0 else "background",
+                    ).inc()
                 _span.add_event("claim_assigned", {"kind": lease.kind.value})
             # The claim-time hooks run before the leases are handed out: an
             # adapter that owns a claim-scoped entity field (the session
@@ -245,11 +358,15 @@ class InMemoryClaimEngine(ClaimEngine):
 
     async def heartbeat(
         self, worker_id: str, kind_ids: list[tuple[ClaimKind, str]],
+        *, memory_claims: dict[str, str] | None = None,
     ) -> list[tuple[ClaimKind, str]]:
         now = self._clock()
         confirmed = []
         for kind, entity_id in kind_ids:
             row = self._leases.get((kind, entity_id))
+            if kind == ClaimKind.MEMORY and (row is None or not row.memory_claim_id
+                                              or row.memory_claim_id != (memory_claims or {}).get(entity_id)):
+                continue
             if row is not None and row.claimed_by == worker_id:
                 row.last_heartbeat_at = now
                 row.expires_at = now + timedelta(seconds=self.lease_ttl_seconds)
@@ -289,8 +406,17 @@ class InMemoryClaimEngine(ClaimEngine):
             wake_signal = await adapter.on_release(
                 conn=None, entity_id=lease.entity_id, outcome=outcome,
             )
+        if lease.kind == ClaimKind.MEMORY:
+            # on_release can suspend. Recheck the current row and holder
+            # before applying the old disposition to this stable key.
+            if (self._leases.get(key) is not row or row.claimed_by != lease.claimed_by
+                    or not lease.memory_claim_id or row.memory_claim_id != lease.memory_claim_id):
+                return
+            if row.memory_occurrence != lease.memory_occurrence:
+                outcome = ReleaseOutcome(success=True, entity_noop=True)
         if outcome.drop_lease:
             self._leases.pop(key, None)
+            self._priority_changed(key)
             self._read_errors_logged.pop(key, None)
         else:
             row.claimed_by = None
@@ -324,15 +450,7 @@ class InMemoryClaimEngine(ClaimEngine):
     async def mark_resumable(
         self, kind: ClaimKind, entity_id: str, *, priority: int = CLAIM_PRIORITY_RESUME,
     ) -> None:
-        row = self._leases.get((kind, entity_id))
-        if row is None:
-            await self.upsert(kind, entity_id, priority=priority)
-            return
-        row.priority_score = priority
-        row.next_attempt_at = self._clock()
-        row.generation += 1
-        self._wake.set()
-        self._notify_queue.put_nowait((kind, entity_id))
+        await self.upsert(kind, entity_id, priority=priority, next_attempt_at=self._clock())
 
     async def watch_ready(self) -> AsyncIterator[tuple[ClaimKind, str]]:
         while True:

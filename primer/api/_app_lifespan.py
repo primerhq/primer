@@ -33,7 +33,6 @@ from primer.api._app_lifespan_phases import (
     sample_claim_gauges,
     seed_default_artifact_provider,
     sweep_orphaned_tool_call_tasks,
-    warm_chat_channels,
 )
 from primer.api._app_mcp import _start_mcp_mount
 from primer.api.config import AppConfig
@@ -81,19 +80,14 @@ def _make_lifespan(config: AppConfig):
         warn_if_unconfined(detect_local_isolation())
 
         # --- Observability wiring ----------------------------------------
-        # Set up OTEL tracing + auto-instrumentation as early as possible
-        # in the lifespan so any span-emitting code below is covered.
+        # Import tracing here; start its owners only after critical publisher
+        # storage preflight succeeds, so refusal cannot leak exporter threads.
         from primer.observability import tracing as _tracing
-        _tracing.setup(config.observability)
 
         # Outbound request guard: the operator's internal-target allowlist
         # (empty by default) for the web tools.
         from primer.common.netguard import configure_egress_allow
         configure_egress_allow(config.egress_allow)
-
-        if config.observability.enabled:
-            from primer.observability import logging_integration as _log_integration
-            _log_integration.install_log_correlation()
 
         # When scheduler is unset, default to an in-memory scheduler
         # so the zero-config path boots. Operators running worker mode
@@ -119,16 +113,28 @@ def _make_lifespan(config: AppConfig):
         # single-module patch seam after the app.py split.
         from primer.api import app as _app_facade
         storage_provider = _app_facade._build_storage_provider(config)
-        await storage_provider.initialize()
-        # Content and event schemas, then the ordered data migrations
-        # (``primer init`` runs the same preamble). Runs BEFORE auto-bootstrap
-        # so a migration never has to reason about whether a reserved row
-        # exists yet: it only ever transforms rows that were already there. A
-        # fresh install baselines straight to LATEST_VERSION instead of
-        # running the chain against an empty database.
+        # Establish the publisher gate before tracing workers, secret providers,
+        # schedulers, listeners or channel owners exist. Baseline schema alone
+        # is not proof of approval seeding. A refused preflight owns only storage.
         from primer.storage.migrations import prepare_storage
+        from primer.bootstrap.seed import ensure_workspace_publisher_policy, require_workspace_publisher_policy
 
-        await prepare_storage(storage_provider)
+        try:
+            await storage_provider.initialize()
+            await prepare_storage(storage_provider)
+            await ensure_workspace_publisher_policy(storage_provider)
+            await require_workspace_publisher_policy(storage_provider)
+        except BaseException:
+            try:
+                await storage_provider.aclose()
+            except Exception:
+                logger.exception("publisher preflight storage cleanup failed")
+            raise
+
+        _tracing.setup(config.observability)
+        if config.observability.enabled:
+            from primer.observability import logging_integration as _log_integration
+            _log_integration.install_log_correlation()
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory
@@ -201,11 +207,11 @@ def _make_lifespan(config: AppConfig):
         # be a SECOND inbound connection competing with the API's (Telegram 409
         # Conflict; duplicate Slack/Discord deliveries). A worker-only process
         # posts over outbound-only connections and never warms (W7).
-        owns_inbound = config.runtime_mode in (
+        inbound_eligible = config.runtime_mode in (
             RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
         )
         channel_registry = ChannelRegistry(
-            owns_inbound=owns_inbound,
+            owns_inbound=False,
             channel_storage=storage_provider.get_storage(Channel),
             channel_provider_storage=storage_provider.get_storage(ChannelProvider),
             inbox=channel_inbox,
@@ -278,6 +284,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
+            channel_registry=channel_registry,
             workspace_registry=workspace_registry,
             # Share the app-level resolver (01a06610): the
             # /tool_approval_policies/invalidate endpoint clears THIS
@@ -495,6 +502,7 @@ def _make_lifespan(config: AppConfig):
         stuck_session_sweeper = None
         session_messaging_sweeper = None
         task_ask_reconciler = None
+        memory_schedule_reconciler = None
         tool_wait_reconciler = None
         harness_sweeper = None
         watcher_manager = None
@@ -557,6 +565,7 @@ def _make_lifespan(config: AppConfig):
             # on the storage layer). Without this re-bind, the inbox's
             # publish path crashes with AttributeError on .publish.
             channel_inbox._event_bus = event_bus
+            channel_registry.set_event_bus(event_bus)
             logger.info("lifespan: starting yield listener / timer / sweeper")
             from primer.model.workspace_session import (
                 WorkspaceSession as _WorkspaceSession,
@@ -789,12 +798,16 @@ def _make_lifespan(config: AppConfig):
             stt_registry=getattr(app.state, "stt_registry", None),
         )
 
-        if owns_inbound:
-            app.state.chat_channel_warm_task = asyncio.create_task(
-                warm_chat_channels(channel_registry),
-            )
-        else:
-            app.state.chat_channel_warm_task = None
+        from primer.channel.listener_owner import ChannelListenerOwner
+
+        if scheduler is not None:
+            await channel_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+        channel_cache_task = asyncio.create_task(channel_registry.watch(inbound=False), name="channel-cache")
+        listener_owner = None
+        if inbound_eligible:
+            listener_owner = ChannelListenerOwner(channel_registry)
+            listener_owner.start(coordinator.leader_elector if scheduler is not None else None)
+        app.state.chat_channel_warm_task = listener_owner
 
         # Name every filesystem artifact store this process cannot use (a pod without the shared volume) in the log, in the BACKGROUND: a root
         # on a slow or hung mount never holds the boot, and the check never raises. It runs after the invalidation bus is bound, so a store it
@@ -856,6 +869,7 @@ def _make_lifespan(config: AppConfig):
             # executor's own liveness predicate, so the two cannot drift.
             await sweep_orphaned_tool_call_tasks(claim_engine, storage_provider)
             from primer.bus.scheduler_tasks import (
+                MemoryScheduleReconciler,
                 TaskAskDecisionReconciler,
                 ToolWaitWakeReconciler,
             )
@@ -882,6 +896,8 @@ def _make_lifespan(config: AppConfig):
                 storage_provider=storage_provider,
                 claim_engine=claim_engine,
             )
+            memory_schedule_reconciler = MemoryScheduleReconciler(storage_provider, claim_engine)
+            memory_schedule_reconciler.start(coordinator.leader_elector)
             task_ask_reconciler.start(coordinator.leader_elector)
             tool_wait_reconciler.start(coordinator.leader_elector)
 
@@ -1150,6 +1166,14 @@ def _make_lifespan(config: AppConfig):
                     await worker_pool.drain_and_stop()
                 except Exception:
                     logger.exception("worker_pool.drain_and_stop failed")
+            channel_cache_task.cancel()
+            await asyncio.gather(channel_cache_task, return_exceptions=True)
+            if listener_owner is not None:
+                await listener_owner.stop()
+            try:
+                await channel_registry.aclose()
+            except Exception:
+                logger.exception("channel_registry.aclose failed")
             # Stop yield background tasks BEFORE the scheduler / bus
             # close so an in-flight tick doesn't race a closing bus.
             if getattr(app.state, "coordinator_sweeper", None) is not None:
@@ -1173,6 +1197,7 @@ def _make_lifespan(config: AppConfig):
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
                 (session_messaging_sweeper, "session_messaging_sweeper"),
+                (memory_schedule_reconciler, "memory_schedule_reconciler"),
                 (task_ask_reconciler, "task_ask_reconciler"),
                 (tool_wait_reconciler, "tool_wait_reconciler"),
                 (timer_scheduler, "timer_scheduler"),
@@ -1242,10 +1267,6 @@ def _make_lifespan(config: AppConfig):
                 await tts_registry.aclose()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("lifespan: tts_registry aclose failed: %s", exc)
-            try:
-                await channel_registry.aclose()
-            except Exception:
-                logger.exception("channel_registry.aclose failed")
             try:
                 await provider_registry.aclose()
             except Exception:

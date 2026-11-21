@@ -102,14 +102,14 @@ class SlackChannelAdapter(ChannelAdapter):
         # Handlers are registered once-per-connection in Task 6 (factory).
 
     async def aclose(self) -> None:
-        client, self._http_client = self._http_client, None
-        if client is not None and hasattr(client, "aclose"):
-            await client.aclose()
+        if self._http_client is not None and hasattr(self._http_client, "aclose"):
+            await self._http_client.aclose()
+            self._http_client = None
         entry = SLACK_CONNECTIONS.entry(self._provider.id)
-        if entry is not None:
-            entry.adapters_by_channel_id.pop(self._channel.external_id, None)
+        if entry is not None and entry.adapters_by_channel_id.get(self._channel.external_id) is self:
+            del entry.adapters_by_channel_id[self._channel.external_id]
         if self._conn is not None:
-            await SLACK_CONNECTIONS.release(self._provider)
+            await SLACK_CONNECTIONS.release(self._provider, expected=self._conn)
             self._conn = None
 
     async def verify(self) -> None:

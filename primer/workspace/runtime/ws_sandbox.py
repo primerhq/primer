@@ -152,6 +152,9 @@ class WSSandbox(Sandbox):
     async def read_file(self, path: str) -> bytes:
         return await self._client.read_file(self._resolve(path))
 
+    async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
+        return await self._client.capture_service_bundle(path, reserved)
+
     async def read_file_from(self, path: str, offset: int) -> bytes:
         return await self._client.read_file(self._resolve(path), offset=offset)
 
@@ -243,13 +246,19 @@ class WSSandbox(Sandbox):
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 50,
+        with_files: bool = False,
     ) -> list[dict]:
         """Delegate to :meth:`RuntimeClient.state_history`."""
         return await self._client.state_history(
             session_id=session_id,
             agent_id=agent_id,
             limit=limit,
+            **({"with_files": True} if with_files else {}),
         )
+
+    async def state_show_commit(self, sha: str) -> dict:
+        """Delegate bounded commit inspection to the runtime."""
+        return await self._client.state_show_commit(sha)
 
     # ------------------------------------------------------------------
     # Inspection + lifecycle

@@ -27,7 +27,9 @@ from primer.model.access import Access
 from primer.model.principal import Principal
 from pydantic import SecretStr
 from primer.model.user import User
-from primer.model.workspace import FileEntry, Workspace, WorkspaceRuntimeMeta
+from primer.model.workspace import (
+    ContainerTemplateConfig, FileEntry, Workspace, WorkspaceRuntimeMeta, WorkspaceTemplate,
+)
 
 _NOW = datetime(2026, 10, 8, tzinfo=timezone.utc)
 _SECRET = b'{"kind":"error","payload":{"extensions":{"traceback":"Traceback ... /app/primer/x.py"}}}\n'
@@ -72,7 +74,7 @@ class _FakeWorkspace:
     state_path = ".state"
 
     def __init__(self) -> None:
-        self._state = _FakeState()
+        self.state_repo = _FakeState()
         self.reads: list[str] = []
         self.list_calls: list[dict] = []
 
@@ -305,3 +307,121 @@ async def test_an_admins_recursive_listing_walks_the_reserved_trees_too():
     assert resp.status_code == 200
     assert registry.ws.list_calls == [{"recursive": True, "skip_reserved": False}]
     assert ".state" in [item["path"] for item in resp.json()["items"]]
+
+
+@pytest.mark.parametrize("backend", ["absent", "no_hook", "unsupported"])
+async def test_unsupported_commit_diff_is_problem_501(backend):
+    app, registry = _app("admin")
+    class Unsupported:
+        async def show_commit(self, sha):
+            raise NotImplementedError("runtime upgrade required")
+    registry.ws.state_repo = {"absent": None, "no_hook": object(), "unsupported": Unsupported()}[backend]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/v1/workspaces/w/commit/abcdef1")
+    assert response.status_code == 501, response.text
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["extensions"]["error"] == "not_implemented"
+
+
+async def _runtime_workspace(sandbox, root):
+    """Use the real public workspace contract, not a local-shaped test double."""
+    from primer.workspace.sandbox.workspace import SandboxWorkspace
+
+    return await SandboxWorkspace.materialise(
+        workspace_id="w",
+        template=WorkspaceTemplate(
+            id="t", provider_id="p", description="",
+            backend=ContainerTemplateConfig(image="unused-test-image"),
+        ),
+        sandbox=sandbox,
+        backend_kind="container",
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://unused", token=SecretStr("test")),
+        workspace_root=str(root),
+    )
+
+
+@pytest.mark.parametrize("role", ["admin", "user"])
+async def test_runtime_commit_diff_route_preserves_file_visibility(tmp_path, role):
+    from aiohttp.test_utils import TestServer
+    from primer_runtime.server import build_app
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+
+    async with TestServer(build_app(token="test", workspace_root=str(tmp_path))) as server:
+        runtime = RuntimeClient(url=str(server.make_url("/")).replace("http:", "ws:"), token="test")
+        await runtime.connect()
+        try:
+            sha = await runtime.state_commit(files={"session.json": b"private transcript\n"}, deletes=[], message="turn")
+            sandbox = WSSandbox(runtime_client=runtime, container_id="test", workspace_root=str(tmp_path))
+            app, registry = _app(role)
+            registry.ws = await _runtime_workspace(sandbox, tmp_path)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get(f"/v1/workspaces/w/commit/{sha}")
+                assert response.status_code == 200, response.text
+                assert response.json()["subject"] == "turn"
+                if role == "admin":
+                    assert "+private transcript" in response.json()["files"][0]["patch"]
+                else:
+                    assert response.json()["files"] == [] and response.json()["files_hidden"] is True
+                    assert "private transcript" not in response.text
+                missing = await client.get("/v1/workspaces/w/commit/" + "0" * 40)
+                assert missing.status_code == 404
+                invalid = await client.get("/v1/workspaces/w/commit/--output=pwned")
+                assert invalid.status_code == 422
+                assert not (tmp_path / ".state" / "pwned").exists()
+        finally:
+            await runtime.aclose()
+
+
+async def test_protocol_1_5_commit_refusal_is_501_without_sending_rpc():
+    from unittest.mock import AsyncMock
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+
+    runtime = RuntimeClient(url="ws://unused/", token="test")
+    runtime._negotiated_version = "1.5"
+    runtime._send_request = AsyncMock()
+    sandbox = WSSandbox(runtime_client=runtime, container_id="old-runtime")
+    app, registry = _app("admin")
+    registry.ws = await _runtime_workspace(sandbox, "/workspace")
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/v1/workspaces/w/commit/abcdef1")
+        assert response.status_code == 501, response.text
+        assert "1.6" in response.json()["detail"]
+        runtime._send_request.assert_not_awaited()
+    finally:
+        await runtime.aclose()
+
+
+@pytest.mark.parametrize("bound", ["MAX_INSPECT_BYTES", "MAX_RESULT_BYTES"])
+async def test_runtime_inspection_caps_are_422_on_log_and_diff(tmp_path, monkeypatch, bound):
+    from aiohttp.test_utils import TestServer
+    from primer_runtime import state_inspect
+    from primer_runtime.server import build_app
+    from primer.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+
+    async with TestServer(build_app(token="test", workspace_root=str(tmp_path))) as server:
+        runtime = RuntimeClient(url=str(server.make_url("/")).replace("http:", "ws:"), token="test")
+        await runtime.connect()
+        try:
+            sha = await runtime.state_commit(files={"session.json": b"transcript\n"}, deletes=[], message="turn")
+            sandbox = WSSandbox(runtime_client=runtime, container_id="capped", workspace_root=str(tmp_path))
+            app, registry = _app("admin")
+            registry.ws = await _runtime_workspace(sandbox, tmp_path)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                with monkeypatch.context() as capped:
+                    capped.setattr(state_inspect, bound, 32)
+                    for path in (f"/v1/workspaces/w/commit/{sha}", "/v1/workspaces/w/log?with_files=true"):
+                        response = await client.get(path)
+                        assert response.status_code == 422, response.text
+                        assert response.headers["content-type"] == "application/problem+json"
+                        assert "limit" in response.json()["detail"]
+                # A rejected result must not drop the runtime WebSocket or return
+                # partial success; the same connection can still serve full data.
+                response = await client.get("/v1/workspaces/w/log?with_files=true")
+                assert response.status_code == 200, response.text
+                assert response.json()["commits"][0]["files"][0]["path"] == "session.json"
+        finally:
+            await runtime.aclose()

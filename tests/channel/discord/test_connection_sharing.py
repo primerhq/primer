@@ -70,7 +70,7 @@ async def test_acquire_returns_same_client(monkeypatch):
     )
     # Stub the start-as-task helper so the test doesn't actually
     # try to connect to Discord.
-    async def _start_task(client, token, *, ready_wait=1.0): pass
+    async def _start_task(client, token, *, ready_wait=1.0, retire_start=None): pass
     monkeypatch.setattr(
         "primer.channel.discord.connection._start_client_as_task",
         _start_task,

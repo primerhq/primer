@@ -125,6 +125,7 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 # list suitable for ``CREATE [UNIQUE] INDEX ... ON "{table}" {expr}``.
 _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     # M2: the same hot fields as the postgres registry (single-process installs scan too, just later).
+    "sessioncreationintent": [("state", False, "(json_extract(data,'$.state'), id)")],
     "sessions": [
         ("parent_session_id", False, "(json_extract(data,'$.parent_session_id'))"),
         ("last_worker_id", False, "(json_extract(data,'$.last_worker_id'))"),

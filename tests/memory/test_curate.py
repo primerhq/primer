@@ -8,7 +8,8 @@ from datetime import timedelta
 import pytest
 
 import primer.memory.curate as curate_mod
-from primer.int.claim import ClaimKind, Lease
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.claim import ClaimKind
 from primer.knowledge.collection_query import QueryHit
 from primer.memory.curate import curate
 from primer.memory.entry import slugify_name
@@ -200,13 +201,19 @@ async def test_the_job_requeues_a_day_later_and_remembers_the_run(sp, llm) -> No
     await sp.get_storage(MemoryJob).create(MemoryJob(
         id=f"curate:{AGENT}", kind="curate", agent_id=AGENT, created_at=NOW, expires_at=NOW + timedelta(hours=1),
     ))
-    lease = Lease(ClaimKind.MEMORY, f"curate:{AGENT}", "w1", NOW, NOW + timedelta(minutes=1), 0, None)
+    deps.engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW + timedelta(days=1))
+    await deps.engine.upsert(ClaimKind.MEMORY, f"curate:{AGENT}")
+    lease, = await deps.engine.claim_due("w1", max_count=1)
     out = await run_memory_job(deps, lease)
     assert out.success and out.requeue_after == timedelta(hours=24) and not out.drop_lease
     stored = await sp.get_storage(AgentMemory).get(AGENT)
     assert stored.last_curated_at == NOW
     job = await sp.get_storage(MemoryJob).get(f"curate:{AGENT}")
     assert job.expires_at > NOW + timedelta(days=1), "the job outlives its week so the daily chain does not die"
-    again = await run_memory_job(deps, lease)
+    assert job.occurrence_id and job.requested_due_at == NOW + timedelta(days=1)
+    assert (await run_memory_job(deps, lease)).drop_lease  # pre-upgrade lease cannot run it again
+    await deps.engine.release(lease, outcome=out)
+    next_lease, = await deps.engine.claim_due("w1", max_count=1)
+    again = await run_memory_job(deps, next_lease)
     assert again.requeue_after is not None and again.requeue_after <= timedelta(hours=24), "at most one run a day"
     assert llm.calls == []

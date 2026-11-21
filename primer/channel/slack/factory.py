@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.channel.retirement import ListenerCallbacks, finish_cleanup, retry_cleanup
 from primer.channel.adapter import APPROVAL_ROUTED_NOTICE, refusal_notice
 from primer.channel.gate_tag import split_gate_suffix
 from primer.channel.factory import register_adapter_factory
@@ -108,8 +109,15 @@ def _install_handlers(provider_id: str, app: Any) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
     _HANDLERS_INSTALLED.add(provider_id)
+    # Bind SDK callbacks to the entry that installed them, including callbacks
+    # the SDK has scheduled but has not yet started when this generation retires.
+    entry = SLACK_CONNECTIONS.entry(provider_id)
+    callbacks = ListenerCallbacks()
+    if entry is not None:
+        entry.callbacks = callbacks
 
     @app.action("approve")
+    @callbacks.guard
     async def _on_approve(ack, body, client):
         await ack()
         try:
@@ -119,7 +127,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             logger.warning("slack: malformed approve value")
             return
         channel_id = body["channel"]["id"]
-        entry = SLACK_CONNECTIONS.entry(provider_id)
         adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
         if adapter is None:
             return
@@ -150,6 +157,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             logger.exception("slack: chat.update after approve failed")
 
     @app.action("reject")
+    @callbacks.guard
     async def _on_reject(ack, body, client):
         await ack()
         try:
@@ -172,6 +180,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
 
 
     @app.view(REJECT_MODAL_CALLBACK_ID)
+    @callbacks.guard
     async def _on_modal_submit(ack, body, view, client):
         await ack()
         # private_metadata: reject:ws:sid:tcid[:channel:ts]
@@ -188,7 +197,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         user_id = body.get("user", {}).get("id")
         # Modal submissions don't carry the originating channel_id; route the
         # rejection through any adapter under this provider (inbox dedupes).
-        entry = SLACK_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
         accepted = None            # None: no adapter under this provider, so nothing was relayed (else True or a falsy DecisionRefused)
@@ -239,6 +247,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
 
 
     @app.event("message")
+    @callbacks.guard
     async def _on_message(event, client, context):
         # Ignore bot/self messages and edits/deletes (no plain text payload).
         # A "file_share" subtype carries the user's uploaded files and a
@@ -249,7 +258,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             return
         thread_ts = event.get("thread_ts")
         channel_id = event["channel"]
-        entry = SLACK_CONNECTIONS.entry(provider_id)
         adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
         if adapter is None:
             return
@@ -335,7 +343,11 @@ async def _slack_factory(
     # The connection is now acquired; install handlers on it once (none on a posting-only connection, W7).
     conn = SLACK_CONNECTIONS.entry(provider.id)
     if conn is not None and owns_inbound:
-        _install_handlers(provider.id, conn.conn.app)
+        try:
+            _install_handlers(provider.id, conn.conn.app)
+        except BaseException:
+            await finish_cleanup(retry_cleanup(adapter.aclose, f"channel adapter {channel.id}"))
+            raise
     return adapter
 
 
