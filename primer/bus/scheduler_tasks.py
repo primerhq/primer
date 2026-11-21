@@ -726,6 +726,12 @@ class SessionMessagingSweeper(_BackgroundTask):
 
         Returns how many sessions were woken from their queue.
         """
+        from primer.workspace.session_creation import recover_preparations
+
+        try:
+            await recover_preparations(self._sp)
+        except Exception:
+            logger.exception("session-messaging-sweeper: creation receipt recovery failed")
         await self._trim_peer_ledger()
         if self._claim_engine is None:
             return 0

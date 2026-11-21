@@ -364,6 +364,7 @@ async def test_create_session_default_status_is_created(
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["status"] == "created"
+    assert body["turn_status"] == "idle" and body["started_at"] is None
     assert body["workspace_id"] == seeded_workspace.id
     assert body["binding"]["kind"] == "agent"
     assert body["turn_no"] == 0
@@ -407,7 +408,7 @@ async def test_create_session_with_auto_start_enqueues(
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["status"] == "running"
+    assert body["status"] == "running" and body["turn_status"] == "claimable"
     assert body["started_at"] is not None
 
 

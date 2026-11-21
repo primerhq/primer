@@ -794,6 +794,36 @@ The wake of a click is a routed wake (a receipt, and an `extra_payload` that hol
 
 ## 7. Persistence
 
+### Workspace-backed creation
+
+The REST create, workspace create-session tool and fresh-session trigger subscribers use
+`start_workspace_session`. Before touching the slot, the factory reserves its child ID with a
+`SessionCreationIntent` keyed by that ID and a fresh occurrence. The receipt contains the target
+workspace ID, time and decision. Instructions, runtime credentials and caller data stay out of it.
+Allocation and the initial transcript flush happen outside the database transaction.
+
+Publication uses the provider's `locking_transaction`. In table/key order it validates the binding
+(and graph external-tool witness when needed), conditionally commits the reserved occurrence, inserts
+the complete child, and checks the locked target workspace and any trusted calling session. Session
+keys are acquired in ID order. Changes to the observed binding, workspace identity, or caller generation
+refuse publication. A user create rechecks full target access for its authenticated person.
+`parent_session_id` is lineage. A tool context identifies a caller and, when supplied, its turn number.
+A trigger retains its existing subscription identity and access checks.
+
+An auto-starting child first appears as `running/claimable` with the initial transcript cursor,
+responder ledger and start time. A deferred child first appears as `created/idle`. A scheduler pulse
+and claim registration follow commit. If the creating process dies there, the session messaging sweeper
+repairs a published claimable turn lacking a lease. An unknown commit result is returned to the caller;
+the occurrence guard preserves an already committed decision. A retry of the public request gets a new ID.
+
+A failed preparation can become `abandoned`; the sweeper fences preparations left open more than an
+hour. A slow allocator that loses this race cannot publish. A committed receipt and any abandoned
+tombstone remain reserved even if the session is later deleted. Recovery leaves workspace files alone:
+a late backend request could still write, or a slot could contain user work. Recovery cannot replay
+an unconfirmed transcript. Existing sessions require no receipt or backfill. Old binaries do not
+participate in reservation or publication fencing, so these guarantees require upgraded creators and
+sweepers. Strict job ordering and reservations remain separate.
+
 History is `messages.jsonl` inside the workspace, written through `WorkspaceMessageWriter` (`primer/session/persistence.py`). The writer:
 
 - Owns the monotonic `seq` counter and overwrites each record's `seq` so the stored value is authoritative.
