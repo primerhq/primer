@@ -27,7 +27,8 @@ class StateRepo(Protocol):
 
     All methods are async. Implementations may raise NotImplementedError
     (HTTP 501 equivalent) for methods that are not applicable to their
-    backend -- show_commit in particular may 501 on the sandbox backend.
+    backend. Sandbox commit diffs require runtime protocol 1.6 or newer;
+    older runtimes return the unsupported capability response.
 
     Two capabilities are OPTIONAL and declared apart, in :class:`StatingStateRepo` and :class:`AppendingStateRepo`: callers probe for them
     with ``getattr`` and degrade when they are absent.
@@ -97,7 +98,7 @@ class StateRepo(Protocol):
         """Return diff view for a single commit.
 
         Optional -- may raise NotImplementedError on backends that do not
-        expose per-commit diff data (e.g. the sandbox backend).
+        expose per-commit diff data (including sandbox runtimes before 1.6).
         """
         ...
 
