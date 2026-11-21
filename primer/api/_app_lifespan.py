@@ -33,7 +33,6 @@ from primer.api._app_lifespan_phases import (
     sample_claim_gauges,
     seed_default_artifact_provider,
     sweep_orphaned_tool_call_tasks,
-    warm_chat_channels,
 )
 from primer.api._app_mcp import _start_mcp_mount
 from primer.api.config import AppConfig
@@ -201,11 +200,11 @@ def _make_lifespan(config: AppConfig):
         # be a SECOND inbound connection competing with the API's (Telegram 409
         # Conflict; duplicate Slack/Discord deliveries). A worker-only process
         # posts over outbound-only connections and never warms (W7).
-        owns_inbound = config.runtime_mode in (
+        inbound_eligible = config.runtime_mode in (
             RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
         )
         channel_registry = ChannelRegistry(
-            owns_inbound=owns_inbound,
+            owns_inbound=False,
             channel_storage=storage_provider.get_storage(Channel),
             channel_provider_storage=storage_provider.get_storage(ChannelProvider),
             inbox=channel_inbox,
@@ -278,6 +277,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
+            channel_registry=channel_registry,
             workspace_registry=workspace_registry,
             # Share the app-level resolver (01a06610): the
             # /tool_approval_policies/invalidate endpoint clears THIS
@@ -558,6 +558,7 @@ def _make_lifespan(config: AppConfig):
             # on the storage layer). Without this re-bind, the inbox's
             # publish path crashes with AttributeError on .publish.
             channel_inbox._event_bus = event_bus
+            channel_registry.set_event_bus(event_bus)
             logger.info("lifespan: starting yield listener / timer / sweeper")
             from primer.model.workspace_session import (
                 WorkspaceSession as _WorkspaceSession,
@@ -790,12 +791,16 @@ def _make_lifespan(config: AppConfig):
             stt_registry=getattr(app.state, "stt_registry", None),
         )
 
-        if owns_inbound:
-            app.state.chat_channel_warm_task = asyncio.create_task(
-                warm_chat_channels(channel_registry),
-            )
-        else:
-            app.state.chat_channel_warm_task = None
+        from primer.channel.listener_owner import ChannelListenerOwner
+
+        if scheduler is not None:
+            await channel_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+        channel_cache_task = asyncio.create_task(channel_registry.watch(inbound=False), name="channel-cache")
+        listener_owner = None
+        if inbound_eligible:
+            listener_owner = ChannelListenerOwner(channel_registry)
+            listener_owner.start(coordinator.leader_elector if scheduler is not None else None)
+        app.state.chat_channel_warm_task = listener_owner
 
         # Name every filesystem artifact store this process cannot use (a pod without the shared volume) in the log, in the BACKGROUND: a root
         # on a slow or hung mount never holds the boot, and the check never raises. It runs after the invalidation bus is bound, so a store it
@@ -1154,6 +1159,14 @@ def _make_lifespan(config: AppConfig):
                     await worker_pool.drain_and_stop()
                 except Exception:
                     logger.exception("worker_pool.drain_and_stop failed")
+            channel_cache_task.cancel()
+            await asyncio.gather(channel_cache_task, return_exceptions=True)
+            if listener_owner is not None:
+                await listener_owner.stop()
+            try:
+                await channel_registry.aclose()
+            except Exception:
+                logger.exception("channel_registry.aclose failed")
             # Stop yield background tasks BEFORE the scheduler / bus
             # close so an in-flight tick doesn't race a closing bus.
             if getattr(app.state, "coordinator_sweeper", None) is not None:
@@ -1247,10 +1260,6 @@ def _make_lifespan(config: AppConfig):
                 await tts_registry.aclose()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("lifespan: tts_registry aclose failed: %s", exc)
-            try:
-                await channel_registry.aclose()
-            except Exception:
-                logger.exception("channel_registry.aclose failed")
             try:
                 await provider_registry.aclose()
             except Exception:

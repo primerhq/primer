@@ -53,10 +53,9 @@ def build_app(config_path: Path, slack_url: str):
         if channel is None:
             raise HTTPException(404, "unknown private fixture room")
         adapter = app.state.channel_registry.peek_adapter(channel_id)
-        if adapter is None:
-            # The test must take the documented human REST-save step; it
-            # cannot manufacture listener readiness by lazy-building here.
-            raise HTTPException(409, "save the room through REST to start its listener")
+        if adapter is None or not adapter.owns_inbound:
+            # Observe the actual listener. A fixture must never build it.
+            raise HTTPException(409, "room listener is not active")
         raw = await request.json()
         assert raw["channel"] == channel.external_id
         accepted = await _route_channel_event(adapter, channel.provider_id, raw)

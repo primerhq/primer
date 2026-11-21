@@ -183,14 +183,17 @@ def valid_evidence():
              "binding": binding, "binding_arguments": {"config": binding_config},
              "provider_readback": {"id": "p", "config": {"app_token": "***", "bot_token": "***"}},
              "manual_fire": {"results": [{"skipped": True, "error_code": "skipped_no_match"}]},
-             "standing": {"channel_id": "ch"}, "activation": {"pre_http": 409, "save_http": 200, "saved": {"id": "ch", "access": {"owners": ["o"]}}},
+             "standing": {"channel_id": "ch"}, "activation": {"pre_http": 409, "receive_http": 200, "saved": {"id": "ch", "config": {"chats": {"enabled": True}}, "access": {"owners": ["o"]}}},
              "unmatched": {"event": {"text": "unmatched"}, "sessions": [], "posts": []}, "wire": [],
              "default": {"before": default, "after": copy.deepcopy(default), "directory_exists": True},
              "cleanup": [{"kind": kind, "id": id, "delete_http": 204, "get_http": 404} for kind, id in (("workspaces", "w"), ("channels", "ch"), ("channel_providers", "p"))],
-             "checks": {k: True for k in ("human_activation_required", "nonmatching_message_has_no_effect", "reader_writes_refused",
+             "checks": {k: True for k in ("tool_activated_listener", "nonmatching_message_has_no_effect", "reader_writes_refused",
                                          "binding_removed", "trigger_deleted", "standing_cleared", "owned_fixtures_deleted", "default_preserved")},
              "calls": [{"actor": "reader", "scoped_id": name, "envelope": {"ok": False, "error": {"message": "forbidden"}}}
                        for name in ("system__create_channel_binding", "system__delete_channel_binding", "trigger__fire_now")]}
+    trace["calls"].append({"actor": "owner", "scoped_id": "system__update_channel",
+                           "arguments": {"id": "ch", "entity": {"config": {"chats": {"enabled": True}}}},
+                           "envelope": {"ok": True, "output": json.dumps(trace["activation"]["saved"])}})
     for i, (name, (operation, role, decision)) in enumerate(journey.SPECS.items()):
         items = message_items(values[name], gate=name, arguments=actions[name])
         records, answer, value = journey.read_gate(items, name)
@@ -225,6 +228,7 @@ def valid_evidence():
     (("gates", 0, "gate_id"), "other"), (("gates", 0, "pending", "arguments"), {"wrong": True}),
     (("binding", "owner", "user_id"), "a"), (("binding", "payload_template"), "invented"),
     (("manual_fire", "results", 0, "skipped"), False), (("activation", "pre_http"), 200),
+    (("activation", "receive_http"), 409), (("activation", "saved", "config", "chats", "enabled"), False),
     (("inbound_session", "posts", 0, "thread_ts"), "wrong"), (("inbound_session", "row", "workspace_id"), "other"),
     (("inbound_session", "native_view", "info", "session_id"), "other"),
     (("inbound_session", "native_view", "info", "workspace_id"), "other"),

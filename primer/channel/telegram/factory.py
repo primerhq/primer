@@ -305,7 +305,11 @@ async def _telegram_factory(
     await adapter.initialize()
     conn = TELEGRAM_CONNECTIONS.entry(provider.id)
     if conn is not None and owns_inbound:  # none on a posting-only connection (W7)
-        _install_handlers(provider.id, conn.app)
+        try:
+            _install_handlers(provider.id, conn.app)
+        except BaseException:
+            await adapter.aclose()
+            raise
     return adapter
 
 

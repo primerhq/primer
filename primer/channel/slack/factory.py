@@ -335,7 +335,11 @@ async def _slack_factory(
     # The connection is now acquired; install handlers on it once (none on a posting-only connection, W7).
     conn = SLACK_CONNECTIONS.entry(provider.id)
     if conn is not None and owns_inbound:
-        _install_handlers(provider.id, conn.conn.app)
+        try:
+            _install_handlers(provider.id, conn.conn.app)
+        except BaseException:
+            await adapter.aclose()
+            raise
     return adapter
 
 

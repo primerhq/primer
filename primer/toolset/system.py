@@ -284,6 +284,7 @@ _ADMIN_WRITE_NOTES: dict[str, str] = {
 
 if TYPE_CHECKING:
     from primer.api.registries import ProviderRegistry
+    from primer.api.registries.channel_registry import ChannelRegistry
     from primer.api.registries.artifact_storage_registry import ArtifactStorageRegistry
     from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
     from primer.api.registries.workspace_registry import WorkspaceRegistry
@@ -358,6 +359,7 @@ def build_system_toolset(
     toolset_id: str = SYSTEM_TOOLSET_ID,
     approval_resolver: "ApprovalResolver | None" = None,
     artifact_storage_registry: "ArtifactStorageRegistry | None" = None,
+    channel_registry: "ChannelRegistry | None" = None,
     mcp_oauth: "ToolsetOAuthService | None" = None,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_system`` toolset.
@@ -419,6 +421,16 @@ def build_system_toolset(
         # The registry publishes on the invalidation bus once the lifespan bound it, so this reaches every process; unbound it evicts here.
         if artifact_storage_registry is not None:
             await artifact_storage_registry.invalidate(eid)
+
+    from primer.int.coordinator import InvalidationTopic
+
+    async def _channel_changed(eid: str) -> None:
+        if channel_registry is not None:
+            await channel_registry.changed(InvalidationTopic.CHANNEL, eid)
+
+    async def _channel_provider_changed(eid: str) -> None:
+        if channel_registry is not None:
+            await channel_registry.changed(InvalidationTopic.CHANNEL_PROVIDER, eid)
 
     async def _inv_policy(_eid: str) -> None:
         # The gate's cached verdicts are stale in every process once a policy row changes (GS-28); ``approval_resolver`` is set below.
@@ -626,30 +638,14 @@ def build_system_toolset(
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin", False),
         ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, _inv_asp, _inv_asp, "admin", False),
         ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, _inv_policy, _inv_policy, "admin", False),
-        ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin", False),
-        ("channel", "channels", Channel, None, None, None, "user", True),
+        ("channel_provider", "channel_providers", ChannelProvider, _channel_provider_changed, _channel_provider_changed, _channel_provider_changed, "admin", False),
+        ("channel", "channels", Channel, _channel_changed, _channel_changed, _channel_changed, "user", True),
     ]
-    # The entities whose warm adapter an edit through the REST route refreshes but an edit through a TOOL does not (task 01a111d1, D5
-    # phase 2c, the lead's ruling: document it, do not mirror the hook). ChannelRegistry invalidates only the cache of its own process,
-    # the warm inbound adapters live in the API process, and a tool runs in whichever process executes the session (a worker in the k3s
-    # split), so a local-only mirror would look like parity and do nothing where it matters. Binding the registry to the invalidation bus
-    # is the channel half of the design ticket 01a11358; the artifact-storage half is done (ArtifactStorageRegistry publishes on the
-    # ``artifact_storage_provider`` topic, so ``_inv_asp`` above reaches every process and that entity carries no note). The note reaches
-    # the agent through the update / delete descriptors.
-    cache_notes_by_label: dict[str, str] = {
-        "channel_provider": (
-            "Unlike the other provider rows, this tool does NOT flush the warm channel adapters (the Telegram / Slack / Discord "
-            "gateways live in the API process, and the registry's invalidation is local to one process, while a tool may run in "
-            "another). The change takes effect after the next restart, or after the row is edited through the REST route, which "
-            "flushes them."
-        ),
-        "channel": (
-            "This tool does NOT flush or re-warm the channel's adapter (its inbound gateway lives in the API process, and the "
-            "registry's invalidation is local to one process, while a tool may run in another), so a new config, or "
-            "``config.chats.enabled`` turned on, takes effect after the next restart or after the row is edited through the REST "
-            "route, which flushes and re-warms it."
-        ),
-    }
+    channel_refresh_note = (
+        "The API process that owns inbound reconciles listeners from the saved channel and provider configuration. "
+        "A successful write confirms the stored row; a platform connection may still be starting or retrying."
+    )
+    cache_notes_by_label = dict.fromkeys(("channel", "channel_provider"), channel_refresh_note)
     # A consequence of deleting a row that the agent reads in the delete descriptor before it acts (ADM-13). The tool still deletes: setup
     # completeness is derived live, so removing the seeded operator or builder reopens setup, and a restart or the seed route restores it
     # (the lead ruled: no refusal, the same facts as the console's prompt). The wording avoids "restart": test_system_cache_caveats uses
@@ -811,6 +807,7 @@ def build_system_toolset(
                 pre_create=pre_create,
                 pre_update=pre_update,
                 cache_note=cache_notes_by_label.get(label),
+                durable_refresh=label in cache_notes_by_label,
                 admin_when=admin_writes_by_label.get(label),
                 admin_note=_ADMIN_WRITE_NOTES.get(label),
                 delete_note=delete_notes_by_label.get(label),

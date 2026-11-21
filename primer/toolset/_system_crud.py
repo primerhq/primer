@@ -380,6 +380,7 @@ def _crud_tools_for(
     pre_create: _PreCreate = None,
     pre_update: _PreUpdate = None,
     cache_note: str | None = None,
+    durable_refresh: bool = False,
     admin_when: Callable[[Any, Any | None], bool | str | None] | None = None,
     admin_note: str | None = None,
     delete_note: str | None = None,
@@ -406,9 +407,8 @@ def _crud_tools_for(
     they run after the guards, before the write, as the router orders them. A refusal (:class:`EntityCheckError`) is answered as a
     typed error (``conflict`` or ``validation-error`` naming the field) and nothing is stored; ``None`` runs none.
 
-    ``cache_note`` is appended to the update and delete descriptors of an entity whose warm adapter a tool edit does NOT refresh
-    (the REST router does): the registries that cache it invalidate only their own process, so a local-only mirror of the router's hook
-    would look like parity and do nothing where it matters. It tells the agent when the change takes effect and why.
+    ``cache_note`` describes asynchronous cache refresh on writes. With ``durable_refresh``
+    the post-write hook only publishes a hint: polling repairs a lost hint after cancellation.
 
     ``admin_when(entity, existing)`` marks the writes that only an admin CALLER may make although the tool's static ``required_role``
     is lower (``existing`` is ``None`` on a create): the handler checks the run's identity itself, because the tool manager's floor
@@ -621,6 +621,8 @@ def _crud_tools_for(
             "``type=validation-error`` naming the field, and nothing is stored."
         )
 
+    if cache_note:
+        create_when += " " + cache_note
     if admin_when is not None and admin_note:
         create_when += f" {admin_note}"
     if write_note:
@@ -740,7 +742,7 @@ def _crud_tools_for(
         "the mask is refused with ``type=validation-error`` (\"re-enter the secret\") "
         "and nothing is stored; send the secret itself to move it."
     )
-    if on_update is not None:
+    if on_update is not None and cache_note is None:
         update_when += (
             " Mutating provider/toolset/vector-store rows invalidates the "
             "matching cached adapter immediately."
@@ -777,7 +779,7 @@ def _crud_tools_for(
             # An entity with an ``on_update`` hook is a row write and then the hook that drops the cached adapter: a
             # Stop that cancelled in between would leave the adapter built from the old row. A Stop waits for the
             # call. Without a hook it is one statement in one transaction.
-            interruptible=on_update is None,
+            interruptible=on_update is None or durable_refresh,
         ),
         _update_handler,
     )
@@ -839,7 +841,7 @@ def _crud_tools_for(
     delete_when = (
         "Use when removing a row; unknown id returns ``type=not-found``."
     )
-    if on_delete is not None:
+    if on_delete is not None and cache_note is None:
         delete_when += (
             " Deleting provider/toolset/vector-store rows invalidates the "
             "matching cached adapter immediately."
@@ -860,7 +862,7 @@ def _crud_tools_for(
                 ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
             ],
             required_role=required_role,
-            interruptible=on_delete is None and pre_delete is None and post_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
+            interruptible=(on_delete is None or durable_refresh) and pre_delete is None and post_delete is None,   # as update_: the row delete, then the hook; a pre_delete is more steps
         ),
         _delete_handler,
     )

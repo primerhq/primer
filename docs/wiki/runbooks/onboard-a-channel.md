@@ -105,7 +105,7 @@ A required worker call parks until the person decides; do not retry while parked
 {"toolset_id": "workspaces", "tool_name": "get_workspace", "arguments": {"id": "team-work"}}
 ```
 
-5. Human activation step: save the channel through the existing Channels console (the owner-authorized REST update), or have an operator restart the API process that owns inbound. Tool writes do not refresh or warm that process's cached channel adapter. A channel row with chats.enabled=true is not proof that its gateway is listening. This [human activation step](not-agent-callable) is required before testing a newly tool-created room; no new warm tool is implied.
+5. Allow the listening API to connect. A tool save requests listener refresh automatically. A saved room does not itself prove a live listener. Failed connection attempts retry; check the API logs and provider credentials if the room stays silent.
 
 6. Use [`trigger__fire_now`](reference/tools/trigger/fire_now) only as a dispatch diagnostic. It supplies no ChannelEvent. For this event-matched binding, expect results[].skipped=true with error_code=skipped_no_match and no session. HTTP 200 or a fire_id is not inbound acceptance; do not remove the matcher to manufacture success.
 

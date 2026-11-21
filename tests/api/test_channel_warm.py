@@ -1,8 +1,8 @@
-"""ChannelRegistry.warm_chat_channels starts bots for channels with
+"""ChannelRegistry.reconcile starts bots for channels with
 config.chats.enabled=True.
 
 Chat-driven bots are user-initiated, so unlike session channels (warmed by the
-first outbound park) they have no other start trigger. warm_chat_channels eagerly
+first outbound park) they have no other start trigger. reconcile eagerly
 initializes the adapter for each Channel whose chat config is enabled at boot.
 """
 
@@ -90,7 +90,7 @@ async def test_warm_starts_enabled_chat_adapters(p: SqliteStorageProvider):
         storage_provider=p,
     )
     try:
-        count = await reg.warm_chat_channels()
+        count = await reg.reconcile()
         assert count == 1
         assert started == ["ch-1"]
     finally:
@@ -104,4 +104,4 @@ async def test_warm_noop_without_storage_provider(p: SqliteStorageProvider):
         channel_provider_storage=p.get_storage(ChannelProvider),
         inbox=ChannelInbox(event_bus=None),
     )
-    assert await reg.warm_chat_channels() == 0
+    assert await reg.reconcile() == 0

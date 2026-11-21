@@ -227,6 +227,25 @@ def create_test_app(
     from primer.model.provider import ArtifactStorageProvider as _ASP
     _art_storage = storage_provider.get_storage(_ASP)
     _test_artifact_registry = _ArtReg(storage=_art_storage, storage_provider=storage_provider)
+    # Channel subsystem — registry + dispatcher for test fixtures.
+    from primer.api.registries.channel_registry import ChannelRegistry as _CR
+    from primer.channel.dispatcher import ChannelDispatcher as _CD
+    from primer.channel.inbox import ChannelInbox as _CI
+    from primer.model.channel import (
+        Channel as _Channel,
+        ChannelProvider as _ChannelProvider,
+    )
+    _test_channel_inbox = _CI(event_bus=None)
+    _test_channel_registry = _CR(
+        channel_storage=storage_provider.get_storage(_Channel),
+        channel_provider_storage=storage_provider.get_storage(_ChannelProvider),
+        inbox=_test_channel_inbox,
+        storage_provider=storage_provider,
+    )
+    _test_channel_dispatcher = _CD(registry=_test_channel_registry)
+    app.state.channel_inbox = _test_channel_inbox
+    app.state.channel_registry = _test_channel_registry
+    app.state.channel_dispatcher = _test_channel_dispatcher
     if system_toolset is None:
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
@@ -236,6 +255,7 @@ def create_test_app(
             # Same sharing invariant as the real lifespan (01a06610).
             approval_resolver=_test_approval_resolver,
             artifact_storage_registry=_test_artifact_registry,
+            channel_registry=_test_channel_registry,
             mcp_oauth=mcp_oauth,
         )
     if workspaces_toolset is None:
@@ -469,25 +489,6 @@ def create_test_app(
         app.state.start_worker_pool = None
         app.state.stop_worker_pool = None
 
-    # Channel subsystem — registry + dispatcher for test fixtures.
-    from primer.api.registries.channel_registry import ChannelRegistry as _CR
-    from primer.channel.dispatcher import ChannelDispatcher as _CD
-    from primer.channel.inbox import ChannelInbox as _CI
-    from primer.model.channel import (
-        Channel as _Channel,
-        ChannelProvider as _ChannelProvider,
-    )
-    _test_channel_inbox = _CI(event_bus=None)
-    _test_channel_registry = _CR(
-        channel_storage=storage_provider.get_storage(_Channel),
-        channel_provider_storage=storage_provider.get_storage(_ChannelProvider),
-        inbox=_test_channel_inbox,
-        storage_provider=storage_provider,
-    )
-    _test_channel_dispatcher = _CD(registry=_test_channel_registry)
-    app.state.channel_inbox = _test_channel_inbox
-    app.state.channel_registry = _test_channel_registry
-    app.state.channel_dispatcher = _test_channel_dispatcher
     _mount_routers(app)
     register_error_handlers(app)
     generated = build_generated_route_toolsets(
