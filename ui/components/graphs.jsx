@@ -666,6 +666,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
     const body = {
       id: currentDraft.id,
       description: currentDraft.description,
+      default_priority: currentDraft.default_priority,
       nodes: (currentDraft.nodes || []).map(GR_stripCoords),
       edges: (currentDraft.edges || []).map((e) => ({ ...e })),
       ...(currentDraft.max_iterations != null

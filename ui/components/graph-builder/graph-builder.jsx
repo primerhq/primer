@@ -222,6 +222,7 @@ function GB_Builder(props) {
   const buildSaveBody = () => ({
     id: draft.id,
     description: draft.description,
+    default_priority: draft.default_priority,
     nodes: (draft.nodes || []).map(GR_stripCoords),
     edges: (draft.edges || []).map((e) => ({ ...e })),
     ...(draft.max_iterations != null ? { max_iterations: draft.max_iterations } : {}),
