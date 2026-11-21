@@ -40,7 +40,7 @@ class SignIn:
             require(set(self._continuation) == {"client_id"})
             require(text(self._continuation["client_id"]) != "dynamic_agent_client")
         revocations = store.read("revocations") or {"items": []}
-        require(set(revocations) == {"items"} and type(revocations["items"]) is list
+        require(set(revocations) in ({"items"}, {"items", "identity"}) and type(revocations["items"]) is list
                 and len(revocations["items"]) <= 32)
         self._revocations = revocations["items"]
         for item in self._revocations:
@@ -56,6 +56,17 @@ class SignIn:
             else:
                 self._validate_record(self._record)
                 self._selected = {key: self._record[key] for key in ("subject", "client_id", "account")}
+        identity = revocations.get("identity")
+        if identity is not None:
+            require(type(identity) is dict and set(identity) == {"subject", "client_id", "account"})
+            require(identity["account"] == binding(text(identity["subject"]), text(identity["client_id"])))
+        if self._revocations:
+            # Write-ahead disposal can coexist with an old active registration
+            # after a crash. It is a durable fence, NEVER a credential source.
+            if identity is not None:
+                require(self._selected is None or self._selected == identity)
+                self._selected = identity
+            self._record = None
         host = store.read("host")
         if host is None:
             host = {"id": secrets.token_urlsafe(32)}
@@ -192,7 +203,7 @@ class SignIn:
         a previously unknown opaque binding. Staged tokens are never inferable
         over IPC and remain unusable until this operation succeeds.
         """
-        require(not self._lock.locked() and self._candidate is not None
+        require(not self._lock.locked() and not self._revocations and self._candidate is not None
                 and self._candidate_deadline > time.monotonic()
                 and self._candidate["expires_at"] > time.time())
         record = self._candidate
@@ -204,14 +215,14 @@ class SignIn:
         return record["account"]
 
     def snapshot(self):
-        require(self._record is not None)
+        require(self._record is not None and not self._revocations)
         record = self._record
         return self._policy.snapshot(record["account"], record["generation"], record["expires_at"])
 
     async def credential(self, account: str) -> tuple[str, str]:
         """Broker-private only. Serialize rotation; never retry unknown outcomes."""
         async with self._lock:
-            require(self._record is not None and account == self._record["account"])
+            require(self._record is not None and not self._revocations and account == self._record["account"])
             self._policy.grant(account)
             record = self._record
             if record["expires_at"] <= time.time() + 60:
@@ -250,9 +261,12 @@ class SignIn:
                     item = {key: source[key] for key in ("client_id", "refresh_token")}
                     if item not in self._revocations:
                         self._revocations.append(item)
+            # Publish the retry handle AND verified identity before destroying
+            # the old durable credential. Startup treats any pending item as a
+            # fence even if the following marker write did not complete.
+            self._save_revocations()
             if self._selected is not None:
                 self._store.write("registration", {"reauthorization_required": True, **self._selected})
-            self._store.write("revocations", {"items": self._revocations})
             if not self._revocations:
                 return
             try:
@@ -268,7 +282,12 @@ class SignIn:
                         except Exception:
                             continue  # Attempt other distinct sessions too.
                         self._revocations.remove(item)
-                        self._store.write("revocations", {"items": self._revocations})
+                        self._save_revocations()
                 require(not self._revocations)
             except Exception:
                 raise BoundaryError("SIWC remote revocation unconfirmed; local credentials disabled") from None
+
+    def _save_revocations(self) -> None:
+        # Empty is persisted only after registration's disabled marker is
+        # durable. Unknown completion outcomes may safely repeat revocation.
+        self._store.write("revocations", {"items": self._revocations, "identity": self._selected})

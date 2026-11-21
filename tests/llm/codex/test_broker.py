@@ -548,7 +548,10 @@ async def test_correction_active_and_staged_revoke_failure_disables_and_attempts
         await world.auth.sign_out()
     assert attempted == ["dedicated-test-refresh", "staged-refresh"]
     assert world.auth._record is None and world.auth._candidate is None
-    assert world.store.read("revocations") == {"items": [{"client_id": "issued-client", "refresh_token": "dedicated-test-refresh"}]}
+    assert world.store.read("revocations") == {
+        "items": [{"client_id": "issued-client", "refresh_token": "dedicated-test-refresh"}],
+        "identity": {"subject": "dedicated-subject", "client_id": "issued-client", "account": world.account},
+    }
     restored = SignIn(world.store, world.policy, world.http)
     with pytest.raises(BoundaryError):
         restored.begin("http://127.0.0.1:12345/auth/callback")

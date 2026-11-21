@@ -17,6 +17,7 @@ DISCOVERY = ISSUER + "/.well-known/openid-configuration"
 RESOURCE = "https://api.openai.com/v1"
 MODELS = RESOURCE + "/models"
 RESPONSES = RESOURCE + "/responses"
+MAX_EVENT_BYTES = 1048576
 
 
 class FixedHTTP:
@@ -74,29 +75,41 @@ class FixedHTTP:
                                                     "Accept": "text/event-stream"}) as response:
                 require(response.status_code == 200 and response.headers.get("content-type", "").split(";")[0] == "text/event-stream")
                 buffer = bytearray()
-                data = []
+                data = bytearray()
+                has_data = False
                 async for chunk in self._raw(response, 33554432):
-                    require(len(chunk) <= 1048576 - len(buffer))
+                    require(len(chunk) <= MAX_EVENT_BYTES - len(buffer))
+                    scan = len(buffer)  # Existing partial line was already scanned.
                     buffer.extend(chunk)
-                    while b"\n" in buffer:
-                        line, _, remainder = buffer.partition(b"\n")
-                        buffer = bytearray(remainder)
-                        line = line.rstrip(b"\r")
+                    start = 0
+                    while (end := buffer.find(b"\n", scan)) >= 0:
+                        line = buffer[start:end].rstrip(b"\r")
+                        start = scan = end + 1
                         if not line:
-                            if data:
-                                raw = b"\n".join(data)
-                                data = []
+                            if has_data:
+                                raw = bytes(data)
+                                data.clear()
+                                has_data = False
                                 if raw == b"[DONE]":
                                     return
                                 event = decode(raw)
                                 require(type(event) is dict)
                                 yield event
                         elif line.startswith(b"data:"):
-                            data.append(bytes(line[5:]).lstrip(b" "))
-                            require(sum(map(len, data)) <= 1048576)
+                            part = line[5:].lstrip(b" ")
+                            # Count separators too: empty data lines still grow
+                            # an event. No per-line scan or unbounded entry list.
+                            extra = len(part) + int(has_data)
+                            require(extra <= MAX_EVENT_BYTES - len(data))
+                            if has_data:
+                                data.extend(b"\n")
+                            data.extend(part)
+                            has_data = True
                         elif not (line.startswith(b":") or line.startswith(b"event:")):
                             raise BoundaryError("Unsupported stream framing")
-                require(not data and not buffer)
+                    # Drop consumed bytes once per chunk, not once per line.
+                    del buffer[:start]
+                require(not has_data and not buffer)
         except Exception:
             raise BoundaryError("Broker model stream failed") from None
 
