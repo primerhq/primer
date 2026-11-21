@@ -346,6 +346,7 @@ const AGM_REFLECTION_REASONS = {
   input_compaction_limit: "Learning skipped: the full evidence cannot fit the bounded summary plan. Progress was kept.",
   compaction_invalid: "Learning skipped: a summary could not be validated. Progress was kept.",
   compaction_output_limit: "Learning skipped: model output reached a limit. Progress was kept.",
+  compaction_incomplete: "Learning skipped: the model did not provide a complete verdict. Progress was kept.",
   input_context_rejected: "Learning skipped: the model rejected the context size. Progress was kept.",
   input_superseded: "Learning skipped: the session, memory settings or job changed."
 };

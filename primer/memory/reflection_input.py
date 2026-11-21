@@ -208,6 +208,7 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
     structured_result = None
     argument_parts: list[str] = []
     argument_size = 0
+    completed = False
     try:
         async for event in stream:
             events += 1
@@ -215,7 +216,9 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
             # events are not retained; event count and the attempt deadline bound
             # streams with no text. This is not a network-frame-size guarantee.
             payload = event.extended if isinstance(event, ExtendedEvent) else event
-            text = getattr(payload, "text", "")
+            if "tool_call" in payload.type and not isinstance(event, (ToolCallStart, ToolCallDelta, ToolCallEnd)):
+                raise InputRefused("compaction_invalid")
+            text = getattr(payload, "text", None) or ""
             if len(text) > MAX_OUTPUT_BYTES:
                 raise InputRefused("compaction_output_limit")
             received += len(text.encode("utf-8"))
@@ -223,14 +226,28 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
                 raise InputRefused("compaction_output_limit")
             if events > MAX_EVENTS:
                 raise InputRefused("compaction_output_limit")
-            if isinstance(event, Done) and event.stop_reason == "max_tokens":
-                raise InputRefused("compaction_output_limit")
+            if isinstance(event, Done):
+                if completed:
+                    raise ServerError("memory model sent duplicate completion", code="network_error")
+                if event.stop_reason == "max_tokens":
+                    raise InputRefused("compaction_output_limit")
+                if event.stop_reason == "error":
+                    raise ServerError("memory model did not complete", code="network_error")
+                if event.stop_reason not in ("stop", "tool_use"):
+                    raise InputRefused("compaction_incomplete")
+                if event.stop_reason == "tool_use" and structured_result is None:
+                    raise InputRefused("compaction_incomplete")
+                completed = True
+                continue
             if isinstance(event, Error):
-                if event.fatal:
-                    if is_context_overflow_error(event):
-                        raise InputRefused("input_context_rejected")
-                    raise ServerError("memory model stream failed", code=event.code)
-            elif isinstance(event, ToolCallStart):
+                # Nonfatal means another event may follow, not that a failed
+                # response is valid evidence (notably OpenResponses failures).
+                if is_context_overflow_error(event):
+                    raise InputRefused("input_context_rejected")
+                raise ServerError("memory model stream failed", code=event.code)
+            if completed and (text or isinstance(event, (ToolCallStart, ToolCallDelta, ToolCallEnd))):
+                raise ServerError("memory model sent content after completion", code="network_error")
+            if isinstance(event, ToolCallStart):
                 if event.name != "structured_output" or structured_key is not None:
                     raise InputRefused("compaction_invalid")
                 structured_key = (event.id, event.index)
@@ -272,10 +289,12 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
         raise
     finally:
         await _close(stream)
+    if not completed:
+        raise ServerError("memory model stream ended without completion", code="network_error")
     try:
         if structured_key is not None:
             if structured_result is None:
-                raise InvalidVerdict()
+                raise InputRefused("compaction_incomplete")
             if argument_parts and json.loads("".join(argument_parts)) != structured_result:
                 raise InvalidVerdict()
             return structured_result

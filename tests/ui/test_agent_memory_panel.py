@@ -150,6 +150,8 @@ def test_empty_error_loading_states() -> None:
 
 def test_compaction_activity_explains_preserved_progress_without_echoing_details() -> None:
     activity = [
+        {"id": 4, "type": "memory.reflection.skipped", "actor": "memory:a1", "at": "t",
+         "payload": {"reason": "compaction_incomplete"}},
         {"id": 3, "type": "memory.reflection.skipped", "actor": "memory:a1", "at": "t",
          "payload": {"reason": "input_incomplete"}},
         {"id": 2, "type": "memory.reflection.skipped", "actor": "memory:a1", "at": "t",
@@ -164,4 +166,5 @@ def test_compaction_activity_explains_preserved_progress_without_echoing_details
         shown = text_of(ctx, "memory-activity")
         assert "Progress was kept" in shown and "2 evidence summaries" in shown
         assert "transcript range is incomplete" in shown
+        assert "complete verdict" in shown
         assert "PRIVATE_SOURCE_TEXT" not in shown
