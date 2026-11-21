@@ -3398,7 +3398,7 @@ async def workspace_show_commit(
     """
     await _require_workspace(request, workspace_id, AccessLevel.READ)
     ws = await registry.get_workspace(workspace_id)
-    state_repo = getattr(ws, "_state", None)
+    state_repo = ws.state_repo
     show = getattr(state_repo, "show_commit", None) if state_repo else None
     if show is None:
         raise HTTPException(

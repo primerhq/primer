@@ -249,7 +249,7 @@ class _FakeWorkspace:
         # route forwards (command, timeout_seconds) verbatim.
         self.diagnostic_calls: list[tuple[str, float]] = []
         # state_repo stand-in for the diff endpoint.
-        self._state = _FakeStateRepo()
+        self.state_repo = _FakeStateRepo()
         self._diagnostic_raise: BaseException | None = None
 
     @property

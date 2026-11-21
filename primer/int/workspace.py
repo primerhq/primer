@@ -102,14 +102,12 @@ class Workspace(ABC):
     def state_repo(self) -> "Any | None":
         """Optional handle to the workspace's state repository.
 
-        Backends that persist state via a local git repo (currently
-        :class:`primer.workspace.local.LocalWorkspace`) expose a
-        :class:`primer.workspace.local.state.LocalStateRepo` here so
-        downstream callers - primarily the graph executor - can
-        commit per-graph state directly. Backends that do not yet
-        offer a compatible state-repo surface (sandbox / container /
-        k8s) return ``None``; callers that require state_repo MUST
-        check for ``None`` and raise a clear error.
+        Local workspaces expose ``LocalStateRepo``; container and Kubernetes
+        workspaces expose ``SandboxStateRepo``. Consumers use this public
+        property for graph state and commit inspection rather than private
+        backend attributes. Individual operations may require a newer
+        runtime protocol. Backends without a state repository return
+        ``None``; callers that require it must check and raise a clear error.
 
         Default implementation returns ``None`` so existing backends
         opt in by override rather than being broken by the new
