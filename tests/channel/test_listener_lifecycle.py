@@ -229,3 +229,84 @@ async def test_telegram_cancelled_poll_start_stops_partial_application(monkeypat
     for method in (updater.stop, app.stop, app.shutdown):
         method.assert_awaited_once()
     assert not pool._entries
+
+
+async def test_supervisor_repeated_stop_waits_for_all_providers_and_retry(world, builds, monkeypatch):
+    from primer.channel import retirement
+
+    monkeypatch.setattr(retirement, "_RETRY_SECONDS", .01)
+    sp, _, _ = world
+    for i in range(2):
+        await sp.get_storage(ChannelProvider).create(ChannelProvider(**{**PROVIDER, "id": f"cp-{i}"}))
+        await sp.get_storage(Channel).create(Channel(**{**ROOM, "id": f"room-{i}", "provider_id": f"cp-{i}"}))
+    reg = registry(sp)
+    owner = ChannelListenerOwner(reg)
+    lease = SimpleNamespace(lost_event=asyncio.Event())
+    released = asyncio.Event()
+    done = set()
+    entered = [asyncio.Event(), asyncio.Event()]
+    finish = [asyncio.Event(), asyncio.Event()]
+
+    async def release():
+        assert done == {0, 1}
+        released.set()
+
+    lease.release = release
+    owner.start(SimpleNamespace(try_acquire=AsyncMock(side_effect=[lease, None])))
+    try:
+        await until(lambda: len(builds) == 2)
+        for i in range(2):
+            async def close(i=i):
+                if i == 1 and not entered[i].is_set():
+                    entered[i].set()
+                    raise ConnectionError("transient SDK failure")
+                entered[i].set()
+                await finish[i].wait()
+                done.add(i)
+            reg.peek_adapter(f"room-{i}").aclose = close
+        lease.lost_event.set()
+        await asyncio.wait_for(entered[0].wait(), 2)
+        await asyncio.wait_for(entered[1].wait(), 2)
+        stopping = asyncio.create_task(owner.stop())
+        await asyncio.sleep(0)
+        owner._task.cancel()
+        await asyncio.sleep(0)
+        finish[0].set()
+        await until(lambda: 0 in done)
+        assert not released.is_set() and not stopping.done()
+        finish[1].set()
+        await asyncio.wait_for(stopping, 2)
+        assert released.is_set() and reg.peek_adapter("room-0") is reg.peek_adapter("room-1") is None
+    finally:
+        for gate in finish:
+            gate.set()
+        await owner.stop()
+        await reg.aclose()
+
+
+async def test_disabled_rooms_use_standing_or_audible_session_binding_without_a_correlation(world, builds):
+    from datetime import UTC, datetime
+    from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
+    from primer.model.workspace_session import WorkspaceSession
+    from tests.api.test_gate_fence import G1, _ask_user_session
+
+    sp, _, _ = world
+    await sp.get_storage(ChannelProvider).create(ChannelProvider(**PROVIDER))
+    for name in ("standing", "ephemeral", "silent", "unused"):
+        await sp.get_storage(Channel).create(Channel(id=name, external_id=name, provider="slack", provider_id="cp"))
+    await sp.get_storage(Workspace).create(Workspace(
+        id="w", provider_id="local", template_id="t", created_at=datetime.now(UTC),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://unused", token="fixture"), reply_binding=WorkspaceChannelLink(channel_id="standing"),
+    ))
+    for name in ("ephemeral", "silent"):
+        session = _ask_user_session(session_id=name, tool_call_id="ask", gate_id=G1)
+        session.metadata["reply_binding"] = {"channel_id": name}
+        if name == "silent":
+            session.metadata["reply_binding"]["silent"] = True
+        await sp.get_storage(WorkspaceSession).create(session)
+    reg = registry(sp, True)
+    try:
+        assert await reg.reconcile() == 2
+        assert {cid for cid, *_ in builds} == {"standing", "ephemeral"}
+    finally:
+        await reg.aclose()

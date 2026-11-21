@@ -14,7 +14,7 @@ A channel is one room on a [channel provider](channels/providers): a Slack chann
 - **One room, one channel.** The pair `provider_id` and `external_id` belongs to one channel only.
 - **`config.chats`** has one key and no others: `enabled` (default `false`).
 - **`chats.enabled: true` lets a message in the room start a session.** With `false`, the [bindings](channels/bindings) that start a session (`agent_fresh_session`, `graph_fresh_session`) do not fire for the room. A `session_append` binding still feeds its session, a session waiting on a channel event still wakes, and a thread mapped to a session still feeds it.
-- **Listening.** The listening API shares one platform connection across a provider's rooms. It opens chat-enabled rooms at startup and after channel changes. A chat-disabled room can still receive correlated replies if the listening API has opened its adapter for a session.
+- **Listening.** The listening API shares one platform connection across a provider's rooms. It opens chat-enabled rooms and rooms needed for a saved reply destination or conversation. A person can answer an existing session with `chats.enabled` off. Turn that setting on when the room should start fresh sessions.
 - **The channel does not pick the agent.** A message starts the agent or graph that a [binding](channels/bindings) on a `channel` trigger names, so one room can route to different agents by rule.
 - **How much a conversation hears back** is set by the `interactive` flag of the channel trigger ([inbound bindings](channels/bindings)). The room has no setting for it.
 - **A DM is a room too.** A direct message with the bot needs its own channel, with the DM's id as `external_id` (for Telegram, the person's user id).

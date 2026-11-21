@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from primer.channel.retirement import check_available, retire, retire_failed_start
 from primer.model.channel import (
     ChannelProvider, TelegramChannelProviderConfig,
 )
@@ -97,6 +98,28 @@ class _Entry:
     adapters_by_chat_id: dict[str, Any] = field(default_factory=dict)
     poll_timeout: int = 25
     inbound: bool = True
+    updater_stopped: bool = False
+    app_stopped: bool = False
+    shutdown_done: bool = False
+
+    async def stop(self) -> None:
+        # Attempt independent stages even if an earlier one failed; retry only
+        # unfinished stages. PTB reports which components are still running.
+        try:
+            if self.inbound and not self.updater_stopped:
+                if getattr(self.app.updater, "running", True):
+                    await self.app.updater.stop()
+                self.updater_stopped = True
+        finally:
+            try:
+                if self.inbound and not self.app_stopped:
+                    if getattr(self.app, "running", True):
+                        await self.app.stop()
+                    self.app_stopped = True
+            finally:
+                if not self.shutdown_done:
+                    await self.app.shutdown()
+                    self.shutdown_done = True
 
 
 class _TelegramConnectionRegistry:
@@ -115,28 +138,21 @@ class _TelegramConnectionRegistry:
         ChannelRegistry, so one mode.
         """
         async with self._lock:
+            check_available(self, provider.id)
             entry = self._entries.get(provider.id)
             if entry is None:
                 cfg = provider.config
                 assert isinstance(cfg, TelegramChannelProviderConfig)
                 app = _build_application(cfg)
+                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds, inbound=inbound)
                 try:
                     await app.initialize()
                     if inbound:
                         await app.start()
                         await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
                 except BaseException:
-                    try:
-                        if app.updater.running:
-                            await app.updater.stop()
-                    finally:
-                        try:
-                            if app.running:
-                                await app.stop()
-                        finally:
-                            await app.shutdown()
+                    await retire_failed_start(self, provider.id, entry.stop)
                     raise
-                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds, inbound=inbound)
                 self._entries[provider.id] = entry
                 logger.info(
                     "telegram: application started for provider %s", provider.id,
@@ -144,28 +160,19 @@ class _TelegramConnectionRegistry:
             entry.refcount += 1
             return entry.app
 
-    async def release(self, provider: ChannelProvider) -> None:
+    async def release(self, provider: ChannelProvider, *, expected: Any = None) -> None:
         async with self._lock:
             entry = self._entries.get(provider.id)
-            if entry is None:
+            if entry is None or (expected is not None and entry.app is not expected):
                 return
             entry.refcount -= 1
-            if entry.refcount <= 0:
-                try:
-                    if entry.inbound:
-                        await entry.app.updater.stop()
-                        await entry.app.stop()
-                    await entry.app.shutdown()
-                except Exception:
-                    logger.exception(
-                        "telegram: shutdown failed for %s", provider.id,
-                    )
-                del self._entries[provider.id]
-                if self.on_close is not None:
-                    self.on_close(provider.id)
-                logger.info(
-                    "telegram: application stopped for provider %s", provider.id,
-                )
+            if entry.refcount:
+                return
+            del self._entries[provider.id]
+            closing = retire(self, provider.id, entry.stop)
+            if self.on_close is not None:
+                self.on_close(provider.id)
+        await asyncio.shield(closing)
 
     def entry(self, provider_id: str) -> _Entry | None:
         return self._entries.get(provider_id)

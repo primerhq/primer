@@ -228,11 +228,55 @@ async def test_release_removes_the_entry_and_stops_the_gateway_even_when_the_clo
     await _until(lambda: client.closed == 1, "the close ran to its end in the background")
 
 
-async def test_release_removes_the_entry_when_the_close_fails(monkeypatch):
+async def test_release_quarantines_failed_close_and_joins_gateway_before_reuse(monkeypatch):
     client = _Client(ready=True, close_error=OSError("session already closed"))
-    registry = _registry(monkeypatch, [client])
+    from primer.channel import retirement
+    from primer.model.except_ import ProviderError
+
+    monkeypatch.setattr(retirement, "_RETRY_SECONDS", .02)
+    replacement = _Client(ready=True)
+    registry = _registry(monkeypatch, [client, replacement])
     await registry.acquire(_provider())
     gateway = registry.entry("cp-1").task
+    releasing = asyncio.create_task(registry.release(_provider()))
+    try:
+        await _until(lambda: client.close_started, "the close failed")
+        with pytest.raises(ProviderError, match="still closing"):
+            await registry.acquire(_provider())
+        assert not releasing.done()
+    finally:
+        client.close_error = None
+        await asyncio.wait_for(releasing, 2)
+    assert gateway.done() and client.closed == 1
+    assert await registry.acquire(_provider()) is replacement
     await registry.release(_provider())
-    assert registry.entry("cp-1") is None
-    await _until(gateway.cancelled, "the gateway task was cancelled")
+
+
+async def test_no_replacement_while_closed_client_gateway_is_still_exiting(monkeypatch):
+    from primer.model.except_ import ProviderError
+
+    entered, finish = asyncio.Event(), asyncio.Event()
+    client = _Client(ready=True)
+    async def connect():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            entered.set()
+            await finish.wait()
+
+    client.connect = connect
+    registry = _registry(monkeypatch, [client, _Client(ready=True)])
+    await registry.acquire(_provider())
+    gateway = registry.entry("cp-1").task
+    closing = asyncio.create_task(registry.release(_provider()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert client.closed == 1 and not gateway.done() and not closing.done()
+        with pytest.raises(ProviderError, match="still closing"):
+            await registry.acquire(_provider())
+    finally:
+        finish.set()
+        await asyncio.wait_for(closing, 2)
+    assert gateway.done()
+    await registry.acquire(_provider())
+    await registry.release(_provider())

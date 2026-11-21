@@ -9,6 +9,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
+from primer.channel.retirement import finish_cleanup, retry_cleanup
 from primer.channel.discord.adapter import DiscordChannelAdapter
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import (
@@ -374,7 +375,7 @@ async def _discord_factory(
         try:
             _install_handlers(provider.id, conn.client, channel)
         except BaseException:
-            await adapter.aclose()
+            await finish_cleanup(retry_cleanup(adapter.aclose, f"channel adapter {channel.id}"))
             raise
     return adapter
 
