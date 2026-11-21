@@ -89,6 +89,13 @@ tool_duration_seconds = Histogram(
 # Claim / queue metrics
 # ---------------------------------------------------------------------------
 
+claim_work_priority_total = Counter(
+    "claim_work_priority_total",
+    "Claims made by the internal work-priority engine, by bounded priority class.",
+    ["kind", "priority_class"],
+    registry=registry,
+)
+
 claim_enqueue_latency_seconds = Histogram(
     "claim_enqueue_latency_seconds",
     "Time a lease waited in the queue before being claimed, in seconds.",
@@ -429,6 +436,8 @@ ALLOWED_LABEL_NAMES = frozenset({
     # What a respond to a human gate said about WHICH gate it answers (matched / stale / absent):
     # a closed enum, so bounded.
     "gate_token",
+    # Work priority is classified as foreground/background, never a numeric label.
+    "priority_class",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -480,7 +489,7 @@ def reset_for_test() -> None:
     global llm_tokens_total, llm_duration_seconds, llm_failure_total  # noqa: PLW0603
     global llm_retry_total  # noqa: PLW0603
     global tool_calls_total, tool_duration_seconds  # noqa: PLW0603
-    global claim_enqueue_latency_seconds, claim_queue_depth  # noqa: PLW0603
+    global claim_work_priority_total, claim_enqueue_latency_seconds, claim_queue_depth  # noqa: PLW0603
     global claim_active_count, claim_eligibility_read_errors_total  # noqa: PLW0603
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
@@ -542,6 +551,12 @@ def reset_for_test() -> None:
         "tool_duration_seconds",
         "Tool execution duration in seconds, partitioned by tool name.",
         ["name"],
+        registry=registry,
+    )
+    claim_work_priority_total = Counter(
+        "claim_work_priority_total",
+        "Claims made by the internal work-priority engine, by bounded priority class.",
+        ["kind", "priority_class"],
         registry=registry,
     )
     claim_enqueue_latency_seconds = Histogram(
@@ -811,6 +826,7 @@ __all__ = [
     "tool_calls_total",
     "tool_duration_seconds",
     # Claims
+    "claim_work_priority_total",
     "claim_enqueue_latency_seconds",
     "claim_queue_depth",
     "claim_active_count",

@@ -39,6 +39,7 @@ from pydantic import (
     model_validator,
 )
 
+from primer.model.work_priority import WorkPriority
 from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable, reading_a_stored_row
 from primer.model.principal import PrincipalRef, person_ref
@@ -607,6 +608,7 @@ class WorkspaceSession(Identifiable):
             "the console. Backward-compatible default for existing rows."
         ),
     )
+    priority: WorkPriority = 0
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
     base_prompt: str | None = Field(
