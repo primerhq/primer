@@ -97,7 +97,17 @@ ownership establishes enterprise inventory completeness. Deployment remains gate
 on an actual reviewed supervisor and administrative recovery procedure.
 
 Open trust/store handles are mandatory for every authorization/read/write and
-socket operation; closed handles refuse before filesystem/socket access. Private
+socket operation. Both handles belong to their constructing process and thread;
+thread object identity prevents recycled numeric thread IDs from acquiring access.
+Foreign-thread use and close refuse; the public APIs are deliberately not a
+cross-thread ledger service. Sibling ledgers share the same single owner thread,
+so their complete synchronous transitions serialize without a partial-vector race.
+Forked children may only close their inherited descriptor copies, without an
+explicit flock unlock; they cannot read, write, authorize, or connect. The parent's
+lock and handles remain usable. A supervisor must construct handles in the final
+broker process/thread, never preconstruct and transfer them across fork.
+The composed ledger checks both owner lifetimes before private-store IO; closing
+only HostTrust or only PrivateStore refuses retained policy grants before reads. Private
 record and lock acquisition is nonblocking followed by regular-file validation,
 so a misprovisioned FIFO cannot hang initialization. Closing the store releases
 its lock, and retained policies cease authorizing.
