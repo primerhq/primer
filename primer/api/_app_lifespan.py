@@ -1005,7 +1005,7 @@ def _make_lifespan(config: AppConfig):
         # tool) can fail the boot on drift before the first request.
         await validate_curated_route_declarations(app)
 
-        from primer.bootstrap.seed import builtin_toolset_providers, run_ensure_pass
+        from primer.bootstrap.seed import builtin_toolset_providers, require_workspace_publisher_policy, run_ensure_pass
         from primer.workspace.local_policy import validate_default_template
 
         # Fail the boot, loudly, when the default workspace would be seeded on a provider this
@@ -1034,6 +1034,9 @@ def _make_lifespan(config: AppConfig):
             default_workspace_template=config.default_workspace_template,
             seed_system_collection=seed_system_collection,
         )
+        # Fresh installs baseline schema before best-effort seeding. Do not
+        # serve or start workers when publication's explicit policy is absent.
+        await require_workspace_publisher_policy(storage_provider)
         if _ensure.errors:
             logger.warning("seed: ensure pass finished with errors", extra={
                 "seed_errors": _ensure.errors,

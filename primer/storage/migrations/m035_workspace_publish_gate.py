@@ -30,17 +30,16 @@ class ToolApprovalPolicy(Identifiable):  # noqa: N801 - name selects the existin
 
 
 async def _has_policy(store) -> bool:
-    row = await store.get(_POLICY_ID)
-    if row is not None:
-        if row.toolset_id not in {"system", "_system"} or row.tool_name != _TOOL_NAME:
-            # Preserve the row, but never stamp a successful upgrade with a
-            # colliding unrelated id hiding the missing publisher gate.
-            raise ConflictError("workspace publisher approval id belongs to another tool")
-        return True
+    # Semantic policy identity wins regardless of an unrelated seed-ID occupant.
     for spelling in ("system", "_system"):
         query = Q(ToolApprovalPolicy).where("toolset_id", spelling).where("tool_name", _TOOL_NAME).build()
         if (await store.find(query, OffsetPage(offset=0, length=1))).items:
             return True
+    row = await store.get(_POLICY_ID)
+    if row is not None:
+        # With no semantic publisher policy, an occupied seed ID cannot be
+        # overwritten or counted as a successful gate installation.
+        raise ConflictError("workspace publisher approval id belongs to another tool")
     return False
 
 

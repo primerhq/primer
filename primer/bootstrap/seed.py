@@ -55,6 +55,20 @@ async def policy_rows_for(store, toolset_id: str, tool_name: str, *, length: int
     return list(rows.values())
 
 
+async def require_workspace_publisher_policy(storage_provider) -> None:
+    """Refuse startup without an explicit publisher policy after best-effort seed.
+
+    The schema stamp does not prove fresh seeding succeeded. Disabled/custom
+    operator rows are intentional choices and count under either system spelling.
+    A read failure also propagates: inability to verify is not permission to run.
+    """
+    rows = await policy_rows_for(
+        storage_provider.get_storage(ToolApprovalPolicy), "system", "publish_service", length=1,
+    )
+    if not rows:
+        raise RuntimeError("workspace publisher approval policy is missing; repair approval seeding before startup")
+
+
 async def ensure_crud_approval_policies(storage_provider) -> list[str]:
     """Ensure one approval policy per default-gated tool (``DEFAULT_GATED_TOOLS``), the gate ``shipped_gate`` names.
 

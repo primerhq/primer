@@ -116,7 +116,9 @@ An administrator in a workspace session can call `system__publish_service`
 with `{"name": "status-app", "path": "apps/status"}`. The handler resolves the
 initiating person, verifies read access to the workspace supplied by the turn,
 and requires service-management authority. Its shipped gate requires admin
-approval on fresh installs and via migration35 on existing installs. Operator
+approval on fresh installs and via migration35 on existing installs. Startup refuses
+to serve or start workers if this policy is absent after seeding, including a
+fresh install already stamped schema35. Storage verification failures also abort. Operator
 policy customizations are retained; migration16 is unchanged. The workspace ID and viewer authentication are outside the tool schema.
 An external MCP caller can use the generated archive tool.
 

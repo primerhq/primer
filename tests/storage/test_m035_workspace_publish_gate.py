@@ -89,3 +89,35 @@ async def test_failed_create_does_not_advance_version_and_retry_repairs(sp, monk
     assert store.create == create
     assert await run_migrations(sp, is_fresh_install=False) == 35
     assert (await store.get(migration._POLICY_ID)).enabled is True
+
+
+@pytest.mark.parametrize('spelling', ['system', '_system'])
+@pytest.mark.parametrize('enabled', [False, True])
+async def test_custom_semantic_policy_precedes_unrelated_seed_id_collision(sp, spelling, enabled):
+    from primer.bootstrap.seed import require_workspace_publisher_policy
+    store = sp.get_storage(ToolApprovalPolicy)
+    unrelated = ToolApprovalPolicy(id=migration._POLICY_ID, toolset_id='misc', tool_name='other',
+                                   enabled=False, approval={'type': 'required'})
+    custom = ToolApprovalPolicy(
+        id='operator-publisher', toolset_id=spelling, tool_name='publish_service', enabled=enabled,
+        approval={'type': 'required'}, approvers={'kind': 'users', 'users': ['owner'], 'roles': []},
+    )
+    await store.create(unrelated)
+    await store.create(custom)
+    await sp.set_schema_version(34)
+    assert await run_migrations(sp, is_fresh_install=False) == 35
+    await ensure_crud_approval_policies(sp)
+    await require_workspace_publisher_policy(sp)
+    assert (await store.get(unrelated.id)).model_dump() == unrelated.model_dump()
+    assert (await store.get(custom.id)).model_dump() == custom.model_dump()
+    assert (await sp.get_system_state()).schema_version == 35
+
+
+async def test_startup_policy_verification_read_failure_propagates(sp, monkeypatch):
+    from primer.bootstrap.seed import require_workspace_publisher_policy
+    store = sp.get_storage(ToolApprovalPolicy)
+    async def unavailable(*args, **kwargs):
+        raise OSError('policy lookup unavailable')
+    monkeypatch.setattr(store, 'find', unavailable)
+    with pytest.raises(OSError, match='policy lookup unavailable'):
+        await require_workspace_publisher_policy(sp)
