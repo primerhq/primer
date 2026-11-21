@@ -19,7 +19,7 @@ from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
 from primer.storage.q import Q
 from primer.model.except_ import NotFoundError
-from primer.model.storage import OffsetPage
+from primer.model.storage import CursorPage, OffsetPage
 from primer.int.coordinator import InvalidationTopic
 
 
@@ -208,29 +208,38 @@ class ChannelRegistry:
             correlations = self._storage_provider.get_storage(ChannelCorrelation)
             needed.update(await correlations.count_by("channel_id", sorted(remaining)))
             remaining -= needed
-            # A standing or ephemeral binding may carry an approval without a thread mapping.
-            for model, path in ((Workspace, "reply_binding.channel_id"),
-                                (WorkspaceSession, "metadata.reply_binding.channel_id")):
-                if not remaining:
+            if not remaining:
+                continue
+            query = Q.or_(Q(WorkspaceSession).where_null("metadata.reply_binding.silent"),
+                          Q(WorkspaceSession).where("metadata.reply_binding.silent", False))
+            predicate = query.where_in("metadata.reply_binding.channel_id", sorted(remaining)).build()
+            cursor = None
+            while remaining:
+                page = await self._storage_provider.get_storage(WorkspaceSession).find(
+                    predicate, CursorPage(cursor=cursor, length=200),
+                )
+                for session in page.items:
+                    cid = session.metadata["reply_binding"]["channel_id"]
+                    needed.add(cid)
+                    remaining.discard(cid)
+                cursor = page.next_cursor
+                if cursor is None:
                     break
-                query = Q(model)
-                if model is WorkspaceSession:
-                    query = Q.or_(query.where_null("metadata.reply_binding.silent"),
-                                  Q(model).where("metadata.reply_binding.silent", False))
-                predicate = query.where_in(path, sorted(remaining)).build()
-                offset = 0
-                while remaining:
-                    page = await self._storage_provider.get_storage(model).find(
-                        predicate, OffsetPage(offset=offset, length=200, want_total=False),
-                    )
-                    for row in page.items:
-                        cid = (row.metadata["reply_binding"]["channel_id"] if model is WorkspaceSession
-                               else row.reply_binding.channel_id)
-                        needed.add(cid)
-                        remaining.discard(cid)
-                    if len(page.items) < 200:
-                        break
-                    offset += len(page.items)
+
+        # The model accepts both stored names (reply_binding and legacy channel_association).
+        # Filtering on the current JSON field would discard old rows before model validation.
+        remaining = set(candidates) - needed
+        cursor = None
+        while remaining:
+            page = await self._storage_provider.get_storage(Workspace).list(CursorPage(cursor=cursor, length=200))
+            for workspace in page.items:
+                binding = workspace.reply_binding
+                if binding is not None and binding.channel_id in remaining:
+                    needed.add(binding.channel_id)
+                    remaining.remove(binding.channel_id)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
         return needed
 
     async def reconcile(self) -> int:

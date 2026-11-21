@@ -284,7 +284,8 @@ async def test_supervisor_repeated_stop_waits_for_all_providers_and_retry(world,
         await reg.aclose()
 
 
-async def test_disabled_rooms_use_standing_or_audible_session_binding_without_a_correlation(world, builds):
+@pytest.mark.parametrize("legacy_standing", [False, True], ids=["current", "legacy"])
+async def test_disabled_rooms_use_standing_or_audible_session_binding_without_a_correlation(world, builds, legacy_standing):
     from datetime import UTC, datetime
     from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
     from primer.model.workspace_session import WorkspaceSession
@@ -298,6 +299,15 @@ async def test_disabled_rooms_use_standing_or_audible_session_binding_without_a_
         id="w", provider_id="local", template_id="t", created_at=datetime.now(UTC),
         runtime_meta=WorkspaceRuntimeMeta(url="ws://unused", token="fixture"), reply_binding=WorkspaceChannelLink(channel_id="standing"),
     ))
+    if legacy_standing:
+        # Persist the historical spelling so this covers the storage query as well as model reads.
+        await sp.connection.execute(
+            """UPDATE workspace SET data = json_remove(
+                   json_set(data, '$.channel_association', json_extract(data, '$.reply_binding')), '$.reply_binding'
+               ) WHERE id = ?""", ("w",),
+        )
+        await sp.connection.commit()
+        assert (await sp.get_storage(Workspace).get("w")).reply_binding.channel_id == "standing"
     for name in ("ephemeral", "silent"):
         session = _ask_user_session(session_id=name, tool_call_id="ask", gate_id=G1)
         session.metadata["reply_binding"] = {"channel_id": name}
