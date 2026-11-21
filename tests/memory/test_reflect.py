@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -34,6 +35,17 @@ class FakeLLM:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.answers: list = []
+
+    async def stream(self, *, model, messages, response_format, tools, tool_choice, max_output_tokens, **kwargs):
+        from primer.model.chat import TextDelta
+        assert tools is None and tool_choice == "none" and max_output_tokens > 0
+        try:
+            answer = await self.judge_structured(model=model, system_prompt=messages[0].parts[0].text,
+                                                user_message=messages[1].parts[0].text, response_schema=response_format)
+        except ValueError:
+            yield TextDelta(text="not json", index=0)
+        else:
+            yield TextDelta(text=json.dumps(answer), index=0)
 
     async def judge_structured(self, *, model, system_prompt, user_message, response_schema):
         self.calls.append({"model": model, "system_prompt": system_prompt, "user_message": user_message, "schema": response_schema})
@@ -81,7 +93,7 @@ async def sp(tmp_path: Path):
     await provider.get_event_store().ensure_schema()
     await provider.get_storage(Collection).create(Collection(id=CID, description="memory", memory_of=AGENT))
     await provider.get_storage(ModelProfile).create(
-        ModelProfile(id="p", description="p", provider_id="prov", model_name="m1", context_length=1000)
+        ModelProfile(id="p", description="p", provider_id="prov", model_name="m1", context_length=32768)
     )
     yield provider
     await provider.aclose()
@@ -90,7 +102,7 @@ async def sp(tmp_path: Path):
 async def _setup(sp, *, turn_person=OWNER, owner="u-owner", binding_profile=None, **settings):
     agent = Agent(id=AGENT, description="d", model=AgentModel(profile_id="p"))
     agent.access.owners = [owner]
-    await sp.get_storage(Agent).create(agent)
+    agent = await sp.get_storage(Agent).create(agent)
     mem = await sp.get_storage(AgentMemory).create(AgentMemory(id=AGENT, enabled=True, **settings))
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="s1", workspace_id="w1", binding=AgentSessionBinding(agent_id=AGENT, profile_id=binding_profile), created_at=NOW, turn_no=2, completed_turn_no=2,
@@ -244,7 +256,8 @@ async def test_custom_reflection_prompt_is_sent_and_schema_still_enforced(sp, ll
     assert llm.calls[0]["system_prompt"] == "CUSTOM PROMPT" != DEFAULT_REFLECTION_PROMPT
     assert "deltas" in llm.calls[0]["schema"]["properties"]
     llm.answers = [_run([_add_delta("x1")] * 4)]       # a custom prompt does not loosen the cap
-    job2 = job.model_copy(update={"reflected_turn": 0})
+    job2 = job.model_copy(update={"id": "reflect-second", "reflected_turn": 0})
+    await sp.get_storage(MemoryJob).create(job2)
     report = await reflect(deps, job2, agent, mem)
     assert report.skipped_reason == "invalid_output"
 
@@ -308,7 +321,7 @@ async def _clean_credit_run(tmp_path: Path, llm: FakeLLM) -> dict:
     await sp.get_event_store().ensure_schema()
     await sp.get_storage(Collection).create(Collection(id=CID, description="memory", memory_of=AGENT))
     await sp.get_storage(ModelProfile).create(
-        ModelProfile(id="p", description="p", provider_id="prov", model_name="m1", context_length=1000)
+        ModelProfile(id="p", description="p", provider_id="prov", model_name="m1", context_length=32768)
     )
     agent, mem, job = await _setup(sp)
     deps = _deps(sp, llm)
@@ -391,3 +404,89 @@ def test_used_entries_reads_search_and_read_document_calls_on_this_collection_on
     lookups = [{"paths": ["active/four", "candidates/five"], "trial": "candidates/five"}, {"paths": ["active/six"], "trial": None}]
     names, trial = used_entries(messages, CID, lookups)
     assert names == {"one", "two", "three", "four", "five", "six"} and trial == "five"
+
+
+@pytest.mark.parametrize("failure", ["too_large", "policy", "invalid_summary", "invalid_second_summary", "superseded", "disabled"])
+async def test_input_failure_preserves_watermark_and_entries(sp, llm, failure):
+    from primer.model.chat import TextDelta
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * (600000 if failure == "too_large" else 140000))])
+    if failure == "policy":
+        mem = await sp.get_storage(AgentMemory).update(mem.model_copy(update={"do_not_capture": ["x" * 150000]}))
+    calls = []
+    class SummaryLLM(FakeLLM):
+        async def stream(self, **kwargs):
+            calls.append(kwargs)
+            if failure == "superseded":
+                await sp.get_storage(MemoryJob).patch_if(job.id, {"target_turn": 3}, where=job.occurrence_guard())
+            if failure == "disabled":
+                assert await sp.get_storage(AgentMemory).patch_if(AGENT, {"enabled": False}, where={"enabled": [True]})
+            yield TextDelta(text='{"facts":[]}' if failure in {"superseded", "disabled"} or (failure == "invalid_second_summary" and len(calls) == 1) else '{"facts":[{"observation":"invalid","sources":["invented"]}]}', index=0)
+    deps = _deps(sp, SummaryLLM(), source)
+    before = json.dumps([m.model_dump(mode="json") for m in source])
+    report = await reflect(deps, job, agent, mem)
+    expected = {"too_large": "input_compaction_limit", "policy": "input_policy_too_large",
+                "invalid_summary": "compaction_invalid", "invalid_second_summary": "compaction_invalid",
+                "superseded": "input_superseded", "disabled": "input_superseded"}[failure]
+    assert report.skipped_reason == expected
+    assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+    assert json.dumps([m.model_dump(mode="json") for m in source]) == before
+    if failure in {"too_large", "policy"}:
+        assert calls == []
+    else:
+        assert len(calls) == (2 if failure == "invalid_second_summary" else 1)
+
+
+async def test_actual_reflection_learns_from_early_evidence_after_compaction(sp):
+    from primer.model.chat import TextDelta
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    source[0] = Message(role="user", parts=[TextPart(text="EARLY_RETRY_CORRECTION " + "x" * 140000)])
+    observed = []
+    class EvidenceLLM(FakeLLM):
+        async def stream(self, **kwargs):
+            user = kwargs["messages"][1].parts[0].text
+            observed.append(user)
+            if user.startswith("# Memory evidence to summarize"):
+                rows = [json.loads(line) for line in user.splitlines()[1:]]
+                facts = [{"observation": "EARLY_RETRY_CORRECTION: wait before retrying", "sources": [r["source"]]}
+                         for r in rows if "EARLY_RETRY_CORRECTION" in r["text"]]
+                answer = {"facts": facts}
+            else:
+                assert "lossy evidence summary" in user
+                assert "EARLY_RETRY_CORRECTION: wait before retrying" in user
+                answer = _run([_add_delta()])
+            yield TextDelta(text=json.dumps(answer), index=0)
+    deps = _deps(sp, EvidenceLLM(), source)
+    report = await reflect(deps, job, agent, mem)
+    assert report.written == 1
+    assert 2 < len(observed) <= 5
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2
+    events = await _events(sp)
+    completed = next(e for e in events if e.event_type == "memory.reflection.completed")
+    assert completed.payload["input_mode"] == "compacted"
+    assert completed.payload["summary_calls"] == len(observed) - 1
+    assert completed.payload["input_estimate"] <= completed.payload["input_budget"]
+    assert "EARLY_RETRY_CORRECTION" not in json.dumps(completed.payload)
+
+
+async def test_tiny_profile_refuses_complete_frame_without_model_call(sp, llm):
+    agent, mem, job = await _setup(sp)
+    await sp.get_storage(ModelProfile).patch_if("p", {"context_length": 1000}, where={"context_length": [32768]})
+    deps = _deps(sp, llm)
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == "input_policy_too_large" and llm.calls == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+
+
+@pytest.mark.parametrize("available", [0, 1])
+async def test_incomplete_transcript_never_advances_requested_range(sp, llm, available):
+    agent, mem, job = await _setup(sp)
+    source = _transcript()[:3] if available else []
+    deps = _deps(sp, llm, source)
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == "input_incomplete" and llm.calls == []
+    assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0

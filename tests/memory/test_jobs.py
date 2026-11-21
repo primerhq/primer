@@ -214,7 +214,8 @@ async def test_trivial_session_skipped_without_model_call(fake_storage_provider,
     assert out.drop_lease is True and job.reflected_turn == 1 and ran == []
     assert [(e[1]["reason"], "fewer than" in e[1]["detail"]) for e in deps.recorder.events] == [("too_small", True)]
 
-    # enough turns, but nothing after the first user message: no tool call, no further user message
+    # The job requests three turns but the log only contains one. Missing
+    # evidence is not a trivial completed range and must not advance progress.
     async def only_chat(job):
         return [Message(role="user", parts=[TextPart(text="hi")]), Message(role="assistant", parts=[TextPart(text="hello")])]
 
@@ -222,8 +223,8 @@ async def test_trivial_session_skipped_without_model_call(fake_storage_provider,
     deps = _deps(fake_storage_provider, engine, load_messages=only_chat)
     out = await run_memory_job(deps, await _lease(engine, job_id))
     job = await fake_storage_provider.get_storage(MemoryJob).get(job_id)
-    assert out.drop_lease is True and job.reflected_turn == 3 and ran == []
-    assert "0 of 2 messages" in deps.recorder.events[0][1]["detail"] and "user,assistant" in deps.recorder.events[0][1]["detail"]
+    assert out.drop_lease is True and job.reflected_turn == 1 and ran == []
+    assert deps.recorder.events[0][1]["reason"] == "input_incomplete"
 
 
 async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_provider, engine, ran):
@@ -234,6 +235,8 @@ async def test_a_substantial_session_reaches_the_reflect_runner(fake_storage_pro
             Message(role="user", parts=[TextPart(text="do it")]),
             Message(role="assistant", parts=[ToolCallPart(id="c1", name="web__fetch", arguments={})]),
             Message(role="user", parts=[TextPart(text="again")]),
+            Message(role="assistant", parts=[TextPart(text="done again")]),
+            Message(role="user", parts=[TextPart(text="third request")]),
         ]
 
     job_id = await _queued(fake_storage_provider, engine)
@@ -250,7 +253,9 @@ async def test_an_unreachable_model_is_retried_twice_then_skipped(fake_storage_p
     await _agent(fake_storage_provider)
 
     async def worked(job):
-        return [Message(role="user", parts=[TextPart(text="a")]), Message(role="assistant", parts=[TextPart(text="x")]), Message(role="user", parts=[TextPart(text="b")])]
+        return [Message(role="user", parts=[TextPart(text="a")]), Message(role="assistant", parts=[TextPart(text="x")]),
+                Message(role="user", parts=[TextPart(text="b")]), Message(role="assistant", parts=[TextPart(text="y")]),
+                Message(role="user", parts=[TextPart(text="c")])]
 
     async def down(*args, **kwargs):
         raise ReflectionTransient("connection refused")

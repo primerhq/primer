@@ -265,7 +265,58 @@ injection (`test_reflect.py`, `test_auto_inject.py`), the curation
 against the fake, private SQLite and gated PostgreSQL, including stale
 snapshots, legacy timestamps, cancellation, refused deletion and peer writers.
 
-## 11. Historical decisions
+## 11. Bounded reflection input
+
+`primer/memory/reflection_input.py` budgets the entire request, including the
+system instruction, context, transcript, JSON schema and output allowance.
+Its shared CJK-aware token estimate is not a native count: input is limited to
+30,000 estimated tokens and 80% of the profile window after the output reserve.
+The agent's own resolved profile supplies the window (the minimum member window
+for an aggregate). Oversized optional index rows and related entries are removed
+whole and counted; capture/exclusion policy and owner instructions are never cut.
+
+Short evidence uses one tool-free structured call. Longer evidence is split into
+at most four chronological chunks, preserving every text fragment, tool identity,
+error flag and source offset, including the middle of a long individual result.
+Each chunk receives one independent tool-free summary call. Source references and
+summary sizes are validated, then one final reflection reads the lossy summaries.
+No original logs, conversation compaction markers or memory entries are rewritten
+by preprocessing. Summaries cannot expand deterministic credit eligibility.
+Nontext attachments are identified but their contents are not inspected.
+
+Every call has an output request limit, a 64 KiB collected-text/ reasoning-text
+ceiling and an event-count ceiling; summary text has a smaller per-plan byte cap.
+After profile/log loading, context preparation and model calls share a 120-second deadline. Cancellation joins provider
+cleanup, even after repeated waiter cancellation; an adapter that cannot finish
+cleanup can delay that join. There is no detached background model task. Profile
+settings are passed without an automatic setting-refusal retry in this path;
+aggregate adapters retain their own member failover. Bounds describe adapter
+invocations and collected output, not arbitrary provider network frames or costs.
+
+An uncovered source range, oversized fixed policy, invalid summary, output limit,
+context rejection or changed job/settings yields a fixed skip reason without
+advancing `reflected_turn` or applying deltas. Current occurrence settlement retires
+that attempt; a later completed turn can enqueue again. Preserved input is not a
+promise that an ended, permanently oversized session will eventually be learned.
+Transport errors keep the existing bounded durable retries. Invalid *final*
+reflection verdicts retain the existing terminal watermark behavior. Summaries
+are ephemeral, so a retry recomputes them; existing per-delta replay limits remain.
+The range check also refuses a readable log with fewer turn inputs than the job
+requests (`input_incomplete`), including at the triviality gate for eligible
+multi-turn jobs. The existing fewer-than-two-new-turns policy remains unchanged.
+
+The daily reflection count still counts attempts, not preprocessing requests. A
+long attempt can issue four summary calls and one final call; retries consume
+another attempt. Activity reports direct/compacted mode, call count, estimated
+input and budget, or a safe skip reason. It stores no summary or raw model error.
+The existing owner-only activity route and generated `agent_memory__memory_activity`
+tool carry these fields; the Memory activity tab explains skipped learning.
+
+This is independent of measurement-gated native token calibration on live turns.
+It does not add a strict global token-spend budget, stream the whole source log
+from disk, atomically couple entry writes to claims, or guarantee summary fidelity.
+
+## 12. Historical decisions
 
 Memory arrived as a task-based feature (the package's docstrings name the
 tasks): the entries live in the knowledge subsystem's documents (one

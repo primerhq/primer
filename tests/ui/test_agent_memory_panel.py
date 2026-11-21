@@ -146,3 +146,22 @@ def test_empty_error_loading_states() -> None:
         set_resource(ctx, key, _ok({"items": []}))
         _mount(ctx, "AG_MemoryPanel")
         assert "No active entries" in text_of(ctx, "memory-empty")
+
+
+def test_compaction_activity_explains_preserved_progress_without_echoing_details() -> None:
+    activity = [
+        {"id": 3, "type": "memory.reflection.skipped", "actor": "memory:a1", "at": "t",
+         "payload": {"reason": "input_incomplete"}},
+        {"id": 2, "type": "memory.reflection.skipped", "actor": "memory:a1", "at": "t",
+         "payload": {"reason": "input_compaction_limit", "detail": "PRIVATE_SOURCE_TEXT"}},
+        {"id": 1, "type": "memory.reflection.completed", "actor": "memory:a1", "at": "t",
+         "payload": {"input_mode": "compacted", "summary_calls": 2}},
+    ]
+    with agent_form() as ctx:
+        _resources(ctx, activity=activity)
+        _mount(ctx, "AG_MemoryPanel")
+        click(ctx, "memory-tab-activity")
+        shown = text_of(ctx, "memory-activity")
+        assert "Progress was kept" in shown and "2 evidence summaries" in shown
+        assert "transcript range is incomplete" in shown
+        assert "PRIVATE_SOURCE_TEXT" not in shown

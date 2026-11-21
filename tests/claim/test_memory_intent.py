@@ -472,3 +472,54 @@ async def test_postgres_upgrade_preserves_existing_legacy_deadline():
             await db.execute(f'DROP SCHEMA "{after.schema}" CASCADE')
         await after.aclose()
         await before.aclose()
+
+
+async def test_rearmed_memory_claim_stops_held_reflection_summary(provider):
+    """Actual claim/row fences, including the gated native PG parametrization."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from primer.memory.reflect import reflect
+    from primer.model.chat import Message, TextDelta, TextPart
+    from primer.model.model_profile import ModelProfile
+    from tests.memory.test_reflect import AGENT, FakeLLM, _deps as reflect_deps, _setup, _transcript
+
+    await provider.get_storage(ModelProfile).create(ModelProfile(
+        id="p", description="offline", provider_id="prov", model_name="m", context_length=32768))
+    agent, settings, old = await _setup(provider)
+    engine = queue(provider)
+    now = datetime.now(UTC)
+    await jobs._upsert_job(provider, old.id, kind="reflect", agent_id=AGENT, session_id="s1", target_turn=2, now=now)
+    await jobs.arm_current(provider, engine, old.id)
+    job = await provider.get_storage(MemoryJob).get(old.id)
+    lease, = await engine.claim_due("reflection-owner", max_count=1)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    calls = []
+    class Held(FakeLLM):
+        async def stream(self, **kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await resume.wait()
+            yield TextDelta(text='{"facts":[]}', index=0)
+    async def empty(*args):
+        return []
+    source = _transcript()
+    source[0] = Message(role="user", parts=[TextPart(text="original correction " + "x" * 140000)])
+    deps = reflect_deps(provider, Held(), source, store=SimpleNamespace(list_entries=empty))
+    deps.engine, deps.lease = engine, lease
+    running = asyncio.create_task(reflect(deps, job, agent, settings))
+    try:
+        async with asyncio.timeout(10):
+            await entered.wait()
+            await jobs._upsert_job(provider, job.id, kind="reflect", agent_id=AGENT, session_id="s1", target_turn=3, now=now)
+            await jobs.arm_current(provider, engine, job.id)
+            resume.set()
+            report = await running
+    finally:
+        resume.set()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+    assert report.skipped_reason == "input_superseded" and len(calls) == 1
+    latest = await provider.get_storage(MemoryJob).get(job.id)
+    assert latest.target_turn == 3 and latest.reflected_turn == 0
+    assert latest.occurrence_id != lease.memory_occurrence and latest.requested_due_at is not None
