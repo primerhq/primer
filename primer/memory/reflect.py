@@ -7,6 +7,7 @@ most three deltas) and every delta is scrubbed (Task 4) before it is written; an
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable
@@ -20,6 +21,10 @@ from primer.access.policy import level_of
 from primer.memory.collection import memory_collection_id
 from primer.memory.entry import slugify_name
 from primer.memory.prompts import DEFAULT_REFLECTION_PROMPT
+from primer.memory.reflection_input import (
+    ATTEMPT_SECONDS, Budget, InputRefused, InvalidVerdict, bounded_judge,
+    plan_input, prepare_input, request_size, transcript,
+)
 from primer.memory.scrub import known_names, personal_data_hits
 from primer.model.access import AccessLevel
 from primer.model.agent import Agent
@@ -43,13 +48,8 @@ from primer.model.workspace_session import SessionMessageKind, WorkspaceSession
 
 logger = logging.getLogger(__name__)
 
-#: The transcript sent to the model is cut to about this many tokens (4 characters each) after the oldest turns are dropped.
-INPUT_TOKEN_CAP = 30_000
-_CHARS_PER_TOKEN = 4
 #: Related entry bodies sent with the transcript, at most.
 RELATED_ENTRIES = 5
-_CLIP = 500
-
 
 
 class ReflectionTransient(Exception):
@@ -128,10 +128,6 @@ async def _lookups(deps: Any, agent: Agent, job: MemoryJob) -> list[dict[str, An
         after = page[-1].id
 
 
-def _clip(text: str, limit: int = _CLIP) -> str:
-    return text if len(text) <= limit else text[:limit] + " [...]"
-
-
 def turn_starts(messages: list[Message]) -> list[int]:
     """Where each turn's input begins. A turn's input is a run of user messages (a session starts with its instructions after a greeting
     message, a steer carries its attachments): the run counts once, and the tool results of a round are not user messages."""
@@ -145,22 +141,6 @@ def new_turns(messages: list[Message], job: MemoryJob) -> list[Message]:
         return []
     end = starts[job.target_turn] if job.target_turn < len(starts) else len(messages)
     return messages[starts[job.reflected_turn] : end]
-
-
-def _render(messages: list[Message]) -> str:
-    lines: list[str] = []
-    for m in messages:
-        for part in m.parts:
-            if isinstance(part, TextPart):
-                lines.append(f"[{m.role}] {_clip(part.text, 2000)}")
-            elif isinstance(part, ToolCallPart):
-                lines.append(f"[tool call] {part.name} {_clip(json.dumps(part.arguments, default=str))}")
-            elif isinstance(part, ToolResultPart):
-                lines.append(f"[tool {'ERROR' if part.error else 'result'}] {_clip(part.output)}")
-    text = "\n".join(lines)
-    cap = INPUT_TOKEN_CAP * _CHARS_PER_TOKEN
-    # shortcut: the oldest part is dropped, not summarised by a compaction call; upgrade when sessions routinely outgrow the cap.
-    return text if len(text) <= cap else "[earlier turns omitted]\n" + text[-cap:]
 
 
 async def _related(deps: Any, agent_id: str, query: str) -> list[str]:
@@ -197,19 +177,49 @@ def _first_user_text(messages: list[Message]) -> str:
     return ""
 
 
-async def _build_input(deps: Any, agent: Agent, settings: AgentMemory, session: WorkspaceSession | None, turns: list[Message], used: set[str]) -> str:
+async def _build_context(deps: Any, agent: Agent, settings: AgentMemory, session: WorkspaceSession | None, turns: list[Message], used: set[str], *, system: str, schema: dict, budget: Budget) -> tuple[str, dict]:
     active = (await deps.store.list_entries(agent.id, "active"))[: settings.max_index_entries]
     tool_errors = sum(isinstance(p, ToolResultPart) and p.error for m in turns for p in m.parts)
     sections = [
         f"# Outcome signals\nfinal status: {session.status.value if session else 'unknown'}\ntool errors: {tool_errors}",
         "# Capture topics\n" + ("\n".join(f"- {t}" for t in settings.capture_topics) or "(any topic)"),
         "# Do not capture\n" + ("\n".join(f"- {t}" for t in settings.do_not_capture) or "(nothing listed)"),
-        "# Active entries (index)\n" + ("\n".join(f"- {e.name}: {e.description}" for e in active) or "(none)"),
-        "# Related entries\n" + ("\n\n".join(await _related(deps, agent.id, _first_user_text(turns))) or "(none)"),
         "# Entries used in this session\n" + (", ".join(sorted(used)) or "(none)"),
-        "# Transcript\n" + _render(turns),
     ]
-    return "\n\n".join(sections)
+    related = await _related(deps, agent.id, _first_user_text(turns))
+    index = [f"- {e.name}: {e.description}" for e in active]
+    sizes = (len(index), len(related))
+    while True:
+        context = "\n\n".join([*sections, "# Active entries (index)\n" + ("\n".join(index) or "(none)"),
+                                 "# Related entries\n" + ("\n\n".join(related) or "(none)")])
+        if request_size(system, transcript(context, ""), schema) <= budget.input_tokens // 2:
+            return context, {"omitted_index_entries": sizes[0] - len(index), "omitted_related_entries": sizes[1] - len(related)}
+        if related:
+            related.pop()
+        elif index:
+            index.pop()
+        else:
+            return context, {"omitted_index_entries": sizes[0] - len(index), "omitted_related_entries": sizes[1] - len(related)}
+
+
+async def _check_current(deps, job, agent, settings, session):
+    from primer.memory.scheduling import locked_occurrence
+    from primer.memory.settings import EDITABLE
+
+    async with locked_occurrence(deps.sp, job, engine=deps.engine, lease=deps.lease) as (current, _):
+        if current is None or current.target_turn != job.target_turn or current.reflected_turn != job.reflected_turn:
+            raise InputRefused("input_superseded")
+    fresh = await deps.sp.get_storage(AgentMemory).get(agent.id)
+    current_agent = await deps.sp.get_storage(Agent).get(agent.id)
+    if (fresh is None or not fresh.enabled or current_agent is None
+            or current_agent.model != agent.model or current_agent.access != agent.access
+            or any(getattr(fresh, key) != getattr(settings, key) for key in EDITABLE)):
+        raise InputRefused("input_superseded")
+    current_session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
+    if (session is None or current_session is None or any(
+            getattr(current_session, key) != getattr(session, key)
+            for key in ("created_at", "workspace_id", "binding", "binding_epoch", "turn_person", "initiated_by"))):
+        raise InputRefused("input_superseded")
 
 
 # --- the run -----------------------------------------------------------------------------------------------------------------------------------
@@ -254,6 +264,8 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     messages = await deps.load_messages(job) if deps.load_messages is not None else None
     if messages is None:
         return await _skip(deps, agent, job, "transcript_unavailable")
+    if len(turn_starts(messages)) < job.target_turn:
+        return await _skip(deps, agent, job, "input_incomplete")
     turns = new_turns(messages, job)
     if not turns:
         await _mark_reflected(deps, job)
@@ -261,22 +273,38 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     collection_id = memory_collection_id(agent.id)
     used, trial = used_entries(messages, collection_id, await _lookups(deps, agent, job))
     session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
-    user_message = await _build_input(deps, agent, settings, session, turns, used)
+    system = settings.reflection_prompt or DEFAULT_REFLECTION_PROMPT
+    schema = ReflectionOutput.model_json_schema()
+    budget = Budget.for_model(model.context_length)
+    async def check():
+        await _check_current(deps, job, agent, settings, session)
     try:
-        raw = await llm.judge_structured(
-            model=model.model_name or "", system_prompt=settings.reflection_prompt or DEFAULT_REFLECTION_PROMPT, user_message=user_message,
-            response_schema=ReflectionOutput.model_json_schema(),
-        )
-    except ValueError as exc:   # the answer was not a JSON object
+        async with asyncio.timeout(ATTEMPT_SECONDS):
+            await check()
+            context, context_metadata = await _build_context(deps, agent, settings, session, turns, used,
+                                           system=system, schema=schema, budget=budget)
+            plan = plan_input(turns, job.reflected_turn + 1, context=context, system=system,
+                              schema=schema, window=model.context_length)
+            user_message, input_metadata = await prepare_input(
+                plan, llm=llm, model=model, context=context, system=system, schema=schema, check=check,
+            )
+            input_metadata.update(context_metadata)
+            input_metadata["source_turns"] = job.target_turn - job.reflected_turn
+            await check()
+            raw = await bounded_judge(llm, model, system=system, user=user_message, schema=schema, budget=budget)
+            await check()
+    except InputRefused as exc:
+        return await _skip(deps, agent, job, str(exc))
+    except InvalidVerdict:
         await _mark_reflected(deps, job)
-        return await _skip(deps, agent, job, "invalid_output", str(exc)[:200])
-    except Exception as exc:  # noqa: BLE001 - the model could not be reached: the runner requeues
-        raise ReflectionTransient(str(exc)) from exc
+        return await _skip(deps, agent, job, "invalid_output")
+    except Exception as exc:  # noqa: BLE001 - existing durable retries; never log provider payloads
+        raise ReflectionTransient("memory model unavailable") from exc
     try:
         output = ReflectionOutput.model_validate(raw)
-    except ValidationError as exc:
+    except ValidationError:
         await _mark_reflected(deps, job)
-        return await _skip(deps, agent, job, "invalid_output", str(exc)[:200])
+        return await _skip(deps, agent, job, "invalid_output")
 
     ref = (session.turn_person or session.initiated_by) if session else None
     person = person_from_ref(ref)
@@ -314,7 +342,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     await _mark_reflected(deps, job)
     await deps.recorder.emit(
         "memory.reflection.completed", payload={"session_id": job.session_id, "written": report.written, "dropped": report.dropped,
-                                                "run_succeeded": output.run_succeeded},
+                                                "run_succeeded": output.run_succeeded, **input_metadata},
         actor=f"memory:{agent.id}", entity_kind="agent", entity_id=agent.id,
     )
     return report

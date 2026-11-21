@@ -20,6 +20,24 @@ Compaction is a session mechanism. Before the prompt overflows the model's conte
 - **Where it runs.** Compaction is the session executor's job. A graph agent node and a `system__invoke_agent` subagent run the plain turn loop without it: their single turn cannot compact itself.
 - **Manual compaction.** The generated `workspace_sessions__compact_session` operation reaches the same authorized manual-compaction route as the console: `POST /v1/workspaces/{workspace_id}/sessions/{session_id}/compact`. See [session operations](sessions).
 
+## Memory reflection
+
+Memory reflection uses a separate temporary evidence summary when the turns to
+learn from exceed its input budget. It reads original messages across conversation
+compaction markers, preserves source references, and uses at most four tool-free
+summary calls followed by one reflection on the agent's own profile. The 30,000-token
+input limit is estimated and also constrained by that profile's context window.
+Summaries can lose nuance; they never replace or delete original messages.
+
+The owner's Memory activity tab and `agent_memory__memory_activity` operation show
+compacted reflection or a fixed skip reason. If all evidence cannot fit the bounded
+plan, or a summary cannot be validated, no learning is applied and reflection
+progress is kept. A later turn can enqueue another attempt; an ended session is
+not retried forever. Reducing an oversized reflection prompt/exclusion policy or
+using a suitable context window may help. Do not remove necessary exclusions just
+to make a request fit. The daily reflection count counts attempts; long attempts
+can make up to five model calls, and transport retries count as further attempts.
+
 ## Gotchas
 
 - Do not assume the LLM's history input is a contiguous slice of stored rows. It can have a compaction summary replacing a range, and the summary can sit after the first user message of the turn rather than in front.
