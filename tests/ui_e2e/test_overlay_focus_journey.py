@@ -93,6 +93,17 @@ def test_the_phones_create_session_sheet_takes_focus_and_gives_it_back(page: Pag
     expect(sheet).to_be_visible(timeout=10_000)
     expect(sheet).to_have_attribute("aria-modal", "true")
     page.wait_for_function(_FOCUS_IN_DIALOG, timeout=5_000)
+
+    # Close takes focus on entry, even when the workspace list is still loading.
+    # Wait for a real choice before measuring the populated sheet's tab order.
+    close = sheet.get_by_role("button", name="Close", exact=True)
+    expect(close).to_be_focused()
+    first_workspace = sheet.get_by_test_id(re.compile(r"^nv-mob-ns-wid:")).first
+    expect(first_workspace).to_be_visible(timeout=10_000)
+    page.keyboard.press("Tab")
+    expect(first_workspace).to_be_focused()
+    page.keyboard.press("Shift+Tab")
+    expect(close).to_be_focused()
     _assert_the_trap_cycles(page, "the phone's Create session sheet")
 
     page.keyboard.press("Escape")
