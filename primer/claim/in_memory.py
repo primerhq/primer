@@ -41,6 +41,13 @@ class _LeaseRow:
     settling: bool = False
 
 
+@dataclass
+class _PriorityReads:
+    # Exists only while this key has suspended readers: no permanent tombstones.
+    generation: int = 0
+    readers: int = 0
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -78,6 +85,7 @@ class InMemoryClaimEngine(ClaimEngine):
         self._work_priority_enabled = work_priority_enabled
         self._clock = clock
         self._leases: dict[tuple[ClaimKind, str], _LeaseRow] = {}
+        self._priority_reads: dict[tuple[ClaimKind, str], _PriorityReads] = {}
         # The rows whose eligibility read failed, with the error types already logged for each: a bad row is logged once per
         # error type, not once per poll, until a read of it succeeds again.
         self._read_errors_logged: dict[tuple[ClaimKind, str], set[type[BaseException]]] = {}
@@ -108,6 +116,7 @@ class InMemoryClaimEngine(ClaimEngine):
                 kind=kind, entity_id=entity_id, priority_score=priority, work_priority=work_priority,
                 next_attempt_at=_as_utc(next_attempt_at) if next_attempt_at is not None else self._clock(),
             )
+        self._priority_changed(key)
         # Every upsert, new row or re-arm, tells the watcher (Postgres: pg_notify on every call), so a re-armed lease is not left to the next poll (CV-6).
         self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
@@ -117,14 +126,29 @@ class InMemoryClaimEngine(ClaimEngine):
             return 0
         adapter = self._adapters[kind]
         key = (kind, entity_id)
-        while True:
-            before = self._leases.get(key)
-            generation = before.generation if before is not None else None
-            value = validate_work_priority(await adapter.work_priority(entity_id))
-            # A newer arm/claim/release won while the source read awaited. Read
-            # again instead of overwriting that projection with our old value.
-            if self._leases.get(key) is before and (before is None or before.generation == generation):
-                return value
+        reads = self._priority_reads.setdefault(key, _PriorityReads())
+        reads.readers += 1
+        try:
+            while True:
+                before = self._leases.get(key)
+                generation = before.generation if before is not None else None
+                mutation = reads.generation
+                value = validate_work_priority(await adapter.work_priority(entity_id))
+                # Keep the per-key epoch alive across absence -> row -> absence.
+                # Row identity alone cannot detect that ABA; row generation still
+                # fences claims/heartbeats/requeues of a surviving row.
+                if (reads.generation == mutation and self._leases.get(key) is before
+                        and (before is None or before.generation == generation)):
+                    return value
+        finally:
+            reads.readers -= 1
+            if not reads.readers:
+                del self._priority_reads[key]
+
+    def _priority_changed(self, key: tuple[ClaimKind, str]) -> None:
+        reads = self._priority_reads.get(key)
+        if reads is not None:
+            reads.generation += 1
 
     @asynccontextmanager
     async def hold_memory_claim(self, lease: Lease, *, conn):
@@ -155,6 +179,7 @@ class InMemoryClaimEngine(ClaimEngine):
         row.attempt_count = job.retry_count
         row.last_error = job.retry_error
         row.generation += 1
+        self._priority_changed(key)
         self._notify_queue.put_nowait(key)
         self._wake.set()
 
@@ -165,8 +190,10 @@ class InMemoryClaimEngine(ClaimEngine):
             await self.delete_lease(*key)
 
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
-        self._leases.pop((kind, entity_id), None)
-        self._read_errors_logged.pop((kind, entity_id), None)
+        key = (kind, entity_id)
+        self._leases.pop(key, None)
+        self._priority_changed(key)
+        self._read_errors_logged.pop(key, None)
 
     async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
         return (kind, entity_id) in self._leases
@@ -191,6 +218,7 @@ class InMemoryClaimEngine(ClaimEngine):
             if (await adapter.is_dead(row.entity_id) and self._leases.get(key) is row
                     and row.memory_occurrence == occurrence and not held(row)):
                 del self._leases[key]
+                self._priority_changed(key)
                 pruned += 1
         return pruned
 
@@ -383,6 +411,7 @@ class InMemoryClaimEngine(ClaimEngine):
                 outcome = ReleaseOutcome(success=True, entity_noop=True)
         if outcome.drop_lease:
             self._leases.pop(key, None)
+            self._priority_changed(key)
             self._read_errors_logged.pop(key, None)
         else:
             row.claimed_by = None

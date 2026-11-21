@@ -163,3 +163,79 @@ def test_model_fields_validate_old_rows_and_refuse_noninteger_priorities():
         for bad in (True, "33", 33.0, -1, 1_000_001):
             with pytest.raises(ValidationError):
                 model.model_validate({**data, "priority": bad})
+
+
+@pytest.mark.parametrize("removal", ["delete", "release", "prune", "already_absent"])
+async def test_absent_lease_aba_forces_a_fresh_source_read(removal):
+    rows = Rows(s=row(0))
+    kind = ClaimKind.MEMORY if removal == "prune" else ClaimKind.SESSION
+    engine = (InMemoryClaimEngine(adapters={kind: MemoryClaimAdapter(storage=rows)}, work_priority_enabled=True)
+              if removal == "prune" else queue(rows))
+    entered, finish = asyncio.Event(), asyncio.Event()
+    get = rows.get
+    reads = 0
+
+    async def delayed(key):
+        nonlocal reads
+        reads += 1
+        value = await get(key)
+        if reads == 1:
+            entered.set()
+            await finish.wait()
+        return value
+
+    rows.get = delayed
+    old = asyncio.create_task(engine.upsert(kind, "s"))
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+            rows.rows["s"] = row(5)
+            if removal != "already_absent":
+                await engine.mark_resumable(kind, "s")
+            if removal == "release":
+                lease, = await engine.claim_due("worker", max_count=1)
+                assert lease.work_priority == 5
+                await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True, entity_noop=True))
+            elif removal == "prune":
+                rows.rows.pop("s")
+                assert await engine.prune_dead_leases(kind) == 1
+                rows.rows["s"] = row(5)
+            else:
+                await engine.delete_lease(kind, "s")
+            assert not await engine.has_lease(kind, "s")
+            reads_before_finish = reads
+            finish.set()
+            await old
+        assert reads == reads_before_finish + 1
+        assert await engine.claim_due("foreground", max_count=1, max_work_priority=0) == []
+        fresh, = await engine.claim_due("background", max_count=1)
+        assert fresh.work_priority == 5
+        assert engine._priority_reads == {}
+    finally:
+        finish.set()
+        await asyncio.gather(old, return_exceptions=True)
+
+
+async def test_cancelled_priority_reader_releases_its_epoch():
+    rows = Rows(s=row(0))
+    engine = queue(rows)
+    entered = asyncio.Event()
+
+    async def suspended(key):
+        entered.set()
+        await asyncio.Event().wait()
+
+    rows.get = suspended
+    task = asyncio.create_task(engine.upsert(ClaimKind.SESSION, "s"))
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+            assert len(engine._priority_reads) == 1
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert engine._priority_reads == {}
+        assert not await engine.has_lease(ClaimKind.SESSION, "s")
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

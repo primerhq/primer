@@ -293,8 +293,11 @@ is enabled. It is not a reservation/readiness metric.
 Priority-enabled generic Postgres arms serialize by entity advisory transaction
 lock before reading their statement snapshot. They do not invert the existing
 lease-to-entity release lock order. Memory keeps its job-to-lease occurrence
-protocol. In-memory arms re-read after a concurrent lease generation change;
-claim eligibility still rechecks row identity/generation after awaits.
+protocol. In-memory arms re-read after a concurrent lease generation change.
+A per-key mutation epoch survives an intervening arm and deletion while readers
+are suspended, including pruning and drop-release; it is reclaimed when the last
+reader completes or is cancelled. Claim eligibility still rechecks row
+identity/generation after awaits.
 
 `primer.claim.priority_migration` contains explicitly invoked offline preparation
 helpers, not a startup migration or activation API. A bounded keyset page
