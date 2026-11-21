@@ -54,3 +54,58 @@ async def test_workspace_publisher_is_not_an_external_mcp_tool(tmp_path):
             await update_exposure(enabled=True, allowed_tools=['system__publish_service'], updated_by='admin', deps=deps)
     finally:
         await sp.aclose()
+
+
+@pytest.mark.parametrize('door', ['direct', 'through-call-tool', 'direct-as-_system', 'through-call-tool-as-_system'])
+async def test_omitted_enabled_publisher_policy_still_parks_before_capture(tmp_path, door):
+    from primer.bootstrap.seed import require_workspace_publisher_policy
+    sp, registry, providers, resolver = await _world(tmp_path, 'fresh')
+    try:
+        store = sp.get_storage(ToolApprovalPolicy)
+        ident = default_policy_id('system', 'publish_service')
+        # Exercise actual JSON storage semantics, not a model that reserializes
+        # the default into the row before the resolver's predicate reads it.
+        async with sp.transaction() as conn:
+            await conn.execute(f'UPDATE "{store._table}" SET data=json_remove(data, \'$.enabled\') WHERE id=?', (ident,))
+        assert (await store.get(ident)).enabled is True
+        await require_workspace_publisher_policy(sp)
+        manager = ToolExecutionManager.for_workspace(
+            toolset_providers=providers, session=_Session(), approval_resolver=resolver,
+            provider_registry=registry, initiated_by=ADMIN,
+            tools=['system__call_tool', 'system__publish_service', '_system__publish_service'],
+        )
+        with pytest.raises(YieldToWorker) as parked:
+            await manager.execute(_call(door, 'system', 'publish_service', {'name': 'site', 'path': 'apps/site'}))
+        meta = parked.value.yielded.resume_metadata
+        assert meta['policy_id'] == ident and meta['approval_type'] == 'required'
+        assert meta['approvers'] == ADMIN_ONLY_SPEC
+        for model in (Service, ServiceVersion):
+            assert not (await sp.get_storage(model).list(OffsetPage(offset=0, length=10))).items
+    finally:
+        await sp.aclose()
+
+
+@pytest.mark.parametrize('enabled', [False, None])
+async def test_publisher_explicit_disabled_choice_and_invalid_null_are_distinct(tmp_path, enabled):
+    from primer.model.except_ import RowDecodeError
+    from primer.bootstrap.seed import ensure_workspace_publisher_policy, require_workspace_publisher_policy
+    sp, registry, providers, resolver = await _world(tmp_path, 'fresh')
+    try:
+        store = sp.get_storage(ToolApprovalPolicy)
+        ident = default_policy_id('system', 'publish_service')
+        async with sp.transaction() as conn:
+            await conn.execute(f'UPDATE "{store._table}" SET data=json_set(data, \'$.enabled\', json(?)) WHERE id=?',
+                               ('null' if enabled is None else 'false', ident))
+        if enabled is None:
+            with pytest.raises(RowDecodeError):
+                await resolver.find(toolset_id='system', tool_name='publish_service')
+            with pytest.raises(RowDecodeError):
+                await require_workspace_publisher_policy(sp)
+        else:
+            before = (await store.get(ident)).model_dump()
+            await ensure_workspace_publisher_policy(sp)
+            await require_workspace_publisher_policy(sp)
+            assert await resolver.find(toolset_id='system', tool_name='publish_service') is None
+            assert (await store.get(ident)).model_dump() == before
+    finally:
+        await sp.aclose()

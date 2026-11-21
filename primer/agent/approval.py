@@ -278,7 +278,9 @@ def approval_resume_metadata(
 def _policy_predicate(toolset_id: str, tool_name: str) -> Predicate:
     """The lookup of the ENABLED policies of one ``(toolset_id, tool_name)``, spelled exactly as stored.
 
-    ``(toolset_id == X AND tool_name == Y) AND enabled == True``. The outer shape lets callers (including test fakes) navigate:
+    Normally ``(toolset_id == X AND tool_name == Y) AND enabled == True``.
+    The publisher also admits missing enabled for its model's True default.
+    The outer shape lets callers (including test fakes) navigate:
     ``predicate.left.left.right.value`` is the toolset_id value and ``predicate.left.right.right.value`` the tool_name value.
     """
     toolset_pred = Predicate(
@@ -301,6 +303,15 @@ def _policy_predicate(toolset_id: str, tool_name: str) -> Predicate:
         op=Op.EQ,
         right=Value(value=True),
     )
+    if canonical_toolset_id(toolset_id) == "system" and tool_name == "publish_service":
+        # Publisher policies whose stored JSON omits enabled decode as True.
+        # Include SQL NULL for model decoding rather than silently bypassing
+        # their gate. Explicit False stays excluded; invalid JSON null fails
+        # model validation and therefore cannot authorize dispatch.
+        enabled_pred = Predicate(
+            left=enabled_pred, op=Op.OR,
+            right=Predicate(left=FieldRef(name="enabled"), op=Op.IS_NULL, right=Value(value=None)),
+        )
     return Predicate(
         left=key_pred,
         op=Op.AND,

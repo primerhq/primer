@@ -37,6 +37,8 @@ async def _has_policy(store) -> bool:
             return True
     row = await store.get(_POLICY_ID)
     if row is not None:
+        if row.toolset_id in {"system", "_system"} and row.tool_name == _TOOL_NAME:
+            return True  # A valid writer won after the semantic reads.
         # With no semantic publisher policy, an occupied seed ID cannot be
         # overwritten or counted as a successful gate installation.
         raise ConflictError("workspace publisher approval id belongs to another tool")

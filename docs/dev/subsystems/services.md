@@ -117,8 +117,11 @@ with `{"name": "status-app", "path": "apps/status"}`. The handler resolves the
 initiating person, verifies read access to the workspace supplied by the turn,
 and requires service-management authority. Its shipped gate requires admin
 approval on fresh installs and via migration35 on existing installs. Startup refuses
-to serve or start workers if this policy is absent after seeding, including a
-fresh install already stamped schema35. Storage verification failures also abort. Operator
+to serve or start runtime owners if its early critical publisher-only seed or
+verification fails, including a fresh install already stamped schema35. Storage
+is closed before refusal. A stored publisher row with omitted `enabled` still
+meets the approval gate using the model's true default; explicit false is retained,
+and invalid null refuses decoding. Operator
 policy customizations are retained; migration16 is unchanged. The workspace ID and viewer authentication are outside the tool schema.
 An external MCP caller can use the generated archive tool.
 

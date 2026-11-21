@@ -121,3 +121,24 @@ async def test_startup_policy_verification_read_failure_propagates(sp, monkeypat
     monkeypatch.setattr(store, 'find', unavailable)
     with pytest.raises(OSError, match='policy lookup unavailable'):
         await require_workspace_publisher_policy(sp)
+
+
+@pytest.mark.parametrize('spelling', ['system', '_system'])
+async def test_valid_canonical_writer_between_semantic_reads_and_id_read(sp, monkeypatch, spelling):
+    store = sp.get_storage(migration.ToolApprovalPolicy)
+    get, create = store.get, store.create
+    winner = migration.ToolApprovalPolicy(
+        id=migration._POLICY_ID, toolset_id=spelling, tool_name='publish_service',
+        enabled=False, approval={'type': 'required'}, retained='operator-choice',
+    )
+    writes = []
+    async def late_get(ident):
+        if ident == migration._POLICY_ID and not writes:
+            await create(winner)
+            writes.append(ident)
+        return await get(ident)
+    monkeypatch.setattr(store, 'get', late_get)
+    await sp.set_schema_version(34)
+    assert await run_migrations(sp, is_fresh_install=False) == 35
+    assert writes == [migration._POLICY_ID]
+    assert (await get(winner.id)).model_dump() == winner.model_dump()

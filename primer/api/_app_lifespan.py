@@ -81,19 +81,14 @@ def _make_lifespan(config: AppConfig):
         warn_if_unconfined(detect_local_isolation())
 
         # --- Observability wiring ----------------------------------------
-        # Set up OTEL tracing + auto-instrumentation as early as possible
-        # in the lifespan so any span-emitting code below is covered.
+        # Import tracing here; start its owners only after critical publisher
+        # storage preflight succeeds, so refusal cannot leak exporter threads.
         from primer.observability import tracing as _tracing
-        _tracing.setup(config.observability)
 
         # Outbound request guard: the operator's internal-target allowlist
         # (empty by default) for the web tools.
         from primer.common.netguard import configure_egress_allow
         configure_egress_allow(config.egress_allow)
-
-        if config.observability.enabled:
-            from primer.observability import logging_integration as _log_integration
-            _log_integration.install_log_correlation()
 
         # When scheduler is unset, default to an in-memory scheduler
         # so the zero-config path boots. Operators running worker mode
@@ -119,16 +114,28 @@ def _make_lifespan(config: AppConfig):
         # single-module patch seam after the app.py split.
         from primer.api import app as _app_facade
         storage_provider = _app_facade._build_storage_provider(config)
-        await storage_provider.initialize()
-        # Content and event schemas, then the ordered data migrations
-        # (``primer init`` runs the same preamble). Runs BEFORE auto-bootstrap
-        # so a migration never has to reason about whether a reserved row
-        # exists yet: it only ever transforms rows that were already there. A
-        # fresh install baselines straight to LATEST_VERSION instead of
-        # running the chain against an empty database.
+        # Establish the publisher gate before tracing workers, secret providers,
+        # schedulers, listeners or channel owners exist. Baseline schema alone
+        # is not proof of approval seeding. A refused preflight owns only storage.
         from primer.storage.migrations import prepare_storage
+        from primer.bootstrap.seed import ensure_workspace_publisher_policy, require_workspace_publisher_policy
 
-        await prepare_storage(storage_provider)
+        try:
+            await storage_provider.initialize()
+            await prepare_storage(storage_provider)
+            await ensure_workspace_publisher_policy(storage_provider)
+            await require_workspace_publisher_policy(storage_provider)
+        except BaseException:
+            try:
+                await storage_provider.aclose()
+            except Exception:
+                logger.exception("publisher preflight storage cleanup failed")
+            raise
+
+        _tracing.setup(config.observability)
+        if config.observability.enabled:
+            from primer.observability import logging_integration as _log_integration
+            _log_integration.install_log_correlation()
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory
@@ -1005,7 +1012,7 @@ def _make_lifespan(config: AppConfig):
         # tool) can fail the boot on drift before the first request.
         await validate_curated_route_declarations(app)
 
-        from primer.bootstrap.seed import builtin_toolset_providers, require_workspace_publisher_policy, run_ensure_pass
+        from primer.bootstrap.seed import builtin_toolset_providers, run_ensure_pass
         from primer.workspace.local_policy import validate_default_template
 
         # Fail the boot, loudly, when the default workspace would be seeded on a provider this
@@ -1034,9 +1041,6 @@ def _make_lifespan(config: AppConfig):
             default_workspace_template=config.default_workspace_template,
             seed_system_collection=seed_system_collection,
         )
-        # Fresh installs baseline schema before best-effort seeding. Do not
-        # serve or start workers when publication's explicit policy is absent.
-        await require_workspace_publisher_policy(storage_provider)
         if _ensure.errors:
             logger.warning("seed: ensure pass finished with errors", extra={
                 "seed_errors": _ensure.errors,
