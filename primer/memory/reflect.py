@@ -388,8 +388,10 @@ async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], 
             raise InputRefused("input_superseded")
     try:
         lines = (raw.decode("utf-8", "strict" if strict else "replace")
-                 if isinstance(raw, (bytes, bytearray)) else str(raw)).splitlines()
+                 if isinstance(raw, (bytes, bytearray)) else str(raw)).split("\n")
         if strict:
+            visible = {}
+            last_seq = 0
             for line in lines:
                 if not line.strip():
                     continue
@@ -400,10 +402,21 @@ async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], 
                     Message.model_validate(obj)
                 elif not isinstance(obj.get("kind"), str):
                     raise ValueError("unrecognized log record")
-                elif obj["kind"] == SessionMessageKind.REWIND_MARKER.value:
-                    to_seq = (obj.get("payload") or {}).get("to_seq")
-                    if type(to_seq) is not int or to_seq < 0:
-                        raise ValueError("invalid rewind")
+                else:
+                    seq = obj.get("seq")
+                    if seq is not None and (type(seq) is not int or seq <= last_seq):
+                        raise ValueError("invalid record ordering")
+                    if obj["kind"] == SessionMessageKind.REWIND_MARKER.value:
+                        to_seq = (obj.get("payload") or {}).get("to_seq")
+                        if (type(to_seq) is not int
+                                or visible.get(to_seq) != SessionMessageKind.USER_INPUT.value
+                                or (seq is not None and to_seq >= seq)):
+                            raise ValueError("invalid rewind target")
+                        visible = {key: kind for key, kind in visible.items() if key <= to_seq}
+                    elif seq is not None:
+                        visible[seq] = obj["kind"]
+                    if seq is not None:
+                        last_seq = seq
     except (ValueError, AttributeError, TypeError, RecursionError):
         raise InputRefused("input_incomplete") from None
     return lines

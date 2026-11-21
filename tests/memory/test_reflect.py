@@ -37,7 +37,7 @@ class FakeLLM:
         self.answers: list = []
 
     async def stream(self, *, model, messages, response_format, tools, tool_choice, max_output_tokens, **kwargs):
-        from primer.model.chat import TextDelta
+        from primer.model.chat import Done, TextDelta
         assert tools is None and tool_choice is None and max_output_tokens > 0
         try:
             answer = await self.judge_structured(model=model, system_prompt=messages[0].parts[0].text,
@@ -46,6 +46,7 @@ class FakeLLM:
             yield TextDelta(text="not json", index=0)
         else:
             yield TextDelta(text=json.dumps(answer), index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
 
     async def judge_structured(self, *, model, system_prompt, user_message, response_schema):
         self.calls.append({"model": model, "system_prompt": system_prompt, "user_message": user_message, "schema": response_schema})
@@ -408,7 +409,7 @@ def test_used_entries_reads_search_and_read_document_calls_on_this_collection_on
 
 @pytest.mark.parametrize("failure", ["too_large", "policy", "invalid_summary", "invalid_second_summary", "superseded", "disabled"])
 async def test_input_failure_preserves_watermark_and_entries(sp, llm, failure):
-    from primer.model.chat import TextDelta
+    from primer.model.chat import Done, TextDelta
     agent, mem, job = await _setup(sp)
     source = _transcript()
     source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * (600000 if failure == "too_large" else 140000))])
@@ -423,6 +424,7 @@ async def test_input_failure_preserves_watermark_and_entries(sp, llm, failure):
             if failure == "disabled":
                 assert await sp.get_storage(AgentMemory).patch_if(AGENT, {"enabled": False}, where={"enabled": [True]})
             yield TextDelta(text='{"facts":[]}' if failure in {"superseded", "disabled"} or (failure == "invalid_second_summary" and len(calls) == 1) else '{"facts":[{"observation":"invalid","sources":["invented"]}]}', index=0)
+            yield Done(stop_reason="stop", raw_reason="stop")
     deps = _deps(sp, SummaryLLM(), source)
     before = json.dumps([m.model_dump(mode="json") for m in source])
     report = await reflect(deps, job, agent, mem)
@@ -440,7 +442,7 @@ async def test_input_failure_preserves_watermark_and_entries(sp, llm, failure):
 
 
 async def test_actual_reflection_learns_from_early_evidence_after_compaction(sp):
-    from primer.model.chat import TextDelta
+    from primer.model.chat import Done, TextDelta
     agent, mem, job = await _setup(sp)
     source = _transcript()
     source[0] = Message(role="user", parts=[TextPart(text="EARLY_RETRY_CORRECTION " + "x" * 140000)])
@@ -459,6 +461,7 @@ async def test_actual_reflection_learns_from_early_evidence_after_compaction(sp)
                 assert "EARLY_RETRY_CORRECTION: wait before retrying" in user
                 answer = _run([_add_delta()])
             yield TextDelta(text=json.dumps(answer), index=0)
+            yield Done(stop_reason="stop", raw_reason="stop")
     deps = _deps(sp, EvidenceLLM(), source)
     report = await reflect(deps, job, agent, mem)
     assert report.written == 1
@@ -556,4 +559,44 @@ async def test_session_identity_is_captured_before_loading_evidence(sp, llm):
     report = await reflect(deps, job, agent, mem)
     assert report.skipped_reason == "input_superseded" and llm.calls == []
     assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+
+
+@pytest.mark.parametrize("stage", ["summary", "final"])
+@pytest.mark.parametrize("ending", ["failed", "error_event", "missing", "filtered"])
+@pytest.mark.parametrize("parseable", [False, True])
+async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, parseable):
+    from types import SimpleNamespace as NS
+    from primer.llm.openresponses import _StreamState, _translate_event
+    from primer.memory.reflect import ReflectionTransient
+
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    if stage == "summary":
+        source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * 140000)])
+    answer = {"facts": []} if stage == "summary" else _run([_add_delta()])
+    text = json.dumps(answer) if parseable else '{"partial":'
+    calls = []
+    class Incomplete(FakeLLM):
+        async def stream(self, **kwargs):
+            calls.append(kwargs)
+            state = _StreamState()
+            events = [NS(type="response.output_text.delta", delta=text)]
+            if ending == "error_event":
+                events.append(NS(type="error", code="server_error", message="offline failure"))
+            if ending in {"failed", "error_event"}:
+                events.append(NS(type="response.failed"))
+            elif ending == "filtered":
+                events.append(NS(type="response.incomplete", response=NS(incomplete_details=NS(reason="content_filter"))))
+            for raw in events:
+                for event in _translate_event(raw, state):
+                    yield event
+    deps = _deps(sp, Incomplete(), source)
+    if ending == "filtered":
+        report = await reflect(deps, job, agent, mem)
+        assert report.skipped_reason == "compaction_incomplete"
+    else:
+        with pytest.raises(ReflectionTransient):
+            await reflect(deps, job, agent, mem)
+    assert len(calls) == 1 and await _entries(deps) == []
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0

@@ -287,6 +287,13 @@ No executable tools are supplied. Providers with native structured output return
 JSON text; Anthropic's existing adapter uses its single synthetic
 `structured_output` result. The bounded collector accepts that result as schema
 data, never executes it, and rejects other or repeated tool calls.
+Both forms require successful terminal confirmation: `stop`, or `tool_use` with
+the completed synthetic result. Failed/error responses (including nonfatal wire
+errors) and absent terminal events use the bounded transient retry policy. Filtered,
+stop-sequence, unknown or other incomplete completions preserve progress with
+`compaction_incomplete`; a terminal token ceiling uses `compaction_output_limit`.
+Only a normally completed malformed verdict uses the existing invalid-output
+watermark rule. Parseable prefixes are not completion evidence.
 
 Every call has an output request limit, a 64 KiB collected-text/reasoning-text
 ceiling and an event-count ceiling; summary text has a smaller per-plan byte cap.
@@ -295,8 +302,12 @@ limits. A terminal `max_tokens` response is incomplete even if its JSON prefix
 parses: it never applies deltas or advances reflection progress.
 After profile/log loading, context preparation and model calls share a 120-second deadline. Cancellation joins provider
 cleanup, even after repeated waiter cancellation; an adapter that cannot finish
-cleanup can delay that join. There is no detached background model task. Profile
-settings are passed without an automatic setting-refusal retry in this path;
+cleanup can delay that join. There is no detached background model task.
+Anthropic and OpenChat explicitly await their owned timeout iterator and SDK
+response disposal on normal completion, early iterator close and cancellation.
+Cleanup failures do not replace the original response outcome or cancellation;
+an attempted failed close is not proof that a remote generation has stopped.
+Profile settings are passed without an automatic setting-refusal retry in this path;
 aggregate adapters retain their own member failover. Bounds describe adapter
 invocations and collected output, not arbitrary provider network frames or costs.
 
@@ -318,6 +329,13 @@ executor's permissive history reader. Valid compaction markers remain ignored
 and valid rewinds still remove their discarded history. This detects damaged
 records, not a missing but syntactically intact tail: the log has no completeness
 checksum or persisted job boundary proving that every original byte is present.
+Records split on the writer's literal LF, accepting CRLF without splitting legal
+Unicode line separators inside JSON strings. Sequenced records must be ordered;
+a rewind must name an earlier still-visible user-input record, with its own
+sequence later than that target when present. Legacy marker rows without their
+own sequence are checked against earlier file-order evidence. Reflection does
+not retroactively apply the current API's compaction-barrier restriction to
+historical rewinds whose earlier source evidence remains available.
 The session identity is captured before loading and rechecked across the read
 and subsequent model work. This is execution-time provenance; memory jobs do not
 persist an enqueue-time binding epoch, and historical reads across prior session

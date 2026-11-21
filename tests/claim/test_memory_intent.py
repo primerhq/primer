@@ -480,7 +480,7 @@ async def test_rearmed_memory_claim_stops_held_reflection_summary(provider):
     from types import SimpleNamespace
 
     from primer.memory.reflect import reflect
-    from primer.model.chat import Message, TextDelta, TextPart
+    from primer.model.chat import Done, Message, TextDelta, TextPart
     from primer.model.model_profile import ModelProfile
     from tests.memory.test_reflect import AGENT, FakeLLM, _deps as reflect_deps, _setup, _transcript
 
@@ -501,6 +501,7 @@ async def test_rearmed_memory_claim_stops_held_reflection_summary(provider):
             entered.set()
             await resume.wait()
             yield TextDelta(text='{"facts":[]}', index=0)
+            yield Done(stop_reason="stop", raw_reason="stop")
     async def empty(*args):
         return []
     source = _transcript()

@@ -16,10 +16,48 @@ with no overhead.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypeVar
 
 _T = TypeVar("_T")
+
+
+async def _close_streams(*streams: Any) -> None:
+    """Join disposal of owned iterator/SDK responses on every adapter exit.
+
+    Cleanup errors cannot replace a response/iteration error. Cancellation
+    still propagates, after every owned stream has had its close awaited.
+    """
+    async def dispose():
+        cancelled = None
+        for stream in streams:
+            try:
+                closer = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+                if closer is not None:
+                    result = closer()
+                    if inspect.isawaitable(result):
+                        await result
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception as exc:
+                logging.getLogger(__name__).debug("upstream close failed: %s", type(exc).__name__)
+        if cancelled is not None:
+            raise cancelled
+
+    task = asyncio.create_task(dispose())
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+    if cancelled is not None:
+        if not task.cancelled():
+            task.exception()
+        raise cancelled
+    task.result()
 
 
 class GenerationBudgetExceeded(TimeoutError):

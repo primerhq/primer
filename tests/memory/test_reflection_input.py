@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from primer.memory import reflection_input as ri
-from primer.model.chat import Error, Message, TextDelta, TextPart, ToolCallPart, ToolCallStart, ToolResultPart
+from primer.model.chat import Done, Error, Message, TextDelta, TextPart, ToolCallPart, ToolCallStart, ToolResultPart
 from primer.model.memory import ReflectionOutput
 
 SCHEMA = ReflectionOutput.model_json_schema()
@@ -97,7 +97,7 @@ async def judge(llm, **kwargs):
 
 
 async def test_valid_structured_stream_is_tool_free_and_closed():
-    llm = Stream([TextDelta(text='{"run_succeeded":true,"deltas":[]}', index=0)])
+    llm = Stream([TextDelta(text='{"run_succeeded":true,"deltas":[]}', index=0), Done(stop_reason="stop", raw_reason="stop")])
     assert (await judge(llm))["deltas"] == []
     assert llm.closed and len(llm.calls) == 1
     assert llm.calls[0]["tools"] is None and llm.calls[0]["tool_choice"] is None
@@ -111,7 +111,7 @@ async def test_rejected_output_closes_stream(kind):
         event = ToolCallStart(id="unexpected", name="do_not_execute", index=0)
     if kind == "context":
         event = Error(code="context_length_exceeded", message="input too long", fatal=True)
-    llm = Stream([event])
+    llm = Stream([event, Done(stop_reason="stop", raw_reason="stop")])
     with pytest.raises(ri.InvalidVerdict if kind == "invalid" else ri.InputRefused):
         await judge(llm)
     assert llm.closed
@@ -154,6 +154,7 @@ async def test_prepared_summary_carries_early_evidence_or_refuses_foreign_refere
             if any("EARLY_CORRECTION" in row["text"] for row in rows):
                 facts = [{"observation": "EARLY_CORRECTION observed", "sources": ["foreign" if foreign else rows[0]["source"]]}]
             yield TextDelta(text=json.dumps({"facts": facts}), index=0)
+            yield Done(stop_reason="stop", raw_reason="stop")
     async def check():
         pass
     work = ri.prepare_input(p, llm=Summarizer(), model=MODEL, context="context", system="system", schema=SCHEMA, check=check)
@@ -242,4 +243,21 @@ async def test_synthetic_result_remains_single_correlated_bounded_data(wrong):
     llm = Stream(events)
     with pytest.raises(ri.InputRefused, match="compaction_output_limit" if wrong == "oversize" else "compaction_invalid"):
         await judge(llm, max_bytes=64)
+    assert llm.closed
+
+
+@pytest.mark.parametrize("reason", ["content_filter", "stop_sequence", "other", "tool_turn_cap", "tool_use"])
+async def test_non_success_terminal_cannot_authorize_a_text_verdict(reason):
+    llm = Stream([TextDelta(text='{"run_succeeded":true,"deltas":[]}', index=0),
+                  Done(stop_reason=reason, raw_reason=reason)])
+    with pytest.raises(ri.InputRefused, match="compaction_incomplete"):
+        await judge(llm)
+    assert llm.closed
+
+
+async def test_success_terminal_does_not_complete_an_unfinished_synthetic_block():
+    llm = Stream([ToolCallStart(id="result", name="structured_output", index=0),
+                  Done(stop_reason="stop", raw_reason="stop")])
+    with pytest.raises(ri.InputRefused, match="compaction_incomplete"):
+        await judge(llm)
     assert llm.closed

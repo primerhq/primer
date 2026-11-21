@@ -8,6 +8,14 @@ Callers (the agent loop, the ingest path, the collections subsystem) depend only
 
 ## 2. Conceptual model
 
+Anthropic and OpenChat own each opened SDK response until iteration ends. They
+explicitly await both timeout-iterator and response cleanup on exhaustion, errors,
+consumer close and cancellation, before releasing the concurrency slot. Repeated
+cancellation joins that cleanup; a non-cooperative close can delay completion.
+Cleanup errors are logged by class at debug level without replacing the original
+response outcome or cancellation. This does not establish remote abort success
+when the SDK close itself fails.
+
 A provider row (`LLMProvider`, `EmbeddingProvider`, or `CrossEncoderProvider` in `primer/model/provider.py`) is a configuration record: which backend (`provider` enum), which models are permitted (`models`), the backend-specific connection details (`config`, a discriminated union), and the concurrency budget (`limits`). An adapter is the live object built from that row. The adapter serves every model the row declares; model selection happens per call, validated against `provider.models` with a `ModelNotFoundError` raised when the caller passes an unknown name.
 
 The universal types the adapters translate are defined in `primer/model/chat.py` and `primer/model/embedding.py`: `Message` (a role plus a list of `Part`s), `Tool`, `ToolChoice`, the `StreamEvent` union that `LLM.stream` yields, and `EmbeddingPart` / `EmbedResponse` for embedders. Provider-specific knobs that do not map cleanly across vendors ride in an open-ended `extended: dict[str, Any]` slot the adapter interprets and silently drops unknown keys from.
