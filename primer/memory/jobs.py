@@ -273,6 +273,8 @@ async def _trivial(deps: MemoryDeps, job: MemoryJob) -> str | None:
         return None
     try:
         messages = await deps.load_messages(job)
+    except InputRefused:
+        raise  # detectable log damage/identity change is never a trivial range
     except Exception:  # noqa: BLE001 - an unreadable log is the runner's to report, not a reason to skip
         logger.warning("memory job %s: could not read the session messages for the triviality gate", job.id, exc_info=True)
         return None

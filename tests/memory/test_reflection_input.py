@@ -100,7 +100,7 @@ async def test_valid_structured_stream_is_tool_free_and_closed():
     llm = Stream([TextDelta(text='{"run_succeeded":true,"deltas":[]}', index=0)])
     assert (await judge(llm))["deltas"] == []
     assert llm.closed and len(llm.calls) == 1
-    assert llm.calls[0]["tools"] is None and llm.calls[0]["tool_choice"] == "none"
+    assert llm.calls[0]["tools"] is None and llm.calls[0]["tool_choice"] is None
     assert llm.calls[0]["max_output_tokens"] == 4096
 
 
@@ -181,3 +181,65 @@ async def test_shared_deadline_cancels_owned_stream_and_closes_it():
         async with asyncio.timeout(.01):
             await judge(Slow())
     assert finished.is_set()
+
+
+@pytest.mark.parametrize("failure", ["finally", "aclose"])
+async def test_cleanup_failure_cannot_replace_repeated_outward_cancellation(failure):
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def fail_close():
+        cleaning.set()
+        await release.wait()
+        raise RuntimeError("isolated cleanup failure")
+    class Iterator:
+        def __aiter__(self):
+            return self
+        async def __anext__(self):
+            entered.set()
+            await asyncio.Event().wait()
+        async def aclose(self):
+            await fail_close()
+    class Failing:
+        def stream(self, **kwargs):
+            if failure == "aclose":
+                return Iterator()
+            async def generate():
+                try:
+                    entered.set()
+                    await asyncio.Event().wait()
+                    yield TextDelta(text="", index=0)
+                finally:
+                    await fail_close()
+            return generate()
+    task = asyncio.create_task(judge(Failing()))
+    try:
+        async with asyncio.timeout(5):
+            await entered.wait()
+            task.cancel()
+            await cleaning.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("wrong", ["identity", "repeat", "oversize"])
+async def test_synthetic_result_remains_single_correlated_bounded_data(wrong):
+    from primer.model.chat import ToolCallDelta, ToolCallEnd
+    events = [ToolCallStart(id="result", name="structured_output", index=0)]
+    if wrong == "identity":
+        events.append(ToolCallEnd(id="other", arguments={}, index=0))
+    elif wrong == "repeat":
+        events += [ToolCallEnd(id="result", arguments={}, index=0),
+                   ToolCallStart(id="second", name="structured_output", index=1)]
+    else:
+        events.append(ToolCallDelta(id="result", index=0, arguments_delta="x" * 100))
+    llm = Stream(events)
+    with pytest.raises(ri.InputRefused, match="compaction_output_limit" if wrong == "oversize" else "compaction_invalid"):
+        await judge(llm, max_bytes=64)
+    assert llm.closed
