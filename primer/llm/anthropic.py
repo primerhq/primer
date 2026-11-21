@@ -869,6 +869,12 @@ class AnthropicLLM(LLM):
         request.update(_extract_extended_kwargs(extended))
         _fit_thinking(request, messages=messages, provider_id=self._provider.id)
         _fit_sampling(request, model=model, provider_id=self._provider.id)
+        # Locked Anthropic 2.3.0 omits these SDK keyword parameters. Preserve the
+        # fitted wire settings for older models/proxies through extra_body,
+        # which older SDKs also support. Never restore knobs fitting dropped.
+        sampling = {key: request.pop(key) for key in ("temperature", "top_p", "top_k") if key in request}
+        if sampling:
+            request["extra_body"] = sampling
 
         logger.info(
             "Anthropic stream starting",

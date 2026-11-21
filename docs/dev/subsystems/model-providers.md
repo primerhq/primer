@@ -421,6 +421,12 @@ the request body, and `openrouter` sends its `reasoning` object in the body.
 folds `thinking_budget` or `thinking_level` into `thinking_config` (keeping
 the level when both arrive), `ollama` sends `think` at the top level and
 `anthropic` sends the `thinking` block and `output_config`.
+The locked Anthropic 2.3.0 SDK omits `temperature`, `top_p` and `top_k` keywords.
+After the adapter's model/thinking fitting, remaining sampling knobs travel
+through `extra_body` and arrive as the same top-level JSON fields. This keeps
+older model/proxy settings without restoring knobs deliberately dropped for
+models or thinking modes that reject them. It is SDK argument compatibility,
+not a retry or a bypass of upstream model validation.
 
 A forced `tool_choice` (`required` or a named tool) is sent as the caller
 chose it on every wire. `openchat` used to turn it into `auto` on real OpenAI

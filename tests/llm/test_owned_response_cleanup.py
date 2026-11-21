@@ -14,6 +14,21 @@ from tests.llm.test_openchat import _make_provider as openchat_provider
 from tests.memory.test_reflection_input import MODEL, SCHEMA, judge
 
 
+async def _wait_for_phase(event, *consumers):
+    """Fail at a premature consumer outcome, not a later opaque barrier timeout."""
+    waiting = asyncio.create_task(event.wait())
+    try:
+        await asyncio.wait({waiting, *consumers}, return_when=asyncio.FIRST_COMPLETED)
+        for consumer in consumers:
+            if consumer.done():
+                result = consumer.result()  # propagate the original exception/cause
+                raise AssertionError(f"consumer terminated before barrier: {result!r}")
+        assert waiting.done() and waiting.result()
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openchat"])
 @pytest.mark.parametrize("exit_kind", ["normal", "refusal", "cancel", "consumer_close"])
 @pytest.mark.parametrize("close_fails", [False, True])
@@ -187,6 +202,16 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
     transports, responses = [], []
     async def handler(request):
         assert request.url.host == "offline.invalid"
+        body = json.loads(request.content)
+        assert body["model"] == "offline" and body["stream"] is True
+        if provider == "anthropic":
+            assert body["max_tokens"] == 4096
+            assert body["tool_choice"] == {"type": "tool", "name": "structured_output"}
+            assert body["tools"][0]["input_schema"] == SCHEMA
+            if consumer == "bounded":
+                assert body["temperature"] == 0.0 and body["system"] == "system"
+            else:
+                assert "temperature" not in body
         if transports:
             assert transports[0].finished  # permit cannot be released early
         transport = TransportStream(first=not transports)
@@ -226,15 +251,15 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
     try:
         async with asyncio.timeout(5):
             if cancel_read:
-                await reading.wait()
+                await _wait_for_phase(reading, first)
                 assert not closing.is_set() and not responses[0].is_closed
             else:
-                await closing.wait()
+                await _wait_for_phase(closing, first)
             second = asyncio.create_task(consume())
-            await queued.wait()
+            await _wait_for_phase(queued, first, second)
             if cancel_read:
                 first.cancel()  # exactly once, before any close has started
-                await closing.wait()
+                await _wait_for_phase(closing, first, second)
                 assert first.cancelling() == 1
             elif cancel_close:
                 first.cancel()
@@ -311,3 +336,63 @@ async def test_nested_close_preserves_only_the_cancelled_callers_outcome():
         release.set()
         caller.cancel()
         await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.parametrize("outcome", ["failure", "normal"])
+async def test_phase_wait_exposes_early_consumer_completion(outcome):
+    async def consumer():
+        if outcome == "failure":
+            raise RuntimeError("offline opening failure")
+        return "unexpected early finish"
+    running = asyncio.create_task(consumer())
+    try:
+        async with asyncio.timeout(5):
+            with pytest.raises(RuntimeError if outcome == "failure" else AssertionError,
+                               match="offline opening failure" if outcome == "failure" else "unexpected early finish"):
+                await _wait_for_phase(asyncio.Event(), running)
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.parametrize("model,expected", [
+    ("claude-sonnet-4-5", {"temperature": 0.2, "top_p": 0.9, "top_k": 7}),
+    ("offline", {"temperature": 0.2, "top_p": 0.9, "top_k": 7}),
+    ("claude-opus-4-7", {}),
+])
+async def test_anthropic_sampling_survives_sdk_binding_after_model_fitting(model, expected):
+    """The real SDK must send fitted knobs, never reject them as Python kwargs."""
+    import json
+    import httpx2
+    from anthropic import AsyncAnthropic
+    from primer.model.chat import Done
+    seen = []
+    async def handler(request):
+        assert request.url.host == "offline.invalid"
+        body = json.loads(request.content)
+        seen.append(body)
+        assert {key: body[key] for key in ("temperature", "top_p", "top_k") if key in body} == expected
+        assert "extra_body" not in body  # SDK merges into the top-level JSON
+        assert body["model"] == model and body["max_tokens"] == 64 and body["stream"] is True
+        events = [
+            {"type": "message_start", "message": {"id": "msg_offline", "type": "message", "role": "assistant",
+             "model": model, "content": [], "stop_reason": None, "stop_sequence": None,
+             "usage": {"input_tokens": 1, "output_tokens": 0}}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 0}},
+            {"type": "message_stop"},
+        ]
+        wire = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"},
+                               content=wire)
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    client = AsyncAnthropic(api_key="offline-test", base_url="https://offline.invalid", http_client=http, max_retries=0)
+    llm = AnthropicLLM(anthropic_provider(models=[model]))
+    llm._client = client
+    try:
+        events = [event async for event in llm.stream(
+            model=model, messages=[Message(role="user", parts=[TextPart(text="source")])],
+            max_output_tokens=64, temperature=0.2, top_p=0.9, extended={"top_k": 7},
+        )]
+        assert len(seen) == 1 and any(isinstance(event, Done) and event.stop_reason == "stop" for event in events)
+    finally:
+        await client.close()
