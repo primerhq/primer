@@ -252,3 +252,77 @@ async def test_metadata_is_captured_before_source_builds_payload(fake_storage_pr
     assert seen[0][0].trigger_id == "tr-fire" and seen[0][0].interactive is True
     assert "fire_metadata" not in seen[0][1] and "interactive" not in seen[0][1]
     assert deps.fire_metadata is stale
+
+
+@pytest.mark.parametrize("config,interactive", CONFIGS)
+async def test_fresh_agent_and_graph_store_priority_from_the_same_fire(
+    fake_storage_provider, fake_claim_engine, fake_scheduler, fake_workspace_registry,
+    seeded_workspace, seeded_agent, seeded_graph, monkeypatch, config, interactive,
+):
+    from functools import partial
+
+    from primer.model.principal import PrincipalRef
+    from primer.model.session_creation import SessionCreationIntent
+    from primer.model.trigger import AgentFreshSubConfig, GraphFreshSubConfig
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.trigger.subscribers import agent_fresh_session, graph_fresh_session
+    from primer.workspace.session_factory import SessionFactoryDeps
+
+    sp = fake_storage_provider
+    triggers = sp.get_storage(Trigger)
+    trigger = await triggers.create(Trigger(id="tr-priority", slug="priority", name="priority", config=config, created_at=NOW))
+    cases = [
+        (seeded_agent, AgentFreshSubConfig(workspace_id=seeded_workspace.id, agent_id=seeded_agent.id), 19),
+        (seeded_graph, GraphFreshSubConfig(workspace_id=seeded_workspace.id, graph_id=seeded_graph.id), 73),
+    ]
+    for source, sub_config, value in cases:
+        await sp.get_storage(type(source)).update(source.model_copy(update={"default_priority": value}))
+        await sp.get_storage(Subscription).create(Subscription(
+            id=f"sub-{source.id}", trigger_id=trigger.id, config=sub_config, payload_template="{}",
+            owner=PrincipalRef.system(), parallelism="queue", created_at=NOW,
+        ))
+    deps = DispatchDeps(sp, fake_claim_engine, fake_scheduler, fake_workspace_registry)
+    extra = {"interactive": not interactive, "priority": 1, "fire_metadata": {"interactive": not interactive}}
+
+    # Actual dispatch with ordinary production dependencies must reject both background defaults.
+    if not interactive:
+        refused = await fire_trigger(trigger_id=trigger.id, scheduled_for=NOW, deps=deps, extra_context=extra)
+        assert len(refused.results) == 2
+        assert all(not r["ok"] and "scheduling cutover" in r["error_message"] for r in refused.results)
+        assert not sp.get_storage(WorkspaceSession)._data
+        assert not sp.get_storage(SessionCreationIntent)._data
+
+        assert not fake_workspace_registry.workspaces
+        for module in (agent_fresh_session, graph_fresh_session):
+            monkeypatch.setattr(module, "SessionFactoryDeps", partial(SessionFactoryDeps, nonzero_priority_available=True))
+
+    # Change the live webhook row after the first real child was published, before its sibling starts.
+    if isinstance(config, WebhookTriggerConfig):
+        original_upsert = fake_claim_engine.upsert
+        calls = 0
+
+        async def upsert(*args, **kwargs):
+            nonlocal calls
+            result = await original_upsert(*args, **kwargs)
+            calls += 1
+            if calls == 1:
+                if interactive:
+                    await triggers.delete(trigger.id)
+                else:
+                    await triggers.update(trigger.model_copy(update={"config": WebhookTriggerConfig(interactive=True)}))
+            return result
+
+        monkeypatch.setattr(fake_claim_engine, "upsert", upsert)
+
+    if isinstance(config, WebhookTriggerConfig) and interactive:
+        # Both subscribers complete before final trigger bookkeeping observes the deletion.
+        with pytest.raises(NotFoundError):
+            await fire_trigger(trigger_id=trigger.id, scheduled_for=None, deps=deps, extra_context=extra)
+    else:
+        result = await fire_trigger(trigger_id=trigger.id, scheduled_for=None, deps=deps, extra_context=extra)
+        assert len(result.results) == 2 and all(r["ok"] and not r["skipped"] for r in result.results)
+    children = list(sp.get_storage(WorkspaceSession)._data.values())
+    assert len(children) == 2
+    assert {row.metadata["subscription_id"]: row.priority for row in children} == {
+        f"sub-{source.id}": 0 if interactive else value for source, _, value in cases
+    }

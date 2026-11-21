@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from primer.access.person import Person
 from primer.access.policy import require
@@ -20,6 +21,10 @@ from primer.model.storage import OffsetPage, Op, OrderBy
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.storage.q import Q
+from primer.workspace.work_priority import choose_creation_priority
+
+if TYPE_CHECKING:
+    from primer.trigger.subscribers import TriggerFireMetadata
 
 logger = logging.getLogger(__name__)
 # Recovery may decline a slow allocation after this grace. It never touches its files.
@@ -38,7 +43,7 @@ def _caller_version(row: WorkspaceSession | None, turn_no: int | None):
     return (
         row.workspace_id, row.created_at, row.responder_epoch, row.binding_epoch,
         row.turn_no, row.status, row.turn_status, row.parked_status, row.parked_at,
-        row.turn_started_at, row.metadata.get("invocation"),
+        row.turn_started_at, row.metadata.get("invocation"), row.priority,
     )
 
 
@@ -90,7 +95,7 @@ class CreationAttempt:
                 session.id, {"state": "committed"},
                 where={
                     "state": ["preparing"], "occurrence": [self.receipt.occurrence],
-                    "workspace_id": [session.workspace_id],
+                    "workspace_id": [session.workspace_id], "priority": [session.priority],
                 },
                 conn=conn,
             )
@@ -112,20 +117,26 @@ class CreationAttempt:
 async def preparing_creation(
     sp: StorageProvider, *, sid: str, workspace: Workspace, person: Person | None,
     sources: Sequence[Agent | Graph], caller_id: str | None, caller_turn: int | None,
+    requested_priority: int | None, fire: TriggerFireMetadata | None, binding_default: int,
+    nonzero_priority_available: bool,
 ) -> AsyncIterator[CreationAttempt]:
     """Only the allocator that inserted the receipt may attempt to publish."""
     sessions = sp.get_storage(WorkspaceSession)
-    receipt = SessionCreationIntent(id=sid, workspace_id=workspace.id)
     if caller_id == sid:
         raise ConflictError("child ID collides with calling session")
-    version = None
-    if caller_id is not None:
-        version = _caller_version(await sessions.get(caller_id), caller_turn)
-
     ordered_sources = sorted(sources, key=lambda source: (type(source).__name__, source.id))
+    witnesses = tuple(source.model_copy(deep=True) for source in ordered_sources)
+    caller = await sessions.get(caller_id) if caller_id is not None else None
+    version = _caller_version(caller, caller_turn) if caller_id is not None else None
+    priority = choose_creation_priority(
+        requested=requested_priority, caller=caller, fire=fire, binding_default=binding_default,
+        nonzero_available=nonzero_priority_available,
+    )
+    receipt = SessionCreationIntent(id=sid, workspace_id=workspace.id, priority=priority)
+
     attempt = CreationAttempt(
         receipt=receipt, workspace=workspace.model_copy(deep=True), person=person,
-        sources=tuple(source.model_copy(deep=True) for source in ordered_sources),
+        sources=witnesses,
         caller_id=caller_id, caller_turn=caller_turn, caller_version=version,
     )
     attempt.check_workspace(workspace)

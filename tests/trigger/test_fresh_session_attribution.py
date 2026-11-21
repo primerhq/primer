@@ -17,12 +17,13 @@ import pytest
 
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
+    TriggerKind,
     AgentFreshSubConfig,
     GraphFreshSubConfig,
     Subscription,
 )
 from primer.model.workspace_session import WorkspaceSession
-from primer.trigger.subscribers import DispatchDeps
+from primer.trigger.subscribers import DispatchDeps, TriggerFireMetadata
 from primer.trigger.subscribers.agent_fresh_session import (
     AgentFreshSessionDispatcher,
 )
@@ -68,13 +69,14 @@ async def test_a_platform_owned_agent_fresh_session_stamps_a_user_ranked_trigger
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_workspace_registry, seeded_workspace, seeded_agent,
 ):
+    sub = _agent_sub(seeded_workspace.id, seeded_agent.id)
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata(sub.trigger_id, TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
         workspace_registry=fake_workspace_registry,
     )
-    sub = _agent_sub(seeded_workspace.id, seeded_agent.id)
     res = await AgentFreshSessionDispatcher().dispatch(
         sub,
         rendered_payload="run a check",
@@ -100,13 +102,14 @@ async def test_a_platform_owned_graph_fresh_session_stamps_a_user_ranked_trigger
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_workspace_registry, seeded_workspace, seeded_graph,
 ):
+    sub = _graph_sub(seeded_workspace.id, seeded_graph.id)
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata(sub.trigger_id, TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
         workspace_registry=fake_workspace_registry,
     )
-    sub = _graph_sub(seeded_workspace.id, seeded_graph.id)
     res = await GraphFreshSessionDispatcher().dispatch(
         sub,
         rendered_payload=json.dumps({"tenant_id": "acme"}),

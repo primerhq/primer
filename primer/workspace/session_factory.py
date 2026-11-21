@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_core import to_jsonable_python
 
@@ -46,6 +46,10 @@ from primer.model.workspace_session import (
 )
 
 
+if TYPE_CHECKING:
+    from primer.trigger.subscribers import TriggerFireMetadata
+
+
 logger = logging.getLogger(__name__)
 
 # Keys the runtime reads off a session's metadata and trusts, so only an internal writer sets them (security review GS-1): the channel
@@ -65,6 +69,8 @@ class SessionFactoryDeps:
     claim_engine: Any
     scheduler: Any
     workspace_registry: Any | None = None
+    # No production caller enables this before coordinated writer/worker cutover.
+    nonzero_priority_available: bool = False
 
 
 async def start_workspace_session(
@@ -87,6 +93,8 @@ async def start_workspace_session(
     workspace_person: Person | None = None,
     calling_session_id: str | None = None,
     calling_turn_no: int | None = None,
+    priority: int | None = None,
+    fire_metadata: TriggerFireMetadata | None = None,
 ) -> WorkspaceSession:
     """Full create flow shared by the REST route and the workspaces tool:
     validate workspace + binding (+ graph_input vs Begin.input_schema),
@@ -208,7 +216,10 @@ async def start_workspace_session(
     # agent's flag; graph bindings need at least one agent node whose
     # agent allows them (injection is then gated per node, so flag-off
     # nodes never see the defs).
-    sources = [source for source in (resolved_agent, resolved_graph) if source is not None]
+    bound_source = resolved_agent if resolved_agent is not None else resolved_graph
+    if bound_source is None:
+        raise ValidationError("session creation requires an agent or graph binding")
+    sources = [bound_source]
     if external_tools:
         if resolved_agent is not None:
             if not resolved_agent.allow_external_tools:
@@ -246,6 +257,9 @@ async def start_workspace_session(
     async with preparing_creation(
         deps.storage_provider, sid=sid, workspace=workspace, person=workspace_person,
         sources=sources, caller_id=calling_session_id, caller_turn=calling_turn_no,
+        requested_priority=priority, fire=fire_metadata,
+        binding_default=bound_source.default_priority,
+        nonzero_priority_available=deps.nonzero_priority_available,
     ) as attempt:
         initial_last_seq, initial_responder_ledger = await _materialize_initial_slot(
             deps=deps, workspace_id=workspace_id, sid=sid, binding=binding, resolved_agent=resolved_agent,
@@ -516,6 +530,7 @@ async def create_session(
     )
     session = WorkspaceSession(
         id=sid,
+        priority=creation_attempt.receipt.priority if creation_attempt is not None else 0,
         workspace_id=workspace_id,
         binding=binding,
         status=SessionStatus.RUNNING if auto_start else SessionStatus.CREATED,
