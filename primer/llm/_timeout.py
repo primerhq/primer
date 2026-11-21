@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypeVar
 from weakref import WeakSet
@@ -44,9 +45,16 @@ def _protect_sdk_response_close(sdk_stream: Any) -> None:
     async def joined_close():
         nonlocal task
         caller = asyncio.current_task()
+        # A body-read cancellation may already be unwinding into HTTPX's
+        # finally before this first close starts. No second cancel is needed.
+        # Inspect the active exception, not Task.cancelling(): its count can
+        # remain nonzero after a caller has handled an earlier cancellation.
+        active_error = sys.exception()
+        cancelled = active_error if isinstance(active_error, asyncio.CancelledError) else None
+        if cancelled is not None:
+            cancelled_callers.add(caller)
         if task is None:
             task = asyncio.create_task(close())
-        cancelled = None
         while not task.done():
             try:
                 await asyncio.shield(task)

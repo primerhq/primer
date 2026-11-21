@@ -29,6 +29,11 @@ The guard remembers which callers were cancelled while joining a response's
 close. Re-entry from a nested SDK finally preserves that caller's cancellation
 instead of replacing it with the cached transport error. A different,
 uncancelled caller still observes that error; the transport is not retried.
+On first entry the guard also captures an active `CancelledError` unwinding
+from a suspended body read. That single cancellation survives a later failed
+close without needing another cancel request. It inspects the active exception,
+not the task's cancellation count, which may remain nonzero after a previously
+handled cancellation. The close still completes before the permit is released.
 
 OpenChat and OpenRouter translate nonempty Chat Completions `delta.refusal`
 into `ExtendedEvent(RefusalDelta)`, even alongside a normal `stop`. Responses

@@ -107,12 +107,16 @@ async def test_adapter_joins_nonexhausted_sdk_close(provider, exit_kind, close_f
 
 @pytest.mark.parametrize("provider", ["anthropic", "openchat"])
 @pytest.mark.parametrize("consumer", ["direct", "bounded"])
-@pytest.mark.parametrize("ending", ["complete", "cancel", "iteration_error", "close_error", "cancel_close_error"])
+@pytest.mark.parametrize("ending", [
+    "complete", "cancel", "iteration_error", "close_error", "cancel_close_error",
+    "read_cancel", "read_cancel_close_error", "handled_cancel_close_error",
+])
 async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(provider, consumer, ending):
     """Real SDK + HTTPX response: is_closed becomes true before transport close.
 
     All HTTP is intercepted in memory. The first stream reaches SDK/HTTPX
-    automatic disposal, not Primer's explicit finally, before cancellation.
+    automatic disposal, not Primer's explicit finally. Cancellation is delivered
+    either during close or once at a deterministic body-read barrier.
     """
     import json
 
@@ -125,6 +129,10 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
     from primer.model.except_ import ServerError
 
     closing, release, queued = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reading = asyncio.Event()
+    cancel_read = ending in {"read_cancel", "read_cancel_close_error"}
+    cancel_close = ending in {"cancel", "cancel_close_error"}
+    close_error = ending in {"close_error", "cancel_close_error", "read_cancel_close_error", "handled_cancel_close_error"}
     class Limiter(InMemoryRateLimiter):
         calls = 0
         async def acquire(self, key, *, max_concurrency):
@@ -159,6 +167,9 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
             self.close_calls = 0
             self.finished = self.interrupted = False
         async def __aiter__(self):
+            if self.first and cancel_read:
+                reading.set()
+                await asyncio.Event().wait()  # only the single cancellation releases this read
             yield wire(broken=self.first and ending == "iteration_error")
         async def aclose(self):
             self.close_calls += 1
@@ -167,7 +178,7 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
                     closing.set()
                     await release.wait()
                 self.finished = True
-                if self.first and ending in {"close_error", "cancel_close_error"}:
+                if self.first and close_error:
                     raise RuntimeError("offline transport cleanup failure")
             except asyncio.CancelledError:
                 self.interrupted = True
@@ -193,7 +204,16 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
         llm = OpenChatLLM(openchat_provider(models=["offline"], max_concurrency=1), rate_limiter=limiter)
         client = AsyncOpenAI(api_key="offline-test", base_url="https://offline.invalid", http_client=http, max_retries=0)
     llm._client = client
-    async def consume():
+    async def consume(*, handled_cancel=False):
+        if handled_cancel:
+            caller = asyncio.current_task()
+            caller.cancel()
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                pass
+            # Deliberately leave the count nonzero, but no active exception.
+            assert caller.cancelling() == 1
         if consumer == "bounded":
             return await judge(llm)
         return [event async for event in llm.stream(
@@ -201,33 +221,41 @@ async def test_locked_sdk_automatic_close_joins_transport_before_permit_handoff(
             response_format=SCHEMA, max_output_tokens=4096,
         )]
 
-    first = asyncio.create_task(consume())
+    first = asyncio.create_task(consume(handled_cancel=ending == "handled_cancel_close_error"))
     second = None
     try:
         async with asyncio.timeout(5):
-            await closing.wait()
-            assert responses[0].is_closed and not transports[0].finished
+            if cancel_read:
+                await reading.wait()
+                assert not closing.is_set() and not responses[0].is_closed
+            else:
+                await closing.wait()
             second = asyncio.create_task(consume())
             await queued.wait()
-            if ending.startswith("cancel"):
+            if cancel_read:
+                first.cancel()  # exactly once, before any close has started
+                await closing.wait()
+                assert first.cancelling() == 1
+            elif cancel_close:
                 first.cancel()
                 await asyncio.sleep(0)
                 first.cancel()
                 await asyncio.sleep(0)
+            assert responses[0].is_closed and not transports[0].finished
             assert not first.done() and not second.done()
             assert len(transports) == 1 and not transports[0].interrupted
             release.set()
-            if ending.startswith("cancel"):
+            if cancel_read or cancel_close:
                 with pytest.raises(asyncio.CancelledError):
                     await first
-            elif ending in {"iteration_error", "close_error"} and consumer == "bounded":
+            elif (ending == "iteration_error" or close_error) and consumer == "bounded":
                 with pytest.raises(ServerError):
                     await first
             else:
                 result = await first
                 if consumer == "bounded":
                     assert result["deltas"] == []
-                elif ending in {"iteration_error", "close_error"}:
+                elif ending == "iteration_error" or close_error:
                     assert any(isinstance(event, Error) for event in result)
                 else:
                     assert any(isinstance(event, Done) and event.stop_reason == "stop" for event in result)
