@@ -380,6 +380,7 @@ function GB_reducer(draft, action) {
       // max_iterations). The id never changes (a pasted id would retarget the save) and a spec with no description keeps the current one.
       const next = { ...d, ...a.spec, id: d.id };
       if (a.spec.description == null) next.description = d.description;
+      if (a.spec.default_priority === undefined) delete next.default_priority;
       if (a.spec.max_iterations == null) delete next.max_iterations;
       if (a.spec.on_max_iterations == null) delete next.on_max_iterations;
       if (a.spec.edges == null) next.edges = [];

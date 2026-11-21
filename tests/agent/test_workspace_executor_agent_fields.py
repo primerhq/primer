@@ -25,6 +25,7 @@ def _non_default_agent() -> Agent:
         id="ag-fields",
         description="an agent with every knob turned",
         model=AgentModel(profile_id="p--m"),
+        default_priority=40,
         temperature=0.35,
         max_tool_turns=3,
         max_output_tokens=777,

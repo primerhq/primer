@@ -373,18 +373,27 @@ def _reduce(draft: dict, action: dict) -> dict:
     return json.loads(_ctx().eval(f"JSON.stringify(GB_reducer({json.dumps(draft)}, {json.dumps(action)}))"))
 
 
-_CURRENT = {"id": "g", "description": "keep me", "nodes": [], "edges": [], "max_iterations": 5, "on_max_iterations": "a"}
+_CURRENT = {
+    "id": "g", "description": "keep me", "default_priority": 40, "nodes": [], "edges": [],
+    "max_iterations": 5, "on_max_iterations": "a",
+}
 
 
 def test_importing_clears_the_graph_level_fields_the_spec_leaves_out() -> None:
     """The legacy editor dropped ``max_iterations`` when the pasted spec had none; a PUT of the same body would too. A merge kept the old value."""
     out = _reduce(_CURRENT, {"type": "IMPORT_SPEC", "spec": {"nodes": [], "edges": []}})
+    assert "default_priority" not in out
     assert "max_iterations" not in out and "on_max_iterations" not in out
     assert out["id"] == "g" and out["description"] == "keep me", "the pasted spec never retargets the graph, and a spec with no description keeps the current one"
 
 
 def test_importing_sets_the_graph_level_fields_the_spec_has() -> None:
-    out = _reduce(_CURRENT, {"type": "IMPORT_SPEC", "spec": {"id": "other", "description": "new", "nodes": [], "edges": [], "max_iterations": 3, "on_max_iterations": "z"}})
+    spec = {
+        "id": "other", "description": "new", "default_priority": 0, "nodes": [], "edges": [],
+        "max_iterations": 3, "on_max_iterations": "z",
+    }
+    out = _reduce(_CURRENT, {"type": "IMPORT_SPEC", "spec": spec})
+    assert out["default_priority"] == 0
     assert out["max_iterations"] == 3 and out["on_max_iterations"] == "z" and out["description"] == "new" and out["id"] == "g"
 
 
@@ -392,6 +401,7 @@ def test_applying_a_starter_still_merges() -> None:
     """``APPLY_TEMPLATE`` shared the reducer case with the import and keeps its merge: a starter spec names nodes and edges and nothing else."""
     out = _reduce(_CURRENT, {"type": "APPLY_TEMPLATE", "spec": {"nodes": [], "edges": []}})
     assert out["max_iterations"] == 5 and out["on_max_iterations"] == "a"
+    assert out["default_priority"] == 40
 
 
 def test_the_import_modal_seeds_the_loop_landing_so_loading_its_text_unchanged_keeps_it() -> None:

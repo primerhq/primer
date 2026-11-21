@@ -26,7 +26,7 @@ def test_a_spec_of_the_wrong_type_is_refused_and_the_builder_keeps_its_draft(pag
     nodes = [{"kind": "begin", "id": "begin"}, {"kind": "end", "id": "end", "output_template": ""}]
     edges = [{"kind": "static", "from_node": "begin", "to_node": "end"}]
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/graphs", json={"id": graph_id, "description": "import refusal probe", "nodes": nodes, "edges": edges})
+        r = c.post("/v1/graphs", json={"id": graph_id, "description": "import refusal probe", "default_priority": 40, "nodes": nodes, "edges": edges})
         assert r.status_code == 201, r.text
     try:
         open_legacy_route(page, console_url, f"graphs/{graph_id}")
@@ -38,6 +38,8 @@ def test_a_spec_of_the_wrong_type_is_refused_and_the_builder_keeps_its_draft(pag
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=10_000)
         spec = modal.get_by_test_id("graph-import-spec")
+        exported = json.loads(spec.input_value())
+        assert exported["default_priority"] == 40
 
         spec.fill(json.dumps({"nodes": [{"kind": "begin", "id": "begin"}], "edges": [], "description": {"x": 1}}))
         modal.get_by_role("button", name="Load into editor").click()
@@ -52,10 +54,19 @@ def test_a_spec_of_the_wrong_type_is_refused_and_the_builder_keeps_its_draft(pag
         expect(modal.get_by_text("wrong type")).to_be_visible(timeout=5_000)
         expect(rows).to_have_count(2)
 
-        spec.fill(json.dumps({"description": "imported", "nodes": [{"kind": "begin", "id": "begin"}], "edges": []}))
+        spec.fill(json.dumps({**exported, "description": "imported", "nodes": [{"kind": "begin", "id": "begin"}], "edges": []}))
         modal.get_by_role("button", name="Load into editor").click()
         expect(page.locator(".modal")).to_have_count(0, timeout=5_000)
         expect(rows).to_have_count(1)
+        path = f"/v1/graphs/{graph_id}"
+        with page.expect_response(lambda resp: resp.request.method == "PUT" and resp.url.endswith(path)) as saved:
+            gb.save_button(page).click()
+        assert saved.value.ok, saved.value.text()
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            stored = c.get(path)
+            stored.raise_for_status()
+            graph = stored.json()
+        assert (graph["description"], graph["default_priority"]) == ("imported", 40)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/graphs/{graph_id}")

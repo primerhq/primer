@@ -888,6 +888,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
       // A description the operator did not touch goes back exactly as stored; an edited one is trimmed (audit G3-05).
       description: isEdit && description === existing.description ? existing.description : description.trim(),
       model: { profile_id: profileId },
+      // Carry the stored priority through a replacement PUT. Creation uses the server default.
+      default_priority: existing?.default_priority,
       tools,
       // The parts nobody touched go back as stored; a typed part is trimmed and a blank one dropped (AG_systemPromptForSave).
       system_prompt: AG_systemPromptForSave(systemPromptParts, existing?.system_prompt),

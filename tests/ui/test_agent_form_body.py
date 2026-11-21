@@ -72,10 +72,19 @@ def test_saving_an_agent_with_default_values_sends_them_back(ctx):
     mount(ctx, existing=DEFAULTS)
     click(ctx, "agent-form-submit")
     assert body(ctx) == {
-        "id": "plain", "description": "Plain", "model": {"profile_id": "fast"}, "tools": [], "system_prompt": [],
+        "id": "plain", "description": "Plain", "model": {"profile_id": "fast"}, "default_priority": 0, "tools": [], "system_prompt": [],
         "compaction_prompt": [], "compaction_tool_access": False, "allow_external_tools": False, "use_workspace_instructions": True,
         "tts_voice": None, "max_tool_turns": 50, "max_output_tokens": None, "response_format": None,
     }  # temperature None is left out; the PUT-replace default is None
+
+
+def test_editing_an_older_agent_without_priority_uses_the_server_default(ctx):
+    mount(ctx, existing={k: v for k, v in DEFAULTS.items() if k != "default_priority"})
+    type_into(ctx, "agent-description", "Updated description")
+    click(ctx, "agent-form-submit")
+    sent = body(ctx)
+    assert sent["description"] == "Updated description"
+    assert "default_priority" not in sent
 
 
 def test_an_agent_on_a_deleted_profile_keeps_that_profile_on_save(ctx):  # plan 05 Review Focus 2
