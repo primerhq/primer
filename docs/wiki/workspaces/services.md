@@ -24,7 +24,9 @@ From an admin workspace session, prepare a dedicated directory with your app fil
 and optional `service.yaml`. Call `system__publish_service` with
 `{"name":"status-app","path":"apps/status"}`. The default policy requires an
 admin to approve, including after an upgrade. Existing operator-customized
-policies remain in effect. Approve the publish when prompted.
+policies remain in effect, including disabled policies. A malformed matching
+publisher policy refuses the call until repaired; it is not treated as absent.
+Approve the publish when prompted.
 The result gives the active version number, version ID and URL (`/svc/status-app/`).
 The first call creates a console-authenticated service. Later calls publish a new
 version and keep its current viewer authentication. The directory must contain
