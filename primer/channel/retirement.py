@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from functools import wraps
 
 from primer.model.except_ import ProviderError
 
@@ -13,6 +14,35 @@ logger = logging.getLogger(__name__)
 # Per-process. Pool instances distinguish independent credentials and test runtimes.
 _pending: dict[tuple[object, str], asyncio.Task] = {}
 _RETRY_SECONDS = 1.0
+
+
+class ListenerCallbacks:
+    """Application work admitted by one SDK connection on its event loop."""
+
+    def __init__(self) -> None:
+        self._closed = False
+        self._tasks: set[asyncio.Task] = set()
+
+    def guard(self, callback):
+        @wraps(callback)  # Bolt introspects the original named callback arguments.
+        async def guarded(*args, **kwargs):
+            if self._closed:
+                return
+            task = asyncio.create_task(callback(*args, **kwargs))
+            self._tasks.add(task)
+            try:
+                return await task
+            finally:
+                self._tasks.discard(task)
+
+        return guarded
+
+    def begin_close(self) -> Awaitable:
+        """Seal synchronously, cancel admitted work, and return its completion."""
+        self._closed = True
+        for task in self._tasks:
+            task.cancel()
+        return asyncio.gather(*self._tasks, return_exceptions=True)
 
 
 async def retry_cleanup(action: Callable[[], Awaitable[None]], label: str) -> None:
@@ -46,11 +76,15 @@ def check_available(pool: object, provider_id: str) -> None:
         raise ProviderError("channel provider connection is still closing")
 
 
-def retire(pool: object, provider_id: str, close: Callable[[], Awaitable[None]]) -> asyncio.Task:
+def retire(pool: object, provider_id: str, close: Callable[[], Awaitable[None]], *,
+           callbacks: ListenerCallbacks | None = None) -> asyncio.Task:
     """Called under the pool lock after detaching the last reference. The task owns the handle."""
     key = (pool, provider_id)
+    joined = callbacks.begin_close() if callbacks is not None else None
 
     async def run() -> None:
+        if joined is not None:
+            await joined
         await retry_cleanup(close, f"channel provider {provider_id}")
         del _pending[key]
 

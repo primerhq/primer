@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from primer.channel.retirement import check_available, retire, retire_failed_start
+from primer.channel.retirement import ListenerCallbacks, check_available, retire, retire_failed_start
 from primer.model.channel import ChannelProvider, SlackChannelProviderConfig
 
 
@@ -30,6 +30,12 @@ class _Conn:
     def __init__(self, app: Any, handler: Any) -> None:
         self.app = app
         self.handler = handler
+        self._messages = ListenerCallbacks()
+        if handler is not None:
+            # Socket Mode spawns this coroutine independently for every envelope,
+            # including disconnect/reconnect notifications.
+            client = handler.client
+            client.run_message_listeners = self._messages.guard(client.run_message_listeners)
 
     async def start_async(self) -> None:
         if self.handler is not None:
@@ -37,7 +43,12 @@ class _Conn:
 
     async def close_async(self) -> None:
         if self.handler is not None:
+            await self._messages.begin_close()
             await self.handler.close_async()
+            # The aiohttp Socket Mode client cancels these loops without joining them.
+            client = self.handler.client
+            loops = (client.message_processor, client.current_session_monitor, client.message_receiver)
+            await asyncio.gather(*(task for task in loops if task is not None), return_exceptions=True)
 
 
 def _build_app(cfg: SlackChannelProviderConfig) -> Any:
@@ -72,6 +83,7 @@ class _Entry:
     conn: Any
     refcount: int = 0
     adapters_by_channel_id: dict[str, Any] = field(default_factory=dict)
+    callbacks: ListenerCallbacks | None = None
 
 
 class _SlackConnectionRegistry:
@@ -119,7 +131,7 @@ class _SlackConnectionRegistry:
             if entry.refcount:
                 return
             del self._entries[provider.id]
-            closing = retire(self, provider.id, entry.conn.close_async)
+            closing = retire(self, provider.id, entry.conn.close_async, callbacks=entry.callbacks)
             if self.on_close is not None:
                 self.on_close(provider.id)
         await asyncio.shield(closing)
