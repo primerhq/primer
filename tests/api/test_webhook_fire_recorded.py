@@ -12,6 +12,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from primer.api import _app_lifespan_phases as phases
 from primer.api.routers import webhooks
 from primer.bus.in_memory import InMemoryEventBus
@@ -34,6 +36,24 @@ async def _only_row(sp) -> WebhookDelivery:
     page = await sp.get_storage(WebhookDelivery).find(None, OffsetPage(offset=0, length=10))
     assert len(page.items) == 1
     return page.items[0]
+
+
+async def _await_post_phase(event, post, *, timeout, phase):
+    """Observe a held POST milestone without hiding an earlier request failure."""
+    waiter = asyncio.create_task(event.wait())
+    try:
+        done, _ = await asyncio.wait((waiter, post), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if waiter in done:
+            await waiter
+            return
+        if post in done:
+            response = await post  # preserve an actual request exception
+            raise AssertionError(f'POST ended before {phase}: HTTP {response.status_code}')
+        raise TimeoutError(f'POST did not reach {phase} within {timeout}s')
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
 
 
 # --------------------------------------------------------------------------- characterization
@@ -112,6 +132,7 @@ async def test_W12_a_held_fire_outliving_the_grace_is_not_refired_by_recovery(
     monkeypatch.setattr(app.state, "event_bus", bus)
     fires: list[str] = []
     fired = asyncio.Event()
+    hold_entered = asyncio.Event()
     hold_tasks: list[asyncio.Task] = []
     real_fire_and_hold = webhooks.fire_and_hold
 
@@ -121,6 +142,7 @@ async def test_W12_a_held_fire_outliving_the_grace_is_not_refired_by_recovery(
         task = asyncio.current_task()
         assert task is not None
         hold_tasks.append(task)
+        hold_entered.set()
         return await real_fire_and_hold(**kw)
 
     monkeypatch.setattr(webhooks, "fire_and_hold", _hold)
@@ -134,12 +156,17 @@ async def test_W12_a_held_fire_outliving_the_grace_is_not_refired_by_recovery(
     monkeypatch.setattr(webhooks, "fire_trigger", _fire)
     post = asyncio.create_task(client.post(f"/v1/webhooks/{trigger.config.token}", content=b"{}"))
     try:
-        await asyncio.wait_for(fired.wait(), 5)
+        # Request admission (middleware/token lookup/row creation) is setup,
+        # not recovery behavior. Keep a separate bounded readiness deadline and
+        # retain the five-second fire deadline after reaching the real hold.
+        await _await_post_phase(hold_entered, post, timeout=20, phase='hold entry')
+        await _await_post_phase(fired, post, timeout=5, phase='first fire')
         for _ in range(100):  # the run is held; give the fire's row write its moment
             row = await _only_row(fake_storage_provider)
             if row.fire_id:
                 break
             await asyncio.sleep(0.01)
+        assert row.fire_id == "fire-1", "fire must be durably recorded before recovery"
         # The fake clock: the row is past the grace, as on a replica booting 6 minutes into a 10-minute run.
         monkeypatch.setattr(phases, "_WEBHOOK_DELIVERY_GRACE_SECS", 0.0)
         await phases.recover_webhook_deliveries(fake_storage_provider, None, None, None, None)
@@ -217,3 +244,57 @@ async def test_W12_recovery_skips_a_pending_row_that_carries_a_fire(fake_storage
     assert fires == []
     row = await storage.get("d-fired")
     assert (row.status, row.attempts) == ("pending", 1)
+
+
+@pytest.mark.parametrize('outcome', ['response', 'exception', 'not-ready'])
+async def test_held_post_phase_reports_request_failure_and_drains_waiter(outcome):
+    event = asyncio.Event()
+    release = asyncio.Event()
+
+    async def request():
+        if outcome == 'response':
+            return SimpleNamespace(status_code=403)
+        if outcome == 'exception':
+            raise ValueError('request failed before hold')
+        await release.wait()
+
+    post = asyncio.create_task(request())
+    before = set(asyncio.all_tasks())
+    try:
+        if outcome == 'response':
+            with pytest.raises(AssertionError, match='before hold entry: HTTP 403'):
+                await _await_post_phase(event, post, timeout=1, phase='hold entry')
+        elif outcome == 'exception':
+            with pytest.raises(ValueError, match='request failed before hold'):
+                await _await_post_phase(event, post, timeout=1, phase='hold entry')
+        else:
+            # Neither coroutine can satisfy readiness, regardless of scheduling.
+            with pytest.raises(TimeoutError, match='did not reach hold entry'):
+                await _await_post_phase(event, post, timeout=0, phase='hold entry')
+            assert not post.done()  # outer test retains request-cleanup ownership
+        assert not (set(asyncio.all_tasks()) - before)
+    finally:
+        if not post.done():
+            post.cancel()
+        await asyncio.gather(post, return_exceptions=True)
+
+
+async def test_held_post_phase_readiness_does_not_require_post_completion():
+    entered, fire, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def request():
+        entered.set()
+        await release.wait()
+        fire.set()
+        await asyncio.Event().wait()
+
+    post = asyncio.create_task(request())
+    try:
+        await _await_post_phase(entered, post, timeout=1, phase='hold entry')
+        assert not fire.is_set() and not post.done()
+        release.set()
+        await _await_post_phase(fire, post, timeout=1, phase='first fire')
+        assert not post.done()  # a held response must stay pending during recovery
+    finally:
+        post.cancel()
+        await asyncio.gather(post, return_exceptions=True)
