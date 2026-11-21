@@ -563,7 +563,7 @@ async def test_session_identity_is_captured_before_loading_evidence(sp, llm):
 
 
 @pytest.mark.parametrize("stage", ["summary", "final"])
-@pytest.mark.parametrize("ending", ["failed", "error_event", "missing", "filtered"])
+@pytest.mark.parametrize("ending", ["failed", "error_event", "missing", "filtered", "refused"])
 @pytest.mark.parametrize("parseable", [False, True])
 async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, parseable):
     from types import SimpleNamespace as NS
@@ -575,7 +575,7 @@ async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, pa
     if stage == "summary":
         source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * 140000)])
     answer = {"facts": []} if stage == "summary" else _run([_add_delta()])
-    text = json.dumps(answer) if parseable else '{"partial":'
+    text = json.dumps(answer) if parseable else ("" if ending == "refused" else '{"partial":')
     calls = []
     class Incomplete(FakeLLM):
         async def stream(self, **kwargs):
@@ -588,11 +588,14 @@ async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, pa
                 events.append(NS(type="response.failed"))
             elif ending == "filtered":
                 events.append(NS(type="response.incomplete", response=NS(incomplete_details=NS(reason="content_filter"))))
+            elif ending == "refused":
+                events.extend([NS(type="response.refusal.delta", delta="offline refusal"),
+                               NS(type="response.completed")])
             for raw in events:
                 for event in _translate_event(raw, state):
                     yield event
     deps = _deps(sp, Incomplete(), source)
-    if ending == "filtered":
+    if ending in {"filtered", "refused"}:
         report = await reflect(deps, job, agent, mem)
         assert report.skipped_reason == "compaction_incomplete"
     else:

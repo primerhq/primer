@@ -24,6 +24,42 @@ from typing import Any, TypeVar
 _T = TypeVar("_T")
 
 
+def _protect_sdk_response_close(sdk_stream: Any) -> None:
+    """Own the HTTP response close before the SDK can initiate it itself.
+
+    The locked Anthropic/OpenAI AsyncStream iterators and their explicit close
+    both call response.aclose(). HTTPX marks that response closed *before* its
+    transport close finishes. Install a per-response, single-flight join at
+    that shared entry point; retrying an interrupted HTTPX close is too late.
+    Stream doubles without an HTTP response retain explicit disposal only.
+    """
+    response = getattr(sdk_stream, "response", None)
+    close = getattr(response, "aclose", None)
+    if close is None:
+        return
+    task = None
+
+    async def joined_close():
+        nonlocal task
+        if task is None:
+            task = asyncio.create_task(close())
+        cancelled = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception:
+                break
+        if cancelled is not None:
+            if not task.cancelled():
+                task.exception()
+            raise cancelled
+        task.result()
+
+    response.aclose = joined_close
+
+
 async def _close_streams(*streams: Any) -> None:
     """Join disposal of owned iterator/SDK responses on every adapter exit.
 

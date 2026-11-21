@@ -25,7 +25,10 @@ from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
 from primer.llm._reasoning import anthropic_extended, claude_traits, debug_once
-from primer.llm._timeout import GenerationBudgetExceeded, _close_streams, _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import (
+    GenerationBudgetExceeded, _close_streams, _iter_with_timeout,
+    _open_with_connect_timeout, _protect_sdk_response_close,
+)
 from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
 from primer.model.chat import (
     AudioPart,
@@ -925,6 +928,7 @@ class AnthropicLLM(LLM):
                         sdk_stream, self._request_timeout_seconds, self._total_timeout_seconds,
                     )
                     try:
+                        _protect_sdk_response_close(sdk_stream)
                         async for raw in timed_stream:
                             for event in _translate_event(raw, state, model_name=model):
                                 if isinstance(event, Usage):
