@@ -178,6 +178,18 @@ lease; ended, paused, re-parked and already-leased rows are not touched.
 
 ## 8. Public surfaces
 
+`webhooks__receive_webhook` exposes `token`, optional base64 `body`, optional
+`signature` (the `X-Primer-Signature: sha256=<hex>` header), and optional `query`
+(a dictionary of string values). Compute the HMAC over the original bytes before
+base64 encoding. The tool decodes those bytes without JSON parsing or rewriting;
+omitting `body` sends an empty body, as REST permits. Query properties become
+independent URL query parameters and are delivered as `webhook_query`. The tool
+uses `application/octet-stream`; arbitrary custom headers are not exposed.
+Token lookup, enablement, HMAC verification, the 1 MiB decoded-body limit, rate
+limiting and durable dispatch all run in the existing REST handler. MCP exposure,
+caller-role and approval checks still apply before dispatch; knowing a webhook
+token does not bypass the tool policy.
+
 REST router `primer/api/routers/triggers.py` under prefix `/v1/triggers`:
 
 - `POST /`, `GET /` (`?kind`, `?enabled`), `GET /{id}`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/fire_now`, `POST /{id}/rotate_token` (webhook only). `POST /` accepts `config.kind="channel"` (`ChannelTriggerConfig`).

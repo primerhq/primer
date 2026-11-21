@@ -1828,3 +1828,28 @@ def test_a_generated_route_with_a_bad_preview_lead_path_fails_the_build() -> Non
 
     with pytest.raises(ConfigError, match="preview lead paths"):
         build_generated_route_toolsets(app)
+
+
+@pytest.mark.parametrize("explicit_style", [False, True])
+def test_form_exploded_query_object_preserves_keys_and_other_parameters(explicit_style):
+    parameter = {"in": "query", "name": "query", "schema": {"$ref": "#/components/schemas/Query"}}
+    if explicit_style:
+        parameter.update(style="form", explode=True)
+    _, bindings = derive_argument_schema(
+        {"parameters": [parameter,
+                        {"in": "query", "name": "tag", "schema": {"type": "array", "items": {"type": "string"}}},
+                        {"in": "header", "name": "X-Primer-Signature", "schema": {"type": "string"}}]},
+        {"schemas": {"Query": {"type": "object", "additionalProperties": True}}},
+        RouteToolMetadata(),
+    )
+    query, headers, body = route_tools_module._request_parts(bindings, {
+        "query": {"name": "a&b=c", "enabled": True, "count": 2}, "tag": ["one", "two"],
+        "X-Primer-Signature": "sha256=signed",
+    })
+    assert query == [("name", "a&b=c"), ("enabled", "true"), ("count", "2"), ("tag", "one"), ("tag", "two")]
+    assert headers == {"X-Primer-Signature": "sha256=signed"}
+    assert body == {}
+    assert route_tools_module._request_parts(bindings, {"query": {}})[0] == []
+    for invalid in ([], "name=value", {"nested": {"x": 1}}, {"list": [1, 2]}):
+        with pytest.raises(ConfigError, match="object of scalar"):
+            route_tools_module._request_parts(bindings, {"query": invalid})

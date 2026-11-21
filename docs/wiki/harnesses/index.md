@@ -20,5 +20,5 @@ The following operations belong to this feature family. The role shown is the mi
 | [`harnesses__get_harness`](reference/tools/harnesses/get_harness) | Get a harness by id. | user |
 | [`harnesses__push_harness`](reference/tools/harnesses/push_harness) | Enqueue PUSH for an outbound harness (202). | user |
 | [`harnesses__put_access`](reference/tools/harnesses/put_access) | Change who Harness is shared with (owners only). | user |
-| [`harnesses__put_harness_overrides`](reference/tools/harnesses/put_harness_overrides) | Set harness overrides (validates against cached schema). | user |
+| [`harnesses__put_harness_overrides`](reference/tools/harnesses/put_harness_overrides) | Set harness overrides (validates against cached schema). | admin |
 | [`harnesses__put_tracked_entities`](reference/tools/harnesses/put_tracked_entities) | Replace tracked_entities on an outbound harness. | user |

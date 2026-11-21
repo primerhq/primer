@@ -26,6 +26,12 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 
 ## Tool calls
 
+`svc__svc_gateway_function` calls a published bundle function with
+`{"name": "my-app", "fn": "double", "body": {"n": 21}}`. The `body` object is
+the function's keyword arguments, checked against its published schema. The
+service's viewer authentication and the tool's effective approval policy apply.
+
+
 The operation table below distinguishes service management from native asset and function routes. Inspect `system__describe_tool` for the arguments and effective gate before a write. An external MCP call cannot park for a required approval.
 
 ## Gotchas

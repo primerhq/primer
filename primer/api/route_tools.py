@@ -354,6 +354,7 @@ class _ArgumentBinding:
     location: Literal["path", "query", "header", "body"]
     media_type: str | None = None
     binary_fields: tuple[str, ...] = ()
+    explode_query_object: bool = False
 
 
 def _resolve_local_component_schema(
@@ -411,6 +412,7 @@ def derive_argument_schema(
     properties: dict[str, Any] = {}
     required: list[str] = []
     bindings: list[_ArgumentBinding] = []
+    definitions = components.get("schemas") or {}
     for parameter in operation.get("parameters") or ():
         location = parameter.get("in")
         if location not in {"path", "query", "header"}:
@@ -424,11 +426,17 @@ def derive_argument_schema(
             properties[argument] = {**properties[argument], "description": parameter["description"]}
         if parameter.get("required"):
             required.append(argument)
-        bindings.append(_ArgumentBinding(argument, wire_name, location))
+        parameter_schema = _resolve_local_component_schema(parameter.get("schema") or {}, definitions)
+        explode_query_object = (
+            location == "query" and parameter_schema.get("type") == "object"
+            and parameter.get("style", "form") == "form" and parameter.get("explode", True)
+        )
+        bindings.append(_ArgumentBinding(
+            argument, wire_name, location, explode_query_object=explode_query_object,
+        ))
 
     request_body = operation.get("requestBody") or {}
     content = request_body.get("content") or {}
-    definitions = components.get("schemas") or {}
     if content:
         preferred = next(
             (kind for kind in ("application/json", "multipart/form-data", "application/x-www-form-urlencoded", "application/octet-stream") if kind in content),
@@ -546,7 +554,16 @@ def _request_parts(
         if binding.argument not in arguments:
             continue
         value = arguments[binding.argument]
-        if binding.location == "query":
+        if binding.location == "query" and binding.explode_query_object:
+            # OpenAPI form+explode objects serialize properties as independent
+            # query keys, not a Python dict repr under the parameter's name.
+            if not isinstance(value, Mapping) or any(
+                not isinstance(key, str) or not isinstance(item, (str, int, float, bool))
+                for key, item in value.items()
+            ):
+                raise ConfigError("exploded query parameter must be an object of scalar values")
+            query.extend((key, str(item).lower() if isinstance(item, bool) else str(item)) for key, item in value.items())
+        elif binding.location == "query":
             values = value if isinstance(value, list) else [value]
             query.extend((binding.wire_name, str(item).lower() if isinstance(item, bool) else str(item)) for item in values)
         elif binding.location == "header":
