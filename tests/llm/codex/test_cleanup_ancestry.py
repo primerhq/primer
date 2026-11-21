@@ -1,8 +1,11 @@
 """Hard-process-bound coverage: a cancellation-resistant cycle must not hang CI."""
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
+import tempfile
+import time
 
 import pytest
 
@@ -70,23 +73,95 @@ async def main():
     assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
     print("CLOSED_NO_PENDING_TASKS", flush=True)
 
+_phase(b"R")  # cold imports and definitions complete; operations start now
 asyncio.run(main())
+_phase(b"C")  # includes asyncio runner shutdown, not merely the last assertion
 '''
+
+
+def _run_cleanup_child(script, *, startup_seconds=20, operation_seconds=4, exit_seconds=4):
+    """Hard deadlines per phase, including normal exit; never rely on cancellation.
+
+    A private pipe carries markers independently of diagnostics. Temporary files
+    prevent stdout/stderr backpressure. Every failure kills and reaps the owned
+    child; these scripts create no descendants. No os._exit bypass of shutdown.
+    """
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        read_fd, write_fd = os.pipe()
+        process = None
+        phase = "startup/import readiness"
+        started = time.monotonic()
+        timings = []
+        failure = None
+        prefix = (
+            'import os as _phase_os\n'
+            'def _phase(marker):\n'
+            f'    _phase_os.write({write_fd}, marker)\n'
+        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-B", "-c", prefix + script],
+                cwd=Path(__file__).resolve().parents[3], env=env,
+                pass_fds=(write_fd,), stdout=stdout, stderr=stderr,
+            )
+            os.close(write_fd)
+            write_fd = None
+            for phase, marker, seconds in (
+                ("startup/import readiness", b"R", startup_seconds),
+                ("cleanup operation and asyncio shutdown", b"C", operation_seconds),
+            ):
+                assert select.select([read_fd], [], [], seconds)[0], f"deadline {seconds}s exceeded"
+                assert os.read(read_fd, 1) == marker, "child exited or sent an unexpected phase marker"
+                timings.append((phase, time.monotonic() - started))
+            phase = "normal interpreter exit"
+            process.wait(timeout=exit_seconds)
+            assert process.returncode == 0, f"child exit code {process.returncode}"
+            timings.append((phase, time.monotonic() - started))
+        except BaseException as exc:
+            failure = exc
+        finally:
+            try:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+            finally:
+                os.close(read_fd)
+                if write_fd is not None:
+                    os.close(write_fd)
+        stdout.seek(0)
+        stderr.seek(0)
+        output = stdout.read(16384).decode(errors="replace")
+        errors = stderr.read(16384).decode(errors="replace")
+        if failure is not None:
+            raise AssertionError(
+                f"{phase}: {failure}; completed phases (elapsed seconds): {timings}; "
+                f"child reaped={process is not None and process.returncode is not None}\n"
+                f"stdout: {output}\nstderr: {errors}"
+            ) from failure
+        return output
 
 
 @pytest.mark.parametrize("mode", ["bridge", "adapter", "source-self"])
 def test_cleanup_callback_cannot_join_its_own_ancestor(mode):
-    env = os.environ.copy()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    # TimeoutExpired uses subprocess.run's hard kill + wait, not cooperative
-    # asyncio cancellation. This also bounds regression execution on old code.
-    completed = subprocess.run(
-        [sys.executable, "-B", "-c", "MODE = " + repr(mode) + "\n" + PROBE],
-        cwd=Path(__file__).resolve().parents[3], env=env,
-        capture_output=True, text=True, timeout=4,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "CLOSED_NO_PENDING_TASKS"
+    output = _run_cleanup_child("MODE = " + repr(mode) + "\n" + PROBE)
+    assert output.strip() == "CLOSED_NO_PENDING_TASKS"
+
+
+@pytest.mark.parametrize("phase", ["startup", "operation", "exit"])
+def test_cleanup_child_phase_deadline_kills_and_reaps(phase):
+    # A successful assertion marker must not turn a later shutdown hang green.
+    markers = {"startup": "", "operation": '_phase(b"R")\n',
+               "exit": '_phase(b"R")\n_phase(b"C")\n'}[phase]
+    script = 'import signal\n' + markers + 'print("CLOSED_NO_PENDING_TASKS", flush=True)\nsignal.pause()\n'
+    expected = {"startup": "startup/import readiness", "operation": "cleanup operation and asyncio shutdown",
+                "exit": "normal interpreter exit"}[phase]
+    with pytest.raises(AssertionError, match=expected) as caught:
+        _run_cleanup_child(script, startup_seconds=.2 if phase == "startup" else 20,
+                           operation_seconds=.2 if phase == "operation" else 4, exit_seconds=.2)
+    assert "child reaped=True" in str(caught.value)
 
 
 @pytest.mark.asyncio
