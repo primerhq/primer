@@ -16,13 +16,13 @@ from pydantic import SecretStr
 
 from primer.channel.adapter import PromptEnvelope
 from primer.channel.dispatcher import ChannelDispatcher
-from primer.channel.null_adapter import NullChannelAdapter
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.model.workspace import (
     Workspace,
     WorkspaceChannelLink,
     WorkspaceRuntimeMeta,
 )
+from tests._support.channel_offline import OfflineChannelRegistry
 
 
 class _FakeSession:
@@ -71,38 +71,6 @@ def _make_workspace(channel_id: str | None = None) -> Workspace:
     )
 
 
-class _Registry:
-    """Stub registry whose ``get_adapter`` returns a per-id NullChannelAdapter.
-
-    ``for_session`` borrows the real ``ChannelRegistry`` implementation so the
-    test exercises the shipped code against an in-memory storage provider.
-    """
-
-    def __init__(self, storage_provider) -> None:
-        self._storage_provider = storage_provider
-        self.adapters: dict[str, NullChannelAdapter] = {}
-        self.requested: list[str] = []
-
-    async def get_adapter(self, channel_id: str) -> NullChannelAdapter:
-        self.requested.append(channel_id)
-        adapter = self.adapters.get(channel_id)
-        if adapter is None:
-            adapter = NullChannelAdapter()
-            await adapter.initialize()
-            self.adapters[channel_id] = adapter
-        return adapter
-
-    async def route_for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.route_for_session(self, session)
-
-    async def for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.for_session(self, session)
-
-
 def _env() -> PromptEnvelope:
     return PromptEnvelope(
         kind="ask_user",
@@ -120,7 +88,7 @@ def _env() -> PromptEnvelope:
 async def test_for_session_prefers_session_scoped_binding():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace(channel_id="ch-ws"))
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     session = _FakeSession(
         workspace_id="ws-1",
         metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-sess"}},
@@ -135,7 +103,7 @@ async def test_for_session_prefers_session_scoped_binding():
 async def test_for_session_falls_back_to_workspace_then_none():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace(channel_id="ch-ws"))
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     session = _FakeSession(workspace_id="ws-1", metadata={})
 
     adapters = await reg.for_session(session)
@@ -144,7 +112,7 @@ async def test_for_session_falls_back_to_workspace_then_none():
 
     # Clear the workspace binding -> nothing to resolve.
     sp.get_storage(Workspace).put(_make_workspace(channel_id=None))
-    reg2 = _Registry(sp)
+    reg2 = OfflineChannelRegistry(sp)
     adapters = await reg2.for_session(session)
     assert adapters == []
     assert reg2.requested == []
@@ -154,7 +122,7 @@ async def test_for_session_falls_back_to_workspace_then_none():
 async def test_dispatch_prompt_with_session_uses_for_session():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace(channel_id="ch-ws"))
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     session = _FakeSession(
         workspace_id="ws-1",
         metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-sess"}},

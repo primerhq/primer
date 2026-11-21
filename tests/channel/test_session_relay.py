@@ -24,7 +24,6 @@ import pytest
 from pydantic import SecretStr
 
 from primer.channel.dispatcher import ChannelDispatcher
-from primer.channel.null_adapter import NullChannelAdapter
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.channel.session_relay import post_session_final_result
 from primer.model.workspace import (
@@ -32,6 +31,7 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
     WorkspaceRuntimeMeta,
 )
+from tests._support.channel_offline import OfflineChannelRegistry
 
 
 class _FakeSession:
@@ -81,39 +81,11 @@ def _make_workspace(channel_id: str | None = None) -> Workspace:
     )
 
 
-class _Registry:
-    """Stub registry borrowing the real ``for_session`` resolution path."""
-
-    def __init__(self, storage_provider) -> None:
-        self._storage_provider = storage_provider
-        self.adapters: dict[str, NullChannelAdapter] = {}
-        self.requested: list[str] = []
-
-    async def get_adapter(self, channel_id: str) -> NullChannelAdapter:
-        self.requested.append(channel_id)
-        adapter = self.adapters.get(channel_id)
-        if adapter is None:
-            adapter = NullChannelAdapter()
-            await adapter.initialize()
-            self.adapters[channel_id] = adapter
-        return adapter
-
-    async def route_for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.route_for_session(self, session)
-
-    async def for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.for_session(self, session)
-
-
 @pytest.mark.asyncio
 async def test_final_result_posts_to_binding():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace())
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     d = ChannelDispatcher(registry=reg)
     session = _FakeSession(
         workspace_id="ws-relay",
@@ -139,7 +111,7 @@ async def test_empty_final_result_is_silent():
     """An empty derived text opens no thread: no adapter is even requested."""
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace())
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     d = ChannelDispatcher(registry=reg)
     session = _FakeSession(
         workspace_id="ws-relay",
@@ -162,7 +134,7 @@ async def test_empty_final_result_is_silent():
 async def test_quiet_binding_suppresses_final():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace())
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     d = ChannelDispatcher(registry=reg)
     session = _FakeSession(
         workspace_id="ws-relay",
@@ -187,7 +159,7 @@ async def test_quiet_binding_suppresses_final():
 async def test_no_binding_is_silent():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace(channel_id=None))
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     d = ChannelDispatcher(registry=reg)
     session = _FakeSession(workspace_id="ws-relay", metadata={})
 

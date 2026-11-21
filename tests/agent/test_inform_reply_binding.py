@@ -10,13 +10,13 @@ from pydantic import SecretStr
 
 from primer.agent.inform import SessionInformSink
 from primer.channel.dispatcher import ChannelDispatcher
-from primer.channel.null_adapter import NullChannelAdapter
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.model.workspace import (
     Workspace,
     WorkspaceChannelLink,
     WorkspaceRuntimeMeta,
 )
+from tests._support.channel_offline import OfflineChannelRegistry
 
 
 class _FakeSession:
@@ -49,40 +49,6 @@ class _SP:
         return self._stores.setdefault(cls, _Storage())
 
 
-class _Registry:
-    def __init__(self, storage_provider) -> None:
-        self._storage_provider = storage_provider
-        self.adapters: dict[str, NullChannelAdapter] = {}
-
-    async def get_adapter(self, channel_id: str) -> NullChannelAdapter:
-        adapter = self.adapters.get(channel_id)
-        if adapter is None:
-            adapter = NullChannelAdapter()
-            await adapter.initialize()
-            self.adapters[channel_id] = adapter
-        return adapter
-
-    async def route_for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.route_for_session(self, session)
-
-    async def for_session(self, session):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.for_session(self, session)
-
-    async def route_for_workspace(self, workspace_id):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.route_for_workspace(self, workspace_id)
-
-    async def for_workspace(self, workspace_id):
-        from primer.api.registries.channel_registry import ChannelRegistry
-
-        return await ChannelRegistry.for_workspace(self, workspace_id)
-
-
 def _make_workspace(channel_id: str | None = None) -> Workspace:
     return Workspace(
         id="ws-1",
@@ -105,7 +71,7 @@ async def test_inform_routes_to_session_binding():
     # Workspace-standing binding points elsewhere; the session-scoped binding
     # must win, proving the sink threads the session through the dispatcher.
     sp.get_storage(Workspace).put(_make_workspace(channel_id="ch-ws"))
-    reg = _Registry(sp)
+    reg = OfflineChannelRegistry(sp)
     dispatcher = ChannelDispatcher(registry=reg)
 
     session = _FakeSession(
