@@ -51,6 +51,7 @@ from primer.session.default_binding import resolve_initial_binding
 from primer.model.problem_details import record_without_traceback
 from primer.session.usage_cache import UsageCache, fold_usage
 from primer.workspace.segments import SegmentGap, SegmentInfo, SessionLog, ordered, segment_name, session_log_for
+from primer.model.work_priority import SessionPriorityRequest
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -77,7 +78,7 @@ nested_session_router = APIRouter(tags=["workspace-sessions"])
 top_session_router = APIRouter(tags=["sessions"])
 
 
-class SessionCreateBody(BaseModel):
+class SessionCreateBody(SessionPriorityRequest):
     """Body of ``POST /v1/workspaces/{workspace_id}/sessions``.
 
     Mirrors spec §11.4: a discriminated-union ``binding`` selecting the
@@ -157,7 +158,7 @@ class SessionCreateBody(BaseModel):
     response_model=WorkspaceSession,
     status_code=201,
     summary="Create a new session attached to an agent or graph",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500, 503),
 )
 @route_tool(mapping_state="curated", curated_tool_ids=("workspaces__create_workspace_session",))
 async def create_session(
@@ -220,6 +221,7 @@ async def create_session(
         workspace_person=person_from_request(request),
         calling_session_id=calling_session_id(request),
         calling_turn_no=calling_turn_no(request),
+        priority=body.requested_priority,
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=body.initial_instructions,

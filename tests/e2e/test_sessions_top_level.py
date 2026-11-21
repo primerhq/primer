@@ -131,6 +131,14 @@ async def test_t0042_top_level_get_session_works_without_workspace_context(
                     assert ws.status_code == 201, ws.text
                     workspace_id = ws.json()["id"]
 
+                    refused = await client.post(
+                        f"/v1/workspaces/{workspace_id}/sessions",
+                        json={**_session_body(agent_id=agent_id), "priority": 1},
+                    )
+                    assert refused.status_code == 503, refused.text
+                    assert refused.json()["type"] == "/errors/service-unavailable"
+                    assert "scheduling cutover" in refused.json()["detail"]
+
                     sess = await client.post(
                         f"/v1/workspaces/{workspace_id}/sessions",
                         json=_session_body(agent_id=agent_id),
@@ -147,6 +155,7 @@ async def test_t0042_top_level_get_session_works_without_workspace_context(
                     assert top_body["id"] == session_id
                     assert top_body["workspace_id"] == workspace_id
                     for row in (session_row, top_body):
+                        assert row["priority"] == 0
                         assert row["status"] == "created" and row["turn_status"] == "idle"
                         assert row["started_at"] is None
                     # Binding identity is preserved

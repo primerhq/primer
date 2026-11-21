@@ -34,6 +34,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field, PositiveInt, field_validator
 
 from primer.model.access import Owned
+from primer.model.work_priority import WorkPriority
 from primer.model.common import Describeable
 
 
@@ -95,6 +96,10 @@ class Agent(Owned, Describeable):
     """
 
     _id_prefix: ClassVar[str] = "agent"
+
+    default_priority: WorkPriority = Field(
+        default=0, description="Priority for a new session from a noninteractive trigger fire.",
+    )
 
     model: AgentModel = Field(
         ...,

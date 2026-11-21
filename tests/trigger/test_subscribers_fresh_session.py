@@ -9,6 +9,7 @@ import pytest
 
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
+    TriggerKind,
     AgentFreshSubConfig,
     GraphFreshSubConfig,
     Subscription,
@@ -19,7 +20,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.trigger.subscribers import DispatchDeps
+from primer.trigger.subscribers import DispatchDeps, TriggerFireMetadata
 from primer.trigger.subscribers.agent_fresh_session import (
     AgentFreshSessionDispatcher,
 )
@@ -71,6 +72,7 @@ async def test_agent_fresh_creates_session(
 ):
     """Happy path — fresh session, agent binding, payload as initial instructions."""
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -142,6 +144,7 @@ async def test_agent_fresh_skips_when_subscription_busy(
     await sessions.create(existing)
 
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -181,6 +184,7 @@ async def test_agent_fresh_queue_creates_even_when_busy(
     await sessions.create(existing)
 
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -209,6 +213,7 @@ async def test_graph_fresh_parses_payload_as_json(
 ):
     """Happy path — payload parses as JSON, lands in metadata.graph_input."""
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -248,6 +253,7 @@ async def test_graph_fresh_invalid_json_payload(
 ):
     """Non-JSON payload → structured ``graph_input_invalid`` error, no session."""
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -273,6 +279,7 @@ async def test_graph_fresh_rejects_non_object_payload(
 ):
     """A JSON scalar/array doesn't qualify as graph_input either."""
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -409,6 +416,7 @@ async def test_graph_fresh_fires_past_a_stuck_never_started_session(
         _seed_session("se-stuck", seeded_workspace.id, "ag-x")
     )
     deps = DispatchDeps(
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
         storage_provider=fake_storage_provider,
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
@@ -423,3 +431,30 @@ async def test_graph_fresh_fires_past_a_stuck_never_started_session(
     )
     assert res.ok and not res.skipped, res.error_message
     assert res.artefact_id is not None
+
+
+@pytest.mark.parametrize("kind", ["agent", "graph"])
+@pytest.mark.parametrize("fire", [None, TriggerFireMetadata("other-trigger", TriggerKind.CHANNEL, True)])
+async def test_fresh_creation_requires_matching_internal_classification(
+    fake_storage_provider, fake_claim_engine, fake_scheduler, fake_workspace_registry,
+    seeded_workspace, seeded_agent, seeded_graph, kind, fire,
+):
+    from primer.model.session_creation import SessionCreationIntent
+
+    deps = DispatchDeps(fake_storage_provider, fake_claim_engine, fake_scheduler, fake_workspace_registry,
+                        fire_metadata=fire)
+    if kind == "agent":
+        sub = _agent_sub(seeded_workspace.id, seeded_agent.id)
+        dispatcher = AgentFreshSessionDispatcher()
+    else:
+        sub = _graph_sub(seeded_workspace.id, seeded_graph.id)
+        dispatcher = GraphFreshSessionDispatcher()
+    result = await dispatcher.dispatch(
+        sub, rendered_payload="{}", fire_id="fire", deps=deps,
+        fire_context={"trigger_id": sub.trigger_id, "interactive": True, "priority": 0},
+    )
+    assert not result.ok and result.error_code == "dispatch_failed"
+    assert "matching trigger fire metadata" in result.error_message
+    assert not fake_storage_provider.get_storage(SessionCreationIntent)._data
+    assert not fake_storage_provider.get_storage(WorkspaceSession)._data
+    assert not fake_workspace_registry.workspaces

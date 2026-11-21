@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from primer.model.except_ import ConfigError
 from primer.model.storage import CursorPage, Op
 from primer.model.trigger import Subscription, TriggerKind
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
@@ -58,8 +59,8 @@ class SubscriptionDispatchResult(BaseModel):
 class TriggerFireMetadata:
     """Internal classification captured from the trigger row for one fire.
 
-    Separate from template/event payloads, with no authorization or scheduling
-    authority. It describes the snapshot at fire entry, not later row edits.
+    Classifies fresh-session creation using the snapshot at fire entry. It
+    grants no access and is independent of later edits and event payloads.
     """
 
     trigger_id: str
@@ -104,6 +105,11 @@ class DispatchDeps:
     # fire_trigger supplies an isolated bundle per subscriber. Direct/legacy
     # dispatcher callers have no trusted classification, rather than False.
     fire_metadata: TriggerFireMetadata | None = None
+
+    def require_fire_metadata(self, trigger_id: str) -> TriggerFireMetadata:
+        if self.fire_metadata is None or self.fire_metadata.trigger_id != trigger_id:
+            raise ConfigError("fresh-session dispatch requires matching trigger fire metadata")
+        return self.fire_metadata
 
 
 class Dispatcher(Protocol):

@@ -271,7 +271,8 @@ The claim engines have an internal `work_priority_enabled=False` constructor
 capability. The production factory leaves it off; there is no config, REST,
 MCP or UI switch. Existing deployments continue ordering internal scores as
 before. The additive session and memory-job `priority` fields default to zero
-and do not yet implement public session priority controls or reserved capacity.
+on older rows. Session creation selects priority from its trusted source and refuses
+new nonzero starts before coordinated cutover. See [workspace-backed creation](../subsystems/sessions.md#workspace-backed-creation).
 
 With the internal capability enabled, adapters derive a strict integer
 `work_priority` snapshot when a lease is armed. Sessions and memory jobs use

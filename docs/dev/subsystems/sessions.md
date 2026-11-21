@@ -799,7 +799,7 @@ The wake of a click is a routed wake (a receipt, and an `extra_payload` that hol
 The REST create, workspace create-session tool and fresh-session trigger subscribers use
 `start_workspace_session`. Before touching the slot, the factory reserves its child ID with a
 `SessionCreationIntent` keyed by that ID and a fresh occurrence. The receipt contains the target
-workspace ID, time and decision. Instructions, runtime credentials and caller data stay out of it.
+workspace ID, selected priority, time and decision. Instructions, runtime credentials and caller data stay out of it.
 Allocation and the initial transcript flush happen outside the database transaction.
 
 Publication uses the provider's `locking_transaction`. In table/key order it validates the binding
@@ -809,6 +809,22 @@ keys are acquired in ID order. Changes to the observed binding, workspace identi
 refuse publication. A user create rechecks full target access for its authenticated person.
 `parent_session_id` is lineage. A tool context identifies a caller and, when supplied, its turn number.
 A trigger retains its existing subscription identity and access checks.
+
+Session create accepts an optional strict JSON integer `priority` from 0 through 1,000,000.
+A direct start defaults to 0 regardless of the binding's automation default. A start from a
+turn inherits the trusted calling session's priority when omitted. An explicit smaller number
+would raise urgency and returns 403. An explicit null, boolean, floating-point number or string returns 422.
+Publication checks the observed caller priority along with its turn generation under the row lock.
+Fresh-session subscribers use the immutable trigger fire classification and the locked binding
+as described in [triggers](triggers.md).
+
+Production refuses any newly selected nonzero value before writing a receipt or allocating a
+slot (REST 503, create-session tool `unavailable`). A process-local claim engine flag cannot
+establish deployment-wide support.
+Tests can inject that capability into the factory. Existing rows missing the priority fields
+decode as zero. Recovery preserves the committed child and its priority. An abandoned preparation
+cannot recreate a child from its receipt. Enabling nonzero starts requires a coordinated migration
+and cutover of all creators and workers.
 
 An auto-starting child first appears as `running/claimable` with the initial transcript cursor,
 responder ledger and start time. A deferred child first appears as `created/idle`. A scheduler pulse

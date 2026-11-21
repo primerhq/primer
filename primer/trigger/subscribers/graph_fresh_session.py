@@ -138,6 +138,7 @@ class GraphFreshSessionDispatcher:
                 initiated_by=await principal_for_fire(
                     sub, deps.storage_provider,
                 ),
+                fire_metadata=deps.require_fire_metadata(sub.trigger_id),
                 deps=factory_deps,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter

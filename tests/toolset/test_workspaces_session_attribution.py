@@ -302,3 +302,47 @@ async def test_previous_turn_cannot_start_a_child(session_toolset, sp, seeded):
     child = await store.get(json.loads(result.output)["id"])
     assert child.id < caller.id and child.parent_session_id == "unrelated-lineage"
     assert child.status == SessionStatus.CREATED and child.turn_status == "idle"
+
+
+async def test_tool_priority_uses_the_active_caller_and_enforces_its_floor(session_toolset, sp, seeded, monkeypatch):
+    from functools import partial
+
+    from primer.model.session_creation import SessionCreationIntent
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+    from primer.workspace import session_factory
+
+    rows = sp.get_storage(WorkspaceSession)
+    caller = await rows.create(WorkspaceSession(
+        id="caller", workspace_id=seeded, status=SessionStatus.RUNNING, created_at=datetime.now(UTC),
+        binding=AgentSessionBinding(agent_id="code-reviewer"), turn_no=2, priority=14,
+    ))
+    ctx = ToolContext(
+        tool_call_id="call", session_id=caller.id, workspace_id=seeded, turn_no=2,
+        initiated_by=PrincipalRef(type="user", id="u-1", user_id="u-1", role="user", source="local", display="u1"),
+    )
+    args = {"workspace_id": seeded, "binding": {"kind": "agent", "agent_id": "code-reviewer"},
+            "parent_session_id": "unrelated-lineage", "metadata": {"priority": 0}, "auto_start": False}
+
+    async def create(fields, *, context=ctx):
+        return await session_toolset.call(tool_name="create_workspace_session", arguments={**args, **fields}, ctx=context)
+
+    for fields in ({}, {"priority": 14}):
+        refused = await create(fields)
+        assert refused.is_error and json.loads(refused.output)["type"] == "unavailable"
+        assert "scheduling cutover" in refused.output
+    escalation = await create({"priority": 0})
+    assert escalation.is_error and json.loads(escalation.output)["type"] == "forbidden"
+    invalid = await create({"priority": True})
+    assert invalid.is_error and json.loads(invalid.output)["type"] == "validation-error"
+    assert not sp.get_storage(SessionCreationIntent)._data
+
+    monkeypatch.setattr(session_factory, "SessionFactoryDeps",
+                        partial(session_factory.SessionFactoryDeps, nonzero_priority_available=True))
+    for fields, context, expected in [({}, ctx, 14), ({"priority": 14}, ctx, 14), ({"priority": 17}, ctx, 17),
+                                      ({"priority": 9}, None, 9), ({}, None, 0)]:
+        result = await create(fields, context=context)
+        assert not result.is_error, result.output
+        child = await rows.get(json.loads(result.output)["id"])
+        assert child.priority == expected and child.parent_session_id == "unrelated-lineage"
+    refused = await create({"priority": 13})
+    assert refused.is_error and json.loads(refused.output)["type"] == "forbidden"

@@ -226,13 +226,13 @@ existing final bookkeeping write after subscribers run.
 
 This internal metadata is separate from the mutable template/event `fire_context`
 and its `extra_context` overlay. Payload fields cannot set or override it. Direct
-dispatcher callers that do not go through `fire_trigger` keep the default
-`fire_metadata=None`, meaning unknown, not non-interactive. Existing dispatch
-signatures, persisted rows and payloads are unchanged, so older processes require
-no migration. This is a foundation for future priority sources only: no current
-consumer changes session priority, queue order, webhook holding, channel replies,
-authorization or scheduling based on it. It is not a durable receipt or an
-authorization token, and does not make a partial fire exactly-once.
+dispatcher callers with no matching snapshot receive a configuration error when a fresh-session
+subscriber attempts creation. A scheduled, delayed or noninteractive webhook/channel fire uses
+the bound agent or graph's `default_priority` (zero on older definitions). An interactive webhook
+or channel fire selects zero. Fresh creation checks the selected value before allocation and
+rejects nonzero starts until coordinated scheduling support is available. A binding edit during
+allocation invalidates the attempt. Fire classification grants no authorization, and delivery
+keeps its existing at-least-once semantics.
 
 `deliver_steer` (`primer/session/steer_delivery.py`) is the ONE steer-delivery path. A trigger's `session_append` subscription and a channel thread reply both mean "put this text on that session", so both go through it and the S1 routing rule (a steer that lands while a turn is open becomes a `PendingSessionMessage`, never a second `USER_INPUT`) is applied in exactly one place. It reports `woken`, `queued`, `skipped_busy` or `missing`. A message the pause hold of `wake_session` queues reports `queued`. A peer message (`message_session`) passes a `PeerAttribution`, which reaches the USER_INPUT record or the queued row and survives the realize. `missing` covers both "no such row" and "row exists but cannot take a message", so a thread whose session was deleted falls through to a fresh one instead of raising. A message from another session (`message_session`, `peer` given) can also get `queue_full`: the target's queue already holds 50 waiting messages and a peer message never takes a person's place in it (nothing is stored). It gets `missing` for a session an operator cancelled (an operator's Cancel sticks).
 

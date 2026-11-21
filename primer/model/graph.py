@@ -27,6 +27,7 @@ from pydantic import (
 
 from primer.common.log import redact_credentials
 from primer.model.access import Owned
+from primer.model.work_priority import WorkPriority
 from primer.model.chat import Message
 from primer.model.common import Describeable, Identifiable
 from primer.model.principal import PrincipalRef
@@ -803,6 +804,10 @@ class Graph(Owned, Describeable):
     """
 
     _id_prefix: ClassVar[str] = "graph"
+
+    default_priority: WorkPriority = Field(
+        default=0, description="Priority for a new session from a noninteractive trigger fire.",
+    )
 
     nodes: list[GraphNode] = Field(
         default_factory=list,

@@ -15,6 +15,7 @@ import pytest
 
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
+    TriggerKind,
     AgentFreshSubConfig,
     ScheduledTriggerConfig,
     Subscription,
@@ -24,7 +25,7 @@ from primer.model.workspace_session import WorkspaceSession
 import primer.trigger.dispatch as dispatch_module
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.fire_id import make_fire_id
-from primer.trigger.subscribers import DispatchDeps, SubscriptionDispatchResult
+from primer.trigger.subscribers import DispatchDeps, SubscriptionDispatchResult, TriggerFireMetadata
 
 
 
@@ -144,6 +145,7 @@ async def test_skip_parallelism_serialized_busy_check(
         claim_engine=fake_claim_engine,
         scheduler=fake_scheduler,
         workspace_registry=fake_workspace_registry,
+        fire_metadata=TriggerFireMetadata("tr-1", TriggerKind.SCHEDULED, False),
     )
     dispatcher = AgentFreshSessionDispatcher()
 

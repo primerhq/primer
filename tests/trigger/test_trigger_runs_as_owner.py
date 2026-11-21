@@ -13,6 +13,7 @@ to a :class:`ToolExecutionManager` holding the real system toolset, the way the 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -26,14 +27,14 @@ from primer.model.chat import ToolCallPart
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.provider import Toolset
-from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger
+from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger, TriggerKind
 from primer.model.user import User
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
-from primer.trigger.subscribers import DispatchDeps
+from primer.trigger.subscribers import DispatchDeps, TriggerFireMetadata
 from primer.trigger.subscribers.agent_fresh_session import AgentFreshSessionDispatcher
 from primer.trigger.subscribers.graph_fresh_session import GraphFreshSessionDispatcher
 
@@ -88,6 +89,11 @@ async def _seed(sp, *, kind: str, target_id: str, trigger_owner, sub_owner) -> S
 
 
 async def _fire(sp, sub: Subscription, deps: DispatchDeps, *, kind: str) -> WorkspaceSession:
+    trigger = await sp.get_storage(Trigger).get(sub.trigger_id)
+    fire = TriggerFireMetadata(
+        sub.trigger_id, TriggerKind(trigger.config.kind), getattr(trigger.config, "interactive", False),
+    )
+    deps = replace(deps, fire_metadata=fire)
     dispatcher = AgentFreshSessionDispatcher() if kind == "agent" else GraphFreshSessionDispatcher()
     res = await dispatcher.dispatch(
         sub,

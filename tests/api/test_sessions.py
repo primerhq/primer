@@ -2266,3 +2266,79 @@ async def test_rename_session_clears_the_name_for_a_whitespace_only_value(sessio
 
     assert patched.status_code == 200, patched.text
     assert patched.json()["name"] is None
+
+
+@pytest.mark.parametrize("value", [None, False, True, "3", 3.0, -1, 1_000_001])
+async def test_session_create_rejects_non_strict_priority(sessions_client, seeded_workspace, seeded_agent, value):
+    response = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "priority": value},
+    )
+    assert response.status_code == 422
+    assert "priority" in response.text
+
+
+async def test_rest_priority_cutover_and_direct_creation(
+    sessions_client, app, seeded_workspace, seeded_agent, monkeypatch,
+):
+    from functools import partial
+
+    from primer.model.session_creation import SessionCreationIntent
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.workspace import session_factory
+
+    sp = app.state.storage_provider
+    await sp.get_storage(type(seeded_agent)).update(seeded_agent.model_copy(update={"default_priority": 23}))
+    url = f"/v1/workspaces/{seeded_workspace.id}/sessions"
+    body = {"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "parent_session_id": "lineage"}
+    # Neither the claim-engine flag nor serialized caller/capability data authorizes nonzero starts.
+    monkeypatch.setattr(app.state.claim_engine, "_work_priority_enabled", True, raising=False)
+    headers = {"primer.route_tool_session_id": "lineage", "primer.route_tool_dispatch": "true"}
+    refused = await sessions_client.post(url, json={**body, "priority": 1, "nonzero_priority_available": True},
+                                         headers=headers)
+    assert refused.status_code == 503 and "scheduling cutover" in refused.json()["detail"]
+    assert not sp.get_storage(SessionCreationIntent)._data
+    for fields in ({}, {"priority": 0}):
+        response = await sessions_client.post(url, json={**body, **fields}, headers=headers)
+        assert response.status_code == 201, response.text
+        assert response.json()["priority"] == 0
+
+    monkeypatch.setattr(session_factory, "SessionFactoryDeps",
+                        partial(session_factory.SessionFactoryDeps, nonzero_priority_available=True))
+    response = await sessions_client.post(url, json={**body, "priority": 1_000_000})
+    assert response.status_code == 201, response.text
+    sid = response.json()["id"]
+    assert response.json()["priority"] == 1_000_000
+    assert (await sp.get_storage(WorkspaceSession).get(sid)).priority == 1_000_000
+    assert (await sp.get_storage(SessionCreationIntent).get(sid)).priority == 1_000_000
+
+
+async def test_rest_create_honors_trusted_caller_and_turn(sessions_client, app, seeded_workspace, seeded_agent, monkeypatch):
+    from functools import partial
+
+    from primer.access.person import Person
+    from primer.api.route_tools import _TrustedAsgiApp
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+    from primer.workspace import session_factory
+
+    caller = await app.state.storage_provider.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="real-caller", workspace_id=seeded_workspace.id, binding=AgentSessionBinding(agent_id=seeded_agent.id),
+        created_at=datetime.now(timezone.utc), status=SessionStatus.RUNNING, turn_no=3, priority=25,
+    ))
+    monkeypatch.setattr(session_factory, "SessionFactoryDeps",
+                        partial(session_factory.SessionFactoryDeps, nonzero_priority_available=True))
+    path = f"/v1/workspaces/{seeded_workspace.id}/sessions"
+    body = {"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "parent_session_id": "unrelated-lineage"}
+    wrapper = _TrustedAsgiApp(app, Person(None, "system"), session_id=caller.id, turn_no=3)
+    async with AsyncClient(transport=ASGITransport(app=wrapper), base_url="http://t",
+                           cookies=sessions_client.cookies) as client:
+        refused = await client.post(path, json={**body, "priority": 24})
+        assert refused.status_code == 403 and refused.json()["type"] == "/errors/forbidden"
+        response = await client.post(path, json=body)
+        assert response.status_code == 201, response.text
+        assert response.json()["priority"] == 25
+    stale = _TrustedAsgiApp(app, Person(None, "system"), session_id=caller.id, turn_no=2)
+    async with AsyncClient(transport=ASGITransport(app=stale), base_url="http://t",
+                           cookies=sessions_client.cookies) as client:
+        conflict = await client.post(path, json=body)
+        assert conflict.status_code == 409

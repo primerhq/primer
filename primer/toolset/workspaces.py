@@ -99,6 +99,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
 )
 from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceNotImplementedError, WorkspaceRefusedError
+from primer.model.work_priority import SessionPriorityRequest
 from primer.model.workspace_session import (
     SessionBinding,
     SessionState,
@@ -410,7 +411,7 @@ class _CreateWorkspaceArgs(BaseModel):
     overrides: WorkspaceTemplateOverrides | None = Field(default=None)
 
 
-class _CreateSessionArgs(BaseModel):
+class _CreateSessionArgs(SessionPriorityRequest):
     workspace_id: str = Field(..., min_length=1)
     binding: SessionBinding
     initial_instructions: str | None = None
@@ -1966,6 +1967,7 @@ def build_workspaces_toolset(
             SessionFactoryDeps,
             start_workspace_session,
         )
+        from primer.workspace.work_priority import SessionPriorityUnavailable
 
         deps = SessionFactoryDeps(
             storage_provider=storage_provider,
@@ -1978,6 +1980,7 @@ def build_workspaces_toolset(
                 workspace_person=person_for_tool(ctx),
                 calling_session_id=ctx.session_id if ctx is not None else None,
                 calling_turn_no=ctx.turn_no if ctx is not None else None,
+                priority=args.requested_priority,
                 workspace_id=args.workspace_id,
                 binding=args.binding,
                 initial_instructions=args.initial_instructions,
@@ -2005,6 +2008,8 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="conflict")
         except AccessDeniedError as exc:
             return _err_from_primer(exc, error_type="forbidden")
+        except SessionPriorityUnavailable as exc:
+            return _err_from_primer(exc, error_type="unavailable")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
         return _ok(session)
