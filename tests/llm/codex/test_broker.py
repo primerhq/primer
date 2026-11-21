@@ -21,6 +21,15 @@ from primer.llm.codex.request import compact, prepare_request
 from tests.llm.codex.test_bridge import frames, message
 
 
+def streamed_response(status, *, json=None, content=None, text=None, headers=None):
+    """Unconsumed wire stream, matching AsyncClient.stream on real HTTP."""
+    data = compact(json).encode() if json is not None else (text.encode() if text is not None else content or b"")
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield data
+    return httpx.Response(status, stream=Body(), headers=headers)
+
+
 @pytest.fixture(scope="module")
 def rsa_key():
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -59,21 +68,21 @@ class World:
         self.calls.append(request)
         url = str(request.url)
         if url == DISCOVERY:
-            return httpx.Response(200, json={"issuer": ISSUER, "token_endpoint": TOKEN,
+            return streamed_response(200, json={"issuer": ISSUER, "token_endpoint": TOKEN,
                 "authorization_endpoint": AUTHORIZE, "jwks_uri": ISSUER + "/.well-known/jwks.json",
                 "revocation_endpoint": ISSUER + "/api/accounts/oauth/revoke"})
         if url == ISSUER + "/.well-known/jwks.json":
             jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(self.key.public_key()))
-            return httpx.Response(200, json={"keys": [{**jwk, "kid": "fixture", "alg": "RS256", "use": "sig"}]})
+            return streamed_response(200, json={"keys": [{**jwk, "kid": "fixture", "alg": "RS256", "use": "sig"}]})
         if url == TOKEN:
             form = parse_qs(request.content.decode())
             assert form["resource"] == [RESOURCE] and form["client_id"] == ["issued-client"]
             if form["grant_type"] == ["refresh_token"]:
                 if self.fail_refresh:
-                    return httpx.Response(503, text="dedicated-test-access MUST NOT LEAK")
+                    return streamed_response(503, text="dedicated-test-access MUST NOT LEAK")
                 result = {**self.initial, "access_token": "rotated-access", "refresh_token": "rotated-refresh"}
                 result.pop("id_token", None)
-                return httpx.Response(200, json=result)
+                return streamed_response(200, json=result)
             assert form["redirect_uri"] == ["http://127.0.0.1:12345/auth/callback"]
             assert len(form["code_verifier"][0]) >= 43
             claims = {"iss": ISSUER, "sub": "dedicated-subject", "aud": "issued-client",
@@ -82,16 +91,16 @@ class World:
                       "access_token": "dedicated-test-access", "refresh_token": "dedicated-test-refresh",
                       "id_token": jwt.encode(claims, self.key, algorithm="RS256", headers={"kid": "fixture"}), **self.token_changes}
             self.initial = result
-            return httpx.Response(200, json=result)
+            return streamed_response(200, json=result)
         if url == ISSUER + "/api/accounts/oauth/revoke":
             assert parse_qs(request.content.decode())["token_type_hint"] == ["refresh_token"]
-            return httpx.Response(200)
+            return streamed_response(200)
         if url == MODELS:
             assert request.headers["authorization"] in {"Bearer dedicated-test-access", "Bearer rotated-access"}
-            return httpx.Response(200, json={"models": self.catalog})
+            return streamed_response(200, json={"models": self.catalog})
         if url == RESPONSES:
             data = b"".join(b"data: " + compact(frame).encode() + b"\n\n" for frame in frames())
-            return httpx.Response(200, content=data, headers={"content-type": "text/event-stream"})
+            return streamed_response(200, content=data, headers={"content-type": "text/event-stream"})
         raise AssertionError("Unexpected outbound endpoint")
 
     def start(self):
@@ -451,4 +460,210 @@ async def test_staged_identity_expires_or_signout_clears_it(world):
     with pytest.raises(BoundaryError):
         world.auth.commit_registration()
     await world.auth.sign_out()
-    assert world.auth._candidate is None and world.store.read("registration") is None
+    assert world.auth._candidate is None
+    assert world.store.read("registration") == {"reauthorization_required": True,
+        "subject": "dedicated-subject", "client_id": "issued-client", "account": world.account}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["state=wrong&code=x&client_id=evil", "state=x&state=y&code=x", "malformed", "state="])
+async def test_correction_bad_callback_preserves_real_attempt(world, bad):
+    params = world.start()
+    with pytest.raises(BoundaryError):
+        await world.auth.complete(bad)
+    assert world.calls == []
+    valid = urlencode({"state": params["state"][0], "code": "x", "client_id": "issued-client"})
+    result = await world.auth.complete(valid)
+    assert result["account"] == world.account
+    count = len(world.calls)
+    with pytest.raises(BoundaryError):
+        await world.auth.complete(valid)
+    assert len(world.calls) == count
+
+
+@pytest.mark.asyncio
+async def test_correction_matching_denial_consumes_once(world):
+    params = world.start()
+    with pytest.raises(BoundaryError):
+        await world.auth.complete(urlencode({"state": params["state"][0], "error": "access_denied"}))
+    with pytest.raises(BoundaryError):
+        await world.auth.complete(urlencode({"state": params["state"][0], "code": "x", "client_id": "issued-client"}))
+    assert world.calls == []
+
+
+@pytest.mark.asyncio
+async def test_correction_first_invalid_grant_retains_only_unverified_continuation(world):
+    original = world.http.json
+    async def invalid(url, **kwargs):
+        if url == TOKEN:
+            raise BoundaryError("synthetic invalid_grant")
+        return await original(url, **kwargs)
+    world.http.json = invalid
+    params = world.start()
+    with pytest.raises(BoundaryError):
+        await world.auth.complete(urlencode({"state": params["state"][0], "code": "spent", "client_id": "issued-client"}))
+    assert world.auth._selected is None and world.auth._record is None and world.auth._candidate is None
+    restored = SignIn(world.store, world.policy, world.http)
+    retry = parse_qs(urlsplit(restored.begin("http://127.0.0.1:12345/auth/callback")).query)
+    assert retry["client_id"] == ["issued-client"] and "agent_name_hint" not in retry
+    assert retry["state"] != params["state"] and retry["nonce"] != params["nonce"]
+    with pytest.raises(BoundaryError):
+        restored.snapshot()
+    # A fresh signed identity and explicit policy commitment are still required.
+    world.http.json = original
+    world.nonce = retry["nonce"][0]
+    await restored.complete(urlencode({"state": retry["state"][0], "code": "new"}))
+    assert restored._record is None
+    assert restored.commit_registration() == world.account
+
+
+@pytest.mark.asyncio
+async def test_correction_staged_signout_revokes_and_retains_verified_identity(world):
+    params = world.start()
+    await world.auth.complete(urlencode({"state": params["state"][0], "code": "x", "client_id": "issued-client"}))
+    await world.auth.sign_out()
+    forms = [parse_qs(r.content.decode()) for r in world.calls if str(r.url).endswith("/oauth/revoke")]
+    assert forms == [{"token": ["dedicated-test-refresh"], "token_type_hint": ["refresh_token"], "client_id": ["issued-client"]}]
+    record = world.store.read("registration")
+    assert record == {"reauthorization_required": True, "subject": "dedicated-subject", "client_id": "issued-client", "account": world.account}
+    restored = SignIn(world.store, world.policy, world.http)
+    assert parse_qs(urlsplit(restored.begin("http://127.0.0.1:12345/auth/callback")).query)["client_id"] == ["issued-client"]
+    with pytest.raises(BoundaryError):
+        restored.snapshot()
+
+
+@pytest.mark.asyncio
+async def test_correction_active_and_staged_revoke_failure_disables_and_attempts_both(world):
+    await world.login()
+    world.token_changes = {"refresh_token": "staged-refresh"}
+    params = world.start()
+    await world.auth.complete(urlencode({"state": params["state"][0], "code": "x"}))
+    attempted = []
+    async def revoke(endpoint, client, refresh):
+        attempted.append(refresh)
+        if refresh == "dedicated-test-refresh":
+            raise BoundaryError("unconfirmed")
+    world.http.revoke = revoke
+    with pytest.raises(BoundaryError, match="unconfirmed"):
+        await world.auth.sign_out()
+    assert attempted == ["dedicated-test-refresh", "staged-refresh"]
+    assert world.auth._record is None and world.auth._candidate is None
+    assert world.store.read("revocations") == {"items": [{"client_id": "issued-client", "refresh_token": "dedicated-test-refresh"}]}
+    restored = SignIn(world.store, world.policy, world.http)
+    with pytest.raises(BoundaryError):
+        restored.begin("http://127.0.0.1:12345/auth/callback")
+    async def succeed(*args):
+        attempted.append(args[-1])
+    world.http.revoke = succeed
+    await restored.sign_out()
+    assert restored._revocations == [] and attempted[-1] == "dedicated-test-refresh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["json", "sse"])
+@pytest.mark.parametrize("encoding", ["gzip", "br", "identity, gzip"])
+async def test_correction_nonidentity_rejected_before_body_or_decoder(kind, encoding, monkeypatch):
+    import gzip
+    import httpx._decoders
+    started = []
+    decoded = []
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            started.append(True)
+            yield gzip.compress(b"x" * 4096)  # Small, safe expansion only.
+    def decoder(*args):
+        decoded.append(True)
+        raise AssertionError("decompression must never start")
+    monkeypatch.setattr(httpx._decoders.GZipDecoder, "decode", decoder)
+    async def respond(request):
+        # Check this independently of rejection, so the old decoded read is
+        # exercised even when it advertises compression in Accept-Encoding.
+        return httpx.Response(200, stream=Body(), headers={"content-encoding": encoding, "content-type": "text/event-stream"})
+    client = FixedHTTP(_test_transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(BoundaryError):
+            if kind == "json":
+                await client.json(MODELS, bearer="synthetic")
+            else:
+                _ = [e async for e in client.events({}, "synthetic")]
+        assert not started and not decoded
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["json", "sse"])
+async def test_correction_raw_budget_prevents_excess_consumption_and_identity_succeeds(kind):
+    entered, headers = [], []
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for i in range(20):
+                entered.append(i)
+                yield b"x" * 16384
+    async def respond(request):
+        headers.append(request.headers["accept-encoding"])
+        return httpx.Response(200, stream=Body(), headers={"content-length": "999999999", "content-type": "text/event-stream"})
+    client = FixedHTTP(_test_transport=httpx.MockTransport(respond))
+    try:
+        with pytest.raises(BoundaryError):
+            if kind == "json":
+                await client.json(MODELS, bearer="synthetic")
+            else:
+                _ = [e async for e in client.events({}, "synthetic")]
+        assert entered == [] and headers == ["identity"]  # Refuse before reading.
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_correction_identity_raw_stream_positive_and_small_explicit_budget():
+    closed = []
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"a" * 16384
+            yield b"b" * 16384
+            raise AssertionError("budget must stop before third chunk")
+        async def aclose(self):
+            closed.append(True)
+    response = httpx.Response(200, stream=Body())
+    received = []
+    try:
+        with pytest.raises(BoundaryError):
+            async for chunk in FixedHTTP._raw(response, 16384):
+                received.append(chunk)
+        assert received == [b"a" * 16384]
+    finally:
+        await response.aclose()
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_correction_new_attempt_cannot_silently_discard_staged_grant(world):
+    params = world.start()
+    await world.auth.complete(urlencode({"state": params["state"][0], "code": "x", "client_id": "issued-client"}))
+    candidate = world.auth._candidate
+    with pytest.raises(BoundaryError):
+        world.start()
+    assert world.auth._candidate is candidate
+    await world.auth.sign_out()
+    assert world.start()["client_id"] == ["issued-client"]
+
+
+@pytest.mark.asyncio
+async def test_correction_identity_sse_yields_small_event_without_waiting_for_eof():
+    closed = asyncio.Event()
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"type":"first"}\n\n'
+            await asyncio.Future()
+        async def aclose(self):
+            closed.set()
+    client = FixedHTTP(_test_transport=httpx.MockTransport(lambda _: httpx.Response(
+        200, stream=Body(), headers={"content-type": "text/event-stream"})))
+    events = client.events({}, "synthetic")
+    try:
+        assert await asyncio.wait_for(anext(events), 1) == {"type": "first"}
+    finally:
+        await events.aclose()
+        await client.close()
+    assert closed.is_set()

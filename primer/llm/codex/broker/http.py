@@ -23,8 +23,24 @@ class FixedHTTP:
     def __init__(self, *, _test_transport=None):
         # The test transport is a trusted code dependency, never protocol data.
         self._client = httpx.AsyncClient(trust_env=False, follow_redirects=False, verify=True,
+                                        headers={"Accept-Encoding": "identity"},
                                         timeout=httpx.Timeout(30, connect=10),
                                         limits=httpx.Limits(max_connections=8), transport=_test_transport)
+
+    @staticmethod
+    async def _raw(response: httpx.Response, budget: int):
+        # Refuse BEFORE iterating: aiter_bytes decodes before application limits.
+        # chunk_size there cannot bound decompressor output or CPU consumption.
+        encoding = response.headers.get("content-encoding", "identity").strip().lower()
+        require(encoding == "identity")
+        length = response.headers.get("content-length")
+        if length is not None:
+            require(length.isascii() and length.isdigit() and len(length) <= 12 and int(length) <= budget)
+        used = 0
+        async for chunk in response.aiter_raw():
+            require(len(chunk) <= budget - used)
+            used += len(chunk)
+            yield chunk
 
     async def json(self, url: str, *, form: dict | None = None, bearer: str | None = None) -> dict:
         allowed = {DISCOVERY, TOKEN, MODELS}
@@ -36,9 +52,8 @@ class FixedHTTP:
                                            headers={"Authorization": "Bearer " + bearer} if bearer else {}) as response:
                 require(response.status_code == 200)
                 raw = bytearray()
-                async for chunk in response.aiter_bytes():
+                async for chunk in self._raw(response, 262144):
                     raw.extend(chunk)
-                    require(len(raw) <= 262144)
                 result = decode(bytes(raw))
                 require(type(result) is dict)
                 return result
@@ -60,12 +75,9 @@ class FixedHTTP:
                 require(response.status_code == 200 and response.headers.get("content-type", "").split(";")[0] == "text/event-stream")
                 buffer = bytearray()
                 data = []
-                total = 0
-                async for chunk in response.aiter_bytes():
-                    total += len(chunk)
-                    require(total <= 33554432)
+                async for chunk in self._raw(response, 33554432):
+                    require(len(chunk) <= 1048576 - len(buffer))
                     buffer.extend(chunk)
-                    require(len(buffer) <= 1048576)
                     while b"\n" in buffer:
                         line, _, remainder = buffer.partition(b"\n")
                         buffer = bytearray(remainder)
