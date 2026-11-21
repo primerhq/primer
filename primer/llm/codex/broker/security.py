@@ -59,7 +59,7 @@ class PrivateStore:
 
     @staticmethod
     def _name(name: str) -> str:
-        require(name in {"registration", "host", "client_hint", "revocations"})
+        require(name in {"registration", "host", "client_hint", "revocations", "policy_ledger"})
         return name + ".json"
 
     def read(self, name: str) -> dict | None:

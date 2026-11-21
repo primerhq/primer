@@ -24,9 +24,10 @@ complete authority inventory must come from an authenticated administrator,
 not Primer JSON, a model response or a broker capability claim. This code does
 not discover enterprise/cloud policy or prove that a supplied inventory is
 complete. A deployment must establish that provenance before activation; this
-is not permission to override an existing administrator policy. The trusted
-loader must enforce authenticated freshness and rollback protection; a still-valid
-old signed bundle is not rejected solely because its revision was seen earlier.
+is not permission to override an existing administrator policy. Bare SignedPolicy does not provide rollback protection. The explicit
+[host composition](HOST.md) adds root-owned manifest provenance, mandatory durable
+revision tracking and distinct UID checks before constructing the broker. Actual
+administrator provisioning and deployment proof remain required.
 
 `SignIn` creates fresh state, nonce and S256 PKCE, uses a single-use expiring
 attempt, verifies RS256 signatures from issuer metadata/JWKS, and checks issuer,
@@ -137,8 +138,9 @@ packet. No external auth or model calls were made.
 
 ## Remaining delivery
 
-Next review must examine this code and adversarial tests before adding a trusted
-host launcher/client and management UI. It must establish real administrator
+The explicit host trust loader and peer-checked socket connection are described
+in [HOST.md](HOST.md). They remain unregistered and require independent review.
+A supervised launcher, full model client and management UI remain open. It must establish real administrator
 key/inventory provenance, OS-user/socket isolation, package/dependency identity,
 loopback listener ownership and consent UX. Then genuine dedicated sign-in,
 workspace/plan entitlement, model discovery and Responses tool/replay evidence

@@ -1,0 +1,267 @@
+"""Explicit Linux host trust composition, not a launcher or policy discovery.
+
+Root provisions the manifest and authority inventory. No environment lookup,
+credential import, identity creation, endpoint override or automatic bootstrap.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import re
+import socket
+import stat
+import struct
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from primer.llm.codex.boundary import BoundaryError
+from primer.llm.codex.request import compact, decode
+from .security import MAX_RECORD, PrivateStore, SignedPolicy, require, text
+
+
+def _parts(path: Path) -> tuple[str, ...]:
+    raw = str(path)
+    require(raw.startswith('/') and not raw.startswith('//')
+            and all(p not in {'', '.', '..'} for p in raw.split('/')[1:]))
+    return tuple(raw.split('/')[1:])
+
+
+def _root_directory(path: Path) -> int:
+    """Descriptor walk: root-owned, non-writable by group/other at every hop."""
+    parts = _parts(path)
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in (None, *parts):
+            if part is not None:
+                new = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = new
+            info = os.fstat(fd)
+            require(info.st_uid == 0 and not stat.S_IMODE(info.st_mode) & 0o022)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _root_json(fd: int, name: str) -> dict:
+    child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    try:
+        info = os.fstat(child)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                and not stat.S_IMODE(info.st_mode) & 0o022 and info.st_size <= MAX_RECORD)
+        raw = bytearray()
+        while len(raw) <= MAX_RECORD:
+            chunk = os.read(child, min(65536, MAX_RECORD + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        require(len(raw) <= MAX_RECORD)
+        value = decode(bytes(raw))
+        require(type(value) is dict)
+        return value
+    finally:
+        os.close(child)
+
+
+def _revision(value) -> int:
+    require(type(value) is str and re.fullmatch(r'[1-9][0-9]{0,18}', value) is not None)
+    return int(value)
+
+
+class PolicyLedger:
+    """Authenticate before recording; persist before authorizing, including deny.
+
+    The pre-provisioned record is mandatory. A write exception permanently fences
+    this instance; no in-process retry may authorize an uncertain transition.
+    """
+    def __init__(self, store: PrivateStore, *, identity: str, keys: dict[str, bytes],
+                 audience: str, floors: dict[str, str], load):
+        self._store, self._identity, self._load = store, identity, load
+        self._keys = {k: Ed25519PublicKey.from_public_bytes(v) for k, v in keys.items()}
+        self._audience, self._floors = audience, floors
+        self._failed = False
+        self._state = store.read('policy_ledger')
+        require(type(self._state) is dict and set(self._state) == {'identity', 'revisions'}
+                and self._state['identity'] == identity
+                and type(self._state['revisions']) is dict
+                and set(self._state['revisions']) == set(keys) == set(floors))
+        for ident, item in self._state['revisions'].items():
+            require(type(item) is dict and set(item) == {'revision', 'sha256'})
+            require(_revision(item['revision']) >= _revision(floors[ident]))
+            require(type(item['sha256']) is str and re.fullmatch(r'[0-9a-f]{64}', item['sha256']) is not None)
+
+    def __call__(self):
+        require(not self._failed)
+        bundle = self._load()
+        require(type(bundle) is dict and set(bundle) == set(self._keys))
+        revisions = {}
+        # Complete authentication/rollback validation precedes ANY write.
+        for ident, key in self._keys.items():
+            envelope = bundle[ident]
+            require(type(envelope) is dict and set(envelope) == {'payload', 'signature'})
+            raw = text(envelope['payload'], MAX_RECORD).encode()
+            key.verify(base64.b64decode(envelope['signature'], validate=True), raw)
+            doc = decode(raw)
+            require(type(doc) is dict and doc.get('audience') == self._audience)
+            number = _revision(doc.get('revision'))
+            previous = self._state['revisions'][ident]
+            digest = hashlib.sha256(raw).hexdigest()
+            require(number >= _revision(previous['revision']) and number >= _revision(self._floors[ident]))
+            require(number != _revision(previous['revision']) or digest == previous['sha256'])
+            revisions[ident] = {'revision': doc['revision'], 'sha256': digest}
+        prospective = {'identity': self._identity, 'revisions': revisions}
+        if prospective != self._state:
+            try:
+                self._store.write('policy_ledger', prospective)
+            except BaseException:
+                self._failed = True
+                raise
+            self._state = prospective
+        return bundle
+
+
+class HostTrust:
+    """Pinned root manifest with fresh signed policy reads; distinct OS identities.
+
+    This proves the local filesystem owner, not organizational completeness.
+    Root, the broker UID, interpreter/dependencies and local kernel are trusted.
+    """
+    def __init__(self, directory: Path):
+        self._fd = _root_directory(directory)
+        try:
+            self._document = _root_json(self._fd, 'host.json')
+            doc = self._document
+            require(set(doc) == {'audience', 'broker_uid', 'primer_uid', 'account',
+                                 'store', 'socket', 'authorities'})
+            require(type(doc['broker_uid']) is int and doc['broker_uid'] > 0
+                    and type(doc['primer_uid']) is int and doc['primer_uid'] > 0
+                    and doc['broker_uid'] != doc['primer_uid'])
+            text(doc['audience'])
+            require(re.fullmatch(r'[0-9a-f]{64}', text(doc['account'])) is not None)
+            for field in ('store', 'socket'):
+                _parts(Path(text(doc[field])))
+            authorities = doc['authorities']
+            require(type(authorities) is dict and 0 < len(authorities) <= 32)
+            self._keys, self._floors = {}, {}
+            for ident, item in authorities.items():
+                text(ident)
+                require(type(item) is dict and set(item) == {'key', 'minimum_revision'})
+                key = base64.b64decode(item['key'], validate=True)
+                Ed25519PublicKey.from_public_bytes(key)
+                _revision(item['minimum_revision'])
+                self._keys[ident], self._floors[ident] = key, item['minimum_revision']
+            self.identity = hashlib.sha256(compact(doc).encode()).hexdigest()
+        except BaseException:
+            self.close()
+            raise BoundaryError('Host trust unavailable') from None
+
+    @property
+    def account(self):
+        return self._document['account']
+
+    @property
+    def primer_uid(self):
+        return self._document['primer_uid']
+
+    def _policy_bundle(self):
+        # Changes to keys, identities or paths require a stopped, reprovisioned
+        # process. Policy replacement itself is permitted and read every grant.
+        require(_root_json(self._fd, 'host.json') == self._document)
+        return _root_json(self._fd, 'policy.json')
+
+    def open_policy_store(self) -> tuple[PrivateStore, SignedPolicy]:
+        """Broker-side only; all identity/path checks before credential reads."""
+        require(os.geteuid() == self._document['broker_uid'])
+        path = Path(self._document['store'])
+        parent = _root_directory(path.parent)
+        store = None
+        try:
+            # Parent descriptor prevents a second path walk through mutable
+            # ancestors. PrivateStore independently checks leaf UID/mode/lock.
+            store = PrivateStore(Path(f'/proc/self/fd/{parent}') / path.name)
+            ledger = PolicyLedger(store, identity=self.identity, keys=self._keys,
+                                  audience=self._document['audience'], floors=self._floors,
+                                  load=self._policy_bundle)
+            policy = SignedPolicy(self._keys, self._document['audience'], ledger)
+            policy.grant(self.account)
+            return store, policy
+        except BaseException:
+            if store is not None:
+                store.close()
+            raise
+        finally:
+            os.close(parent)
+
+    def connect_model_socket(self) -> socket.socket:
+        """Primer-side authenticated connection, BEFORE any request bytes.
+
+        Return a nonblocking socket for async protocol composition. No generic
+        endpoint, account override, management operation or credential is sent.
+        """
+        require(os.geteuid() == self.primer_uid)
+        path = Path(self._document['socket'])
+        parent = _root_directory(path.parent)
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            require(_root_json(self._fd, 'host.json') == self._document)
+            info = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            require(stat.S_ISSOCK(info.st_mode) and info.st_uid == self._document['broker_uid']
+                    and stat.S_IMODE(info.st_mode) == 0o660)
+            sock.settimeout(2)
+            sock.connect(f'/proc/self/fd/{parent}/{path.name}')
+            _, uid, _ = struct.unpack('3i', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            require(uid == self._document['broker_uid'])
+            sock.setblocking(False)
+            return sock
+        except BaseException:
+            if sock is not None:
+                sock.close()
+            raise BoundaryError('Broker peer authentication refused') from None
+        finally:
+            os.close(parent)
+
+    def close(self):
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+
+
+@asynccontextmanager
+async def host_broker(directory: Path):
+    """Compose only after host provenance, UID, ledger and grant validation.
+
+    Does not bind/listen, enroll, authenticate, register or activate a provider.
+    The host remains responsible for supplying the approved listening socket.
+    """
+    import asyncio
+
+    from primer.llm.codex.lifecycle import drain
+    from .auth import SignIn
+    from .http import FixedHTTP
+    from .service import Broker, BrokerServer
+
+    trust = HostTrust(directory)
+    store = http = server = None
+    try:
+        store, policy = trust.open_policy_store()
+        http = FixedHTTP()
+        auth = SignIn(store, policy, http)
+        server = BrokerServer(Broker(auth, http), peer_uid=trust.primer_uid, account=trust.account)
+        yield server
+    finally:
+        async def cleanup():
+            try:
+                if server is not None:
+                    await server.close()
+                elif http is not None:
+                    await http.close()
+            finally:
+                if store is not None:
+                    store.close()
+                trust.close()
+        await drain(asyncio.create_task(cleanup()))
