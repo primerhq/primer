@@ -1377,3 +1377,19 @@ class TestCountTokens:
         msgs = [Message(role="user", parts=[TextPart(text="hello world")])]
         n = await llm.count_tokens(model="gpt-4o", messages=msgs, tools=None)
         assert n > 0
+
+
+@pytest.mark.parametrize("refusal", [None, "", "cannot"])
+def test_chat_refusal_channel_does_not_discard_content_or_change_normal_stop(refusal):
+    from openai.types.chat import ChatCompletionChunk
+    from primer.model.chat import ExtendedEvent, RefusalDelta
+    chunk = ChatCompletionChunk.model_validate({
+        "id": "offline", "object": "chat.completion.chunk", "created": 0, "model": "m1",
+        "choices": [{"index": 0, "delta": {"content": "prefix", "refusal": refusal}, "finish_reason": "stop"}],
+    })
+    out = _translate_chunk(chunk, _StreamState())
+    assert [event.text for event in out if isinstance(event, TextDelta)] == ["prefix"]
+    refusals = [event.extended for event in out if isinstance(event, ExtendedEvent)]
+    assert [event.text for event in refusals] == (["cannot"] if refusal else [])
+    assert all(isinstance(event, RefusalDelta) for event in refusals)
+    assert isinstance(out[-1], Done) and out[-1].stop_reason == "stop"

@@ -563,7 +563,7 @@ async def test_session_identity_is_captured_before_loading_evidence(sp, llm):
 
 
 @pytest.mark.parametrize("stage", ["summary", "final"])
-@pytest.mark.parametrize("ending", ["failed", "error_event", "missing", "filtered", "refused"])
+@pytest.mark.parametrize("ending", ["failed", "error_event", "missing", "filtered", "refused", "refusal_done"])
 @pytest.mark.parametrize("parseable", [False, True])
 async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, parseable):
     from types import SimpleNamespace as NS
@@ -575,7 +575,7 @@ async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, pa
     if stage == "summary":
         source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * 140000)])
     answer = {"facts": []} if stage == "summary" else _run([_add_delta()])
-    text = json.dumps(answer) if parseable else ("" if ending == "refused" else '{"partial":')
+    text = json.dumps(answer) if parseable else ("" if ending in {"refused", "refusal_done"} else '{"partial":')
     calls = []
     class Incomplete(FakeLLM):
         async def stream(self, **kwargs):
@@ -591,11 +591,14 @@ async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, pa
             elif ending == "refused":
                 events.extend([NS(type="response.refusal.delta", delta="offline refusal"),
                                NS(type="response.completed")])
+            elif ending == "refusal_done":
+                events.extend([NS(type="response.refusal.done", refusal="offline refusal"),
+                               NS(type="response.completed")])
             for raw in events:
                 for event in _translate_event(raw, state):
                     yield event
     deps = _deps(sp, Incomplete(), source)
-    if ending in {"filtered", "refused"}:
+    if ending in {"filtered", "refused", "refusal_done"}:
         report = await reflect(deps, job, agent, mem)
         assert report.skipped_reason == "compaction_incomplete"
     else:
@@ -603,3 +606,69 @@ async def test_unconfirmed_response_preserves_all_progress(sp, stage, ending, pa
             await reflect(deps, job, agent, mem)
     assert len(calls) == 1 and await _entries(deps) == []
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+
+
+@pytest.mark.parametrize("provider", ["openchat", "openrouter"])
+@pytest.mark.parametrize("stage", ["summary", "final"])
+@pytest.mark.parametrize("prefix", [False, True])
+async def test_chat_adapter_refusal_with_stop_preserves_range(sp, provider, stage, prefix):
+    from types import SimpleNamespace as NS
+    from unittest.mock import AsyncMock
+    from openai.types.chat import ChatCompletionChunk
+    from primer.llm.openchat import OpenChatLLM
+    from primer.llm.openrouter import OpenRouterLLM
+    from tests.llm.test_openchat import _make_provider as chat_provider
+    from tests.llm.test_openrouter import _make_provider as router_provider
+
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    if stage == "summary":
+        source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * 140000)])
+    answer = {"facts": []} if stage == "summary" else _run([_add_delta()])
+    def chunk(content, refusal, stop):
+        return ChatCompletionChunk.model_validate({
+            "id": "offline", "object": "chat.completion.chunk", "created": 0, "model": "m1",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": content, "refusal": refusal},
+                         "finish_reason": stop}],
+        })
+    async def raw():
+        if prefix:
+            yield chunk(json.dumps(answer), None, None)
+        yield chunk(None, "offline refusal", "stop")
+    llm = OpenChatLLM(chat_provider(models=["m1"])) if provider == "openchat" else OpenRouterLLM(router_provider(models=["m1"]))
+    create = AsyncMock(return_value=raw())
+    llm._client = NS(chat=NS(completions=NS(create=create)))
+    deps = _deps(sp, llm, source)
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == "compaction_incomplete"
+    assert create.call_count == 1  # refused summary cannot reach another summary/final
+    assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+
+
+@pytest.mark.parametrize("provider", ["openchat", "openrouter"])
+@pytest.mark.parametrize("malformed", [False, True])
+async def test_chat_adapter_normal_stop_retains_final_verdict_policy(sp, provider, malformed):
+    from types import SimpleNamespace as NS
+    from unittest.mock import AsyncMock
+    from openai.types.chat import ChatCompletionChunk
+    from primer.llm.openchat import OpenChatLLM
+    from primer.llm.openrouter import OpenRouterLLM
+    from tests.llm.test_openchat import _make_provider as chat_provider
+    from tests.llm.test_openrouter import _make_provider as router_provider
+
+    agent, mem, job = await _setup(sp)
+    async def raw():
+        yield ChatCompletionChunk.model_validate({
+            "id": "offline", "object": "chat.completion.chunk", "created": 0, "model": "m1",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "malformed" if malformed else json.dumps(_run([])),
+                                                "refusal": ""}, "finish_reason": "stop"}],
+        })
+    llm = OpenChatLLM(chat_provider(models=["m1"])) if provider == "openchat" else OpenRouterLLM(router_provider(models=["m1"]))
+    create = AsyncMock(return_value=raw())
+    llm._client = NS(chat=NS(completions=NS(create=create)))
+    deps = _deps(sp, llm)
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == ("invalid_output" if malformed else None)
+    assert create.call_count == 1 and await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2

@@ -25,6 +25,18 @@ Cleanup errors are logged by class at debug level without replacing the original
 response outcome or cancellation during explicit disposal. SDK-initiated close
 failures still follow the SDK's normal iteration-error path. This does not
 establish remote abort success when the SDK close itself fails.
+The guard remembers which callers were cancelled while joining a response's
+close. Re-entry from a nested SDK finally preserves that caller's cancellation
+instead of replacing it with the cached transport error. A different,
+uncancelled caller still observes that error; the transport is not retried.
+
+OpenChat and OpenRouter translate nonempty Chat Completions `delta.refusal`
+into `ExtendedEvent(RefusalDelta)`, even alongside a normal `stop`. Responses
+also forwards a terminal-only `response.refusal.done` as a refusal when its
+block had no nonempty streamed refusal text; otherwise it suppresses the
+repeated final text. This is a per-block fallback, not a second visible copy
+of the same refusal. The absence of a prior delta is supported by the event's
+self-contained locked SDK shape, not asserted as a measured live frequency.
 
 A provider row (`LLMProvider`, `EmbeddingProvider`, or `CrossEncoderProvider` in `primer/model/provider.py`) is a configuration record: which backend (`provider` enum), which models are permitted (`models`), the backend-specific connection details (`config`, a discriminated union), and the concurrency budget (`limits`). An adapter is the live object built from that row. The adapter serves every model the row declares; model selection happens per call, validated against `provider.models` with a `ModelNotFoundError` raised when the caller passes an unknown name.
 
