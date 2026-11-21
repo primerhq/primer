@@ -282,8 +282,8 @@ class InMemoryClaimEngine(ClaimEngine):
         filter runs before its ``LIMIT``.
 
         Reading an entity awaits, and another claim or a release can run meanwhile, so each row is checked again after its
-        read, with no await between that check and the stamp: it must still be this engine's row, unwritten since the read
-        began (its ``generation``: an expired holder's release in between may have changed the entity the read saw), and
+        read, with no await between that check and the stamp: it must still be this engine's row, unwritten since candidate
+        selection (its ``generation`` also fences changes while an earlier candidate's read awaited), and
         still due. The decision is made at ``now``, the claim's start; the stamps (``claimed_at``, ``expires_at``) are read
         from the clock when they are written.
         """
@@ -296,22 +296,27 @@ class InMemoryClaimEngine(ClaimEngine):
             now = self._clock()
             kind_set = None if kinds is None else set(kinds)
             candidates = [
-                row for row in self._leases.values()
+                (row, row.generation) for row in self._leases.values()
                 if self._due(row, now) and (kind_set is None or row.kind in kind_set)
                 and (max_work_priority is None or row.work_priority <= max_work_priority)
             ]
-            candidates.sort(key=lambda r: (r.work_priority if self._work_priority_enabled else 0, r.priority_score, _as_utc(r.next_attempt_at)))
+            candidates.sort(key=lambda candidate: (
+                candidate[0].work_priority if self._work_priority_enabled else 0,
+                candidate[0].priority_score, _as_utc(candidate[0].next_attempt_at),
+            ))
             out: list[Lease] = []
-            for row in candidates:
+            for row, generation in candidates:
                 if len(out) >= max_count:
                     break
-                generation = row.generation
+                if self._leases.get((row.kind, row.entity_id)) is not row or row.generation != generation:
+                    continue  # An earlier candidate awaited while this one's admission/order changed.
                 if not await self._eligible(row, now):
                     continue
                 if (
                     self._leases.get((row.kind, row.entity_id)) is not row
                     or row.generation != generation
                     or not self._due(row, now)
+                    or (max_work_priority is not None and row.work_priority > max_work_priority)
                 ):
                     continue                              # dropped, claimed, released or re-armed while its entity was read
                 stamp = self._clock()

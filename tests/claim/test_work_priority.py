@@ -239,3 +239,44 @@ async def test_cancelled_priority_reader_releases_its_epoch():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("ceiling", [0, None])
+async def test_later_candidate_rearmed_during_earlier_read_keeps_ceiling_and_order(ceiling):
+    rows = Rows(a=row(0), b=row(0))
+    if ceiling is None:
+        rows.rows["c"] = row(1)
+    engine = queue(rows)
+    due = datetime.now(UTC) - timedelta(seconds=3)
+    for index, name in enumerate(rows.rows):
+        await engine.upsert(ClaimKind.SESSION, name, next_attempt_at=due+timedelta(milliseconds=index))
+    entered, finish = asyncio.Event(), asyncio.Event()
+    adapter = engine._adapters[ClaimKind.SESSION]
+    eligible = adapter.is_eligible
+
+    async def hold_first(entity_id, now):
+        if entity_id == "a":
+            entered.set()
+            await finish.wait()
+            return False
+        return await eligible(entity_id, now)
+
+    adapter.is_eligible = hold_first
+    poll = asyncio.create_task(engine.claim_due("first", max_count=1, max_work_priority=ceiling))
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+            before = engine._leases[ClaimKind.SESSION, "b"]
+            rows.rows["b"] = row(5)
+            # Ordinary upsert mutates the same row and preserves its due time.
+            await engine.upsert(ClaimKind.SESSION, "b")
+            assert engine._leases[ClaimKind.SESSION, "b"] is before
+            finish.set()
+            claims = await poll
+        assert [lease.entity_id for lease in claims] == ([] if ceiling == 0 else ["c"])
+        assert not await engine.has_live_lease(ClaimKind.SESSION, "b")
+        general, = await engine.claim_due("general", max_count=1)
+        assert general.entity_id == "b" and general.work_priority == 5
+    finally:
+        finish.set()
+        await asyncio.gather(poll, return_exceptions=True)
