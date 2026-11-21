@@ -100,6 +100,29 @@ class _Entry:
     updater_needs_stop: bool = False
     app_needs_stop: bool = False
     shutdown_done: bool = False
+    closed_init_requests: set = field(default_factory=set, repr=False)
+
+    async def stop_partial_init(self) -> None:
+        # PTB can fail in getMe before Application.shutdown takes ownership.
+        # Bot exposes only its API request publicly; the pair also owns getUpdates.
+        error = None
+        for request in self.app.bot._request:
+            if request in self.closed_init_requests:
+                continue
+            try:
+                # Our builder uses PTB's HTTPXRequest for both. HTTPX marks a
+                # client closed before draining transports. A subsequent no-op
+                # shutdown cannot establish that an interrupted close finished.
+                if request._client.is_closed:
+                    raise RuntimeError("Telegram HTTP transport teardown is uncertain")
+                await request.shutdown()
+            except Exception as exc:
+                error = exc
+            else:
+                self.closed_init_requests.add(request)
+        if error is not None:
+            raise error
+        await self.stop()
 
     async def stop(self) -> None:
         # Attempt independent stages even if an earlier one failed; retry only
@@ -143,15 +166,18 @@ class _TelegramConnectionRegistry:
                 assert isinstance(cfg, TelegramChannelProviderConfig)
                 app = _build_application(cfg)
                 entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds)
+                initialized = False
                 try:
                     await app.initialize()
+                    initialized = True
                     if inbound:
                         entry.app_needs_stop = True
                         await app.start()
                         entry.updater_needs_stop = True
                         await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
                 except BaseException:
-                    await retire_failed_start(self, provider.id, entry.stop)
+                    close = entry.stop if initialized else entry.stop_partial_init
+                    await retire_failed_start(self, provider.id, close)
                     raise
                 self._entries[provider.id] = entry
                 logger.info(
