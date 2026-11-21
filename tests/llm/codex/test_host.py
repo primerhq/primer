@@ -853,7 +853,10 @@ failures, refused, opened = [], [], []
 def worker():
     try:
         import threading
-        assert threading.current_thread() is threading.main_thread()
+        if sys.version_info < (3, 13):
+            assert threading.current_thread() is threading.main_thread()
+        # Newer CPython may already classify this importer as unmanaged.
+        # Either registry behavior must refuse the real non-leader before IO.
         assert threading.get_native_id() != os.getpid()
         from pathlib import Path
         from primer.llm.codex.broker import host
@@ -887,3 +890,81 @@ os._exit(0)
     result = subprocess.run([sys.executable, '-c', script, str(tmp_path)],
                             timeout=5, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('target', ['lock', 'directory', 'trust'])
+def test_late_close_error_revokes_authority_and_never_retries_reused_fd(composed, monkeypatch, target):
+    trust = host.HostTrust(composed.root)
+    store, policy = trust.open_policy_store()
+    handle = trust if target == 'trust' else store
+    victim = trust._fd if target == 'trust' else (store._lock if target == 'lock' else store._fd)
+    expected = [trust._fd] if target == 'trust' else [store._lock, store._fd]
+    original_close = os.close
+    attempts, reused = [], []
+    def late_error(fd):
+        attempts.append(fd)
+        original_close(fd)
+        if fd == victim:
+            # Reproduce Linux's released-descriptor/late-error semantics, then
+            # deliberately reuse that number to detect a dangerous close retry.
+            replacement = os.open('/dev/null', os.O_RDONLY)
+            if replacement != fd:
+                os.dup2(replacement, fd)
+                original_close(replacement)
+            reused.append(fd)
+            raise OSError('simulated late descriptor close error')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'close', late_error)
+            with pytest.raises(OSError, match='late descriptor close'):
+                handle.close()
+            assert attempts == expected
+            assert handle._fd is None
+            if handle is store:
+                assert store._lock is None
+            with pytest.raises(BoundaryError):
+                policy.grant(composed.manifest['account'])
+            handle.close()
+            assert attempts == expected, 'second disposal retried a recycled descriptor'
+            os.fstat(victim)  # The independently owned replacement is still open.
+    finally:
+        for fd in reused:
+            original_close(fd)
+        store.close()
+        trust.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('trust_also_fails', [False, True])
+async def test_host_cleanup_attempts_trust_after_store_close_error(composed, monkeypatch, trust_also_fails):
+    trust = host.HostTrust(composed.root)
+    original_close = os.close
+    attempts, expected, failing = [], [], set()
+    def late_error(fd):
+        if fd in expected:
+            attempts.append(fd)
+        original_close(fd)
+        if fd in failing:
+            raise OSError(f'simulated late close {fd}')
+    with monkeypatch.context() as patch:
+        patch.setattr(host, 'HostTrust', lambda directory: trust)
+        error_type = BaseExceptionGroup if trust_also_fails else OSError
+        with pytest.raises(error_type) as raised:
+            async with host.host_broker(composed.root) as server:
+                store = server._broker._auth._store
+                policy = server._broker._auth._policy
+                expected[:] = [store._lock, store._fd, trust._fd]
+                failing.add(store._lock)
+                if trust_also_fails:
+                    failing.add(trust._fd)
+                patch.setattr(os, 'close', late_error)
+        assert attempts == expected
+        assert store._lock is None and store._fd is None and trust._fd is None
+        if trust_also_fails:
+            assert len(raised.value.exceptions) == 2
+            assert all(isinstance(exc, OSError) for exc in raised.value.exceptions)
+        with pytest.raises(BoundaryError):
+            policy.grant(composed.manifest['account'])
+        store.close()
+        trust.close()
+        assert attempts == expected

@@ -142,12 +142,22 @@ class PrivateStore:
         # flock's open-file description is shared with the still-live parent.
         if os.getpid() == self._owner_pid:
             require(threading.current_thread() is self._owner_thread)
-        if self._lock is not None:
-            os.close(self._lock)
-            self._lock = None
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
+        # Linux may release an fd before reporting a late close error. Revoke
+        # authority first and never retry a saved number which may be reused.
+        lock, directory = self._lock, self._fd
+        self._lock = self._fd = None
+        errors = []
+        for fd in (lock, directory):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except BaseException as exc:
+                    errors.append(exc)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("Broker store descriptor disposal failed", errors)
+
 
 
 class SignedPolicy:
