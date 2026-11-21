@@ -138,3 +138,20 @@ Reference: [`crud__update_trigger`](reference/tools/crud/update_trigger)
 
 ## Related
 [subscriptions](triggers/subscriptions), [fire a trigger now](triggers/fire-now), [waiting for events](triggers/waiting-for-events), [channel bindings](channels/bindings), [roles and approvals](start-here/roles-and-approvals).
+
+
+## Receive a webhook through a tool
+
+`webhooks__receive_webhook` takes the webhook `token`, optional base64 `body`,
+optional `signature` and optional string-valued `query` object. For example,
+`body: "eyJldmVudCI6InBpbmcifQ=="` sends the bytes `{"event":"ping"}`; a query
+such as `{"source":"mcp"}` is delivered to templates as `webhook_query`.
+For an HMAC-protected trigger, compute `sha256=<hex>` over the exact original
+body bytes, then base64-encode those same bytes for `body`. The tool preserves
+whitespace and byte encoding; changing either invalidates the signature.
+Omitting the body sends empty bytes. The decoded-body limit is 1 MiB.
+
+The tool sends `application/octet-stream` and does not expose arbitrary custom
+headers. Trigger enablement, token and HMAC checks still apply, along with the
+tool's exposure and effective approval policy. An external MCP call cannot park
+for approval. Each accepted call is a separate delivery; retries can fire twice.

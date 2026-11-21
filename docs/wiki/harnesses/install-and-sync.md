@@ -49,6 +49,12 @@ Reference: [`harness__register`](reference/tools/harness/register)
 Reference: [`harness__update`](reference/tools/harness/update)
 
 ### Set the overrides
+
+The generated REST twin `harnesses__put_harness_overrides` accepts
+`{"harness_id": "hns_a1b2c3d4e5f6", "body": {"max_concurrent_reviews": 3}}`.
+It requires an admin and follows its effective approval policy. Both paths
+validate the supplied dictionary against the harness's cached schema.
+
 `harness__update_overrides` stores the dictionary after validating it against the cached schema.
 
 ```json

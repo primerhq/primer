@@ -171,6 +171,12 @@ traffic off the control plane.
 
 ### Functions gateway (`primer/service/gateway.py`)
 
+The generated `svc__svc_gateway_function` tool accepts `name`, `fn` and required
+JSON-object `body` (the function's keyword arguments). The published function
+schema still validates those arguments, and the existing sandbox runner executes
+the call. Service resolution and console authentication precede body validation
+as in REST; tool exposure and approval gates remain in force.
+
 `POST /svc/{name}/_gateway/functions/{fn}` validates the JSON body
 against the published schema, loads the source file from artifacts, and
 executes in the SAME hardened runner the python toolsets use (fresh
