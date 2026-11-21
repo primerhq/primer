@@ -1853,3 +1853,42 @@ def test_form_exploded_query_object_preserves_keys_and_other_parameters(explicit
     for invalid in ([], "name=value", {"nested": {"x": 1}}, {"list": [1, 2]}):
         with pytest.raises(ConfigError, match="object of scalar"):
             route_tools_module._request_parts(bindings, {"query": invalid})
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_generated_exploded_queries_cannot_supply_other_bindings(reverse):
+    parameters = [
+        {"in": "query", "name": "first", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+        {"in": "query", "name": "tag", "schema": {"type": "array", "items": {"type": "string"}}},
+        {"in": "query", "name": "second", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+        {"in": "header", "name": "X-Trace", "schema": {"type": "string"}},
+    ]
+    app = FastAPI()
+    seen = []
+
+    @app.get("/query-ownership", openapi_extra={"parameters": parameters[::-1] if reverse else parameters})
+    @route_tool(scoped_id="query_ownership__echo", argument_overrides={"query.tag": "tags", "query.first": "options"})
+    async def echo(request: Request):
+        seen.append(True)
+        return {"query": list(request.query_params.multi_items()), "header": request.headers.get("x-trace")}
+
+    provider = build_generated_route_toolsets(app).providers["query_ownership"]
+    for arguments in (
+        {"options": {"tag": "injected"}},
+        {"options": {"tag": "injected"}, "tags": ["legitimate"]},
+        {"options": {"shared": "first"}, "second": {"shared": "second"}},
+    ):
+        with pytest.raises(ConfigError, match="collides"):
+            await _call(provider, "echo", arguments, Person("alice", "user"))
+        assert seen == []
+    result = await _call(provider, "echo", {
+        "options": {"X-Trace": "query", "tags": "not-the-wire-name"},
+        "tags": ["one", "two"], "second": {"other": "separate"}, "X-Trace": "header",
+    }, Person("alice", "user"))
+    assert not result.is_error, result.output
+    payload = json.loads(result.output)
+    assert payload["header"] == "header"
+    assert sorted(payload["query"]) == sorted([
+        ["X-Trace", "query"], ["tags", "not-the-wire-name"], ["tag", "one"], ["tag", "two"], ["other", "separate"],
+    ])
+    assert seen == [True]

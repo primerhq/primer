@@ -111,8 +111,12 @@ with `application/octet-stream` for exact bytes (the tool exposes base64).
 Declaring this metadata leaves the handler's existing auth and validation order
 intact. In particular, signed webhook bytes must never pass through JSON
 re-encoding. Declared query objects with OpenAPI `style: form, explode: true`
-serialize each scalar property as its own query parameter; ordinary repeated
-array parameters and declared headers retain their existing bindings.
+serialize each scalar property as its own query parameter. Ordinary query wire
+names remain reserved even when their argument is omitted or aliased; overlapping
+keys from two maps are rejected before dispatch. Repeated items within one
+array and same-named headers remain valid. Declared header text is encoded as
+raw bytes (Latin-1 where representable, UTF-8 otherwise), preserving ASCII
+signatures while letting handlers refuse malformed non-ASCII signatures.
 
 The process compiles OpenAPI paths, components and immutable tool blueprints
 once for a stable route contract, after all routers and error handlers are
