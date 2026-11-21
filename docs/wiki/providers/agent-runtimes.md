@@ -62,3 +62,7 @@ Reference: [`system__fetch_llm_provider_models`](reference/tools/system/fetch_ll
 
 ## Related
 [LLM providers](providers/llm), [model profiles](providers/model-profiles).
+
+Codex / ChatGPT plan support is not currently available as a registered Primer
+provider. An internal offline bridge foundation is under development; it does
+not authorize using an existing personal Codex login or enable a live backend.
