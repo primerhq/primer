@@ -154,3 +154,11 @@ Store lock and directory release are independently attempted once; composed host
 cleanup attempts trust disposal even if server/store cleanup failed, and surfaces
 all cleanup errors. OS release after an error is not assumed successful; no retry
 or automatic session-ledger recovery is authorized by disposal.
+
+Descriptor acquisition obeys the same transfer rule: directory walking tracks the
+new child before releasing the previous descriptor. Policy stores and sockets
+remain locally owned until verified-parent disposal completes; a parent close
+error disposes the unreturned resource. Independent cleanup failures are retained
+without retrying an uncertain descriptor number. If the OS reports an error
+before releasing a descriptor, its actual state is unknown to production code;
+this boundary deliberately does not retry it or claim guaranteed kernel release.

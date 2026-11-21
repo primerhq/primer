@@ -27,8 +27,9 @@ def managed_owner_thread() -> threading.Thread:
     """Only standard threading-managed lifetimes may own broker authority.
 
     Alien native threads use persistent DummyThread objects which may survive
-    ident reuse. Custom Thread subclasses can also replace lifecycle handling.
-    Reject both before opening any authority or credential descriptors.
+    ident reuse. Non-leader custom Thread subclasses can replace lifecycle
+    handling and are refused too. A real post-fork leader promoted to main is
+    admitted by kernel identity, independently of its previous subclass.
     """
     owner = threading.current_thread()
     if owner is threading.main_thread():

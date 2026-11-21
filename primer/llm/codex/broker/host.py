@@ -16,6 +16,7 @@ import struct
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import NoReturn
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -31,6 +32,19 @@ def _parts(path: Path) -> tuple[str, ...]:
     return tuple(raw.split('/')[1:])
 
 
+def _raise_after_cleanup(error: BaseException, *cleanup) -> NoReturn:
+    """Attempt each independently owned release without replacing the cause."""
+    errors = [error]
+    for release in cleanup:
+        try:
+            release()
+        except BaseException as exc:
+            errors.append(exc)
+    if len(errors) == 1:
+        raise error
+    raise BaseExceptionGroup('Broker host acquisition cleanup failed', errors)
+
+
 def _root_directory(path: Path) -> int:
     """Descriptor walk: root-owned, non-writable by group/other at every hop."""
     parts = _parts(path)
@@ -39,14 +53,15 @@ def _root_directory(path: Path) -> int:
         for part in (None, *parts):
             if part is not None:
                 new = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                os.close(fd)
-                fd = new
+                old, fd = fd, new
+                # Ownership moves before close: a late old-fd error must clean
+                # the new child, never retry the released/recycled old number.
+                os.close(old)
             info = os.fstat(fd)
             require(info.st_uid == 0 and not stat.S_IMODE(info.st_mode) & 0o022)
         return fd
-    except BaseException:
-        os.close(fd)
-        raise
+    except BaseException as exc:
+        _raise_after_cleanup(exc, lambda: os.close(fd))
 
 
 def _root_json(fd: int, name: str) -> dict:
@@ -264,13 +279,19 @@ class HostTrust:
                                   load=self._policy_bundle, guard=self._live)
             policy = SignedPolicy(self._keys, self._document['audience'], ledger)
             policy.grant(self.account)
+            # Complete parent disposal before transferring the store to caller.
+            # If close reports an error, the local store still owns its flock.
+            owned_parent, parent = parent, None
+            os.close(owned_parent)
             return store, policy
-        except BaseException:
+        except BaseException as exc:
+            cleanup = []
             if store is not None:
-                store.close()
-            raise
-        finally:
-            os.close(parent)
+                cleanup.append(store.close)
+            if parent is not None:
+                owned_parent, parent = parent, None
+                cleanup.append(lambda: os.close(owned_parent))
+            _raise_after_cleanup(exc, *cleanup)
 
     def connect_model_socket(self) -> socket.socket:
         """Primer-side authenticated connection, BEFORE any request bytes.
@@ -294,13 +315,18 @@ class HostTrust:
             _, uid, _ = struct.unpack('3i', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             require(uid == self._document['broker_uid'])
             sock.setblocking(False)
+            owned_parent, parent = parent, None
+            os.close(owned_parent)
             return sock
         except BaseException:
+            cleanup = []
             if sock is not None:
-                sock.close()
-            raise BoundaryError('Broker peer authentication refused') from None
-        finally:
-            os.close(parent)
+                cleanup.append(sock.close)
+            if parent is not None:
+                owned_parent, parent = parent, None
+                cleanup.append(lambda: os.close(owned_parent))
+            # No socket ownership transfers if parent disposal failed either.
+            _raise_after_cleanup(BoundaryError('Broker peer authentication refused'), *cleanup)
 
     def close(self):
         if os.getpid() == self._owner_pid:

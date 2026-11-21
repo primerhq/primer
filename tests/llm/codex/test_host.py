@@ -968,3 +968,142 @@ async def test_host_cleanup_attempts_trust_after_store_close_error(composed, mon
         store.close()
         trust.close()
         assert attempts == expected
+
+
+@pytest.mark.parametrize('child_close_fails', [False, True])
+@pytest.mark.parametrize('old_released', [False, True])
+def test_root_walk_close_error_releases_new_child_without_retrying_old_fd(tmp_path, monkeypatch, child_close_fails, old_released):
+    import stat
+    real_open, real_close, real_stat = os.open, os.close, os.fstat
+    opened, closed, reused = [], [], []
+    def recording_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+    def late_close(fd):
+        closed.append(fd)
+        if fd == opened[0] and not old_released:
+            reused.append(fd)  # Known-open synthetic error, not safe to retry.
+            raise OSError('old parent close refused before release')
+        real_close(fd)
+        if fd == opened[0]:
+            replacement = real_open('/dev/null', os.O_RDONLY)
+            if replacement != fd:
+                os.dup2(replacement, fd)
+                real_close(replacement)
+            reused.append(fd)
+            raise OSError('old parent late close error')
+        if child_close_fails:
+            raise OSError('child late close error')
+    try:
+        with monkeypatch.context() as patch:
+            # Simulate ownership only; walk, descriptor acquisition/release and
+            # numeric FD reuse are real and bounded to the first path hop.
+            patch.setattr(os, 'fstat', lambda fd: SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o700))
+            patch.setattr(os, 'open', recording_open)
+            patch.setattr(os, 'close', late_close)
+            error = BaseExceptionGroup if child_close_fails else OSError
+            with pytest.raises(error) as raised:
+                host._root_directory(tmp_path)
+            assert len(opened) == 2 and closed == opened
+            real_stat(reused[0])
+            with pytest.raises(OSError):
+                real_stat(opened[1])
+            if child_close_fails:
+                assert len(raised.value.exceptions) == 2
+    finally:
+        for fd in reused:
+            real_close(fd)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('store_close_fails', [False, True])
+async def test_parent_close_failure_disposes_unreturned_policy_store(composed, monkeypatch, store_close_fails):
+    trust = host.HostTrust(composed.root)
+    real_directory, real_close = host._root_directory, os.close
+    stores, parents, closed, store_fds = [], [], [], []
+    def directory(path):
+        fd = real_directory(path)
+        parents.append(fd)
+        return fd
+    def store_factory(path):
+        store = PrivateStore(path)
+        stores.append(store)
+        store_fds.extend([store._lock, store._fd])
+        return store
+    def late_close(fd):
+        closed.append(fd)
+        real_close(fd)
+        if fd in parents:
+            raise OSError('parent disposal failed after release')
+        if store_close_fails and fd == store_fds[0]:
+            raise OSError('store disposal also failed')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(host, '_root_directory', directory)
+            patch.setattr(host, 'PrivateStore', store_factory)
+            patch.setattr(host, 'HostTrust', lambda path: trust)
+            patch.setattr(os, 'close', late_close)
+            error = BaseExceptionGroup if store_close_fails else OSError
+            with pytest.raises(error) as raised:
+                async with host.host_broker(composed.root):
+                    pytest.fail('parent disposal failure transferred ownership')
+            if store_close_fails:
+                assert len(raised.value.exceptions) == 2
+            assert trust._fd is None
+            assert all(closed.count(fd) == 1 for fd in store_fds)
+            assert len(parents) == 1 and closed.count(parents[0]) == 1
+            assert len(stores) == 1
+            assert stores[0]._fd is None and stores[0]._lock is None
+            with pytest.raises(BoundaryError):
+                stores[0].read('policy_ledger')
+        # A return displaced by parent cleanup must not strand the flock.
+        reopened = PrivateStore(composed.directory)
+        reopened.close()
+    finally:
+        for store in stores:
+            store.close()
+        trust.close()
+
+
+def test_socket_parent_close_failure_disposes_unreturned_connection(manifest, tmp_path, monkeypatch):
+    trust = host.HostTrust(tmp_path)
+    original_socket, real_close, real_directory = socket.socket, os.close, host._root_directory
+    listener = original_socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(manifest['socket'])
+    os.chmod(manifest['socket'], 0o660)
+    listener.listen(1)
+    listener.settimeout(0.5)
+    parents, clients, closed = [], [], []
+    def directory(path):
+        fd = real_directory(path)
+        parents.append(fd)
+        return fd
+    def socket_factory(*args, **kwargs):
+        client = original_socket(*args, **kwargs)
+        clients.append(client)
+        return client
+    def late_close(fd):
+        closed.append(fd)
+        real_close(fd)
+        if fd in parents:
+            raise OSError('socket parent late close error')
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(host.os, 'geteuid', lambda: manifest['primer_uid'])
+            patch.setattr(host, '_root_directory', directory)
+            patch.setattr(socket, 'socket', socket_factory)
+            patch.setattr(os, 'close', late_close)
+            with pytest.raises(BoundaryError):
+                trust.connect_model_socket()
+        assert len(parents) == 1 and closed.count(parents[0]) == 1
+        assert len(clients) == 1 and clients[0].fileno() == -1
+        accepted, _ = listener.accept()
+        with accepted:
+            accepted.settimeout(0.5)
+            assert accepted.recv(1) == b''  # Connection closed without request bytes.
+    finally:
+        for client in clients:
+            client.close()
+        listener.close()
+        trust.close()
