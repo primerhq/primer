@@ -44,7 +44,7 @@ class PrivateStore:
         try:
             info = os.fstat(self._fd)
             require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700)
-            self._lock = os.open("broker.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=self._fd)
+            self._lock = os.open("broker.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=self._fd)
             self._check(self._lock)
             fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BaseException:
@@ -59,12 +59,23 @@ class PrivateStore:
 
     @staticmethod
     def _name(name: str) -> str:
-        require(name in {"registration", "host", "client_hint", "revocations", "policy_ledger"})
+        require(name in {"registration", "host", "client_hint", "revocations", "policy_ledger", "policy_session"})
         return name + ".json"
 
+    def require_live(self) -> None:
+        # dir_fd=None otherwise silently falls back to cwd.
+        require(self._fd is not None and self._lock is not None)
+
+    @property
+    def identity(self) -> tuple[int, int]:
+        self.require_live()
+        info = os.fstat(self._fd)
+        return info.st_dev, info.st_ino
+
     def read(self, name: str) -> dict | None:
+        self.require_live()
         try:
-            fd = os.open(self._name(name), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self._fd)
+            fd = os.open(self._name(name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self._fd)
         except FileNotFoundError:
             return None
         try:
@@ -81,6 +92,7 @@ class PrivateStore:
             os.close(fd)
 
     def write(self, name: str, value: dict) -> None:
+        self.require_live()
         import secrets
         raw = compact(value).encode()
         require(len(raw) <= MAX_RECORD)
@@ -118,7 +130,7 @@ class SignedPolicy:
     does NOT discover enterprise authorities or attest the inventory is genuine.
     """
     def __init__(self, keys: dict[str, bytes], audience: str, load):
-        require(bool(keys))
+        require(bool(keys) and len(set(keys.values())) == len(keys))
         self._keys = {text(k): Ed25519PublicKey.from_public_bytes(v) for k, v in keys.items()}
         self._audience = text(audience)
         self._load = load

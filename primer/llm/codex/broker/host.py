@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import re
 import socket
@@ -48,6 +49,7 @@ def _root_directory(path: Path) -> int:
 
 
 def _root_json(fd: int, name: str) -> dict:
+    require(type(fd) is int and fd >= 0)
     child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
     try:
         info = os.fstat(child)
@@ -72,34 +74,91 @@ def _revision(value) -> int:
     return int(value)
 
 
-class PolicyLedger:
-    """Authenticate before recording; persist before authorizing, including deny.
+# No reset API: uncertain writes fence this inode for the interpreter lifetime.
+_UNCERTAIN_STORES: set[tuple[int, int]] = set()
 
-    The pre-provisioned record is mandatory. A write exception permanently fences
-    this instance; no in-process retry may authorize an uncertain transition.
+
+def manifest_identity(doc: dict) -> str:
+    """Versioned canonical JSON, independent of object insertion order."""
+    raw = json.dumps(doc, sort_keys=True, ensure_ascii=False, allow_nan=False,
+                     separators=(',', ':'))
+    return hashlib.sha256(('primer-codex-host-v1\n' + raw).encode()).hexdigest()
+
+
+def _manifest(doc: dict) -> tuple[dict[str, bytes], dict[str, str]]:
+    require(type(doc) is dict and set(doc) == {'audience', 'broker_uid', 'primer_uid', 'account',
+                                             'store', 'socket', 'authorities'})
+    require(type(doc['broker_uid']) is int and doc['broker_uid'] > 0
+            and type(doc['primer_uid']) is int and doc['primer_uid'] > 0
+            and doc['broker_uid'] != doc['primer_uid'])
+    text(doc['audience'])
+    require(re.fullmatch(r'[0-9a-f]{64}', text(doc['account'])) is not None)
+    for field in ('store', 'socket'):
+        _parts(Path(text(doc[field])))
+    authorities = doc['authorities']
+    require(type(authorities) is dict and 0 < len(authorities) <= 32)
+    keys, floors = {}, {}
+    for ident, item in authorities.items():
+        text(ident)
+        require(type(item) is dict and set(item) == {'key', 'minimum_revision'})
+        key = base64.b64decode(text(item['key']), validate=True)
+        Ed25519PublicKey.from_public_bytes(key)
+        require(key not in keys.values())
+        _revision(item['minimum_revision'])
+        keys[ident], floors[ident] = key, item['minimum_revision']
+    return keys, floors
+
+
+def _policy_session(store: PrivateStore, identity: str) -> None:
+    """Persist dirty marker BEFORE observing policy; never automatically clear.
+
+    Reopening requires a trusted administrator to reconcile the ledger and
+    provision a ready marker. No policy was observed if the initial marker write
+    fails, but same-process uncertainty still fences every subsequent instance.
     """
+    inode = store.identity
+    require(inode not in _UNCERTAIN_STORES)
+    if hasattr(store, '_policy_session_identity'):
+        require(store._policy_session_identity == identity)
+        return
+    require(store.read('policy_session') == {'identity': identity, 'state': 'ready'})
+    _UNCERTAIN_STORES.add(inode)
+    store.write('policy_session', {'identity': identity, 'state': 'active'})
+    store._policy_session_identity = identity
+    _UNCERTAIN_STORES.remove(inode)
+
+
+class PolicyLedger:
+    """Persist each highest authenticated decision before considering a grant."""
     def __init__(self, store: PrivateStore, *, identity: str, keys: dict[str, bytes],
                  audience: str, floors: dict[str, str], load):
+        require(bool(keys) and len(set(keys.values())) == len(keys))
         self._store, self._identity, self._load = store, identity, load
         self._keys = {k: Ed25519PublicKey.from_public_bytes(v) for k, v in keys.items()}
         self._audience, self._floors = audience, floors
-        self._failed = False
-        self._state = store.read('policy_ledger')
-        require(type(self._state) is dict and set(self._state) == {'identity', 'revisions'}
-                and self._state['identity'] == identity
+        _policy_session(store, identity)
+        self._read_state()
+
+    def _read_state(self):
+        self._state = self._store.read('policy_ledger')
+        require(type(self._state) is dict and set(self._state) == {'identity', 'revisions', 'conflicts'}
+                and self._state['identity'] == self._identity and self._state['conflicts'] == []
                 and type(self._state['revisions']) is dict
-                and set(self._state['revisions']) == set(keys) == set(floors))
+                and set(self._state['revisions']) == set(self._keys) == set(self._floors))
         for ident, item in self._state['revisions'].items():
             require(type(item) is dict and set(item) == {'revision', 'sha256'})
-            require(_revision(item['revision']) >= _revision(floors[ident]))
+            require(_revision(item['revision']) >= _revision(self._floors[ident]))
             require(type(item['sha256']) is str and re.fullmatch(r'[0-9a-f]{64}', item['sha256']) is not None)
 
     def __call__(self):
-        require(not self._failed)
+        inode = self._store.identity
+        require(inode not in _UNCERTAIN_STORES)
+        self._read_state()
         bundle = self._load()
         require(type(bundle) is dict and set(bundle) == set(self._keys))
-        revisions = {}
-        # Complete authentication/rollback validation precedes ANY write.
+        authenticated = {}
+        # Authenticate the COMPLETE set before ANY persistence. Rollback is not
+        # authentication failure: another authority's new denial must survive it.
         for ident, key in self._keys.items():
             envelope = bundle[ident]
             require(type(envelope) is dict and set(envelope) == {'payload', 'signature'})
@@ -107,20 +166,30 @@ class PolicyLedger:
             key.verify(base64.b64decode(envelope['signature'], validate=True), raw)
             doc = decode(raw)
             require(type(doc) is dict and doc.get('audience') == self._audience)
-            number = _revision(doc.get('revision'))
-            previous = self._state['revisions'][ident]
-            digest = hashlib.sha256(raw).hexdigest()
-            require(number >= _revision(previous['revision']) and number >= _revision(self._floors[ident]))
-            require(number != _revision(previous['revision']) or digest == previous['sha256'])
-            revisions[ident] = {'revision': doc['revision'], 'sha256': digest}
-        prospective = {'identity': self._identity, 'revisions': revisions}
+            _revision(doc.get('revision'))
+            authenticated[ident] = {'revision': doc['revision'], 'sha256': hashlib.sha256(raw).hexdigest()}
+        revisions = dict(self._state['revisions'])
+        conflicts, refused = [], False
+        for ident, item in authenticated.items():
+            number = _revision(item['revision'])
+            previous = revisions[ident]
+            prior = _revision(previous['revision'])
+            if number < prior or number < _revision(self._floors[ident]):
+                refused = True
+            elif number == prior and item['sha256'] != previous['sha256']:
+                conflicts.append(ident)
+                refused = True
+            elif number > prior:
+                revisions[ident] = item
+        prospective = {'identity': self._identity, 'revisions': revisions, 'conflicts': sorted(conflicts)}
         if prospective != self._state:
             try:
                 self._store.write('policy_ledger', prospective)
             except BaseException:
-                self._failed = True
+                _UNCERTAIN_STORES.add(inode)
                 raise
             self._state = prospective
+        require(not refused)
         return bundle
 
 
@@ -133,48 +202,42 @@ class HostTrust:
     def __init__(self, directory: Path):
         self._fd = _root_directory(directory)
         try:
-            self._document = _root_json(self._fd, 'host.json')
-            doc = self._document
-            require(set(doc) == {'audience', 'broker_uid', 'primer_uid', 'account',
-                                 'store', 'socket', 'authorities'})
-            require(type(doc['broker_uid']) is int and doc['broker_uid'] > 0
-                    and type(doc['primer_uid']) is int and doc['primer_uid'] > 0
-                    and doc['broker_uid'] != doc['primer_uid'])
-            text(doc['audience'])
-            require(re.fullmatch(r'[0-9a-f]{64}', text(doc['account'])) is not None)
-            for field in ('store', 'socket'):
-                _parts(Path(text(doc[field])))
-            authorities = doc['authorities']
-            require(type(authorities) is dict and 0 < len(authorities) <= 32)
-            self._keys, self._floors = {}, {}
-            for ident, item in authorities.items():
-                text(ident)
-                require(type(item) is dict and set(item) == {'key', 'minimum_revision'})
-                key = base64.b64decode(item['key'], validate=True)
-                Ed25519PublicKey.from_public_bytes(key)
-                _revision(item['minimum_revision'])
-                self._keys[ident], self._floors[ident] = key, item['minimum_revision']
-            self.identity = hashlib.sha256(compact(doc).encode()).hexdigest()
+            doc = _root_json(self._fd, 'host.json')
+            self._keys, self._floors = _manifest(doc)
+            self.identity = manifest_identity(doc)
+            self._document = decode(compact(doc))
         except BaseException:
             self.close()
             raise BoundaryError('Host trust unavailable') from None
 
+    def _live(self):
+        require(self._fd is not None)
+
+    def _manifest_current(self):
+        self._live()
+        doc = _root_json(self._fd, 'host.json')
+        _manifest(doc)
+        require(manifest_identity(doc) == self.identity)
+
     @property
     def account(self):
+        self._live()
         return self._document['account']
 
     @property
     def primer_uid(self):
+        self._live()
         return self._document['primer_uid']
 
     def _policy_bundle(self):
         # Changes to keys, identities or paths require a stopped, reprovisioned
         # process. Policy replacement itself is permitted and read every grant.
-        require(_root_json(self._fd, 'host.json') == self._document)
+        self._manifest_current()
         return _root_json(self._fd, 'policy.json')
 
     def open_policy_store(self) -> tuple[PrivateStore, SignedPolicy]:
         """Broker-side only; all identity/path checks before credential reads."""
+        self._manifest_current()
         require(os.geteuid() == self._document['broker_uid'])
         path = Path(self._document['store'])
         parent = _root_directory(path.parent)
@@ -202,13 +265,14 @@ class HostTrust:
         Return a nonblocking socket for async protocol composition. No generic
         endpoint, account override, management operation or credential is sent.
         """
+        self._manifest_current()
         require(os.geteuid() == self.primer_uid)
         path = Path(self._document['socket'])
         parent = _root_directory(path.parent)
         sock = None
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            require(_root_json(self._fd, 'host.json') == self._document)
+            self._manifest_current()
             info = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
             require(stat.S_ISSOCK(info.st_mode) and info.st_uid == self._document['broker_uid']
                     and stat.S_IMODE(info.st_mode) == 0o660)

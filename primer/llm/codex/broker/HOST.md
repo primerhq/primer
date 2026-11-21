@@ -28,6 +28,7 @@ The closed host manifest has these fields:
   group membership and listener. The code never relaxes permissions.
 - `authorities`: complete map from authority ID to base64 Ed25519 public `key`
   and canonical decimal `minimum_revision` (1 through 19 digits, no leading zero).
+  Different authorities must have distinct decoded keys; aliases of one key refuse.
 
 Root must supply the actual account binding after dedicated identity verification;
 this is not an invitation to fill in an invented value. Authenticating a new
@@ -54,27 +55,60 @@ identity before deployment. No arbitrary command or executable path is accepted.
 ## Rollback and uncertain persistence
 
 An administrator must pre-provision `policy_ledger.json` in the private store as
-0600, with exactly `identity` and `revisions`. Identity is SHA256 of the canonical
-compact JSON host manifest. Revisions map each authority to its initial signed
-payload's `revision` and hex `sha256`. The code will not silently bootstrap a
-missing record or migrate identity: deletion/identity mismatch fails closed.
-Keys/inventory are never read from this broker-writable record.
+0600, with exactly `identity`, `revisions` and an empty `conflicts` list. Identity
+uses `manifest_identity`: SHA256 of UTF-8 `primer-codex-host-v1` followed by a
+newline and JSON with recursively sorted keys, compact separators, no ASCII
+escaping and no nonfinite numbers. Both initial and live manifests undergo the
+same strict schema validation. Harmless object-key reorder keeps this identity;
+a numeric UID replaced by a boolean or float refuses. Revisions map each authority
+to its initial signed payload's `revision` and hex `sha256`. Missing records or
+identity mismatch refuse; there is no automatic migration of older candidates.
 
-Every bundle authenticates ALL authorities and the audience before any state
-write. Revisions must be at least the root-pinned floor and previously durable
-revision. Reuse of a revision with a different signed payload refuses. A newer
-signed denial, including suspension, is persisted before grant evaluation, so a
-later older permissive bundle cannot undo it. File and directory fsync precede
-return to the authorizer. Failure leaves this instance fenced permanently,
-including when rename may have succeeded. No same-process retry clears the fence.
+Every bundle authenticates ALL authorities and the audience before any ledger
+write. After complete authentication, every higher revision is recorded, even
+when another authority supplies an older revision. The mixed bundle is still
+refused. Thus a newly observed signed denial survives a different authority's
+rollback in either iteration order. Same-revision differing signed payloads
+record a durable conflict and refuse subsequent grants until trusted recovery.
+Unauthenticated sets never advance the ledger. All policy handles reread the
+same exclusively held store, including unchanged-revision authorization.
 
-This defends against replay of policy files, not rollback of the entire trusted
-host/storage or hostile kernel/root/broker code. Following an uncertain write,
-recovery must reconcile the authoritative policy and durable ledger; no restart
-claim exceeds the last confirmed fsync. Policy expiry and clock trust remain
-required. Deliberately signed malformed newer payloads may advance the fence and
-refuse access; correcting them requires an even newer revision. Authority/key
-rotation and backup restore need explicit stopped administrative reprovisioning.
+A second mandatory 0600 record, `policy_session.json`, contains exactly the same
+`identity` and `state: "ready"`. Before observing any policy, the broker durably
+replaces ready with active, including file AND directory fsync. It never clears
+active automatically, including on graceful close. The same open store may have
+several ledger handles; a reopened store or new process refuses an active marker.
+This intentionally trades automatic restart availability for explicit recovery.
+A failed initial marker write observes no policy and authorizes nothing. A failed
+later ledger write is preceded by the already durable active marker. In addition,
+a write exception fences the store device/inode for the entire interpreter
+lifetime, including after all handles close and are reconstructed. No reset API
+or enrollment option clears that uncertainty.
+
+Before a new broker process can start after ANY store close, the administrator
+must stop all owners, reconcile with every authority's current authenticated
+monotonic decision (including restrictions), resolve conflicts/unknown write
+outcomes, and durably checkpoint the ledger and a ready session record. Restore
+from an old backup alone is not recovery. Do not mark ready unless the current
+high-water decisions are established; otherwise leave the broker unavailable.
+After an in-process uncertainty, recovery also requires a new interpreter. This
+slice supplies no automated recovery/provisioning command, and no claim that root
+ownership establishes enterprise inventory completeness. Deployment remains gated
+on an actual reviewed supervisor and administrative recovery procedure.
+
+Open trust/store handles are mandatory for every authorization/read/write and
+socket operation; closed handles refuse before filesystem/socket access. Private
+record and lock acquisition is nonblocking followed by regular-file validation,
+so a misprovisioned FIFO cannot hang initialization. Closing the store releases
+its lock, and retained policies cease authorizing.
+
+These controls defend against policy-file replay, not hostile root/kernel,
+trusted broker-UID code or rollback of all host storage. Filesystem fsync semantics,
+policy expiry and clock trust remain assumptions. A crash before the initial
+active-marker fsync has not observed new policy; a crash after successful fsync
+requires the explicit recovery above. Authenticated malformed newer payloads may
+advance the fence and deny access. Authority/key rotation and backup restore need
+stopped administrative reprovisioning. No production activation is supplied.
 
 ## Evidence and remaining gates
 
