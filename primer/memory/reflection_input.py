@@ -19,7 +19,10 @@ from primer.int.llm import _extract_json_object
 from primer.llm._reasoning import profile_extended
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback, text_tokens
 from primer.memory.prompts import MEMORY_SUMMARY_PROMPT
-from primer.model.chat import Error, Message, TextDelta, TextPart, ToolCallPart, ToolResultPart
+from primer.model.chat import (
+    Done, Error, ExtendedEvent, Message, TextDelta, TextPart,
+    ToolCallDelta, ToolCallEnd, ToolCallPart, ToolCallStart, ToolResultPart,
+)
 from primer.model.except_ import ServerError
 
 INPUT_TOKEN_CAP = 30_000
@@ -174,9 +177,13 @@ async def _close(stream) -> None:
             await asyncio.shield(task)
         except asyncio.CancelledError as exc:
             cancelled = exc
-    task.result()
+        except Exception:
+            break  # retrieve below, without losing a cancellation already observed
     if cancelled is not None:
+        if not task.cancelled():
+            task.exception()
         raise cancelled
+    task.result()
 
 
 async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
@@ -190,18 +197,25 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
             Message(role="system", parts=[TextPart(text=system)]),
             Message(role="user", parts=[TextPart(text=user)]),
         ], temperature=0.0, response_format=schema, max_output_tokens=budget.output_tokens,
-        tools=None, tool_choice="none",
+        # No executable tools are exposed. Anthropic emulates the schema with
+        # its reserved structured_output tool and forbids an explicit choice.
+        tools=None, tool_choice=None,
         extended=profile_extended(llm, getattr(model, "config", None), model=model.model_name),
     )
     parts: list[str] = []
     size = events = received = 0
+    structured_key = None
+    structured_result = None
+    argument_parts: list[str] = []
+    argument_size = 0
     try:
         async for event in stream:
             events += 1
             # Reject large text before encoding another copy. Nontext provider
             # events are not retained; event count and the attempt deadline bound
             # streams with no text. This is not a network-frame-size guarantee.
-            text = getattr(event, "text", "")
+            payload = event.extended if isinstance(event, ExtendedEvent) else event
+            text = getattr(payload, "text", "")
             if len(text) > MAX_OUTPUT_BYTES:
                 raise InputRefused("compaction_output_limit")
             received += len(text.encode("utf-8"))
@@ -209,12 +223,43 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
                 raise InputRefused("compaction_output_limit")
             if events > MAX_EVENTS:
                 raise InputRefused("compaction_output_limit")
+            if isinstance(event, Done) and event.stop_reason == "max_tokens":
+                raise InputRefused("compaction_output_limit")
             if isinstance(event, Error):
                 if event.fatal:
                     if is_context_overflow_error(event):
                         raise InputRefused("input_context_rejected")
                     raise ServerError("memory model stream failed", code=event.code)
-            elif "tool_call" in event.type:
+            elif isinstance(event, ToolCallStart):
+                if event.name != "structured_output" or structured_key is not None:
+                    raise InputRefused("compaction_invalid")
+                structured_key = (event.id, event.index)
+            elif isinstance(event, (ToolCallDelta, ToolCallEnd)):
+                if structured_key != (event.id, event.index) or structured_result is not None:
+                    raise InputRefused("compaction_invalid")
+                if isinstance(event, ToolCallDelta):
+                    if len(event.arguments_delta) > max_bytes:
+                        raise InputRefused("compaction_output_limit")
+                    amount = len(event.arguments_delta.encode("utf-8"))
+                    argument_size += amount
+                    received += amount
+                    if argument_size > max_bytes or received > MAX_OUTPUT_BYTES:
+                        raise InputRefused("compaction_output_limit")
+                    argument_parts.append(event.arguments_delta)
+                else:
+                    # Bound an adapter's already-parsed result too, without
+                    # first constructing one unbounded serialized copy.
+                    end_size = 0
+                    for piece in json.JSONEncoder(ensure_ascii=False).iterencode(event.arguments):
+                        end_size += len(piece.encode("utf-8"))
+                        if end_size > max_bytes:
+                            raise InputRefused("compaction_output_limit")
+                    if not argument_parts:
+                        received += end_size
+                        if received > MAX_OUTPUT_BYTES:
+                            raise InputRefused("compaction_output_limit")
+                    structured_result = event.arguments
+            elif "tool_call" in payload.type:
                 raise InputRefused("compaction_invalid")
             elif isinstance(event, TextDelta):
                 size += len(event.text.encode("utf-8"))
@@ -228,6 +273,12 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
     finally:
         await _close(stream)
     try:
+        if structured_key is not None:
+            if structured_result is None:
+                raise InvalidVerdict()
+            if argument_parts and json.loads("".join(argument_parts)) != structured_result:
+                raise InvalidVerdict()
+            return structured_result
         return _extract_json_object("".join(parts))
     except (ValueError, RecursionError):
         raise InvalidVerdict() from None
@@ -246,6 +297,8 @@ async def bounded_judge(llm, model, **kwargs) -> dict:
                 await asyncio.shield(task)
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                break  # cleanup failed; original waiter cancellation still wins
         # Retrieve any cleanup failure but preserve the original cancellation.
         if not task.cancelled():
             task.exception()

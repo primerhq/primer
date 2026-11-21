@@ -216,10 +216,15 @@ async def _check_current(deps, job, agent, settings, session):
             or any(getattr(fresh, key) != getattr(settings, key) for key in EDITABLE)):
         raise InputRefused("input_superseded")
     current_session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
-    if (session is None or current_session is None or any(
-            getattr(current_session, key) != getattr(session, key)
-            for key in ("created_at", "workspace_id", "binding", "binding_epoch", "turn_person", "initiated_by"))):
+    if session is None or current_session is None or _session_identity(current_session) != _session_identity(session):
         raise InputRefused("input_superseded")
+
+
+def _session_identity(session):
+    # This is an execution-time witness, not an enqueue-time binding claim.
+    return tuple(getattr(session, key) for key in (
+        "created_at", "workspace_id", "binding", "binding_epoch", "turn_person", "initiated_by",
+    ))
 
 
 # --- the run -----------------------------------------------------------------------------------------------------------------------------------
@@ -257,11 +262,26 @@ async def resolve_agent_llm(deps: Any, agent: Agent) -> tuple[Any, Any] | None:
 
 async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory) -> ReflectionReport:
     """Reflect on the session's new turns and apply the deltas. The budget is counted by the caller."""
+    session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
+    if session is not None:
+        session = session.model_copy(deep=True)
+
+    async def check():
+        await _check_current(deps, job, agent, settings, session)
+
+    try:
+        await check()
+    except InputRefused as exc:
+        return await _skip(deps, agent, job, str(exc))
     resolved = await resolve_agent_llm(deps, agent)
     if resolved is None:
         return await _skip(deps, agent, job, "profile_unavailable")
     llm, model = resolved
-    messages = await deps.load_messages(job) if deps.load_messages is not None else None
+    try:
+        messages = await deps.load_messages(job) if deps.load_messages is not None else None
+        await check()
+    except InputRefused as exc:
+        return await _skip(deps, agent, job, str(exc))
     if messages is None:
         return await _skip(deps, agent, job, "transcript_unavailable")
     if len(turn_starts(messages)) < job.target_turn:
@@ -272,12 +292,9 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
         return await _skip(deps, agent, job, "no_new_turns")
     collection_id = memory_collection_id(agent.id)
     used, trial = used_entries(messages, collection_id, await _lookups(deps, agent, job))
-    session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
     system = settings.reflection_prompt or DEFAULT_REFLECTION_PROMPT
     schema = ReflectionOutput.model_json_schema()
     budget = Budget.for_model(model.context_length)
-    async def check():
-        await _check_current(deps, job, agent, settings, session)
     try:
         async with asyncio.timeout(ATTEMPT_SECONDS):
             await check()
@@ -291,13 +308,17 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
             input_metadata.update(context_metadata)
             input_metadata["source_turns"] = job.target_turn - job.reflected_turn
             await check()
-            raw = await bounded_judge(llm, model, system=system, user=user_message, schema=schema, budget=budget)
+            try:
+                raw = await bounded_judge(llm, model, system=system, user=user_message, schema=schema, budget=budget)
+            except InvalidVerdict:
+                # Invalid output is a terminal disposition only while this
+                # attempt still has authority to advance the source watermark.
+                await check()
+                await _mark_reflected(deps, job)
+                return await _skip(deps, agent, job, "invalid_output")
             await check()
     except InputRefused as exc:
         return await _skip(deps, agent, job, str(exc))
-    except InvalidVerdict:
-        await _mark_reflected(deps, job)
-        return await _skip(deps, agent, job, "invalid_output")
     except Exception as exc:  # noqa: BLE001 - existing durable retries; never log provider payloads
         raise ReflectionTransient("memory model unavailable") from exc
     try:
@@ -348,19 +369,44 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     return report
 
 
-async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], job: MemoryJob) -> list[str] | None:
+async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], job: MemoryJob, *, strict: bool = False) -> list[str] | None:
     """The lines of the job's session log, or None when the session or its log is gone."""
     if not job.session_id:
         return None
     row = await sp.get_storage(WorkspaceSession).get(job.session_id)
     if row is None:
         return None
+    row = row.model_copy(deep=True)
     try:
         raw = await read_log(row.workspace_id, f"sessions/{row.id}")
     except Exception:  # noqa: BLE001 - an unreadable log is reported by the caller as "no transcript"
         logger.info("memory job %s: the session log cannot be read", job.id, exc_info=True)
         return None
-    return (raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)).splitlines()
+    if strict:
+        current = await sp.get_storage(WorkspaceSession).get(job.session_id)
+        if current is None or _session_identity(current) != _session_identity(row):
+            raise InputRefused("input_superseded")
+    try:
+        lines = (raw.decode("utf-8", "strict" if strict else "replace")
+                 if isinstance(raw, (bytes, bytearray)) else str(raw)).splitlines()
+        if strict:
+            for line in lines:
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                if not isinstance(obj, dict):
+                    raise ValueError("not a log record")
+                if "role" in obj or "parts" in obj:
+                    Message.model_validate(obj)
+                elif not isinstance(obj.get("kind"), str):
+                    raise ValueError("unrecognized log record")
+                elif obj["kind"] == SessionMessageKind.REWIND_MARKER.value:
+                    to_seq = (obj.get("payload") or {}).get("to_seq")
+                    if type(to_seq) is not int or to_seq < 0:
+                        raise ValueError("invalid rewind")
+    except (ValueError, AttributeError, TypeError, RecursionError):
+        raise InputRefused("input_incomplete") from None
+    return lines
 
 
 def _without_compaction_markers(lines: list[str]) -> list[str]:
@@ -381,7 +427,9 @@ def _without_compaction_markers(lines: list[str]) -> list[str]:
 
 def session_message_loader(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]]) -> Callable[[MemoryJob], Awaitable[list[Message] | None]]:
     """``MemoryDeps.load_messages``: the session's whole history as it was lived (compaction markers ignored, the same parse as the executor's),
-    or None when the session or its log is gone.
+    or None when the session or its log is gone. Reflection validates record
+    integrity before that fold; detectable damage or a changed read identity
+    raises InputRefused instead of silently discarding evidence.
 
     ``read_log(workspace_id, slot)`` reads the whole session log under a session's state directory, every segment in order (the worker's IO
     shim, ``read_session_log``): what was said lives before the newest compaction marker too, so this reads every segment, not only that one's.
@@ -389,7 +437,7 @@ def session_message_loader(sp: Any, read_log: Callable[[str, str], Awaitable[byt
     from primer.workspace.session import reconstruct_compacted_history
 
     async def load(job: MemoryJob) -> list[Message] | None:
-        lines = await _log_lines(sp, read_log, job)
+        lines = await _log_lines(sp, read_log, job, strict=True)
         return None if lines is None else reconstruct_compacted_history(_without_compaction_markers(lines))
 
     return load

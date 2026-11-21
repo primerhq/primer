@@ -523,3 +523,54 @@ async def test_rearmed_memory_claim_stops_held_reflection_summary(provider):
     latest = await provider.get_storage(MemoryJob).get(job.id)
     assert latest.target_turn == 3 and latest.reflected_turn == 0
     assert latest.occurrence_id != lease.memory_occurrence and latest.requested_due_at is not None
+
+
+async def test_failed_stream_cleanup_does_not_settle_cancelled_memory_job(provider):
+    import asyncio
+    from types import SimpleNamespace
+
+    from primer.model.chat import TextDelta
+    from primer.model.model_profile import ModelProfile
+    from tests.memory.test_reflect import AGENT, FakeLLM, _deps as reflect_deps, _setup
+
+    await provider.get_storage(ModelProfile).create(ModelProfile(
+        id="p", description="offline", provider_id="prov", model_name="m", context_length=32768))
+    _, _, old = await _setup(provider)
+    engine = queue(provider)
+    now = datetime.now(UTC)
+    await jobs._upsert_job(provider, old.id, kind="reflect", agent_id=AGENT, session_id="s1", target_turn=2, now=now)
+    await jobs.arm_current(provider, engine, old.id)
+    lease, = await engine.claim_due("reflection-owner", max_count=1)
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    class Failing(FakeLLM):
+        async def stream(self, **kwargs):
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+                yield TextDelta(text="", index=0)
+            finally:
+                cleaning.set()
+                await release.wait()
+                raise RuntimeError("isolated cleanup failure")
+    async def empty(*args):
+        return []
+    deps = reflect_deps(provider, Failing(), store=SimpleNamespace(list_entries=empty))
+    deps.engine, deps.now = engine, lambda: now
+    before = await provider.get_storage(MemoryJob).get(old.id)
+    running = asyncio.create_task(jobs.run_memory_job(deps, lease))
+    try:
+        async with asyncio.timeout(10):
+            await entered.wait()
+            running.cancel()
+            await cleaning.wait()
+            running.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+    finally:
+        release.set()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+    latest = await provider.get_storage(MemoryJob).get(old.id)
+    assert latest.reflected_turn == 0 and latest.retry_count == before.retry_count
+    assert latest.requested_due_at == before.requested_due_at and latest.occurrence_id == before.occurrence_id

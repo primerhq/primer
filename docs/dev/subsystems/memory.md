@@ -283,9 +283,16 @@ summary sizes are validated, then one final reflection reads the lossy summaries
 No original logs, conversation compaction markers or memory entries are rewritten
 by preprocessing. Summaries cannot expand deterministic credit eligibility.
 Nontext attachments are identified but their contents are not inspected.
+No executable tools are supplied. Providers with native structured output return
+JSON text; Anthropic's existing adapter uses its single synthetic
+`structured_output` result. The bounded collector accepts that result as schema
+data, never executes it, and rejects other or repeated tool calls.
 
-Every call has an output request limit, a 64 KiB collected-text/ reasoning-text
+Every call has an output request limit, a 64 KiB collected-text/reasoning-text
 ceiling and an event-count ceiling; summary text has a smaller per-plan byte cap.
+Nested raw reasoning events and synthetic result arguments count toward the
+limits. A terminal `max_tokens` response is incomplete even if its JSON prefix
+parses: it never applies deltas or advances reflection progress.
 After profile/log loading, context preparation and model calls share a 120-second deadline. Cancellation joins provider
 cleanup, even after repeated waiter cancellation; an adapter that cannot finish
 cleanup can delay that join. There is no detached background model task. Profile
@@ -301,14 +308,30 @@ promise that an ended, permanently oversized session will eventually be learned.
 Transport errors keep the existing bounded durable retries. Invalid *final*
 reflection verdicts retain the existing terminal watermark behavior. Summaries
 are ephemeral, so a retry recomputes them; existing per-delta replay limits remain.
+Invalid-final progress writes recheck the same authority as valid results.
 The range check also refuses a readable log with fewer turn inputs than the job
 requests (`input_incomplete`), including at the triviality gate for eligible
 multi-turn jobs. The existing fewer-than-two-new-turns policy remains unchanged.
+Reflection-specific reads reject malformed UTF-8, malformed/non-record JSON,
+invalid Message records and malformed rewind targets, without changing the
+executor's permissive history reader. Valid compaction markers remain ignored
+and valid rewinds still remove their discarded history. This detects damaged
+records, not a missing but syntactically intact tail: the log has no completeness
+checksum or persisted job boundary proving that every original byte is present.
+The session identity is captured before loading and rechecked across the read
+and subsequent model work. This is execution-time provenance; memory jobs do not
+persist an enqueue-time binding epoch, and historical reads across prior session
+switches remain supported. Entry writes retain the non-atomic interval after
+their final authority check.
 
 The daily reflection count still counts attempts, not preprocessing requests. A
 long attempt can issue four summary calls and one final call; retries consume
 another attempt. Activity reports direct/compacted mode, call count, estimated
 input and budget, or a safe skip reason. It stores no summary or raw model error.
+That statement covers memory entries and activity metadata only. Enabled provider
+IO tracing can serialize the request, including transcript and summary text, into
+OTEL according to the deployment's existing tracing policy; this path does not
+disable or redact that separately configured trace sink.
 The existing owner-only activity route and generated `agent_memory__memory_activity`
 tool carry these fields; the Memory activity tab explains skipped learning.
 

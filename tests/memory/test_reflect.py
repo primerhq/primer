@@ -38,7 +38,7 @@ class FakeLLM:
 
     async def stream(self, *, model, messages, response_format, tools, tool_choice, max_output_tokens, **kwargs):
         from primer.model.chat import TextDelta
-        assert tools is None and tool_choice == "none" and max_output_tokens > 0
+        assert tools is None and tool_choice is None and max_output_tokens > 0
         try:
             answer = await self.judge_structured(model=model, system_prompt=messages[0].parts[0].text,
                                                 user_message=messages[1].parts[0].text, response_schema=response_format)
@@ -488,5 +488,72 @@ async def test_incomplete_transcript_never_advances_requested_range(sp, llm, ava
     deps = _deps(sp, llm, source)
     report = await reflect(deps, job, agent, mem)
     assert report.skipped_reason == "input_incomplete" and llm.calls == []
+    assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+
+
+@pytest.mark.parametrize("finish,parseable", [("length", False), ("length", True), ("stop", False)])
+async def test_final_token_exhaustion_never_applies_or_advances(sp, finish, parseable):
+    from types import SimpleNamespace as NS
+    from primer.llm._openai_compat import _StreamState, _translate_chunk
+
+    agent, mem, job = await _setup(sp)
+    text = json.dumps(_run([_add_delta()])) if parseable else '{"run_succeeded":true,"deltas":['
+    class Limited(FakeLLM):
+        async def stream(self, **kwargs):
+            state = _StreamState()
+            for content, reason in ((text, None), (None, finish)):
+                chunk = NS(id="offline", model="m", usage=None, choices=[
+                    NS(index=0, delta=NS(role="assistant", content=content, tool_calls=None), finish_reason=reason),
+                ])
+                for event in _translate_chunk(chunk, state):
+                    yield event
+    deps = _deps(sp, Limited())
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == ("compaction_output_limit" if finish == "length" else "invalid_output")
+    assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == (0 if finish == "length" else 2)
+
+
+@pytest.mark.parametrize("edit", ["disable", "exclusion"])
+@pytest.mark.parametrize("answer", ["malformed", '{"run_succeeded":"not a boolean"}'])
+async def test_invalid_final_output_rechecks_policy_before_progress(sp, edit, answer):
+    import asyncio
+    from primer.model.chat import Done, TextDelta
+    agent, mem, job = await _setup(sp)
+    entered, release = asyncio.Event(), asyncio.Event()
+    class Held(FakeLLM):
+        async def stream(self, **kwargs):
+            entered.set()
+            await release.wait()
+            yield TextDelta(text=answer, index=0)
+            yield Done(stop_reason="stop", raw_reason="stop")
+    deps = _deps(sp, Held())
+    running = asyncio.create_task(reflect(deps, job, agent, mem))
+    try:
+        async with asyncio.timeout(5):
+            await entered.wait()
+            patch = {"enabled": False} if edit == "disable" else {"do_not_capture": ["new owner exclusion"]}
+            assert await sp.get_storage(AgentMemory).patch_if(AGENT, patch, where={"enabled": [True]})
+            release.set()
+            report = await running
+    finally:
+        release.set()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+    assert report.skipped_reason == "input_superseded"
+    assert await _entries(deps) == []
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
+
+
+async def test_session_identity_is_captured_before_loading_evidence(sp, llm):
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm)
+    async def changed_during_load(_job):
+        assert await sp.get_storage(WorkspaceSession).patch_if("s1", {"binding_epoch": 1}, where={"binding_epoch": [0]})
+        return _transcript()
+    deps.load_messages = changed_during_load
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == "input_superseded" and llm.calls == []
     assert await _entries(deps) == []
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
