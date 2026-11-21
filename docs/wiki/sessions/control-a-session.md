@@ -78,6 +78,7 @@ Reference: [`workspaces__pause_workspace_session`](reference/tools/workspaces/pa
 Reference: [`workspaces__resume_workspace_session`](reference/tools/workspaces/resume_workspace_session)
 
 ## Gotchas
+- The default-zero `priority` value is internal groundwork. Public priority changes and reserved interactive capacity are not available yet; pause and resume do not enable them.
 - A success answer to interrupt is not a Stop. Read `interrupt_requested`.
 - A pause does not cut the running turn short: the turn finishes first, and the session then reads `paused`. To stop it now and keep it stopped, interrupt it, then pause it.
 - Interrupt refuses (`conflict`) an ended session and a parked one (waiting on an approval, an answer or a timer) or one resuming from a park: there is no turn to stop. Cancel it instead.

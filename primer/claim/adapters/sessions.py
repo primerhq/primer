@@ -49,6 +49,14 @@ class SessionClaimAdapter(ClaimAdapter):
         self._workspace_registry = workspace_registry
         self._event_bus = event_bus
 
+    def work_priority_sql(self, *, schema: str | None = None) -> str:
+        from primer.claim.work_priority import priority_sql
+        return priority_sql()
+
+    async def work_priority(self, entity_id: str) -> int:
+        from primer.claim.work_priority import read_priority
+        return await read_priority(self._storage, entity_id)
+
     def eligibility_sql(self) -> str:
         # parked_status lives inside the entity's JSONB ``data`` column, not as
         # a top-level column. Use the JSONB accessor (matching the harness and

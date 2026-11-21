@@ -75,6 +75,7 @@ class ClaimEngineFactory:
             ),
             ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
                 task_storage=storage_provider.get_storage(ToolCallTask),
+                session_storage=storage_provider.get_storage(WorkspaceSession),
             ),
             ClaimKind.MEMORY: MemoryClaimAdapter(
                 storage=storage_provider.get_storage(MemoryJob),

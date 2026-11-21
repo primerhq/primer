@@ -20,6 +20,14 @@ class MemoryClaimAdapter(ClaimAdapter):
     def __init__(self, *, storage: Storage | None) -> None:
         self._storage = storage
 
+    def work_priority_sql(self, *, schema: str | None = None) -> str:
+        from primer.claim.work_priority import priority_sql
+        return priority_sql()
+
+    async def work_priority(self, entity_id: str) -> int:
+        from primer.claim.work_priority import read_priority
+        return await read_priority(self._storage, entity_id)
+
     def eligibility_sql(self) -> str:
         return "TRUE"
 
