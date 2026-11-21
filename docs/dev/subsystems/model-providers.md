@@ -728,9 +728,13 @@ Integration smokes live under `tests/integration/test_<provider>_smoke.py`, each
 ## Codex / ChatGPT plan foundation (not registered)
 
 `primer/llm/codex/` contains an executor-free, offline-tested model bridge
-foundation. It is not a selectable provider and has no live authentication or
-administrator-policy implementation. Its proposed integration uses the public
+foundation. It is not a selectable provider and has no live authentication
+acceptance. The unregistered `broker/` candidate implements protected credential
+storage, signed policy intersection, dedicated SIWC authentication/refresh and
+peer-checked model IPC, with synthetic offline evidence only. Genuine policy
+provenance and OS isolation remain deployment gates. Its integration uses the public
 Sign-in-with-ChatGPT Responses flow, not a stock Codex app-server with disabled
 tool flags. Primer still owns replay and tool execution; a separately reviewed
 broker must own credentials and enforce policy before activation. See the
-[boundary contract and remaining gates](../../../primer/llm/codex/README.md).
+[boundary contract](../../../primer/llm/codex/README.md) and
+[broker candidate and remaining gates](../../../primer/llm/codex/broker/README.md).

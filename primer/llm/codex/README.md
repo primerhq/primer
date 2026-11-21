@@ -3,7 +3,9 @@
 Status: offline implementation for independent review. This package is not a
 registered provider, a working Codex CLI integration, or an authenticated model
 backend. No API, UI, environment variable, or runtime capability flag activates
-it. The only executable transport shipped here replays explicit synthetic data.
+it. The original harness replays explicit synthetic data. A separate unregistered
+[broker candidate](broker/README.md) now implements OAuth, signed policy,
+fixed-origin HTTP and peer-checked IPC; it has only offline test evidence.
 
 ## Architecture decision
 
@@ -40,8 +42,9 @@ Official documentation fetched on 2026-11-21:
 
 These are documentation facts, not executed account/entitlement proofs. The
 endpoint is not a ChatGPT `backend-api` URL. No API-key fallback is implemented.
-A future separate credential-owning broker must implement the supported flow;
+The separate credential-owning broker candidate implements this flow for review;
 Primer's adapter must never receive its tokens or read its credential files.
+Its deployment and genuine authentication gates remain open.
 
 The current released Codex source was also inspected at tag `rust-v0.171.0`,
 commit `ccf9be8cc458bd6b8336fe84d68d8893f2691a5e`. In
@@ -73,8 +76,10 @@ A policy snapshot is immutable, expires, binds an opaque account and model,
 and refuses suspended/missing policy and all mandatory native effects. Every
 received event rechecks it; any refresh/revision/account change cancels the step
 instead of silently broadening capability. The policy resolver is a trusted
-code dependency, NOT a caller-provided attestation. The shipped live resolver
-is unavailable and fails closed. The synthetic harness's `RecordedPolicy` is
+code dependency, NOT a caller-provided attestation. The default live resolver
+is unavailable and fails closed. The broker's signed-policy implementation needs
+authenticated administrator keys and a complete authority inventory before live
+use. The synthetic harness's `RecordedPolicy` is
 not an administrator-policy implementation and cannot authorize a live model.
 
 One fresh channel serves each step. A channel receives only the snapshotted
@@ -145,13 +150,13 @@ transcript/input data, writes only protocol output, and owns no child process.
 1. Independently review this actual source and tests. Pin the accepted package
    and dependency identity; a hash or a runtime's own capability flag alone is
    not an authority grant.
-2. Implement the separate executor-free credential/policy broker and its local
-   peer-identity protocol, before registration. Build OAuth validation/refresh,
-   account/workspace binding, transport limits, redirect/proxy restrictions,
-   secure state lifecycle and policy-authority tests offline. Honor every
-   applicable administrator requirement; incompatible mandatory native actions
-   must refuse before transport construction. Do not disable host policy or
-   treat this stub snapshot as a substitute for a real resolver.
+2. Independently review the separate credential/policy broker candidate and
+   its offline OAuth, storage, policy, HTTP and peer-identity tests. Then wire
+   trusted host supervision, genuine authority inventory, separate OS identity,
+   callback listener ownership and management UI before registration. Honor
+   every applicable administrator requirement; incompatible mandatory native
+   actions refuse. Passing signature tests does not establish who the real
+   administrators are or authorize disabling host policy.
 3. Actual dedicated user sign-in/consent, authorized administrator policy and
    entitlement are external facts. No such identity was read or used here.
    Obtain genuine model/tool/usage/error/refresh/cleanup evidence; never borrow

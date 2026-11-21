@@ -64,5 +64,7 @@ Reference: [`system__fetch_llm_provider_models`](reference/tools/system/fetch_ll
 [LLM providers](providers/llm), [model profiles](providers/model-profiles).
 
 Codex / ChatGPT plan support is not currently available as a registered Primer
-provider. An internal offline bridge foundation is under development; it does
-not authorize using an existing personal Codex login or enable a live backend.
+provider. An internal bridge and credential-broker candidate are being tested
+offline. They do not authorize using an existing personal Codex login or enable
+a live backend. Dedicated consent, verified administrator policy and isolated
+broker deployment are required before provider activation.
