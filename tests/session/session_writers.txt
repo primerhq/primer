@@ -34,7 +34,6 @@
 [writers]
 primer/api/routers/_test_endpoints.py | test_park_session | update | 1 | test endpoint (stamps a park on a freshly created session for BDD/e2e tests; plan 3.4(e): none)
 primer/api/routers/sessions.py | delete_session | update | 3 | S4 patch_if for the force branch's cancel_requested / cancel_requested_at write (3.8 condition 4); the other two sites write ENDED on a row that is deleted right after (terminal); S2a only pins the non-force RUNNING 409 (C11, N109), C3(a)/(b) closure is S4; S4 also adds the marker clear on its ENDED writes (the C5 remainder)
-primer/workspace/session_factory.py | create_session | update | 1 | none (a new row; the auto_start RUNNING write follows the create)
 
 [deletes]
 primer/session/purge.py | delete_session_rows | delete | 1 | regression pin only (C11, N109, GR-6): the one row delete the DELETE route, a workspace destroy and the retention sweep share; the route decides under session_lifecycle_lock on a fresh read and answers 409 for a RUNNING session before it gets here (GS-21), the destroy and the sweep delete ENDED rows only

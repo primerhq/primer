@@ -97,6 +97,11 @@ async def test_agent_fresh_creates_session(
     assert sess.workspace_id == seeded_workspace.id
     assert sess.initial_instructions == "run a check"
     assert sess.status == SessionStatus.RUNNING
+    from primer.model.session_creation import SessionCreationIntent
+
+    receipt = await fake_storage_provider.get_storage(SessionCreationIntent).get(sess.id)
+    assert receipt.state == "committed" and receipt.workspace_id == sess.workspace_id
+    assert sess.turn_status == "claimable"
     assert sess.metadata.get("subscription_id") == "sb-1"
     assert sess.metadata.get("trigger_id") == "tr-1"
     assert sess.metadata.get("fire_id") == "fire-tr-1-100"

@@ -691,6 +691,7 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # Two concurrent creates of one name (GS-20); created only when no duplicates exist (see _DUP_TOLERANT_UNIQUE_INDEX_NAMES).
         ("username_uniq", True, "((data->>'username'))"),
     ],
+    "sessioncreationintent": [("state", False, "((data->>'state'), id)")],
     "sessions": [
         ("status", False, "((data->>'status'))"),
         # Cross-workspace list filters push `workspace_id IN <readable>`

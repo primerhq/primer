@@ -18,7 +18,8 @@ related: [sessions/observe-a-session, graphs/run-a-graph, workspaces/create-and-
 - **`parent_session_id`** records lineage only. Nothing propagates between parent and child: a cancel of the parent does not reach the child.
 - **`metadata`** is a free-form object stored on the row.
 - **Rank.** A session started from your session runs at your run's rank (the principal that started your run). A session started over MCP with no calling session is recorded as unattributed and runs as an ordinary user.
-- The tool does not wait for the session. It returns as soon as the row exists and the first turn is armed.
+- With `auto_start`, the returned session has a durable first turn queued for a worker. With `auto_start: false`, it waits for an explicit start. A calling session that ends or changes turns while its child is being prepared can receive a conflict.
+- If the connection drops during creation, check the workspace session list before retrying. A repeated create can start a second session.
 
 ## How to
 1. Pick the workspace. Use one workspace per task, so the sessions of one task share files and nothing else.

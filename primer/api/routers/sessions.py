@@ -223,7 +223,12 @@ async def create_session(
     binding = await resolve_initial_binding(
         requested=body.binding, storage_provider=storage_provider,
     )
+    from primer.api.route_tools import calling_session_id, calling_turn_no
+
     return await start_workspace_session(
+        workspace_person=person_from_request(request),
+        calling_session_id=calling_session_id(request),
+        calling_turn_no=calling_turn_no(request),
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=body.initial_instructions,
