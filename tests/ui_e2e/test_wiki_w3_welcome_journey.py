@@ -20,7 +20,7 @@ from tests.ui_e2e._shell_helpers import boot_mobile_shell, default_wid, run_verb
 @pytest.mark.parametrize("mobile", [False, True])
 @pytest.mark.parametrize("role", ["admin", "user"])
 @pytest.mark.parametrize("initial_action", ["dismiss", "manual"])
-def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, base_url, console_url, role, mobile, initial_action):
+def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, base_url, console_url, role, mobile, initial_action, drained_routes):
     wid = default_wid(console_url)
     with httpx.Client(base_url=base_url, timeout=60) as client:
         main = client.post(f"/v1/workspaces/{wid}/main_session")
@@ -28,7 +28,7 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
         sid = main.json()["id"]
     state = {"show": True, "acks": 0, "reopens": 0, "main_calls": 0}
     sends = []
-    held_reopens = []
+    held_reopens = drained_routes
 
     def status(route):
         response = route.fetch()
@@ -107,7 +107,7 @@ def test_first_visit_revisit_reopen_and_chip_preserve_the_existing_chat(page, ba
         assert reopen_button.evaluate("el => el.disabled") is False
         page.keyboard.press("Enter")
         assert len(held_reopens) == state["reopens"] == 1
-        held_reopens[0].fulfill(status=200, json={"variant": role, "show": True})
+        held_reopens.pop(0).fulfill(status=200, json={"variant": role, "show": True})
     else:
         run_verb(page, "Show Me What You Can Do", row_key="v:welcome.reopen")
     expect(card).to_be_visible()

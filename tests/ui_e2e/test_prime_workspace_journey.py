@@ -37,7 +37,7 @@ def test_first_load_selects_the_default_workspace(page: Page, console_url: str) 
 
 
 @pytest.mark.ui_e2e
-def test_a_first_login_opens_the_main_session_once_and_a_reload_does_not(page: Page, console_url: str) -> None:
+def test_a_first_login_opens_the_main_session_once_and_a_reload_does_not(page: Page, console_url: str, drained_routes) -> None:
     wid = default_wid(console_url)
     answers: list[dict] = []
 

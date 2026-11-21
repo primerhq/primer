@@ -475,6 +475,21 @@ def page(
     return page
 
 
+@pytest.fixture
+def drained_routes(page: "Page") -> Iterator[list]:
+    """Opt in when page callbacks call route.fetch or defer a response.
+
+    This finalizes before pytest-playwright closes the context. Deferred routes
+    must be appended to the yielded list and removed when the test answers them.
+    Other journeys may deliberately leave requests unresolved, so waiting is
+    opt-in rather than imposed on every page fixture.
+    """
+    from tests.ui_e2e._route_lifecycle import draining_page_routes
+
+    with draining_page_routes(page) as pending:
+        yield pending
+
+
 def assert_no_console_errors(
     console_messages: list[dict],
     *,
