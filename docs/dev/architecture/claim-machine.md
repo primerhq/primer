@@ -296,8 +296,10 @@ lease-to-entity release lock order. Memory keeps its job-to-lease occurrence
 protocol. In-memory arms re-read after a concurrent lease generation change.
 A per-key mutation epoch survives an intervening arm and deletion while readers
 are suspended, including pruning and drop-release; it is reclaimed when the last
-reader completes or is cancelled. Claim eligibility still rechecks row
-identity/generation after awaits.
+reader completes or is cancelled. Claim candidates capture row identity and
+generation at selection, before any eligibility read can suspend. A row changed
+while an earlier candidate is read is deferred to the next poll; the final
+synchronous check also enforces the ceiling before stamping ownership.
 
 `primer.claim.priority_migration` contains explicitly invoked offline preparation
 helpers, not a startup migration or activation API. A bounded keyset page
