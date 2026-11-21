@@ -102,6 +102,13 @@ a one-line reason; it may not simply be omitted.
   provides `_FakeStorageProvider` / `_InMemoryStorage`, and `tests/api/conftest.py`
   provides the `app` and `client` fixtures.
 - Component-render tests for new React components that have conditional rendering.
+- Browser journeys whose `page.route` callbacks call `route.fetch()` should
+  request `drained_routes`. Its finalizer waits for callbacks before the browser
+  context is disposed, keeping late errors in the originating test. Append
+  deliberately held routes to its yielded list and remove them when answered;
+  cleanup aborts any remaining held requests before waiting. Do not suppress
+  callback failures with a blanket `ignoreErrors` cleanup. Waiting is opt-in
+  because other journeys intentionally leave intercepted requests pending.
 - End-to-end tests for user-visible flows under `tests/ui_e2e/` or `tests/e2e/`.
 - The narrowed sweep stays green:
 
