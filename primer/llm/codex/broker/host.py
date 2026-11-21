@@ -305,9 +305,9 @@ class HostTrust:
     def close(self):
         if os.getpid() == self._owner_pid:
             require(threading.current_thread() is self._owner_thread)
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            os.close(fd)
 
 
 @asynccontextmanager
@@ -334,13 +334,22 @@ async def host_broker(directory: Path):
         yield server
     finally:
         async def cleanup():
+            errors = []
             try:
                 if server is not None:
                     await server.close()
                 elif http is not None:
                     await http.close()
-            finally:
-                if store is not None:
-                    store.close()
-                trust.close()
+            except BaseException as exc:
+                errors.append(exc)
+            for handle in (store, trust):
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except BaseException as exc:
+                        errors.append(exc)
+            if len(errors) == 1:
+                raise errors[0]
+            if errors:
+                raise BaseExceptionGroup("Broker host cleanup failed", errors)
         await drain(asyncio.create_task(cleanup()))

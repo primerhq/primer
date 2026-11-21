@@ -101,8 +101,11 @@ socket operation. Both handles belong to their constructing process and thread;
 construction accepts only the actual Linux process leader (native TID equals PID)
 registered as main, or an exact standard `threading.Thread`. The kernel identity
 check prevents a cold import on an unmanaged thread from claiming main ownership.
-Unmanaged native threads (including persistent dummy-thread wrappers) and custom
-Thread subclasses refuse before opening files. Within supported managed lifetimes,
+Non-leader unmanaged native threads (including persistent dummy-thread wrappers)
+and custom Thread subclasses refuse before opening files. A newly forked process
+leader promoted to Python's main object may construct fresh handles irrespective
+of its pre-fork Thread subclass; the kernel leader lifetime is its authority.
+Inherited parent handles remain forbidden for authorization. Within supported managed lifetimes,
 thread object identity prevents recycled numeric thread IDs from acquiring access.
 Foreign-thread use and close refuse; the public APIs are deliberately not a
 cross-thread ledger service. Sibling ledgers share the same single owner thread,
@@ -144,3 +147,10 @@ UX, dedicated live sign-in and entitlement/model evidence, full model IPC client
 translation/replay and configuration/UI integration, hosted regression gates and
 reviewed activation. Production registry, public tools/UI, live E2E and deployment
 are deliberately absent from this internal security slice, not declared complete.
+
+Disposal revokes descriptor fields before calling the OS. A late close error
+cannot leave authority live or cause a retry against a recycled descriptor number.
+Store lock and directory release are independently attempted once; composed host
+cleanup attempts trust disposal even if server/store cleanup failed, and surfaces
+all cleanup errors. OS release after an error is not assumed successful; no retry
+or automatic session-ledger recovery is authorized by disposal.
