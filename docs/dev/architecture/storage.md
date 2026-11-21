@@ -539,3 +539,17 @@ serial SQLite/fake checks alone do not establish PostgreSQL acceptance.
 - **The `TurnLogRecord` storage entity was added for the graph executor's turn-log path, materialised through the standard `Storage[T]` interface with no special semantics.** Why: turn-boundary observability data for the storage-backed graph executor fits the generic per-model table shape, so it needs no dedicated storage surface. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
 - **The env-var prefix is `PRIMER_` with `__` as the nested delimiter and `PRIMER_CONFIG_PATH` as the TOML override, not the spec-era `MATRIX_`.** Why: the implementation standardised on the `PRIMER_` namespace, so `PRIMER_DB__PROVIDER` and `PRIMER_DB__CONFIG__PATH` are the canonical keys for selecting a backend. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
 - **SQLite serves every request from one shared connection, and anything that unwinds on it rolls back without losing the exception it is unwinding.** Why: `SqliteStorageProvider` has one `aiosqlite` connection and one `_write_lock`; every writer holds the lock from its first statement to its commit (`_write_guard`, `transaction`, pinned structurally by `tests/storage/test_write_guard_coverage.py`) and `read_snapshot` holds it across a consistent pair of reads. `BEGIN` runs on aiosqlite's worker thread and a queued statement cannot be recalled, so a task cancelled while it awaits `BEGIN` (a browser leaving a page mid-request) used to leave the connection inside a transaction nothing tracked, after which every request failed with "cannot start a transaction within a transaction" until restart; `_begin` now rolls back on a cancellation, and `_rollback_while_unwinding` makes a rollback that itself fails log and let the original error or `CancelledError` propagate, on all four unwinding paths (`_begin`, `transaction`, `read_snapshot`, `_write_guard`). A `BEGIN` that fails on its own is untouched. The one residual is a future writer that executes on the connection without the guard: its uncommitted statement would be rolled back by a cancelled `BEGIN`, which the structural test exists to prevent. `tests/storage/test_sqlite_cancelled_begin.py` pins the mechanism with an injected cancellation and with a real task cancelled while `BEGIN` is queued behind a busy worker thread.
+
+### Workspace publisher approval migration
+
+`m035_workspace_publish_gate.py` creates the missing `system::publish_service`
+policy with required approval and admin-only approvers. It is a forward migration;
+M016's frozen table and text are unchanged. Existing policies under any id and
+`system` or `_system`, including disabled or custom operator choices, remain
+untouched. The canonical policy ID is the same as the fresh-install seed. A
+concurrent create is accepted only after confirming a policy exists. An unrelated
+row occupying that ID is preserved and fails the migration, so version35 is not
+stamped over a missing gate. Other storage failures likewise leave the version at
+34 for retry. Fresh-install seeding supplies the same gate without running old
+migrations. Migration lock serialization is not an operator-write transaction;
+concurrent custom duplicate policies retain the resolver's fail-closed behavior.

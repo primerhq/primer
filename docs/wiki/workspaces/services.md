@@ -22,7 +22,9 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 
 From an admin workspace session, prepare a dedicated directory with your app files
 and optional `service.yaml`. Call `system__publish_service` with
-`{"name":"status-app","path":"apps/status"}`. Approve the publish when prompted.
+`{"name":"status-app","path":"apps/status"}`. The default policy requires an
+admin to approve, including after an upgrade. Existing operator-customized
+policies remain in effect. Approve the publish when prompted.
 The result gives the active version number, version ID and URL (`/svc/status-app/`).
 The first call creates a console-authenticated service. Later calls publish a new
 version and keep its current viewer authentication. The directory must contain

@@ -4,7 +4,7 @@
   "expected_path_count": 276,
   "reviewed_gap_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
   "reviewed_skip_sha256": "1db0ea6f6f63eb30bd781f84e212dd9c3829fe48af05fbecde59ad80f288ffe1",
-  "reviewed_surface_revision": "wiki-first-w3-welcome",
+  "reviewed_surface_revision": "workspace-service-publisher-v1",
   "rows": [
     {
       "aggregation_id": null,
@@ -11031,6 +11031,14 @@
       "exposure_reason": null,
       "required_role": "user",
       "scoped_id": "system__move_document",
+      "toolset_id": "system"
+    },
+    {
+      "bare_id": "publish_service",
+      "exposable": false,
+      "exposure_reason": "needs_workspace",
+      "required_role": "admin",
+      "scoped_id": "system__publish_service",
       "toolset_id": "system"
     },
     {

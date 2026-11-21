@@ -15,7 +15,7 @@ creator's) walked around the approval system:
 ``crud.shipped_approvers``): a person who may not make the write, or a chat-platform user primer cannot identify, cannot approve it. ``bootstrap/seed.py`` seeds them with the crud gates (``crud.DEFAULT_GATED_TOOLS`` lists every default gate);
 migration 16 gives an existing install the same rows, and migration 20 re-keys the harness lifecycle ones to the bare tool ids. The internal-collections
 writes are generated route tools: the generated half of the seed carries them at app build, and migration 33 re-stamps an install whose rows still carry
-the pre-admin-tier shape. Like every policy they gate
+the pre-admin-tier shape. Migration35 creates the workspace publisher gate on upgraded installs. Like every policy they gate
 model-initiated calls: the tool manager (the harness tools now mount on an agent's own surface), ``system__call_tool`` and the MCP endpoint, which has no
 park and refuses a gated call - the wire carries the fixed ``tool_unavailable`` error, and the ``approval_required`` refusal reason is the audit and event
 detail, never on the wire. A person acting over REST is not gated.
@@ -109,9 +109,13 @@ required := false if {
 }
 """
 
+#: Workspace-bound publication writes/activates a service; M035 seeds existing installs.
+WORKSPACE_SERVICE_WRITES: tuple[tuple[str, str], ...] = ((_SYSTEM, "publish_service"),)
+
+
 #: Each tool's shipped gate, as a model to copy: ``required`` but for the two toolset writes.
 ADMIN_GATES: Mapping[tuple[str, str], RequiredApprovalConfig | PolicyApprovalConfig] = MappingProxyType({
-    (_SYSTEM, "publish_service"): RequiredApprovalConfig(),
+    **{key: RequiredApprovalConfig() for key in WORKSPACE_SERVICE_WRITES},
     **{key: RequiredApprovalConfig() for key in POLICY_WRITES},
     **{key: PolicyApprovalConfig(policy=HOST_CODE_TOOLSET_POLICY) for key in HOST_CODE_TOOLSET_WRITES},
     **{key: RequiredApprovalConfig() for key in HARNESS_LIFECYCLE},

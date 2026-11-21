@@ -27,7 +27,7 @@ HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "
 # W3 adds exactly two authenticated welcome writes to the M5 frozen surface.
 EXPECTED_OPERATION_COUNT = 407
 EXPECTED_PATH_COUNT = 276
-REVIEWED_SURFACE_REVISION = "wiki-first-w3-welcome"
+REVIEWED_SURFACE_REVISION = "workspace-service-publisher-v1"
 MANIFEST_SCHEMA_VERSION = 1
 BASE_COMMIT = "fb18c24b92bec57131bc5e49959344a4d7d97960"
 ALLOWED_STATES = frozenset({"curated", "generated", "gap", "skip"})
