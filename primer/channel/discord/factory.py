@@ -9,7 +9,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
-from primer.channel.retirement import finish_cleanup, retry_cleanup
+from primer.channel.retirement import ListenerCallbacks, finish_cleanup, retry_cleanup
 from primer.channel.discord.adapter import DiscordChannelAdapter
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import (
@@ -130,11 +130,18 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
     _HANDLERS_INSTALLED.add(provider_id)
+    # Bind SDK callbacks to the entry that installed them, including callbacks
+    # the SDK has scheduled but has not yet started when this generation retires.
+    entry = DISCORD_CONNECTIONS.entry(provider_id)
+    callbacks = ListenerCallbacks()
+    if entry is not None:
+        entry.callbacks = callbacks
     # The reject modals opened on this connection, by custom id. discord.py hands a modal submit to the modal's on_submit
     # AND to on_interaction, so the fallback below decides only a modal this connection did not open: one left open
     # across a restart or a reconnect, which has no on_submit any more (W56c).
     opened_modals = BoundedDict()
 
+    @callbacks.guard
     async def _on_interaction(interaction: discord.Interaction):
         data = interaction.data or {}
         custom_id = data.get("custom_id") if isinstance(data, dict) else None
@@ -150,7 +157,6 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         ch = interaction.channel
         parent = getattr(ch, "parent_id", None)
         channel_id = str(parent) if parent else str(interaction.channel_id or "")
-        entry = DISCORD_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
         adapter = entry.adapters_by_channel_id.get(channel_id)
@@ -198,6 +204,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             # don't carry it, and we want to strip the buttons afterwards.
             original_message = interaction.message
 
+            @callbacks.guard
             async def _on_modal_submit(submitted: discord.Interaction, reason_text: str):
                 # Defer the modal submission first (3s window), then record the
                 # decision. Only an ACCEPTED rejection is confirmed to the clicker
@@ -272,10 +279,10 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 except Exception:
                     logger.exception("discord: telling the clicker the rejection is routed elsewhere failed")
 
+    @callbacks.guard
     async def _on_message(message: discord.Message):
         if message.author and message.author.bot:
             return
-        entry = DISCORD_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
         in_thread = isinstance(message.channel, discord.Thread)

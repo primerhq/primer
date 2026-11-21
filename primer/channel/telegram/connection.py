@@ -97,25 +97,23 @@ class _Entry:
     refcount: int = 0
     adapters_by_chat_id: dict[str, Any] = field(default_factory=dict)
     poll_timeout: int = 25
-    inbound: bool = True
-    updater_stopped: bool = False
-    app_stopped: bool = False
+    updater_needs_stop: bool = False
+    app_needs_stop: bool = False
     shutdown_done: bool = False
 
     async def stop(self) -> None:
         # Attempt independent stages even if an earlier one failed; retry only
-        # unfinished stages. PTB reports which components are still running.
+        # unfinished stages. Both PTB stop methods clear running BEFORE draining.
+        # Only a successful stop can release an attempted start's obligation.
         try:
-            if self.inbound and not self.updater_stopped:
-                if getattr(self.app.updater, "running", True):
-                    await self.app.updater.stop()
-                self.updater_stopped = True
+            if self.updater_needs_stop:
+                await self.app.updater.stop()
+                self.updater_needs_stop = False
         finally:
             try:
-                if self.inbound and not self.app_stopped:
-                    if getattr(self.app, "running", True):
-                        await self.app.stop()
-                    self.app_stopped = True
+                if self.app_needs_stop:
+                    await self.app.stop()
+                    self.app_needs_stop = False
             finally:
                 if not self.shutdown_done:
                     await self.app.shutdown()
@@ -144,11 +142,13 @@ class _TelegramConnectionRegistry:
                 cfg = provider.config
                 assert isinstance(cfg, TelegramChannelProviderConfig)
                 app = _build_application(cfg)
-                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds, inbound=inbound)
+                entry = _Entry(app=app, poll_timeout=cfg.poll_timeout_seconds)
                 try:
                     await app.initialize()
                     if inbound:
+                        entry.app_needs_stop = True
                         await app.start()
+                        entry.updater_needs_stop = True
                         await app.updater.start_polling(timeout=cfg.poll_timeout_seconds)
                 except BaseException:
                     await retire_failed_start(self, provider.id, entry.stop)

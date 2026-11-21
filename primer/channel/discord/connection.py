@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from primer.common.shielded import run_in_background
-from primer.channel.retirement import check_available, retire, retire_failed_start
+from primer.channel.retirement import ListenerCallbacks, check_available, retire, retire_failed_start
 from primer.model.channel import (
     ChannelProvider, DiscordChannelProviderConfig,
 )
@@ -103,6 +103,7 @@ class _Entry:
     task: asyncio.Task | None = None
     refcount: int = 0
     adapters_by_channel_id: dict[str, Any] = field(default_factory=dict)
+    callbacks: ListenerCallbacks | None = None
 
 
 class _DiscordConnectionRegistry:
@@ -155,7 +156,7 @@ class _DiscordConnectionRegistry:
             if entry.refcount:
                 return
             del self._entries[provider.id]
-            closing = retire(self, provider.id, lambda: _discard_client(entry.client, entry.task))
+            closing = retire(self, provider.id, lambda: _discard_client(entry.client, entry.task), callbacks=entry.callbacks)
             if self.on_close is not None:
                 self.on_close(provider.id)
         await asyncio.shield(closing)
