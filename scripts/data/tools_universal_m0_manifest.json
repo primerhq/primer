@@ -9557,7 +9557,7 @@
       "bare_id": "put_harness_overrides",
       "exposable": true,
       "exposure_reason": null,
-      "required_role": "user",
+      "required_role": "admin",
       "scoped_id": "harnesses__put_harness_overrides",
       "toolset_id": "harnesses"
     },

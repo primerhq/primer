@@ -71,8 +71,23 @@ class ToolCallClaimAdapter(ClaimAdapter):
     kind = ClaimKind.TOOL_CALL
     entity_table = "toolcalltask"
 
-    def __init__(self, *, task_storage: Storage | None) -> None:
+    def __init__(self, *, task_storage: Storage | None, session_storage: Storage | None = None) -> None:
         self._storage = task_storage
+        self._session_storage = session_storage
+
+    def work_priority_sql(self, *, schema: str | None = None) -> str:
+        from primer.claim.work_priority import priority_sql
+        table = f'"{schema}"."sessions"' if schema else '"sessions"'
+        return f"(SELECT {priority_sql('p')} FROM {table} p WHERE p.id = e.data->>'session_id')"
+
+    async def work_priority(self, entity_id: str) -> int:
+        from primer.claim.work_priority import read_priority
+        if self._storage is None:
+            raise ValueError("work priority requires authoritative task storage")
+        task = await self._storage.get(entity_id)
+        if task is None:
+            raise ValueError("cannot arm work priority for a missing task")
+        return await read_priority(self._session_storage, task.session_id)
 
     def eligibility_sql(self) -> str:
         # ``state`` lives inside the entity's JSONB ``data`` column, not a

@@ -1828,3 +1828,67 @@ def test_a_generated_route_with_a_bad_preview_lead_path_fails_the_build() -> Non
 
     with pytest.raises(ConfigError, match="preview lead paths"):
         build_generated_route_toolsets(app)
+
+
+@pytest.mark.parametrize("explicit_style", [False, True])
+def test_form_exploded_query_object_preserves_keys_and_other_parameters(explicit_style):
+    parameter = {"in": "query", "name": "query", "schema": {"$ref": "#/components/schemas/Query"}}
+    if explicit_style:
+        parameter.update(style="form", explode=True)
+    _, bindings = derive_argument_schema(
+        {"parameters": [parameter,
+                        {"in": "query", "name": "tag", "schema": {"type": "array", "items": {"type": "string"}}},
+                        {"in": "header", "name": "X-Primer-Signature", "schema": {"type": "string"}}]},
+        {"schemas": {"Query": {"type": "object", "additionalProperties": True}}},
+        RouteToolMetadata(),
+    )
+    query, headers, body = route_tools_module._request_parts(bindings, {
+        "query": {"name": "a&b=c", "enabled": True, "count": 2}, "tag": ["one", "two"],
+        "X-Primer-Signature": "sha256=signed",
+    })
+    assert query == [("name", "a&b=c"), ("enabled", "true"), ("count", "2"), ("tag", "one"), ("tag", "two")]
+    assert headers == {"X-Primer-Signature": "sha256=signed"}
+    assert body == {}
+    assert route_tools_module._request_parts(bindings, {"query": {}})[0] == []
+    for invalid in ([], "name=value", {"nested": {"x": 1}}, {"list": [1, 2]}):
+        with pytest.raises(ConfigError, match="object of scalar"):
+            route_tools_module._request_parts(bindings, {"query": invalid})
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_generated_exploded_queries_cannot_supply_other_bindings(reverse):
+    parameters = [
+        {"in": "query", "name": "first", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+        {"in": "query", "name": "tag", "schema": {"type": "array", "items": {"type": "string"}}},
+        {"in": "query", "name": "second", "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+        {"in": "header", "name": "X-Trace", "schema": {"type": "string"}},
+    ]
+    app = FastAPI()
+    seen = []
+
+    @app.get("/query-ownership", openapi_extra={"parameters": parameters[::-1] if reverse else parameters})
+    @route_tool(scoped_id="query_ownership__echo", argument_overrides={"query.tag": "tags", "query.first": "options"})
+    async def echo(request: Request):
+        seen.append(True)
+        return {"query": list(request.query_params.multi_items()), "header": request.headers.get("x-trace")}
+
+    provider = build_generated_route_toolsets(app).providers["query_ownership"]
+    for arguments in (
+        {"options": {"tag": "injected"}},
+        {"options": {"tag": "injected"}, "tags": ["legitimate"]},
+        {"options": {"shared": "first"}, "second": {"shared": "second"}},
+    ):
+        with pytest.raises(ConfigError, match="collides"):
+            await _call(provider, "echo", arguments, Person("alice", "user"))
+        assert seen == []
+    result = await _call(provider, "echo", {
+        "options": {"X-Trace": "query", "tags": "not-the-wire-name"},
+        "tags": ["one", "two"], "second": {"other": "separate"}, "X-Trace": "header",
+    }, Person("alice", "user"))
+    assert not result.is_error, result.output
+    payload = json.loads(result.output)
+    assert payload["header"] == "header"
+    assert sorted(payload["query"]) == sorted([
+        ["X-Trace", "query"], ["tags", "not-the-wire-name"], ["tag", "one"], ["tag", "two"], ["other", "separate"],
+    ])
+    assert seen == [True]

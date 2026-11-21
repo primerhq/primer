@@ -24,8 +24,10 @@ From an admin workspace session, prepare a dedicated directory with your app fil
 and optional `service.yaml`. Call `system__publish_service` with
 `{"name":"status-app","path":"apps/status"}`. The default policy requires an
 admin to approve, including after an upgrade. Existing operator-customized
-policies remain in effect, including disabled policies. A malformed matching
-publisher policy refuses the call until repaired; it is not treated as absent.
+policies remain in effect, including disabled policies. On an uncached lookup,
+a malformed matching publisher policy refuses the call rather than being treated
+as absent. A cached decision can still be served while a background refresh runs;
+a failed refresh retains that decision until a successful refresh or invalidation.
 Approve the publish when prompted.
 The result gives the active version number, version ID and URL (`/svc/status-app/`).
 The first call creates a console-authenticated service. Later calls publish a new
@@ -41,6 +43,12 @@ To publish an already prepared archive, including from an external MCP client:
 4. Roll back by activating an existing version. Delete the service only when intended: deletion cascades to its versions and artifacts.
 
 ## Tool calls
+
+`svc__svc_gateway_function` calls a published bundle function with
+`{"name": "my-app", "fn": "double", "body": {"n": 21}}`. The `body` object is
+the function's keyword arguments, checked against its published schema. The
+service's viewer authentication and the tool's effective approval policy apply.
+
 
 The operation table below distinguishes service management from native asset and function routes. Inspect `system__describe_tool` for the arguments and effective gate before a write. An external MCP call cannot park for a required approval.
 

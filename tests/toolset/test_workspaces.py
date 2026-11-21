@@ -1168,6 +1168,10 @@ def session_toolset(sp, workspace_registry):
 
 
 class TestCreateWorkspaceSession:
+    @pytest.fixture
+    def sp(self, fake_storage_provider):
+        return fake_storage_provider
+
     @pytest.mark.asyncio
     async def test_create_agent_session_happy_path(
         self, session_toolset, seeded, sp

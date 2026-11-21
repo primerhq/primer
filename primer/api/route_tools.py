@@ -53,6 +53,7 @@ _METADATA_ATTR = "__primer_route_tool_metadata__"
 _TRUST_SCOPE_KEY = "primer.route_tool_dispatch"
 _TRUST_PERSON_SCOPE_KEY = "primer.route_tool_person"
 _TRUST_SESSION_SCOPE_KEY = "primer.route_tool_session_id"
+_TRUST_TURN_SCOPE_KEY = "primer.route_tool_turn_no"
 _TRUST_OBJECT = object()
 _DISPATCH_DEPTH: ContextVar[int] = ContextVar("primer_route_tool_dispatch_depth", default=0)
 _STREAM_CLEANUP_OWNERS: ContextVar[list[asyncio.Task[BaseException | None]] | None] = ContextVar(
@@ -354,6 +355,7 @@ class _ArgumentBinding:
     location: Literal["path", "query", "header", "body"]
     media_type: str | None = None
     binary_fields: tuple[str, ...] = ()
+    explode_query_object: bool = False
 
 
 def _resolve_local_component_schema(
@@ -411,6 +413,7 @@ def derive_argument_schema(
     properties: dict[str, Any] = {}
     required: list[str] = []
     bindings: list[_ArgumentBinding] = []
+    definitions = components.get("schemas") or {}
     for parameter in operation.get("parameters") or ():
         location = parameter.get("in")
         if location not in {"path", "query", "header"}:
@@ -424,11 +427,17 @@ def derive_argument_schema(
             properties[argument] = {**properties[argument], "description": parameter["description"]}
         if parameter.get("required"):
             required.append(argument)
-        bindings.append(_ArgumentBinding(argument, wire_name, location))
+        parameter_schema = _resolve_local_component_schema(parameter.get("schema") or {}, definitions)
+        explode_query_object = (
+            location == "query" and parameter_schema.get("type") == "object"
+            and parameter.get("style", "form") == "form" and parameter.get("explode", True)
+        )
+        bindings.append(_ArgumentBinding(
+            argument, wire_name, location, explode_query_object=explode_query_object,
+        ))
 
     request_body = operation.get("requestBody") or {}
     content = request_body.get("content") or {}
-    definitions = components.get("schemas") or {}
     if content:
         preferred = next(
             (kind for kind in ("application/json", "multipart/form-data", "application/x-www-form-urlencoded", "application/octet-stream") if kind in content),
@@ -542,11 +551,30 @@ def _request_parts(
     query: list[tuple[str, str]] = []
     headers: dict[str, str] = {}
     body: dict[str, Any] = {}
+    # Ordinary query bindings own their wire names even when omitted or aliased.
+    # Exploded maps may only supply otherwise unclaimed query keys.
+    named_query_keys = {
+        binding.wire_name for binding in bindings
+        if binding.location == "query" and not binding.explode_query_object
+    }
+    exploded_query_keys: set[str] = set()
     for binding in bindings:
         if binding.argument not in arguments:
             continue
         value = arguments[binding.argument]
-        if binding.location == "query":
+        if binding.location == "query" and binding.explode_query_object:
+            # OpenAPI form+explode objects serialize properties as independent
+            # query keys, not a Python dict repr under the parameter's name.
+            if not isinstance(value, Mapping) or any(
+                not isinstance(key, str) or not isinstance(item, (str, int, float, bool))
+                for key, item in value.items()
+            ):
+                raise ConfigError("exploded query parameter must be an object of scalar values")
+            if value.keys() & (named_query_keys | exploded_query_keys):
+                raise ConfigError("exploded query property collides with another query parameter")
+            exploded_query_keys.update(value)
+            query.extend((key, str(item).lower() if isinstance(item, bool) else str(item)) for key, item in value.items())
+        elif binding.location == "query":
             values = value if isinstance(value, list) else [value]
             query.extend((binding.wire_name, str(item).lower() if isinstance(item, bool) else str(item)) for item in values)
         elif binding.location == "header":
@@ -558,6 +586,20 @@ def _request_parts(
                 "binary_fields": binding.binary_fields,
             }
     return query, headers, body
+
+
+def _header_wire_bytes(value: str) -> bytes:
+    """Preserve HTTP header bytes without HTTPX's implicit ASCII-only encoding.
+
+    Latin-1 matches ASGI/Starlette's raw header decoding. Unicode outside that
+    range stays non-ASCII on the wire, including lone surrogates, so malformed
+    signatures reach the handler's normal mismatch path rather than raising in
+    request construction. Never replace malformed text with ASCII characters.
+    """
+    try:
+        return value.encode("latin-1")
+    except UnicodeEncodeError:
+        return value.encode("utf-8", errors="surrogatepass")
 
 
 def _body_kwargs(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -598,16 +640,19 @@ def _body_kwargs(body: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class _TrustedAsgiApp:
-    def __init__(self, app: FastAPI, person: Person, *, session_id: str | None = None) -> None:
+    def __init__(self, app: FastAPI, person: Person, *, session_id: str | None = None,
+                 turn_no: int | None = None) -> None:
         self._app = app
         self._person = person
         self._session_id = session_id
+        self._turn_no = turn_no
 
     async def __call__(self, scope, receive, send) -> None:
         trusted_scope = dict(scope)
         trusted_scope[_TRUST_SCOPE_KEY] = _TRUST_OBJECT
         trusted_scope[_TRUST_PERSON_SCOPE_KEY] = self._person
         trusted_scope[_TRUST_SESSION_SCOPE_KEY] = self._session_id
+        trusted_scope[_TRUST_TURN_SCOPE_KEY] = self._turn_no
         await self._app(trusted_scope, receive, send)
 
 
@@ -916,6 +961,14 @@ def calling_session_id(request: Request) -> str | None:
         return None
     session_id = request.scope.get(_TRUST_SESSION_SCOPE_KEY)
     return session_id if isinstance(session_id, str) else None
+
+
+def calling_turn_no(request: Request) -> int | None:
+    """The generation a session-bound tool ran in, when its server context carries one."""
+    if calling_session_id(request) is None:
+        return None
+    turn = request.scope.get(_TRUST_TURN_SCOPE_KEY)
+    return turn if type(turn) is int else None
 
 
 def _install_stream_cleanup(route: APIRoute) -> bool:
@@ -2001,7 +2054,10 @@ def build_generated_route_toolsets(
                     # large HTTPX-decoded allocation after the counter.
                     merged_headers["accept-encoding"] = "identity"
                     transport = _BoundedAsgiTransport(
-                        app=_TrustedAsgiApp(owning_app, person, session_id=ctx.session_id if ctx is not None else None),
+                        app=_TrustedAsgiApp(
+                            owning_app, person, session_id=ctx.session_id if ctx else None,
+                            turn_no=ctx.turn_no if ctx else None,
+                        ),
                         max_response_bytes=_MAX_RESPONSE_BYTES,
                     )
                     async with httpx.AsyncClient(transport=transport, base_url="http://primer.internal") as client:
@@ -2010,7 +2066,7 @@ def build_generated_route_toolsets(
                                 _descriptor.method,
                                 path,
                                 params=query,
-                                headers=merged_headers,
+                                headers={key: _header_wire_bytes(value) for key, value in merged_headers.items()},
                                 **kwargs,
                             ) as response:
                                 status_code = response.status_code
@@ -2147,6 +2203,7 @@ __all__ = [
     "attach_route_tool_metadata",
     "build_generated_route_toolsets",
     "calling_session_id",
+    "calling_turn_no",
     "canonical_tool_id",
     "coverage_projection",
     "derive_argument_schema",

@@ -537,10 +537,17 @@ async def delete_harness(
     "/{harness_id}/overrides",
     response_model=Harness,
     summary="Set harness overrides (validates against cached schema)",
+    # Declare the raw JSON contract without changing handler validation/auth order.
+    openapi_extra={"requestBody": {
+        "required": True,
+        "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": True,
+        }}},
+    }},
     responses=common_responses(404, 422, 500),
     dependencies=_admin_write,
 )
-@route_tool(scoped_id="harnesses__put_harness_overrides")
+@route_tool(scoped_id="harnesses__put_harness_overrides", required_role="admin")
 async def put_harness_overrides(
     request: Request,
     harness_id: str = Path(...),

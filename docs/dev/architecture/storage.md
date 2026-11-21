@@ -553,3 +553,12 @@ stamped over a missing gate. Other storage failures likewise leave the version a
 34 for retry. Fresh-install seeding supplies the same gate without running old
 migrations. Migration lock serialization is not an operator-write transaction;
 concurrent custom duplicate policies retain the resolver's fail-closed behavior.
+
+## Dormant work-priority column
+
+`leases.work_priority` is an additive non-null integer with default zero and a
+0..1000000 check. Initialization does not backfill nonzero values or replace the
+legacy claim indexes. Existing memory occurrence/claim tokens and creation-intent
+indexes are retained. Explicit bounded offline preparation and the mixed-version
+limits are described in [claim-machine](claim-machine.md#work-priority-groundwork-not-activated).
+Production factories do not enable priority ordering yet.

@@ -42,8 +42,18 @@ def test_registry_declares_the_hot_tables():
         "agent", "graph", "toolset", "workspacetemplate", "workspace", "externaltoolcall", "collection", "trigger", "harness",
         "modelprofile", "workspaceprovider", "channelprovider", "semanticsearchprovider", "embeddingprovider", "crossencoderprovider", "llmprovider",
         "serviceversion", "user", "service", "subscription",
-        "toolcalltask",
+        "toolcalltask", "sessioncreationintent",
     }
+
+
+def test_session_creation_recovery_indexes_state_then_session_id():
+    """The recovery sweep filters preparing receipts and pages by increasing id."""
+    from primer.model.session_creation import SessionCreationIntent
+
+    table = _table_name_for(SessionCreationIntent)
+    assert table == "sessioncreationintent"
+    assert _HOT_FIELD_INDEXES[table] == [("state", False, "((data->>'state'), id)")]
+    assert _SQLITE_HOT_FIELD_INDEXES[table] == [("state", False, "(json_extract(data,'$.state'), id)")]
 
 
 def _webhook_index(registry, suffix):
@@ -368,6 +378,7 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     from primer.model.artifact import ArtifactLocation
     from primer.model.channel import Channel
     from primer.model.collection import Document
+    from primer.model.session_creation import SessionCreationIntent
     from primer.model.workspace_session import WorkspaceSession
 
     sp = postgres_storage_provider
@@ -377,8 +388,10 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     await sp.get_storage(Channel).get("__bootstrap__")
     await sp.get_storage(ArtifactLocation).get("__bootstrap__")
     await sp.get_storage(Document).get("__bootstrap__")
+    await sp.get_storage(SessionCreationIntent).get("__bootstrap__")
 
     assert "apitoken_token_hash_uniq" in await _index_names(sp, "apitoken")
+    assert "sessioncreationintent_state" in await _index_names(sp, "sessioncreationintent")
     assert "sessions_status" in await _index_names(sp, "sessions")
     assert "sessions_workspace_id" in await _index_names(sp, "sessions")
     assert "sessions_tool_wait_reconcile_v2" in await _index_names(

@@ -330,6 +330,13 @@ class PostgresStorageProvider(StorageProvider):
                 'ADD COLUMN IF NOT EXISTS memory_occurrence TEXT, '
                 'ADD COLUMN IF NOT EXISTS memory_claim_id TEXT'
             )
+            # Additive groundwork only: production engines retain old ordering.
+            # Nonzero backfill/index preparation is explicit, never startup work.
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}"."leases" '
+                'ADD COLUMN IF NOT EXISTS work_priority INTEGER NOT NULL DEFAULT 0 '
+                'CHECK (work_priority BETWEEN 0 AND 1000000)'
+            )
             # The claim query reads two disjoint kinds of candidate per kind (unclaimed; claimed but expired), each served by its own partial index.
             # They supersede the earlier (priority_score, next_attempt_at) index, which had no kind prefix and could not serve the expired branch.
             await execute_create_idempotent(
@@ -691,6 +698,7 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # Two concurrent creates of one name (GS-20); created only when no duplicates exist (see _DUP_TOLERANT_UNIQUE_INDEX_NAMES).
         ("username_uniq", True, "((data->>'username'))"),
     ],
+    "sessioncreationintent": [("state", False, "((data->>'state'), id)")],
     "sessions": [
         ("status", False, "((data->>'status'))"),
         # Cross-workspace list filters push `workspace_id IN <readable>`

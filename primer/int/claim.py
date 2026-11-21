@@ -27,6 +27,7 @@ class Lease:
     last_error: str | None
     memory_occurrence: str | None = None
     memory_claim_id: str | None = None
+    work_priority: int = 0
 
 
 @dataclass(frozen=True)
@@ -215,6 +216,14 @@ class ClaimAdapter(ABC):
     kind: ClaimKind
     entity_table: str
 
+    def work_priority_sql(self, *, schema: str | None = None) -> str:
+        """SQL over entity alias e; NULL refuses an invalid/missing source."""
+        return "0"
+
+    async def work_priority(self, entity_id: str) -> int:
+        """Authoritative snapshot at arm time; platform work defaults to zero."""
+        return 0
+
     @abstractmethod
     def eligibility_sql(self) -> str: ...
 
@@ -321,6 +330,7 @@ class ClaimEngine(ABC):
     @abstractmethod
     async def claim_due(
         self, worker_id: str, *, max_count: int, kinds: list[ClaimKind] | None = None,
+        max_work_priority: int | None = None,
     ) -> list[Lease]:
         """Claim up to ``max_count`` due leases and return them.
 

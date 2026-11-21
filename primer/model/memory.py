@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from primer.model.collection import CollectionSearchConfig
 from primer.model.common import Identifiable
+from primer.model.work_priority import WorkPriority
 
 
 class AgentMemory(Identifiable):
@@ -87,6 +88,7 @@ class MemoryJob(Identifiable):
     kind: Literal["reflect", "curate", "topics"]
     agent_id: str
     session_id: str | None = None
+    priority: WorkPriority = 0
     reflected_turn: int = 0
     target_turn: int = 0
     created_at: datetime

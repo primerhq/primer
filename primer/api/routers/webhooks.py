@@ -304,9 +304,29 @@ webhooks_router = APIRouter(tags=["webhooks"])
     "/v1/webhooks/{token}",
     status_code=202,
     summary="Receive an inbound webhook",
+    # A JSON binding would re-encode the payload and invalidate its HMAC.
+    # Keep bytes opaque; generated tools use the shared base64 transport.
+    openapi_extra={
+        "requestBody": {
+            "required": False,
+            "description": "Raw webhook bytes. Sign these exact bytes, before base64 encoding.",
+            "content": {"application/octet-stream": {"schema": {
+                "type": "string", "format": "binary",
+            }}},
+        },
+        "parameters": [
+            {"name": "X-Primer-Signature", "in": "header", "required": False,
+             "description": "sha256=<hex> HMAC of the raw body; required when this trigger has an HMAC secret.",
+             "schema": {"type": "string"}},
+            {"name": "query", "in": "query", "required": False,
+             "style": "form", "explode": True,
+             "description": "Webhook query parameters, delivered as webhook_query. Each property becomes a query parameter.",
+             "schema": {"type": "object", "additionalProperties": {"type": "string"}}},
+        ],
+    },
     include_in_schema=True,
 )
-@route_tool(scoped_id="webhooks__receive_webhook")
+@route_tool(scoped_id="webhooks__receive_webhook", argument_overrides={"header.X-Primer-Signature": "signature"})
 async def receive_webhook(
     token: str,
     request: Request,
