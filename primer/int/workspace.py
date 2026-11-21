@@ -265,6 +265,12 @@ class Workspace(ABC):
         """
         return (await self.read_file(path))[offset:]
 
+    async def capture_service_bundle(self, path: str) -> bytes:
+        """Return a bounded gzipped tar rooted at the requested directory."""
+        from primer.model.except_ import BadRequestError
+
+        raise BadRequestError("workspace provider does not support bounded directory publishing")
+
     @abstractmethod
     def download_archive(
         self,

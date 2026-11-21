@@ -16,11 +16,12 @@ def test_service_docs_name_rest_publish_as_the_current_surface() -> None:
     assert "Publishing is available today through" in developer
     assert "`POST /v1/services/{id}/versions`" in developer
     assert "`Primer.tool` is planned" in developer
-    assert "`publish_service`" in developer
-    assert "agent/system tool is not implemented" in developer
+    assert "`system__publish_service`" in developer
+    assert "runtime protocol 1.7" in developer
     assert "Service management and publishing have generated route-backed tools" in wiki
     assert "services__publish_service_version" in wiki
-    assert "no separate curated `publish_service` tool" in wiki
+    assert "system__publish_service" in wiki
+    assert "calling workspace" in wiki
 
 
 def test_unbuilt_service_surfaces_are_not_described_as_active() -> None:
@@ -38,11 +39,11 @@ def test_unbuilt_service_surfaces_are_not_described_as_active() -> None:
     assert "agent-published web apps" not in combined
     assert "agents use the phase-4" not in combined
     assert "Primer.tool arrives" not in combined
-    assert "publish_service tool reuses it" not in combined
     assert "Identifier of the granted Toolset" not in combined
     assert "None grants every tool" not in combined
     assert "a stale name 404s at" not in combined
-    assert not (ROOT / "primer/toolset/publish.py").exists()
+    assert "`Primer.tool` is planned" in combined
+    assert "system__publish_service" in combined
 
     model = _read("primer/model/service.py")
     assert "stored for planned phase-3 dispatch" in model

@@ -270,6 +270,23 @@ class RuntimeClient:
         data = base64.b64decode(result["content_b64"])
         return data[offset:] if offset else data
 
+    async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
+        from primer.model.except_ import BadRequestError
+        from primer.workspace.directory_bundle import MAX_ARCHIVE_BYTES
+
+        if not self._runtime_has((1, 7)):
+            raise BadRequestError("workspace directory publishing requires runtime protocol 1.7")
+        try:
+            result = await self._send_request(OpName.CAPTURE_SERVICE_BUNDLE, {"path": path, "reserved": list(reserved)})
+        except RuntimeError as exc:
+            if exc.code == ErrorCode.EACCES:
+                raise BadRequestError(exc.message) from exc
+            raise
+        encoded = result["content_b64"]
+        if len(encoded) > 4 * ((MAX_ARCHIVE_BYTES + 2) // 3):
+            raise BadRequestError("workspace returned an oversized service archive")
+        return base64.b64decode(encoded, validate=True)
+
     async def write_file(
         self, path: str, content: bytes, *, mode: int | None = None
     ) -> None:

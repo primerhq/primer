@@ -401,6 +401,14 @@ class LocalWorkspace(Workspace):
 
         return await asyncio.to_thread(_tail)
 
+    async def capture_service_bundle(self, path: str) -> bytes:
+        from primer.workspace.directory_bundle import capture_directory
+
+        try:
+            return await asyncio.to_thread(capture_directory, self._root, path, _reserved_rel_paths(self._template))
+        except (ValueError, OSError) as exc:
+            raise BadRequestError(f"could not capture bundle directory: {exc}") from exc
+
     async def download_archive(
         self,
         paths: list[str] | None = None,

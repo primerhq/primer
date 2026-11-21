@@ -196,6 +196,8 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     # pivot P2 task 10: Workspace.write_file of prime's agents.md, which a local workspace runs in a thread under its scope lock (the
     # hazard of write_workspace_file above)
     (SYSTEM_TOOLSET_ID, "reset_prime_instructions"),
+    # Publishing stores artifacts and immutable version rows before activating the version.
+    (SYSTEM_TOOLSET_ID, "publish_service"),
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {

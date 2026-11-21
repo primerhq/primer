@@ -111,6 +111,7 @@ required := false if {
 
 #: Each tool's shipped gate, as a model to copy: ``required`` but for the two toolset writes.
 ADMIN_GATES: Mapping[tuple[str, str], RequiredApprovalConfig | PolicyApprovalConfig] = MappingProxyType({
+    (_SYSTEM, "publish_service"): RequiredApprovalConfig(),
     **{key: RequiredApprovalConfig() for key in POLICY_WRITES},
     **{key: PolicyApprovalConfig(policy=HOST_CODE_TOOLSET_POLICY) for key in HOST_CODE_TOOLSET_WRITES},
     **{key: RequiredApprovalConfig() for key in HARNESS_LIFECYCLE},

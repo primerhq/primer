@@ -10,6 +10,7 @@ Spec: ``docs/superpowers/specs/2026-08-08-services-design.md`` section 5.
 
 from __future__ import annotations
 
+import gzip
 import io
 import tarfile
 from dataclasses import dataclass, field
@@ -22,13 +23,15 @@ from primer.toolset.python_runner.registration import (
     RegistrationError,
     register_module,
 )
+from primer.workspace.directory_bundle import MAX_ARCHIVE_BYTES, MAX_BYTES, MAX_FILES, MAX_MEMBERS
 
-MAX_BUNDLE_BYTES = 10 * 1024 * 1024
+
+MAX_BUNDLE_BYTES = MAX_BYTES
 """Uncompressed size cap; counted while reading, not from headers."""
 
-MAX_BUNDLE_FILES = 200
+MAX_BUNDLE_FILES = MAX_FILES
 
-MAX_BUNDLE_MEMBERS = 1000
+MAX_BUNDLE_MEMBERS = MAX_MEMBERS
 """Every tar member, directories included: a header costs a loop turn even when it carries no bytes (GS-32)."""
 
 MANIFEST_PATH = "service.yaml"
@@ -81,10 +84,23 @@ def _safe_name(name: str) -> str:
     return cleaned
 
 
-def _extract(tar_gz: bytes) -> dict[str, bytes]:
+def _extract(tar_gz: bytes, *, workspace_capture: bool = False) -> dict[str, bytes]:
+    source = io.BytesIO(tar_gz)
+    mode = "r:gz"
     try:
-        tf = tarfile.open(fileobj=io.BytesIO(tar_gz), mode="r:gz")
-    except (tarfile.TarError, OSError) as exc:
+        if workspace_capture:
+            # Verify the runtime response size BEFORE interpreting any tar headers,
+            # including extension headers which tarfile consumes before yielding a member.
+            if len(tar_gz) > MAX_ARCHIVE_BYTES:
+                raise BundleError("workspace service archive exceeds the transfer limit")
+            with gzip.GzipFile(fileobj=source) as compressed:
+                raw = compressed.read(MAX_ARCHIVE_BYTES + 1)
+            if len(raw) > MAX_ARCHIVE_BYTES:
+                raise BundleError("workspace service archive exceeds the expanded archive limit")
+            source = io.BytesIO(raw)
+            mode = "r:"
+        tf = tarfile.open(fileobj=source, mode=mode)
+    except (tarfile.TarError, EOFError, OSError) as exc:
         raise BundleError(f"the bundle is not a gzipped tar: {exc}") from exc
 
     files: dict[str, bytes] = {}
@@ -193,14 +209,14 @@ def _register_functions(
     return specs, sources
 
 
-def validate_bundle(tar_gz: bytes) -> ValidatedBundle:
+def validate_bundle(tar_gz: bytes, *, workspace_capture: bool = False) -> ValidatedBundle:
     """Validate a gzipped-tar bundle and derive its function specs.
 
     Raises :class:`BundleError` on any violation of spec section 5's
     publish gate; a bundle that comes back as a :class:`ValidatedBundle`
     is safe to persist verbatim.
     """
-    files = _extract(tar_gz)
+    files = _extract(tar_gz, workspace_capture=workspace_capture)
     manifest = _parse_manifest(files)
     if not manifest.functions and DEFAULT_FUNCTIONS_FILE in files:
         manifest = manifest.model_copy(
