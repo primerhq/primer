@@ -37,9 +37,13 @@ not retried forever. Reducing an oversized reflection prompt/exclusion policy or
 using a suitable context window may help. Do not remove necessary exclusions just
 to make a request fit. The daily reflection count counts attempts; long attempts
 can make up to five model calls, and transport retries count as further attempts.
-Token-exhausted responses and detectably damaged transcripts preserve progress
-instead of being treated as completed reflection. Summaries are not saved as
-memory/activity records, but enabled provider IO tracing can record their request
+Token-exhausted responses, explicit model refusals and detectably damaged
+transcripts preserve progress instead of being treated as completed reflection.
+A refusal invalidates an earlier partial answer even if the provider reports
+completion afterward. Historical rewinds exclude discarded messages while
+reflection still reads the original evidence across compaction markers.
+Summaries are not saved as memory/activity records, but enabled provider IO
+tracing can record their request
 text under the deployment's existing tracing policy.
 
 ## Gotchas

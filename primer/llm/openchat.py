@@ -30,7 +30,10 @@ from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
 from primer.llm._openai_common import fit_openai_reasoning_request
 from primer.llm._reasoning import openchat_extended
-from primer.llm._timeout import GenerationBudgetExceeded, _close_streams, _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import (
+    GenerationBudgetExceeded, _close_streams, _iter_with_timeout,
+    _open_with_connect_timeout, _protect_sdk_response_close,
+)
 from primer.llm._openai_compat import (
     _build_sampling_params,
     _end_of_stream,
@@ -322,6 +325,7 @@ class OpenChatLLM(LLM):
                     sdk_stream, self._request_timeout_seconds, self._total_timeout_seconds,
                 )
                 try:
+                    _protect_sdk_response_close(sdk_stream)
                     async for raw in timed_stream:
                         for event in _translate_chunk(raw, state):
                             yield event

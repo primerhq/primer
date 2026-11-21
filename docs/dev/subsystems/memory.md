@@ -292,6 +292,8 @@ the completed synthetic result. Failed/error responses (including nonfatal wire
 errors) and absent terminal events use the bounded transient retry policy. Filtered,
 stop-sequence, unknown or other incomplete completions preserve progress with
 `compaction_incomplete`; a terminal token ceiling uses `compaction_output_limit`.
+Typed refusal deltas also refuse the whole call, including a parseable text
+prefix followed by refusal and a provider's nominal completed/stop event.
 Only a normally completed malformed verdict uses the existing invalid-output
 watermark rule. Parseable prefixes are not completion evidence.
 
@@ -305,8 +307,13 @@ cleanup, even after repeated waiter cancellation; an adapter that cannot finish
 cleanup can delay that join. There is no detached background model task.
 Anthropic and OpenChat explicitly await their owned timeout iterator and SDK
 response disposal on normal completion, early iterator close and cancellation.
-Cleanup failures do not replace the original response outcome or cancellation;
-an attempted failed close is not proof that a remote generation has stopped.
+Before iteration, they guard the HTTP response close shared by the locked SDK's
+automatic and explicit disposal paths. Cancellation joins that single close
+before the concurrency permit passes to another caller; HTTPX's early
+`is_closed` flag alone is not evidence of completed transport disposal.
+Explicit cleanup failures do not replace the original outcome or cancellation;
+SDK-initiated close failures retain the normal iteration-error path. An attempted
+failed close is not proof that a remote generation has stopped.
 Profile settings are passed without an automatic setting-refusal retry in this path;
 aggregate adapters retain their own member failover. Bounds describe adapter
 invocations and collected output, not arbitrary provider network frames or costs.
@@ -325,7 +332,8 @@ requests (`input_incomplete`), including at the triviality gate for eligible
 multi-turn jobs. The existing fewer-than-two-new-turns policy remains unchanged.
 Reflection-specific reads reject malformed UTF-8, malformed/non-record JSON,
 invalid Message records and malformed rewind targets, without changing the
-executor's permissive history reader. Valid compaction markers remain ignored
+executor's permissive history reader. Valid compaction summaries remain ignored,
+but their sequence boundaries remain attached to subsequent message records,
 and valid rewinds still remove their discarded history. This detects damaged
 records, not a missing but syntactically intact tail: the log has no completeness
 checksum or persisted job boundary proving that every original byte is present.

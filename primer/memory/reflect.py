@@ -389,6 +389,8 @@ async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], 
     try:
         lines = (raw.decode("utf-8", "strict" if strict else "replace")
                  if isinstance(raw, (bytes, bytearray)) else str(raw)).split("\n")
+        if lines[-1] == "":
+            lines.pop()  # LF terminates the last record; it is not another record.
         if strict:
             visible = {}
             last_seq = 0
@@ -430,7 +432,13 @@ def _without_compaction_markers(lines: list[str]) -> list[str]:
     for line in lines:
         if marker in line:
             try:
-                if json.loads(line).get("kind") == marker:
+                obj = json.loads(line)
+                if obj.get("kind") == marker:
+                    # Keep the sequence boundary for following seqless Message
+                    # rows. Deleting it could attach discarded post-compaction
+                    # messages to a surviving pre-compaction rewind target.
+                    if obj.get("seq") is not None:
+                        kept.append(json.dumps({"seq": obj["seq"]}))
                     continue
             except (ValueError, AttributeError):
                 pass

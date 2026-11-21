@@ -117,24 +117,51 @@ async def test_impossible_rewind_after_two_turns_never_reaches_model(sp, target)
 
 
 @pytest.mark.parametrize("sequenced_marker", [False, True])
-async def test_historical_rewind_keeps_prior_visible_target_across_compaction(sp, sequenced_marker):
+@pytest.mark.parametrize("intervening_turn", [False, True])
+async def test_historical_rewind_keeps_prior_visible_target_across_compaction(sp, sequenced_marker, intervening_turn):
     from primer.model.chat import Message, TextPart
-    _, _, job = await _setup(sp)
+    agent, settings, job = await _setup(sp)
     def message(role, text):
         return Message(role=role, parts=[TextPart(text=text)]).model_dump(mode="json")
     marker = {"kind": "rewind_marker", "payload": {"to_seq": 1}}
     if sequenced_marker:
         marker["seq"] = 4
-    rows = [message("user", "original"), {"seq": 1, "kind": "user_input"},
-            message("assistant", "original answer"), {"seq": 2, "kind": "user_input"},
-            message("user", "discarded"), message("assistant", "discarded answer"),
-            {"seq": 3, "kind": "compaction_marker", "payload": {"summary": "folded"}}, marker,
-            {"seq": 5, "kind": "user_input"}, message("user", "later")]
+    rows = [{"seq": 1, "kind": "user_input"}, message("user", "original"), message("assistant", "original answer")]
+    if intervening_turn:
+        rows += [{"seq": 2, "kind": "user_input"}, message("user", "discarded"), message("assistant", "discarded answer")]
+    rows += [{"seq": 3, "kind": "compaction_marker", "payload": {"summary": "folded"}},
+             message("assistant", "discarded immediately after compaction"), marker,
+             {"seq": 5, "kind": "user_input"}, message("user", "later")]
     async def read_log(*args):
         return ("\n".join(json.dumps(row) for row in rows) + "\n").encode()
     result = await session_message_loader(sp, read_log)(job)
     texts = [p.text for m in result for p in m.parts]
     assert texts == ["original", "original answer", "later"]
+    llm = FakeLLM()
+    llm.answers = [_run([])]
+    deps = _deps(sp, llm)
+    deps.load_messages = session_message_loader(sp, read_log)
+    assert (await reflect(deps, job, agent, settings)).skipped_reason is None
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0]["user_message"]
+    assert "original answer" in prompt and "later" in prompt
+    assert "discarded" not in prompt and "folded" not in prompt
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (b"", "0 log lines: "),
+    (b'{"kind":"user_input"}\n', "1 log lines: user_input"),
+    (b'{"kind":"user_input"}\r\n', "1 log lines: user_input"),
+    (b'{"kind":"user_input"}', "1 log lines: user_input"),
+    (b'{"kind":"user_input"}\n\n', "2 log lines: user_input,?"),
+])
+async def test_diagnostic_counts_records_not_lf_terminator(sp, raw, expected):
+    from primer.memory.reflect import session_log_shapes
+    _, _, job = await _setup(sp)
+    async def read_log(*args):
+        return raw
+    assert await session_log_shapes(sp, read_log)(job) == expected
 
 
 @pytest.mark.parametrize("fault", ["out_of_order", "hidden_target"])

@@ -12,9 +12,19 @@ Anthropic and OpenChat own each opened SDK response until iteration ends. They
 explicitly await both timeout-iterator and response cleanup on exhaustion, errors,
 consumer close and cancellation, before releasing the concurrency slot. Repeated
 cancellation joins that cleanup; a non-cooperative close can delay completion.
+Before iteration, a per-response close guard is installed on the shared
+`response.aclose()` entry point used by the locked OpenAI 3.41.0 and Anthropic
+2.3.0 streams. All calls join one owned close task, including HTTPX 2.12.0
+automatic close, which marks `is_closed` before awaiting its transport. A
+cancelled automatic close therefore finishes its transport attempt before
+cancellation propagates and the permit is released. This relies on the SDKs'
+mutable response object and shared close entry point; dependency upgrades need
+the offline SDK/transport regression coverage. Stream doubles without that
+response object only receive the adapter's explicit close.
 Cleanup errors are logged by class at debug level without replacing the original
-response outcome or cancellation. This does not establish remote abort success
-when the SDK close itself fails.
+response outcome or cancellation during explicit disposal. SDK-initiated close
+failures still follow the SDK's normal iteration-error path. This does not
+establish remote abort success when the SDK close itself fails.
 
 A provider row (`LLMProvider`, `EmbeddingProvider`, or `CrossEncoderProvider` in `primer/model/provider.py`) is a configuration record: which backend (`provider` enum), which models are permitted (`models`), the backend-specific connection details (`config`, a discriminated union), and the concurrency budget (`limits`). An adapter is the live object built from that row. The adapter serves every model the row declares; model selection happens per call, validated against `provider.models` with a `ModelNotFoundError` raised when the caller passes an unknown name.
 

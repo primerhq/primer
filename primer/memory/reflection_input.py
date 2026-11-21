@@ -20,7 +20,7 @@ from primer.llm._reasoning import profile_extended
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback, text_tokens
 from primer.memory.prompts import MEMORY_SUMMARY_PROMPT
 from primer.model.chat import (
-    Done, Error, ExtendedEvent, Message, TextDelta, TextPart,
+    Done, Error, ExtendedEvent, Message, RefusalDelta, TextDelta, TextPart,
     ToolCallDelta, ToolCallEnd, ToolCallPart, ToolCallStart, ToolResultPart,
 )
 from primer.model.except_ import ServerError
@@ -216,6 +216,10 @@ async def _judge_stream(llm, model, *, system: str, user: str, schema: dict,
             # events are not retained; event count and the attempt deadline bound
             # streams with no text. This is not a network-frame-size guarantee.
             payload = event.extended if isinstance(event, ExtendedEvent) else event
+            if isinstance(payload, RefusalDelta):
+                # A refused response is incomplete even when ordinary text
+                # before it parses, or the provider subsequently reports stop.
+                raise InputRefused("compaction_incomplete")
             if "tool_call" in payload.type and not isinstance(event, (ToolCallStart, ToolCallDelta, ToolCallEnd)):
                 raise InputRefused("compaction_invalid")
             text = getattr(payload, "text", None) or ""
