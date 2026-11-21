@@ -550,6 +550,13 @@ def _request_parts(
     query: list[tuple[str, str]] = []
     headers: dict[str, str] = {}
     body: dict[str, Any] = {}
+    # Ordinary query bindings own their wire names even when omitted or aliased.
+    # Exploded maps may only supply otherwise unclaimed query keys.
+    named_query_keys = {
+        binding.wire_name for binding in bindings
+        if binding.location == "query" and not binding.explode_query_object
+    }
+    exploded_query_keys: set[str] = set()
     for binding in bindings:
         if binding.argument not in arguments:
             continue
@@ -562,6 +569,9 @@ def _request_parts(
                 for key, item in value.items()
             ):
                 raise ConfigError("exploded query parameter must be an object of scalar values")
+            if value.keys() & (named_query_keys | exploded_query_keys):
+                raise ConfigError("exploded query property collides with another query parameter")
+            exploded_query_keys.update(value)
             query.extend((key, str(item).lower() if isinstance(item, bool) else str(item)) for key, item in value.items())
         elif binding.location == "query":
             values = value if isinstance(value, list) else [value]
@@ -575,6 +585,20 @@ def _request_parts(
                 "binary_fields": binding.binary_fields,
             }
     return query, headers, body
+
+
+def _header_wire_bytes(value: str) -> bytes:
+    """Preserve HTTP header bytes without HTTPX's implicit ASCII-only encoding.
+
+    Latin-1 matches ASGI/Starlette's raw header decoding. Unicode outside that
+    range stays non-ASCII on the wire, including lone surrogates, so malformed
+    signatures reach the handler's normal mismatch path rather than raising in
+    request construction. Never replace malformed text with ASCII characters.
+    """
+    try:
+        return value.encode("latin-1")
+    except UnicodeEncodeError:
+        return value.encode("utf-8", errors="surrogatepass")
 
 
 def _body_kwargs(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -2027,7 +2051,7 @@ def build_generated_route_toolsets(
                                 _descriptor.method,
                                 path,
                                 params=query,
-                                headers=merged_headers,
+                                headers={key: _header_wire_bytes(value) for key, value in merged_headers.items()},
                                 **kwargs,
                             ) as response:
                                 status_code = response.status_code

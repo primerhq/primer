@@ -145,3 +145,23 @@ async def test_raw_body_tools_keep_default_approval_requirements(app, fake_stora
     for toolset, tool in (("harnesses", "put_harness_overrides"), ("svc", "svc_gateway_function"), ("webhooks", "receive_webhook")):
         policy = await resolver.find(toolset_id=toolset, tool_name=tool)
         assert policy is not None and policy.approval.type.value == "required"
+
+
+async def test_generated_non_ascii_signature_preserves_hmac_refusal_and_guard_order(app, fake_storage_provider):
+    trigger = await _create_webhook_trigger(fake_storage_provider, slug="raw-non-ascii", hmac_secret="test-secret")
+    args = {"token": trigger.config.token, "body": base64.b64encode(b"{}").decode()}
+    for signature in ("sha256=" + "\xff" * 3, "sha256=\u2603", "\ud800"):
+        refused = _output(await _call(app, "webhooks__receive_webhook", {**args, "signature": signature}), 401)
+        assert refused["extensions"]["code"] == "hmac_mismatch"
+    # Malformed signature text must not short-circuit the earlier REST guards.
+    malformed = {**args, "signature": "sha256=\xff"}
+    _output(await _call(app, "webhooks__receive_webhook", {**malformed, "token": "absent"}), 404)
+    disabled = await _create_webhook_trigger(fake_storage_provider, slug="raw-non-ascii-disabled", enabled=False, hmac_secret="test-secret")
+    _output(await _call(app, "webhooks__receive_webhook", {**malformed, "token": disabled.config.token}), 403)
+    oversized = base64.b64encode(b"x" * (1024 * 1024 + 1)).decode()
+    _output(await _call(app, "webhooks__receive_webhook", {**malformed, "body": oversized}), 413)
+    assert fake_storage_provider.get_storage(WebhookDelivery)._data == {}
+    # The same path still accepts an unchanged ordinary ASCII signature.
+    accepted = _output(await _call(app, "webhooks__receive_webhook", {**args, "signature": _make_hmac_sig("test-secret", b"{}")}))
+    assert accepted["status"] == "accepted"
+    assert len(fake_storage_provider.get_storage(WebhookDelivery)._data) == 1
