@@ -304,8 +304,8 @@ class ModelOnlyBridge:
 
     async def aclose(self) -> None:
         self._closed = True
-        if any(s._pending is asyncio.current_task() for s in self._active):
-            raise BoundaryError("Codex owner cannot close inside its own advancement")
+        for stream in self._active:
+            stream.ensure_can_close()
         # Close every retained stream, including idle generators whose last
         # anext consumer has already finished. Gather all cleanup attempts.
         results = await asyncio.gather(*(s.aclose() for s in tuple(self._active)), return_exceptions=True)

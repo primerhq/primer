@@ -95,7 +95,13 @@ cleanup survives repeated caller cancellation. Bridge and adapter own retained
 stream objects, including idle streams advanced by completed temporary tasks.
 Closing the adapter closes those scopes and releases their rate slots. Only one
 advance per iterator is allowed. Trusted callbacks cannot recursively close their
-own advancing owner; refusal unwinds that advance through normal cleanup. The
+own advancing or finalizing owner, including from child cleanup tasks. Task-local
+ownership ancestry is checked before joining an existing cleanup task, so a
+callback cannot join the ancestor waiting for it. Refusal unwinds normal cleanup;
+external concurrent closes still join one cleanup operation. Ancestry is reset
+before returning each event to the consumer. Hard-process-bounded regressions
+cover recursive bridge, adapter and source-finalizer close, including registry,
+channel, rate-slot and pending-task checks. The
 absolute step deadline includes consumer idle time and is checked on the next
 advance; owners must explicitly close abandoned idle streams. No timeout context
 spans an async-generator yield. Timeouts rely on cooperative
