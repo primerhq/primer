@@ -423,6 +423,23 @@ async def read_file(
     return {"content_b64": base64.b64encode(content).decode()}
 
 
+async def capture_service_bundle(args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None) -> dict:
+    from primer_runtime.directory_bundle import CaptureBusyError, capture_bounded
+
+    path, reserved = args.get("path"), args.get("reserved")
+    if not isinstance(path, str) or not isinstance(reserved, list) or not all(isinstance(p, str) for p in reserved):
+        raise OpError(ErrorCode.EPROTOCOL, "expected a directory path and reserved workspace paths")
+    try:
+        data = await capture_bounded(workspace_root, path, tuple(reserved))
+    except CaptureBusyError as exc:
+        raise OpError(ErrorCode.EBUSY, str(exc)) from exc
+    except TimeoutError as exc:
+        raise OpError(ErrorCode.ETIMEDOUT, "workspace bundle capture timed out") from exc
+    except (ValueError, OSError) as exc:
+        raise OpError(ErrorCode.EACCES, f"could not capture bundle directory: {exc}") from exc
+    return {"content_b64": base64.b64encode(data).decode("ascii")}
+
+
 async def write_file(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
     """``write_file`` op → ``{ok}``; atomic; Tier-A locked; creates parents."""
     raw_path: str = args.get("path", "")
@@ -792,6 +809,7 @@ from primer_runtime.state_inspect import state_show_commit
 
 HANDLERS: dict[str, object] = {
     "read_file": read_file,
+    "capture_service_bundle": capture_service_bundle,
     "write_file": write_file,
     "append_line": append_line,
     "list_dir": list_dir,

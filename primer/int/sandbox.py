@@ -91,6 +91,12 @@ class Sandbox(ABC):
     @abstractmethod
     async def read_file(self, path: str) -> bytes: ...
 
+    async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
+        """Read a bounded directory archive relative to this runtime's workspace root."""
+        from primer.model.except_ import BadRequestError
+
+        raise BadRequestError("sandbox does not support bounded directory publishing")
+
     async def read_file_from(self, path: str, offset: int) -> bytes:
         """The file's bytes from byte ``offset`` (empty at or past the end). The default reads the whole file; a sandbox that can seek overrides it."""
         return (await self.read_file(path))[offset:]

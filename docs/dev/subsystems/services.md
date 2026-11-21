@@ -11,11 +11,10 @@ author bundles; publishing detaches the app from them entirely.
 
 Design rationale and the full decision trail live in the (local, not
 committed) spec `docs/superpowers/specs/2026-08-08-services-design.md`.
-This page documents what is implemented: spec phases 1-2. Phase 3 (tool
-dispatch through a manifest allowlist and an anonymous service principal)
-and the separate curated phase-4 `publish_service` tool for workspace-authored
-bundles are not built yet. Generated route-backed publishing and its agent
-guide are available. `viewer_auth="none"` already applies to static files and
+Phases 1-2 serve assets and bundle functions. The workspace publishing tool
+also implements the agent-facing directory workflow. Phase 3 (tool dispatch
+through a manifest allowlist and an anonymous service principal) remains planned.
+`viewer_auth="none"` already applies to static files and
 published functions; it does not make an unbuilt tool gateway available.
 
 ## 2. Conceptual model
@@ -110,6 +109,53 @@ decodes the base64 into the original archive bytes. REST continues to consume
 raw bytes (including existing `application/gzip` callers); its validation and
 authentication order are unchanged. This tool publishes a prepared archive,
 not a workspace directory. It uses the normal generated-write approval gate.
+
+### Publishing from a workspace session
+
+An administrator in a workspace session can call `system__publish_service`
+with `{"name": "status-app", "path": "apps/status"}`. The handler resolves the
+initiating person, verifies read access to the workspace supplied by the turn,
+and requires service-management authority. Its shipped gate requires admin
+approval on fresh installs and via migration35 on existing installs. Startup refuses
+to serve or start runtime owners if its early critical publisher-only seed or
+verification fails, including a fresh install already stamped schema35. Storage
+is closed before refusal. Publisher lookup reads semantic policy rows under both `system` and `_system`,
+paging past disabled rows before selecting enabled policies with the live model's
+boolean decoding (including an omitted field's true default and readable stored
+string booleans). Explicit disabled choices and custom settings remain intact.
+Malformed matching rows refuse lookup rather than disappear behind a raw SQL
+boolean filter. Duplicate enabled policies retain the existing most-restrictive,
+stable-ID selection. Pages are separate reads, not a transaction-wide snapshot;
+post-start edits retain the resolver's invalidation and cache-TTL contract. Operator
+policy customizations are retained; migration16 is unchanged. The workspace ID and viewer authentication are outside the tool schema.
+An external MCP caller can use the generated archive tool.
+
+Capture starts at a dedicated relative directory. Member paths start inside that
+directory. The local backend opens components relative to directory descriptors
+without following links. Container and Kubernetes backends run the same bounded
+operation inside workspace runtime protocol 1.7. Older runtimes refuse this
+operation. The producer bounds traversal to 1,000 members, 200 files and 10 MiB
+of regular file content, and rejects special files, linked files, Git metadata
+and overlap with reserved workspace directories. Finish writing the directory
+before calling. Capture reads individual files without a tree-wide snapshot.
+
+Capture has a 30-second deadline before publication writes. On the runtime
+client this includes waiting for the connection and its response. Each local
+platform process or standalone workspace runtime accepts one capture at a time.
+A timeout or disconnect abandons the result. The filesystem thread retains its
+slot until it exits, even if a filesystem read outlasts the caller. A concurrent
+attempt returns a conflict. Traversal checks for abandonment between entries.
+The deadline applies to capture and leaves the existing publication write
+and approval behavior intact.
+
+The tool uses the same bundle validator, manifest grant lookup, artifact store
+and version publisher as the REST upload. A new name gets console authentication.
+Republishing preserves the service's exposure. Harness-managed names must be
+published through their harness. Success returns `service_id`, `version_id`,
+`version` and the relative `url`. Serving replicas can cache the previous lookup
+for five seconds. Validation precedes auto-creation. A later storage failure
+can leave an unpublished service or a stored version awaiting activation;
+inspect versions before retrying, since publishing again creates a new version.
 
 ## 7. Persistence
 
@@ -219,8 +265,7 @@ create/edit/delete with the standard modal) and `services::{id}` (Config
 plus Versions tabs; activate/rollback; open-app link). The console has no
 bundle upload control. Publishing is available today through
 `POST /v1/services/{id}/versions` and the generated
-`services__publish_service_version` tool; the planned phase-4 `publish_service`
-agent/system tool is not implemented.
+`services__publish_service_version` tool, and `system__publish_service` in a workspace session.
 
 ## 9. Internal contracts
 
@@ -260,6 +305,4 @@ agent/system tool is not implemented.
 - **The roadmap keeps publishing out of the console.** Today an operator or
   API client publishes through `POST /v1/services/{id}/versions`; there is no
   console upload control. The generated publishing tool accepts a prepared
-  archive; the planned phase-4 design adds a
-  `publish_service` tool for workspace-authored bundles rather than a console
-  button that uploads a bundle the operator did not build.
+  archive. The curated workspace tool accepts the directory that contains the app.

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from primer.int.workspace import Workspace
-from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError, ProviderError
 from primer.model.workspace_session import (
     AgentBinding,
     SessionInfo,
@@ -400,6 +400,18 @@ class LocalWorkspace(Workspace):
                 return handle.read(), size <= max_bytes
 
         return await asyncio.to_thread(_tail)
+
+    async def capture_service_bundle(self, path: str) -> bytes:
+        from primer.workspace.directory_bundle import CaptureBusyError, capture_bounded
+
+        try:
+            return await capture_bounded(self._root, path, _reserved_rel_paths(self._template))
+        except CaptureBusyError as exc:
+            raise ConflictError(str(exc)) from exc
+        except TimeoutError as exc:
+            raise ProviderError("workspace bundle capture timed out") from exc
+        except (ValueError, OSError) as exc:
+            raise BadRequestError(f"could not capture bundle directory: {exc}") from exc
 
     async def download_archive(
         self,

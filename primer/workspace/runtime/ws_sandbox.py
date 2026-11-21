@@ -152,6 +152,9 @@ class WSSandbox(Sandbox):
     async def read_file(self, path: str) -> bytes:
         return await self._client.read_file(self._resolve(path))
 
+    async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
+        return await self._client.capture_service_bundle(path, reserved)
+
     async def read_file_from(self, path: str, offset: int) -> bytes:
         return await self._client.read_file(self._resolve(path), offset=offset)
 

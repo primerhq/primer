@@ -108,6 +108,7 @@ from primer.storage.migrations.m033_internal_collections_admin_gates import (
     M033InternalCollectionsAdminGates,
 )
 from primer.storage.migrations.m034_seeded_agents_v5 import M034SeededAgentsV5
+from primer.storage.migrations.m035_workspace_publish_gate import M035WorkspacePublishGate
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M032McpExposureMode(),
     M033InternalCollectionsAdminGates(),
     M034SeededAgentsV5(),
+    M035WorkspacePublishGate(),
 )
 
 #: Highest version this build knows how to apply.

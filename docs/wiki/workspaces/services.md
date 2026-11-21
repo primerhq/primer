@@ -12,12 +12,30 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 
 ## Concepts
 
-- Service management and publishing have generated route-backed tools. There is no separate curated `publish_service` tool, and the planned browser `Primer.tool` API is not an implemented capability.
+- Service management and publishing have generated route-backed tools. Workspace sessions also offer `system__publish_service`. The browser `Primer.tool` API remains planned.
+- Directory capture can take up to 30 seconds. If a prior capture is still reading the workspace, a new attempt returns a conflict. Capture failures occur before a service or version is created.
 - Read the exact publish schema before supplying the manifest and file payloads. A successful publish creates a new immutable version; activating an earlier version is a rollback, not a rewrite of historical artifact bytes.
 - Each artifact retains its storage-provider identity. Changing the active artifact store routes new writes there; reads of existing DB or filesystem versions still use their original provider.
 - Service assets and bundle functions use their native routes. A binary asset or function response must be consumed in its actual format; listing the service does not exercise either path.
 
 ## How to
+
+From an admin workspace session, prepare a dedicated directory with your app files
+and optional `service.yaml`. Call `system__publish_service` with
+`{"name":"status-app","path":"apps/status"}`. The default policy requires an
+admin to approve, including after an upgrade. Existing operator-customized
+policies remain in effect, including disabled policies. On an uncached lookup,
+a malformed matching publisher policy refuses the call rather than being treated
+as absent. A cached decision can still be served while a background refresh runs;
+a failed refresh retains that decision until a successful refresh or invalidation.
+Approve the publish when prompted.
+The result gives the active version number, version ID and URL (`/svc/status-app/`).
+The first call creates a console-authenticated service. Later calls publish a new
+version and keep its current viewer authentication. The directory must contain
+ordinary files, within 200 files and 10 MiB total. Links and workspace state
+directories are refused. Container and Kubernetes workspaces require runtime 1.7.
+
+To publish an already prepared archive, including from an external MCP client:
 
 1. An admin creates the service and reads its saved identity and name.
 2. Build a gzipped tar archive containing the app files (and optional `service.yaml`). Call `services__publish_service_version` with `service_id` and `body`: the base64 encoding of those archive bytes, not a file path or a JSON manifest. `activate` defaults to true; use false to stage a version. List versions and verify the published manifest and file references.
@@ -55,6 +73,7 @@ The following operations belong to this feature family. The role shown is the mi
 | [`services__list_service_versions`](reference/tools/services/list_service_versions) | List a service's published versions, newest first. | admin |
 | [`services__publish_service_version`](reference/tools/services/publish_service_version) | Publish a bundle as a new service version. | admin |
 | [`services__update`](reference/tools/services/update) | Replace Service. | admin |
+| [`system__publish_service`](reference/tools/system/publish_service) | Publish and activate a directory from the calling workspace. | admin |
 | [`svc__svc_gateway_function`](reference/tools/svc/svc_gateway_function) | Call a bundle function in the python-runner sandbox. | user |
 | [`svc__svc_serve`](reference/tools/svc/svc_serve) | Serve a service asset. | user |
 

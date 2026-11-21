@@ -32,11 +32,10 @@ from primer.api.deps import (
 )
 from primer.api.routers._crud import make_crud_router
 from primer.api.route_tools import CrudToolDeclaration
-from primer.model.providers.toolset import Toolset
 from primer.model.service import Service, ServiceVersion
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.service.bundle import BundleError, validate_bundle
-from primer.service.publish import activate_version, publish_version
+from primer.service.publish import activate_version, missing_toolset, publish_version
 from primer.service.serve import invalidate_service_cache
 
 if TYPE_CHECKING:
@@ -219,20 +218,16 @@ async def publish_service_version(
     # names are deliberately NOT resolved here; planned phase-3 dispatch
     # will return 404 for a stale name at call time.
     sp = request.app.state.storage_provider
-    toolsets = sp.get_storage(Toolset)
-    for grant in bundle.manifest.tools:
-        if await toolsets.get(grant.toolset_id) is None:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "unknown_toolset",
-                    "field": "tools",
-                    "message": (
-                        f"manifest grants toolset {grant.toolset_id!r}, "
-                        "which does not exist"
-                    ),
-                },
-            )
+    unknown = await missing_toolset(sp, bundle)
+    if unknown is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "unknown_toolset",
+                "field": "tools",
+                "message": f"manifest grants toolset {unknown!r}, which does not exist",
+            },
+        )
 
     artifacts = await get_artifact_storage_registry(request).get_default()
     created = await publish_version(
