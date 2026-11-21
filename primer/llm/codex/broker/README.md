@@ -64,12 +64,29 @@ remain visible, and no token from the queue can be used for inference. The
 management host must close active connections on sign-out; subsequent event
 authorization already refuses.
 
+Disposal writes its private retry handles and verified identity before replacing
+the active registration with a disabled marker. On startup a nonempty disposal
+queue disables any coexisting old registration; snapshots, credentials and new
+enrollment refuse until explicit cleanup completes. Only after the disabled
+marker is durable may confirmed revocations remove queue entries. A failure
+before the first durable disposal write may leave the unchanged active record
+on disk: sign-out has not succeeded and the error must remain visible. Unknown
+rename/fsync completion can leave either old or new atomic files; retry handles
+are not destroyed first. Successful remote revocation with lost local confirmation
+may be repeated. This is ordered recovery, not a multi-file atomic transaction
+or a claim about hostile storage/power-loss guarantees. Never-committed staging
+remains volatile until its disposal record or registration is persisted.
+
 `FixedHTTP` has literal inference/token/catalog endpoints, TLS verification,
 no environment proxies or redirects, bounded bodies/frames and sanitized errors.
 Requests advertise identity encoding; other Content-Encoding values refuse before
 reading or invoking a decoder. Raw byte budgets and announced lengths are checked
 before buffer extension. Small SSE events are delivered without batching to an
 artificial chunk size or waiting for EOF.
+SSE event data uses a bounded byte buffer, counting newline separators even for
+empty data lines. The parser scans newly arrived bytes and consumes complete
+lines without repeatedly summing entries or copying the whole remaining chunk;
+fragmented lines, multiline events and comments retain the same framing contract.
 Issuer metadata may select only same-origin well-known JWKS and same-origin
 revocation paths. It never follows token header URLs or accepts an API-key
 fallback. SSE is translated by the existing bridge; only Primer function tools
