@@ -8,6 +8,41 @@ Callers (the agent loop, the ingest path, the collections subsystem) depend only
 
 ## 2. Conceptual model
 
+Anthropic and OpenChat own each opened SDK response until iteration ends. They
+explicitly await both timeout-iterator and response cleanup on exhaustion, errors,
+consumer close and cancellation, before releasing the concurrency slot. Repeated
+cancellation joins that cleanup; a non-cooperative close can delay completion.
+Before iteration, a per-response close guard is installed on the shared
+`response.aclose()` entry point used by the locked OpenAI 3.41.0 and Anthropic
+2.3.0 streams. All calls join one owned close task, including HTTPX 2.12.0
+automatic close, which marks `is_closed` before awaiting its transport. A
+cancelled automatic close therefore finishes its transport attempt before
+cancellation propagates and the permit is released. This relies on the SDKs'
+mutable response object and shared close entry point; dependency upgrades need
+the offline SDK/transport regression coverage. Stream doubles without that
+response object only receive the adapter's explicit close.
+Cleanup errors are logged by class at debug level without replacing the original
+response outcome or cancellation during explicit disposal. SDK-initiated close
+failures still follow the SDK's normal iteration-error path. This does not
+establish remote abort success when the SDK close itself fails.
+The guard remembers which callers were cancelled while joining a response's
+close. Re-entry from a nested SDK finally preserves that caller's cancellation
+instead of replacing it with the cached transport error. A different,
+uncancelled caller still observes that error; the transport is not retried.
+On first entry the guard also captures an active `CancelledError` unwinding
+from a suspended body read. That single cancellation survives a later failed
+close without needing another cancel request. It inspects the active exception,
+not the task's cancellation count, which may remain nonzero after a previously
+handled cancellation. The close still completes before the permit is released.
+
+OpenChat and OpenRouter translate nonempty Chat Completions `delta.refusal`
+into `ExtendedEvent(RefusalDelta)`, even alongside a normal `stop`. Responses
+also forwards a terminal-only `response.refusal.done` as a refusal when its
+block had no nonempty streamed refusal text; otherwise it suppresses the
+repeated final text. This is a per-block fallback, not a second visible copy
+of the same refusal. The absence of a prior delta is supported by the event's
+self-contained locked SDK shape, not asserted as a measured live frequency.
+
 A provider row (`LLMProvider`, `EmbeddingProvider`, or `CrossEncoderProvider` in `primer/model/provider.py`) is a configuration record: which backend (`provider` enum), which models are permitted (`models`), the backend-specific connection details (`config`, a discriminated union), and the concurrency budget (`limits`). An adapter is the live object built from that row. The adapter serves every model the row declares; model selection happens per call, validated against `provider.models` with a `ModelNotFoundError` raised when the caller passes an unknown name.
 
 The universal types the adapters translate are defined in `primer/model/chat.py` and `primer/model/embedding.py`: `Message` (a role plus a list of `Part`s), `Tool`, `ToolChoice`, the `StreamEvent` union that `LLM.stream` yields, and `EmbeddingPart` / `EmbedResponse` for embedders. Provider-specific knobs that do not map cleanly across vendors ride in an open-ended `extended: dict[str, Any]` slot the adapter interprets and silently drops unknown keys from.
@@ -41,6 +76,7 @@ Seven LLM backends ship today (`primer/model/provider.py` `LLMProviderType`): `o
 - **Shared OpenAI-family helper modules.** `primer/llm/_openai_common.py` (`build_sampling_params(target=…)`) is shared by the Responses and Chat Completions adapters; `primer/llm/_openai_compat.py` (request/response shaping for Chat Completions) is shared by `OpenChatLLM` and `OpenRouterLLM`. Both modules are pure and do no network IO.
 - **Flavor strategy table over enum-per-flavor.** OpenAI-compatible adapters carry a frozen `_FlavorPolicy` dataclass selected from a `_POLICY_BY_FLAVOR` table keyed by the config's flavor enum, so a new OpenAI-compatible server lands as one table row rather than a new adapter class.
 - **Native token counters are groundwork, not yet on a turn path.** `count_tokens` is a mandatory abstract method backed by per-provider modules under `primer/llm/_tokenizer/`, and `primer.llm.counting.count_prompt_tokens` is the one wrapper meant to call it (see "Token counter contract" below). Nothing in the live turn path calls either yet: agent compaction still decides on a character heuristic (`CompactionStrategy.maybe_compact`), and `compaction_mixin.should_compact`, the only caller, has no production caller.
+- Memory reflection budgets its complete requests using the shared local heuristic and bounded evidence summaries (`primer/memory/reflection_input.py`). This does not activate native counters or change the measurement gates for live-turn calibration; its reported sizes remain estimates.
 - **Observability woven into every stream.** Each `stream()` opens an OpenTelemetry span `llm.stream` and increments Prometheus counters (`llm_tokens_total`, `llm_failure_total`, `llm_duration_seconds`); the cross-cutting instrumentation is identical across adapters.
 
 ## 4. Code layout
@@ -385,6 +421,12 @@ the request body, and `openrouter` sends its `reasoning` object in the body.
 folds `thinking_budget` or `thinking_level` into `thinking_config` (keeping
 the level when both arrive), `ollama` sends `think` at the top level and
 `anthropic` sends the `thinking` block and `output_config`.
+The locked Anthropic 2.3.0 SDK omits `temperature`, `top_p` and `top_k` keywords.
+After the adapter's model/thinking fitting, remaining sampling knobs travel
+through `extra_body` and arrive as the same top-level JSON fields. This keeps
+older model/proxy settings without restoring knobs deliberately dropped for
+models or thinking modes that reject them. It is SDK argument compatibility,
+not a retry or a bypass of upstream model validation.
 
 A forced `tool_choice` (`required` or a named tool) is sent as the caller
 chose it on every wire. `openchat` used to turn it into `auto` on real OpenAI

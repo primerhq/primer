@@ -16,10 +16,100 @@ with no overhead.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypeVar
+from weakref import WeakSet
 
 _T = TypeVar("_T")
+
+
+def _protect_sdk_response_close(sdk_stream: Any) -> None:
+    """Own the HTTP response close before the SDK can initiate it itself.
+
+    The locked Anthropic/OpenAI AsyncStream iterators and their explicit close
+    both call response.aclose(). HTTPX marks that response closed *before* its
+    transport close finishes. Install a per-response, single-flight join at
+    that shared entry point; retrying an interrupted HTTPX close is too late.
+    Stream doubles without an HTTP response retain explicit disposal only.
+    """
+    response = getattr(sdk_stream, "response", None)
+    close = getattr(response, "aclose", None)
+    if close is None:
+        return
+    task = None
+    cancelled_callers = WeakSet()
+
+    async def joined_close():
+        nonlocal task
+        caller = asyncio.current_task()
+        # A body-read cancellation may already be unwinding into HTTPX's
+        # finally before this first close starts. No second cancel is needed.
+        # Inspect the active exception, not Task.cancelling(): its count can
+        # remain nonzero after a caller has handled an earlier cancellation.
+        active_error = sys.exception()
+        cancelled = active_error if isinstance(active_error, asyncio.CancelledError) else None
+        if cancelled is not None:
+            cancelled_callers.add(caller)
+        if task is None:
+            task = asyncio.create_task(close())
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+                cancelled_callers.add(caller)
+            except Exception:
+                break
+        if cancelled is not None or caller in cancelled_callers:
+            if not task.cancelled():
+                task.exception()
+            # HTTPX can unwind into an SDK finally that closes this response
+            # again in the same task. Its cached close error must not replace
+            # the cancellation already propagating through that task. Other
+            # callers still observe an uncancelled close failure normally.
+            raise cancelled if cancelled is not None else asyncio.CancelledError()
+        task.result()
+
+    response.aclose = joined_close
+
+
+async def _close_streams(*streams: Any) -> None:
+    """Join disposal of owned iterator/SDK responses on every adapter exit.
+
+    Cleanup errors cannot replace a response/iteration error. Cancellation
+    still propagates, after every owned stream has had its close awaited.
+    """
+    async def dispose():
+        cancelled = None
+        for stream in streams:
+            try:
+                closer = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+                if closer is not None:
+                    result = closer()
+                    if inspect.isawaitable(result):
+                        await result
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception as exc:
+                logging.getLogger(__name__).debug("upstream close failed: %s", type(exc).__name__)
+        if cancelled is not None:
+            raise cancelled
+
+    task = asyncio.create_task(dispose())
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+    if cancelled is not None:
+        if not task.cancelled():
+            task.exception()
+        raise cancelled
+    task.result()
 
 
 class GenerationBudgetExceeded(TimeoutError):

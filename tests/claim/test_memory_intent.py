@@ -472,3 +472,106 @@ async def test_postgres_upgrade_preserves_existing_legacy_deadline():
             await db.execute(f'DROP SCHEMA "{after.schema}" CASCADE')
         await after.aclose()
         await before.aclose()
+
+
+async def test_rearmed_memory_claim_stops_held_reflection_summary(provider):
+    """Actual claim/row fences, including the gated native PG parametrization."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from primer.memory.reflect import reflect
+    from primer.model.chat import Done, Message, TextDelta, TextPart
+    from primer.model.model_profile import ModelProfile
+    from tests.memory.test_reflect import AGENT, FakeLLM, _deps as reflect_deps, _setup, _transcript
+
+    await provider.get_storage(ModelProfile).create(ModelProfile(
+        id="p", description="offline", provider_id="prov", model_name="m", context_length=32768))
+    agent, settings, old = await _setup(provider)
+    engine = queue(provider)
+    now = datetime.now(UTC)
+    await jobs._upsert_job(provider, old.id, kind="reflect", agent_id=AGENT, session_id="s1", target_turn=2, now=now)
+    await jobs.arm_current(provider, engine, old.id)
+    job = await provider.get_storage(MemoryJob).get(old.id)
+    lease, = await engine.claim_due("reflection-owner", max_count=1)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    calls = []
+    class Held(FakeLLM):
+        async def stream(self, **kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await resume.wait()
+            yield TextDelta(text='{"facts":[]}', index=0)
+            yield Done(stop_reason="stop", raw_reason="stop")
+    async def empty(*args):
+        return []
+    source = _transcript()
+    source[0] = Message(role="user", parts=[TextPart(text="original correction " + "x" * 140000)])
+    deps = reflect_deps(provider, Held(), source, store=SimpleNamespace(list_entries=empty))
+    deps.engine, deps.lease = engine, lease
+    running = asyncio.create_task(reflect(deps, job, agent, settings))
+    try:
+        async with asyncio.timeout(10):
+            await entered.wait()
+            await jobs._upsert_job(provider, job.id, kind="reflect", agent_id=AGENT, session_id="s1", target_turn=3, now=now)
+            await jobs.arm_current(provider, engine, job.id)
+            resume.set()
+            report = await running
+    finally:
+        resume.set()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+    assert report.skipped_reason == "input_superseded" and len(calls) == 1
+    latest = await provider.get_storage(MemoryJob).get(job.id)
+    assert latest.target_turn == 3 and latest.reflected_turn == 0
+    assert latest.occurrence_id != lease.memory_occurrence and latest.requested_due_at is not None
+
+
+async def test_failed_stream_cleanup_does_not_settle_cancelled_memory_job(provider):
+    import asyncio
+    from types import SimpleNamespace
+
+    from primer.model.chat import TextDelta
+    from primer.model.model_profile import ModelProfile
+    from tests.memory.test_reflect import AGENT, FakeLLM, _deps as reflect_deps, _setup
+
+    await provider.get_storage(ModelProfile).create(ModelProfile(
+        id="p", description="offline", provider_id="prov", model_name="m", context_length=32768))
+    _, _, old = await _setup(provider)
+    engine = queue(provider)
+    now = datetime.now(UTC)
+    await jobs._upsert_job(provider, old.id, kind="reflect", agent_id=AGENT, session_id="s1", target_turn=2, now=now)
+    await jobs.arm_current(provider, engine, old.id)
+    lease, = await engine.claim_due("reflection-owner", max_count=1)
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    class Failing(FakeLLM):
+        async def stream(self, **kwargs):
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+                yield TextDelta(text="", index=0)
+            finally:
+                cleaning.set()
+                await release.wait()
+                raise RuntimeError("isolated cleanup failure")
+    async def empty(*args):
+        return []
+    deps = reflect_deps(provider, Failing(), store=SimpleNamespace(list_entries=empty))
+    deps.engine, deps.now = engine, lambda: now
+    before = await provider.get_storage(MemoryJob).get(old.id)
+    running = asyncio.create_task(jobs.run_memory_job(deps, lease))
+    try:
+        async with asyncio.timeout(10):
+            await entered.wait()
+            running.cancel()
+            await cleaning.wait()
+            running.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+    finally:
+        release.set()
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+    latest = await provider.get_storage(MemoryJob).get(old.id)
+    assert latest.reflected_turn == 0 and latest.retry_count == before.retry_count
+    assert latest.requested_due_at == before.requested_due_at and latest.occurrence_id == before.occurrence_id

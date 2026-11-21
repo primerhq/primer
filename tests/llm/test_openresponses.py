@@ -762,6 +762,30 @@ class TestStreamMapping:
         )
         assert isinstance(out[0].extended, RefusalDelta)  # type: ignore[union-attr]
 
+    @pytest.mark.parametrize("prelude", ["none", "delta", "empty_delta"])
+    def test_refusal_done_fallback_does_not_duplicate_streamed_text(self, prelude) -> None:
+        from openai.types.responses import ResponseRefusalDoneEvent
+        state = _StreamState()
+        out = []
+        if prelude != "none":
+            out += _translate_event(NS(type="response.refusal.delta", item_id="msg_1", content_index=0,
+                                       delta="cannot" if prelude == "delta" else ""), state)
+        done = ResponseRefusalDoneEvent(type="response.refusal.done", item_id="msg_1", content_index=0,
+                                       output_index=0, sequence_number=2, refusal="cannot")
+        out += _translate_event(done, state)
+        assert "".join(event.extended.text for event in out) == "cannot"
+        assert all(isinstance(event.extended, RefusalDelta) for event in out)
+        assert _translate_event(done, state) == []
+        # Deduplication is per content block, not a response-wide suppression.
+        other = _translate_event(done.model_copy(update={"content_index": 1}), state)
+        assert len(other) == 1 and other[0].extended.text == "cannot"
+        assert other[0].extended.index != out[0].extended.index
+
+    def test_empty_terminal_refusal_still_signals_explicit_refusal(self) -> None:
+        out = _translate_event(NS(type="response.refusal.done", item_id="msg_1", content_index=0, refusal=""), _StreamState())
+        assert len(out) == 1 and isinstance(out[0].extended, RefusalDelta)
+        assert out[0].extended.text == ""
+
     def test_function_call_arguments_delta(self) -> None:
         state = _StreamState()
         _translate_event(

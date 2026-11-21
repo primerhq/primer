@@ -181,3 +181,14 @@ async def test_activity_lists_memory_events_newest_first(env: _Env) -> None:
     assert ids == sorted(ids, reverse=True)
     newer = await env.client.get(f"{BASE}/activity?after={ids[2]}&limit=1", headers=_as(ALICE))
     assert [i["id"] for i in newer.json()["items"]] == [ids[0]], "limit keeps the newest"
+
+
+async def test_compaction_activity_metadata_is_owner_only(env: _Env) -> None:
+    payload = {"reason": "input_compaction_limit", "retrying": False, "session_id": "s"}
+    await env.sp.get_event_store().append(event_type="memory.reflection.skipped", entity_kind="agent", entity_id=AGENT, payload=payload)
+    for uid in (BOB, CAROL):
+        response = await env.client.get(f"{BASE}/activity", headers=_as(uid))
+        assert response.status_code == 403
+    response = await env.client.get(f"{BASE}/activity", headers=_as(ALICE))
+    assert response.status_code == 200
+    assert response.json()["items"][0]["payload"] == payload

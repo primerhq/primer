@@ -893,6 +893,7 @@ class TestAnthropicThinkingFitsTheRequest:
         assert kwargs["thinking"] == _enabled(2048)
         assert kwargs["max_tokens"] == 4096
         assert "temperature" not in kwargs
+        assert "temperature" not in kwargs.get("extra_body", {})
         assert "output_config" not in kwargs
 
     async def test_stream_sends_adaptive_thinking_and_effort_on_4_6(self, monkeypatch) -> None:
@@ -900,11 +901,13 @@ class TestAnthropicThinkingFitsTheRequest:
         assert kwargs["thinking"] == _ADAPTIVE
         assert kwargs["output_config"] == {"effort": "low"}
         assert "temperature" not in kwargs
+        assert "temperature" not in kwargs.get("extra_body", {})
 
     async def test_stream_to_an_unknown_model_sends_no_reasoning(self, monkeypatch) -> None:
         kwargs = await self._stream(monkeypatch, "claude-opus-6", ReasoningLevel.HIGH, temperature=0.0)
         assert "thinking" not in kwargs and "output_config" not in kwargs
-        assert kwargs["temperature"] == 0.0
+        assert "temperature" not in kwargs
+        assert kwargs["extra_body"]["temperature"] == 0.0
 
 
 # --------------------------------------------------------------------------- #

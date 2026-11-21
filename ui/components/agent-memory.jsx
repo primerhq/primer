@@ -340,6 +340,26 @@ function AGM_Entry({ entry, owner, agentId, act, openSession }) {
   );
 }
 
+const AGM_REFLECTION_REASONS = {
+  input_incomplete: "Learning skipped: the requested transcript range is incomplete. Progress was kept.",
+  input_policy_too_large: "Learning skipped: memory instructions exceed the input budget. Progress was kept.",
+  input_compaction_limit: "Learning skipped: the full evidence cannot fit the bounded summary plan. Progress was kept.",
+  compaction_invalid: "Learning skipped: a summary could not be validated. Progress was kept.",
+  compaction_output_limit: "Learning skipped: model output reached a limit. Progress was kept.",
+  compaction_incomplete: "Learning skipped: the model did not provide a complete verdict. Progress was kept.",
+  input_context_rejected: "Learning skipped: the model rejected the context size. Progress was kept.",
+  input_superseded: "Learning skipped: the session, memory settings or job changed."
+};
+function AGM_reflectionDetail(event) {
+  const p = event.payload || {};
+  if (event.type === "memory.reflection.skipped") return AGM_REFLECTION_REASONS[p.reason] || "";
+  if (event.type === "memory.reflection.completed" && p.input_mode === "compacted" &&
+      Number.isInteger(p.summary_calls) && p.summary_calls >= 1 && p.summary_calls <= 4) {
+    return "Reviewed with " + p.summary_calls + " evidence summaries; original messages preserved.";
+  }
+  return "";
+}
+
 function AGM_Activity({ activity }) {
   if (activity.loading && !activity.data) return <div className="muted text-sm" data-testid="memory-loading">Loading…</div>;
   if (activity.error && !activity.data) {
@@ -353,6 +373,7 @@ function AGM_Activity({ activity }) {
         <li key={e.id} data-testid={"memory-activity-item:" + e.id}>
           <span>{e.type.replace("memory.", "")}</span>{" "}
           <span className="muted text-sm">{e.actor + " · " + relativeTime(e.at)}</span>
+          {AGM_reflectionDetail(e) ? <div className="muted text-sm">{AGM_reflectionDetail(e)}</div> : null}
           {e.payload && e.payload.name ? <span className="muted text-sm">{" · " + e.payload.name}</span> : null}
         </li>
       ))}

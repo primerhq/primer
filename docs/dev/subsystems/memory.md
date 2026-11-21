@@ -265,7 +265,109 @@ injection (`test_reflect.py`, `test_auto_inject.py`), the curation
 against the fake, private SQLite and gated PostgreSQL, including stale
 snapshots, legacy timestamps, cancellation, refused deletion and peer writers.
 
-## 11. Historical decisions
+## 11. Bounded reflection input
+
+`primer/memory/reflection_input.py` budgets the entire request, including the
+system instruction, context, transcript, JSON schema and output allowance.
+Its shared CJK-aware token estimate is not a native count: input is limited to
+30,000 estimated tokens and 80% of the profile window after the output reserve.
+The agent's own resolved profile supplies the window (the minimum member window
+for an aggregate). Oversized optional index rows and related entries are removed
+whole and counted; capture/exclusion policy and owner instructions are never cut.
+
+Short evidence uses one tool-free structured call. Longer evidence is split into
+at most four chronological chunks, preserving every text fragment, tool identity,
+error flag and source offset, including the middle of a long individual result.
+Each chunk receives one independent tool-free summary call. Source references and
+summary sizes are validated, then one final reflection reads the lossy summaries.
+No original logs, conversation compaction markers or memory entries are rewritten
+by preprocessing. Summaries cannot expand deterministic credit eligibility.
+Nontext attachments are identified but their contents are not inspected.
+No executable tools are supplied. Providers with native structured output return
+JSON text; Anthropic's existing adapter uses its single synthetic
+`structured_output` result. The bounded collector accepts that result as schema
+data, never executes it, and rejects other or repeated tool calls.
+Both forms require successful terminal confirmation: `stop`, or `tool_use` with
+the completed synthetic result. Failed/error responses (including nonfatal wire
+errors) and absent terminal events use the bounded transient retry policy. Filtered,
+stop-sequence, unknown or other incomplete completions preserve progress with
+`compaction_incomplete`; a terminal token ceiling uses `compaction_output_limit`.
+Typed refusal deltas also refuse the whole call, including a parseable text
+prefix followed by refusal and a provider's nominal completed/stop event.
+This includes Chat Completions refusal fields through OpenChat/OpenRouter and
+Responses refusal completion events received without an earlier refusal delta.
+Only a normally completed malformed verdict uses the existing invalid-output
+watermark rule. Parseable prefixes are not completion evidence.
+
+Every call has an output request limit, a 64 KiB collected-text/reasoning-text
+ceiling and an event-count ceiling; summary text has a smaller per-plan byte cap.
+Nested raw reasoning events and synthetic result arguments count toward the
+limits. A terminal `max_tokens` response is incomplete even if its JSON prefix
+parses: it never applies deltas or advances reflection progress.
+After profile/log loading, context preparation and model calls share a 120-second deadline. Cancellation joins provider
+cleanup, even after repeated waiter cancellation; an adapter that cannot finish
+cleanup can delay that join. There is no detached background model task.
+Anthropic and OpenChat explicitly await their owned timeout iterator and SDK
+response disposal on normal completion, early iterator close and cancellation.
+Before iteration, they guard the HTTP response close shared by the locked SDK's
+automatic and explicit disposal paths. Cancellation joins that single close
+before the concurrency permit passes to another caller; HTTPX's early
+`is_closed` flag alone is not evidence of completed transport disposal.
+Explicit cleanup failures do not replace the original outcome or cancellation;
+SDK-initiated close failures retain the normal iteration-error path. An attempted
+failed close is not proof that a remote generation has stopped.
+Profile settings are passed without an automatic setting-refusal retry in this path;
+aggregate adapters retain their own member failover. Bounds describe adapter
+invocations and collected output, not arbitrary provider network frames or costs.
+
+An uncovered source range, oversized fixed policy, invalid summary, output limit,
+context rejection or changed job/settings yields a fixed skip reason without
+advancing `reflected_turn` or applying deltas. Current occurrence settlement retires
+that attempt; a later completed turn can enqueue again. Preserved input is not a
+promise that an ended, permanently oversized session will eventually be learned.
+Transport errors keep the existing bounded durable retries. Invalid *final*
+reflection verdicts retain the existing terminal watermark behavior. Summaries
+are ephemeral, so a retry recomputes them; existing per-delta replay limits remain.
+Invalid-final progress writes recheck the same authority as valid results.
+The range check also refuses a readable log with fewer turn inputs than the job
+requests (`input_incomplete`), including at the triviality gate for eligible
+multi-turn jobs. The existing fewer-than-two-new-turns policy remains unchanged.
+Reflection-specific reads reject malformed UTF-8, malformed/non-record JSON,
+invalid Message records and malformed rewind targets, without changing the
+executor's permissive history reader. Valid compaction summaries remain ignored,
+but their sequence boundaries remain attached to subsequent message records,
+and valid rewinds still remove their discarded history. This detects damaged
+records, not a missing but syntactically intact tail: the log has no completeness
+checksum or persisted job boundary proving that every original byte is present.
+Records split on the writer's literal LF, accepting CRLF without splitting legal
+Unicode line separators inside JSON strings. Sequenced records must be ordered;
+a rewind must name an earlier still-visible user-input record, with its own
+sequence later than that target when present. Legacy marker rows without their
+own sequence are checked against earlier file-order evidence. Reflection does
+not retroactively apply the current API's compaction-barrier restriction to
+historical rewinds whose earlier source evidence remains available.
+The session identity is captured before loading and rechecked across the read
+and subsequent model work. This is execution-time provenance; memory jobs do not
+persist an enqueue-time binding epoch, and historical reads across prior session
+switches remain supported. Entry writes retain the non-atomic interval after
+their final authority check.
+
+The daily reflection count still counts attempts, not preprocessing requests. A
+long attempt can issue four summary calls and one final call; retries consume
+another attempt. Activity reports direct/compacted mode, call count, estimated
+input and budget, or a safe skip reason. It stores no summary or raw model error.
+That statement covers memory entries and activity metadata only. Enabled provider
+IO tracing can serialize the request, including transcript and summary text, into
+OTEL according to the deployment's existing tracing policy; this path does not
+disable or redact that separately configured trace sink.
+The existing owner-only activity route and generated `agent_memory__memory_activity`
+tool carry these fields; the Memory activity tab explains skipped learning.
+
+This is independent of measurement-gated native token calibration on live turns.
+It does not add a strict global token-spend budget, stream the whole source log
+from disk, atomically couple entry writes to claims, or guarantee summary fidelity.
+
+## 12. Historical decisions
 
 Memory arrived as a task-based feature (the package's docstrings name the
 tasks): the entries live in the knowledge subsystem's documents (one

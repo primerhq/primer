@@ -29,11 +29,13 @@ from primer.model.chat import (
     DocumentPart,
     Done,
     Error as ChatError,
+    ExtendedEvent,
     ExtendedPart,
     ImagePart,
     Message,
     Part,
     ReasoningDelta,
+    RefusalDelta,
     StopReason,
     StreamEvent,
     StreamStart,
@@ -432,6 +434,10 @@ def _translate_chunk(  # noqa: C901
             content = getattr(delta, "content", None)
             if content:
                 out.append(TextDelta(text=content, index=0))
+
+            refusal = getattr(delta, "refusal", None)
+            if isinstance(refusal, str) and refusal:
+                out.append(ExtendedEvent(extended=RefusalDelta(text=refusal, index=0)))
 
             # Extended-thinking channel used by the DeepSeek/Qwen family
             # and served by vLLM/SGLang/many gateways as

@@ -21,6 +21,7 @@ from primer.model.agent import Agent
 from primer.model.chat import Message, ToolCallPart
 from primer.model.except_ import ConflictError
 from primer.memory.reflect import ReflectionTransient, new_turns, turn_starts
+from primer.memory.reflection_input import InputRefused
 from primer.model.memory import AgentMemory, MemoryJob
 from primer.memory.scheduling import arm_current, locked_occurrence, new_occurrence, patch_job_progress
 from primer.model.scheduler import WorkerConfig
@@ -272,11 +273,15 @@ async def _trivial(deps: MemoryDeps, job: MemoryJob) -> str | None:
         return None
     try:
         messages = await deps.load_messages(job)
+    except InputRefused:
+        raise  # detectable log damage/identity change is never a trivial range
     except Exception:  # noqa: BLE001 - an unreadable log is the runner's to report, not a reason to skip
         logger.warning("memory job %s: could not read the session messages for the triviality gate", job.id, exc_info=True)
         return None
     if messages is None:
         return None
+    if len(turn_starts(messages)) < job.target_turn:
+        raise InputRefused("input_incomplete")
     turns = new_turns(messages, job)
     if _nothing_happened(turns):
         roles = ",".join(m.role for m in messages)
@@ -388,7 +393,12 @@ async def _run(deps: MemoryDeps, job: MemoryJob, lease: Lease, now: datetime) ->
             await _skipped(deps, job, "budget", retrying=True)
             return ReleaseOutcome(success=True, requeue_after=_until_next_utc_midnight(now))
         # 4. a session too small to learn from: marked reflected, no model call
-        if (small := await _trivial(deps, job)) is not None:
+        try:
+            small = await _trivial(deps, job)
+        except InputRefused as exc:
+            await _skipped(deps, job, str(exc))
+            return _DROP
+        if small is not None:
             await _skipped(deps, job, "too_small", small)
             await patch_job_progress(deps, job, {"reflected_turn": job.target_turn})
             return _DROP

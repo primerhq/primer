@@ -25,7 +25,10 @@ from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
 from primer.llm._reasoning import anthropic_extended, claude_traits, debug_once
-from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import (
+    GenerationBudgetExceeded, _close_streams, _iter_with_timeout,
+    _open_with_connect_timeout, _protect_sdk_response_close,
+)
 from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
 from primer.model.chat import (
     AudioPart,
@@ -866,6 +869,12 @@ class AnthropicLLM(LLM):
         request.update(_extract_extended_kwargs(extended))
         _fit_thinking(request, messages=messages, provider_id=self._provider.id)
         _fit_sampling(request, model=model, provider_id=self._provider.id)
+        # Locked Anthropic 2.3.0 omits these SDK keyword parameters. Preserve the
+        # fitted wire settings for older models/proxies through extra_body,
+        # which older SDKs also support. Never restore knobs fitting dropped.
+        sampling = {key: request.pop(key) for key in ("temperature", "top_p", "top_k") if key in request}
+        if sampling:
+            request["extra_body"] = sampling
 
         logger.info(
             "Anthropic stream starting",
@@ -921,12 +930,12 @@ class AnthropicLLM(LLM):
                     tokens_in = 0
                     tokens_out = 0
                     state = _StreamState()
+                    timed_stream = _iter_with_timeout(
+                        sdk_stream, self._request_timeout_seconds, self._total_timeout_seconds,
+                    )
                     try:
-                        async for raw in _iter_with_timeout(
-                            sdk_stream,
-                            self._request_timeout_seconds,
-                            self._total_timeout_seconds,
-                        ):
+                        _protect_sdk_response_close(sdk_stream)
+                        async for raw in timed_stream:
                             for event in _translate_event(raw, state, model_name=model):
                                 if isinstance(event, Usage):
                                     tokens_in = event.input_tokens
@@ -981,6 +990,8 @@ class AnthropicLLM(LLM):
                             message=err.message,
                         )
                         return
+                    finally:
+                        await _close_streams(timed_stream, sdk_stream)
                     _span.set_attribute("llm.usage.tokens_in", tokens_in)
                     _span.set_attribute("llm.usage.tokens_out", tokens_out)
                     _metrics.llm_tokens_total.labels(_provider_kind, "in").inc(tokens_in)
