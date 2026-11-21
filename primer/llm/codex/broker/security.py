@@ -31,7 +31,13 @@ def managed_owner_thread() -> threading.Thread:
     Reject both before opening any authority or credential descriptors.
     """
     owner = threading.current_thread()
-    require(owner is threading.main_thread() or type(owner) is threading.Thread)
+    if owner is threading.main_thread():
+        # On Linux the real process leader has TID == PID. threading's main
+        # object alone is insufficient: a cold import on an alien native thread
+        # can register that importing thread as "main" on CPython 3.12.
+        require(threading.get_native_id() == os.getpid())
+    else:
+        require(type(owner) is threading.Thread)
     return owner
 
 

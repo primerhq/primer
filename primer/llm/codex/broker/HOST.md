@@ -98,7 +98,9 @@ on an actual reviewed supervisor and administrative recovery procedure.
 
 Open trust/store handles are mandatory for every authorization/read/write and
 socket operation. Both handles belong to their constructing process and thread;
-construction accepts only the main thread or an exact standard `threading.Thread`.
+construction accepts only the actual Linux process leader (native TID equals PID)
+registered as main, or an exact standard `threading.Thread`. The kernel identity
+check prevents a cold import on an unmanaged thread from claiming main ownership.
 Unmanaged native threads (including persistent dummy-thread wrappers) and custom
 Thread subclasses refuse before opening files. Within supported managed lifetimes,
 thread object identity prevents recycled numeric thread IDs from acquiring access.
