@@ -3,9 +3,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+from contextvars import ContextVar
 
 from primer.llm.codex.boundary import BoundaryError
 from primer.model.chat import StreamEvent
+
+
+# Immutable ancestry follows tasks created by a source or its finalizer. Task
+# identity alone misses callbacks running inside a separate cleanup task.
+_OWNERS: ContextVar[tuple[object, ...]] = ContextVar("codex_stream_owners", default=())
 
 
 async def drain(task: asyncio.Task) -> None:
@@ -61,12 +67,14 @@ class OwnedStream:
         self._pending = asyncio.current_task()
         self._advanced = asyncio.Event()
         try:
+            token = _OWNERS.set((*_OWNERS.get(), self))
             try:
                 if self._deadline is not None and loop.time() >= self._deadline:
                     raise TimeoutError("Codex stream deadline expired")
                 async with asyncio.timeout_at(self._deadline):
                     return await anext(self._source)
             finally:
+                _OWNERS.reset(token)
                 self._pending = None
                 self._advanced.set()
         except StopAsyncIteration:
@@ -77,17 +85,23 @@ class OwnedStream:
             await self.aclose()
             raise
 
-    async def aclose(self) -> None:
-        # A trusted source callback cannot synchronously join its own advance.
-        # The resulting error unwinds that advance and its normal close path.
+    def ensure_can_close(self) -> None:
+        if self in _OWNERS.get():
+            raise BoundaryError("Codex stream cannot close inside its own advancement or cleanup ancestry")
         if self._pending is asyncio.current_task():
             raise BoundaryError("Codex stream cannot close inside its own advancement")
+
+    async def aclose(self) -> None:
+        # Check ancestry BEFORE joining an existing close task. The callback
+        # may run in a child task whose ancestor is waiting for that callback.
+        self.ensure_can_close()
         self._closed = True
         if self._closing is None:
             self._closing = asyncio.create_task(self._finish_close())
         await drain(self._closing)
 
     async def _finish_close(self) -> None:
+        token = _OWNERS.set((*_OWNERS.get(), self))
         try:
             if self._pending is not None:
                 self._pending.cancel()
@@ -96,4 +110,5 @@ class OwnedStream:
                 await self._advanced.wait()
             await self._source.aclose()
         finally:
+            _OWNERS.reset(token)
             self._on_close(self)
