@@ -7,7 +7,7 @@ The flow walks the enable-internal-collections runbook the way a caller over MCP
 discovers the five generated internal-collections tools, ``list_tools`` carries the nested ``body`` schema of the config write, and
 ``call_tool`` drives the flow end to end (put_config -> bootstrap -> the durable get_config / bootstrap_status rereads -> a real semantic query
 of the system collection -> delete_config). Every acceptance read goes over MCP; REST is used only for the operator setup a journey needs
-(the approval policies the writes park on are disabled for the run - a person's act - and the exposure allowlist). Whatever the flow leaves
+(loading the reserved embedder on a disposable collection, the approval policies and the exposure allowlist). Whatever the flow leaves
 behind is cleaned in the ``finally``, and every cleanup step is attempted even when an earlier one fails: the
 subsystem config is deleted, the exposure and the policies are restored from what was captured BEFORE the first
 mutation, and the MCP token is revoked. A cleanup failure after a passed flow fails the test; after a failed
@@ -20,6 +20,7 @@ import json
 
 import httpx2
 import pytest
+import pytest_asyncio
 
 from primer.bootstrap.seed import default_policy_id
 
@@ -42,8 +43,12 @@ _POLICY_IDS = {
     for tool in ("put_config", "delete_config", "bootstrap")
 }
 _EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
-# The bootstrap runs a real embedding pass over the system collection inline; the call is slow on a cold runner.
-# The bound stays under 180s: the CI job's step budget must outlive the slowest expected call, not equal it.
+_IC_CONFIG = {
+    "embedding_provider_id": "huggingface",
+    "embedding_model": _EMBEDDING_MODEL,
+    "search_provider_id": "lance",
+}
+# This is the SDK transport timeout. The generated REST dispatch has its own 30s deadline.
 _MCP_TIMEOUT = httpx2.Timeout(120.0, connect=10.0)
 
 
@@ -59,12 +64,51 @@ def _call_output(result) -> dict:
     return json.loads(output) if isinstance(output, str) else output
 
 
+@pytest_asyncio.fixture
+async def warmup_collection(client, unique_suffix):
+    collection_id = f"m4-warmup-{unique_suffix}"
+    created = await client.post(
+        "/v1/collections", json={"id": collection_id, "description": "M4 embedder readiness"},
+    )
+    assert created.status_code == 201, created.text
+    path = f"/v1/collections/{collection_id}"
+    try:
+        yield path
+    finally:
+        removed = await client.delete(path)
+        assert removed.status_code == 204, removed.text
+
+
+async def _prepare_reserved_embedder(client, path):
+    # A registered Hugging Face provider can still need to download its weights.
+    # The scratch collection is empty, so enabling search has nothing to index.
+    # The direct semantic query still encodes its input before looking up hits.
+    # That makes the potentially slow first use read-only, including on timeout.
+    enabled = await client.put(
+        f"{path}/search",
+        json={
+            "embedder": {
+                "provider_id": _IC_CONFIG["embedding_provider_id"],
+                "model": _IC_CONFIG["embedding_model"],
+            },
+            "vector_store_provider_id": _IC_CONFIG["search_provider_id"],
+        },
+    )
+    assert enabled.status_code == 200 and enabled.json()["search"]["state"] == "ready", enabled.text
+    query = await client.post(
+        f"{path}/search", json={"query": "embedder readiness", "top_k": 1}, timeout=120.0,
+    )
+    assert query.status_code == 200 and query.json()["hits"] == [], query.text
+
+
 async def test_m4_internal_collections_flow_over_the_mcp_meta_tools(
-    client, base_url: str, unique_suffix: str,
+    client, base_url: str, unique_suffix: str, warmup_collection,
 ) -> None:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
     from mcp.shared._httpx_utils import create_mcp_http_client
+
+    await _prepare_reserved_embedder(client, warmup_collection)
 
     # The restore state is captured BEFORE the first mutation and initialised empty, so the ``finally`` below
     # always restores whatever was captured even when a setup step fails midway.
@@ -143,13 +187,7 @@ async def test_m4_internal_collections_flow_over_the_mcp_meta_tools(
                         "call_tool",
                         arguments={
                             "scoped_id": "internal_collections__put_config",
-                            "arguments": {
-                                "body": {
-                                    "embedding_provider_id": "huggingface",
-                                    "embedding_model": _EMBEDDING_MODEL,
-                                    "search_provider_id": "lance",
-                                }
-                            },
+                            "arguments": {"body": _IC_CONFIG},
                         },
                     )
                     config = _call_output(put)
@@ -159,9 +197,6 @@ async def test_m4_internal_collections_flow_over_the_mcp_meta_tools(
                         "call_tool",
                         arguments={"scoped_id": "internal_collections__bootstrap", "arguments": {}},
                     )
-                    # A failed bootstrap is a real failure of the reserved local embedder the journey depends on
-                    # (the runbook's refusal table), not a reason to skip: the shared e2e database keeps state, and
-                    # a skipped run would leave it configured.
                     outcome = _call_output(boot)
                     assert outcome["status"] == "succeeded", outcome
                     assert outcome["state"] == "ready", outcome
@@ -196,6 +231,7 @@ async def test_m4_internal_collections_flow_over_the_mcp_meta_tools(
                             },
                         },
                     ))
+                    assert search["mode_used"] == "semantic", search
                     assert search["hits"], (
                         "a semantic query against the freshly bootstrapped system collection must return hits; got "
                         f"{search!r}"

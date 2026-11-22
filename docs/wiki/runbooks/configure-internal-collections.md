@@ -60,7 +60,7 @@ Call `internal_collections__bootstrap` ([reference](reference/tools/internal_col
 {"toolset_id": "internal_collections", "tool_name": "bootstrap", "arguments": {}}
 ```
 
-Expected: `{"status": "succeeded", "state": "ready", ...}`. Gated: the turn parks here until an admin approves; do not retry while it is parked. The call runs the embedding pass over the system collection's documents inline before it answers, so it can take from tens of seconds to minutes - wait for it rather than re-calling.
+Expected: `{"status": "succeeded", "state": "ready", ...}`. Gated: the turn parks here until an admin approves; do not retry while it is parked. After approval, bootstrap indexes the system collection inline. The generated tool has a 30-second dispatch deadline. A cold model download or a large backfill can exceed it.
 
 ### 4. Verify
 Two reads: the durable state, and the behavior.
@@ -85,6 +85,7 @@ State the verified end state to the user: the model the corpus runs on, the docu
 ## Refusal and failure
 - `type=not-found` from `put_config` (the search provider id) -> the precondition's SSP check is the read that proves the id; register or name a real one.
 - `type=not-found` from `bootstrap` -> no config row: run step 2 first.
+- `type=route-tool-timeout` from `bootstrap` -> read bootstrap status before taking further action. If indexing was interrupted and a longer run is needed, an administrator can invoke `POST /v1/internal_collections/bootstrap` through the authenticated REST API with a suitable client timeout, then verify the indexed count and query in step 4.
 - `type=conflict` naming frozen fields -> the subsystem is active on a different vector space: the only mutation path is `internal_collections__delete_config` ([reference](reference/tools/internal_collections/delete_config)) (deactivate: disables the search and drops the reserved collections), then `put_config` + `bootstrap` again.
 - `status: "failed"` from `bootstrap` (or a `type=tool-error` naming the embedding model) -> the model is not one the provider permits, or the embedder did not answer: the precondition's `system__test_embedding_provider` is the read that isolates which.
 - a search returns no hits after the state reads `ready` -> the query and the corpus use different spaces (a model changed under an old index): the fix is the deactivate -> re-configure -> bootstrap path above.

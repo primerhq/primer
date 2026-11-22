@@ -95,9 +95,8 @@ def test_the_mid_row_pins_the_seeded_model() -> None:
     """The page and the install seed must not drift apart.
 
     The mid tier is the model a clean install seeds under the reserved
-    `huggingface` provider (bootstrap/defaults.py); the flow promises
-    "choosing it adds no registration and no download", so the page's
-    mid row must name exactly the seeded model.
+    `huggingface` provider (bootstrap/defaults.py). Choosing it needs no
+    provider registration, so the mid row must name a seeded model.
     """
     from primer.bootstrap.defaults import (
         RESERVED_EMBEDDERS,
@@ -110,7 +109,7 @@ def test_the_mid_row_pins_the_seeded_model() -> None:
     mid_model = rows["mid"]["model id"].strip("`")
     assert mid_model in seeded_models, (
         f"the mid row names {mid_model!r} but the install seeds "
-        f"{seeded_models!r} - the 'no registration, no download' promise "
+        f"{seeded_models!r} - the 'no registration' promise "
         f"would break; update one or the other (the spec's W1-14 tiers "
         f"span small/mid/large; the seed is the mid reference)"
     )

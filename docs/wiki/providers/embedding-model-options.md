@@ -19,7 +19,7 @@ Measured 2026-11-06 on a K2-class box (16-core AMD Ryzen 7 7840HS, 27 GB RAM, CP
 | tier | model id | dim | peak RSS | model delta | 150 docs | notes |
 |---|---|---|---|---|---|---|
 | small | `sentence-transformers/all-MiniLM-L6-v2` | 384 | 893 MB | ~160 MB | 0.8 s | Fastest; the documented safe pick when the user says "just pick one" (OQ-2: no silent default - the operator still confirms the tier). English-first. |
-| mid | `BAAI/bge-small-en-v1.5` | 384 | 929 MB | ~200 MB | 1.4 s | Stronger similarity quality than the small tier; the model a clean install already seeds under the reserved `huggingface` provider, so choosing it adds no registration and no download. |
+| mid | `BAAI/bge-small-en-v1.5` | 384 | 929 MB | ~200 MB | 1.4 s | Stronger similarity quality than the small tier. The reserved `huggingface` provider already names this model. First use downloads the weights from the Hub if they are absent from the local cache. |
 | large | `BAAI/bge-m3` | 1024 | 3.9 GB | ~3.1 GB | 20 s (load 92 s) | Multilingual + hybrid retrieval; the strongest of the three; needs ~4 GB of free memory - the tier to skip on a memory-constrained box. |
 
 Quality ordering (published similarity benchmarks, strongest to weakest): `bge-m3` > `bge-small-en-v1.5` > `all-MiniLM-L6-v2`. The tiers therefore spread on both memory and quality.
