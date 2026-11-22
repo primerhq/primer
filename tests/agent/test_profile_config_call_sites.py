@@ -170,39 +170,67 @@ class TestCompaction:
 class TestCompactionOnAClaudeModelThatRefusesSampling:
     """The real Anthropic adapter under compaction: compaction asks for
     temperature 0, which Claude Opus 4.7 and later, Sonnet 5 and later,
-    Haiku 5.5 and Fable refuse on every request. The adapter drops it."""
+    Haiku 5.5 and Fable refuse on every request. The adapter drops it.
+    Check serialized SDK bodies: Sonnet 4.6 keeps sampling without thinking,
+    while adaptive thinking also removes it on that otherwise capable model."""
 
     @pytest.mark.parametrize("model, kept", [
         ("claude-opus-4-7", False),
         ("claude-sonnet-5-5", False),
         ("claude-sonnet-4-6", True),
     ])
-    @pytest.mark.parametrize("config", [None, ModelProfileConfig(reasoning=ReasoningLevel.OFF)])
+    @pytest.mark.parametrize("config, sampling_allowed", [
+        (None, True),
+        (ModelProfileConfig(reasoning=ReasoningLevel.OFF), True),
+        (ModelProfileConfig(reasoning=ReasoningLevel.LOW), False),
+    ])
     async def test_the_summariser_call_carries_no_refused_temperature(
-        self, monkeypatch, model, kept, config,
+        self, model, kept, config, sampling_allowed,
     ) -> None:
+        import httpx2
+        from anthropic import AsyncAnthropic
         from pydantic import SecretStr
 
         from primer.llm.anthropic import AnthropicLLM
         from primer.model.provider import AnthropicConfig, Limits, LLMProvider, LLMProviderType
-        from tests.llm.test_anthropic import _aiter, _ok_events, _patched_client
+        from tests._support.anthropic_wire import text_response
 
-        client = _patched_client(monkeypatch)
-        client.messages.create.side_effect = lambda **_: _aiter(_ok_events())
+        bodies = []
+        def handle(request):
+            assert request.url.host == "offline.invalid"
+            bodies.append(json.loads(request.content))
+            return httpx2.Response(200, content=text_response(model), headers={"content-type": "text/event-stream"})
+        client = AsyncAnthropic(
+            api_key="offline-test", base_url="https://offline.invalid", max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handle)),
+        )
         llm = AnthropicLLM(LLMProvider(
             id="ant-c", provider=LLMProviderType.ANTHROPIC,
             config=AnthropicConfig(api_key=SecretStr("sk-ant")),
             limits=Limits(max_concurrency=1),
         ))
+        llm._client = client
         resolved = ResolvedModel(
             profile_id="p", provider_id="ant-c", model_name=model,
             context_length=1000, config=config,  # type: ignore[arg-type]
         )
-        await CompactionStrategy(tail_turns=1).force_compact(
-            agent=_agent(), llm=llm, model=resolved, history=list(HISTORY),
+        try:
+            await CompactionStrategy(tail_turns=1).force_compact(
+                agent=_agent(), llm=llm, model=resolved, history=list(HISTORY),
+            )
+        finally:
+            await llm.aclose()
+        assert len(bodies) == 1
+        sent = bodies[0]  # after SDK keyword binding and extra_body serialization
+        assert sent["model"] == model and sent["stream"] is True
+        assert sent["max_tokens"] == 4096 and sent["messages"] and sent["system"]
+        assert "extra_body" not in sent
+        assert {key: sent[key] for key in ("temperature", "top_p", "top_k") if key in sent} == (
+            {"temperature": 0.0} if kept and sampling_allowed else {}
         )
-        sent = client.messages.create.call_args.kwargs
-        assert ("temperature" in sent) is kept
+        if not sampling_allowed:
+            assert sent["thinking"] == {"type": "adaptive"}
+            assert sent["output_config"] == {"effort": "low"}
 
 
 # ---- OpenAI reasoning models, captured at the HTTP transport (audit G2-02, G2-03) ----------------------------------------------

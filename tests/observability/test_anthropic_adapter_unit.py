@@ -645,38 +645,54 @@ class TestStream:
         ]
         assert [type(e).__name__ for e in out] == ["StreamStart", "TextDelta", "Usage", "Done"]
 
-    async def test_request_construction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_request_construction(self) -> None:
+        import httpx2
+        from anthropic import AsyncAnthropic
+        from tests._support.anthropic_wire import text_response
+
         llm = AnthropicLLM(_make_provider())
-        client = _patched_client(monkeypatch)
-        client.messages.create.return_value = _aiter(_ok_events())
+        bodies = []
+        def handle(request):
+            assert request.url.host == "offline.invalid"
+            bodies.append(json.loads(request.content))
+            return httpx2.Response(200, content=text_response("claude-sonnet-4-5"),
+                                   headers={"content-type": "text/event-stream"})
+        llm._client = AsyncAnthropic(
+            api_key="offline-test", base_url="https://offline.invalid", max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handle)),
+        )
         tool = Tool(id="search", description="S", toolset_id="t", args_schema={"type": "object"})
-        async for _ in llm.stream(
-            model="claude-sonnet-4-5",
-            messages=[
-                Message(role="system", parts=[TextPart(text="be terse")]),
-                Message(role="user", parts=[TextPart(text="hi")]),
-            ],
-            temperature=0.3,
-            top_p=0.8,
-            max_output_tokens=32,
-            stop=["END"],
-            tools=[tool],
-            tool_choice="required",
-            extended={"top_k": 4, "junk": 1},
-        ):
-            pass
-        kwargs = client.messages.create.call_args.kwargs
-        assert kwargs["stream"] is True
-        assert kwargs["model"] == "claude-sonnet-4-5"
-        assert kwargs["system"] == "be terse"
-        assert kwargs["temperature"] == 0.3
-        assert kwargs["top_p"] == 0.8
-        assert kwargs["max_tokens"] == 32
-        assert kwargs["stop_sequences"] == ["END"]
-        assert kwargs["tools"][0]["name"] == "search"
-        assert kwargs["tool_choice"] == {"type": "any"}
-        assert kwargs["top_k"] == 4
-        assert "junk" not in kwargs
+        try:
+            events = [event async for event in llm.stream(
+                model="claude-sonnet-4-5",
+                messages=[
+                    Message(role="system", parts=[TextPart(text="be terse")]),
+                    Message(role="user", parts=[TextPart(text="hi")]),
+                ],
+                temperature=0.3,
+                top_p=0.8,
+                max_output_tokens=32,
+                stop=["END"],
+                tools=[tool],
+                tool_choice="required",
+                extended={"top_k": 4, "junk": 1},
+            )]
+        finally:
+            await llm.aclose()
+        assert len(bodies) == 1
+        body = bodies[0]
+        assert body["stream"] is True
+        assert body["model"] == "claude-sonnet-4-5"
+        assert body["system"] == "be terse"
+        assert body["temperature"] == 0.3
+        assert body["top_p"] == 0.8
+        assert body["max_tokens"] == 32
+        assert body["stop_sequences"] == ["END"]
+        assert body["tools"][0]["name"] == "search"
+        assert body["tool_choice"] == {"type": "any"}
+        assert body["top_k"] == 4
+        assert "junk" not in body and "extra_body" not in body
+        assert any(isinstance(event, Done) and event.stop_reason == "stop" for event in events)
 
     async def test_response_format_emulation_in_request(
         self, monkeypatch: pytest.MonkeyPatch
