@@ -125,15 +125,12 @@ class TestSearchUnregisteredCollection:
         collections = AsyncMock()
         collections.get = AsyncMock(return_value=coll)
 
-        # Embedder returns a one-vector response.
-        class _Emb:
-            async def embed(self, *, model, inputs, config=None):
-                class _R:
-                    embeddings = [type("V", (), {"vector": [0.1, 0.2, 0.3]})()]
-                return _R()
-
+        embedder = AsyncMock()
+        embedder.embed.return_value = SimpleNamespace(
+            embeddings=[SimpleNamespace(vector=[0.1, 0.2, 0.3])],
+        )
         registry = AsyncMock()
-        registry.get_embedder = AsyncMock(return_value=_Emb())
+        registry.get_embedder.return_value = embedder
 
         # Store raises the lazy-registration error the way a real backend
         # does when nothing has been indexed for the collection yet.
@@ -153,6 +150,12 @@ class TestSearchUnregisteredCollection:
             ssr=ssr,
         )
         assert result == {"hits": []}
+        # A successful empty result exercises the real query embedding path.
+        registry.get_embedder.assert_awaited_once_with(coll.search.embedder.provider_id)
+        embedder.embed.assert_awaited_once()
+        embed_args = embedder.embed.await_args.kwargs
+        assert embed_args["model"] == coll.search.embedder.model
+        assert [part.text for part in embed_args["inputs"]] == ["anything"]
 
     @pytest.mark.asyncio
     async def test_search_reraises_other_bad_requests(self):
