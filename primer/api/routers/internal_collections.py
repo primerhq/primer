@@ -364,7 +364,7 @@ async def _upsert_status(
 @route_tool(
     scoped_id="internal_collections__bootstrap",
     purpose="Enable semantic search on the system collection and run the embedding pass over its documents, inline.",
-    use_when="Use after writing the config to index the system collection inline. If the generated dispatch times out, read bootstrap_status to check the durable outcome.",
+    use_when="Use after writing the internal collections subsystem config to index the system collection inline. If the generated dispatch times out, read bootstrap_status to check the durable outcome.",
     # A zero-argument write: the card is an intentional bounded card - it names the call and shows no value.
     preview_args=(),
 )

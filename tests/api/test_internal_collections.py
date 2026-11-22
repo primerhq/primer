@@ -681,6 +681,35 @@ class TestSearchToolset:
             await pr.get_toolset("search")
 
 
+async def test_find_tools_discovers_the_internal_collections_subsystem_before_bootstrap(app):
+    from primer.mcp.exposure import ExposureDeps, update_exposure
+    from primer.mcp.meta_tools import find_tools
+    from primer.mcp.server import current_actor, current_api_token_scopes
+    from primer.model.principal import Principal
+
+    expected = {
+        "internal_collections__put_config",
+        "internal_collections__get_config",
+        "internal_collections__delete_config",
+        "internal_collections__bootstrap",
+        "internal_collections__bootstrap_status",
+    }
+    deps = ExposureDeps(app.state.storage_provider, app.state.provider_registry, semantic_search=None)
+    await update_exposure(
+        enabled=True, mode="allowlist", allowed_tools=sorted(expected), updated_by="admin", deps=deps,
+    )
+    actor = Principal(type="api_token", id="mcp-token", user_id="admin", role="admin", display="Admin", source="internal")
+    actor_token = current_actor.set(actor)
+    scope_token = current_api_token_scopes.set(["mcp"])
+    try:
+        result = await find_tools(deps, {"query": "internal collections subsystem", "limit": 50})
+    finally:
+        current_api_token_scopes.reset(scope_token)
+        current_actor.reset(actor_token)
+
+    assert {item["scoped_id"] for item in result["items"]} == expected
+
+
 async def test_system_collection_exists_without_ic_activation(client):
     # M12: regeneration is unconditional; no embedder, no IC config needed.
     r = await client.get("/v1/collections/system")
