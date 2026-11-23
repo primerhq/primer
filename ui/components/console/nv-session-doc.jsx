@@ -531,6 +531,33 @@ function NV_doRename(wid, sid, currentName, refetchAll, toast) {
     );
   });
 }
+
+function NV_doParkedPriority(wid, session, refetch, toast) {
+  if (!session || !session.parked_priority_token) return;
+  var max = session.parked_priority_max;
+  return window.promptDialog({
+    title: "Change session priority",
+    message: max ? "Enter a whole number from 0 to " + max + ". Lower numbers run first among eligible work."
+                 : "Only priority 0 is available before scheduling cutover.",
+    defaultValue: String(session.priority || 0),
+  }).then(function (value) {
+    if (value == null) return;
+    var text = value.trim();
+    if (!/^\d+$/.test(text) || Number(text) > max) {
+      toast(max ? "Enter a whole number from 0 to " + max + "." : "Only priority 0 is available.", {kind: "error"});
+      return;
+    }
+    // Keep the generation from when the dialog opened, even if polling has
+    // since delivered a new park. A 409 requires a new choice by the user.
+    return SH_api.setParkedPriority(wid, session.id, Number(text), session.parked_priority_token).then(function () {
+      toast("Session priority saved");
+      refetch();
+    }, function (err) {
+      NV_failToast(toast, "Change priority", err);
+      refetch();
+    });
+  });
+}
 // The tab-group model lives in the shell (nv-shell.jsx's con.tgModel /
 // con.onTgModelChange) - this only ever reads/writes through that seam,
 // same as every other doc-level caller.
@@ -861,6 +888,7 @@ function NV_SessionHeader(props) {
           {(session && session.name) || sid}
         </div>
       )}
+      {session && session.priority > 0 ? <span className="sub muted">Priority {session.priority}</span> : null}
       {usage.label ? (
         <div className="nv-usage" title="context used" role="img"
           aria-label={"Context used: " + usage.label}
@@ -1004,6 +1032,15 @@ function NV_SessionHeader(props) {
                 }}>Canvas settings…</button>
             ) : null}
             <div className="nv-menu-sep" />
+            {session && session.parked_priority_token ? (
+              <button type="button" className="nv-menu-row"
+                data-testid="nv-session-priority" data-verb="session.priority"
+                disabled={wsRo} title={wsRo ? con.wsRoNote : undefined}
+                onClick={function () {
+                  setOvf(false);
+                  NV_doParkedPriority(con.wid, session, props.onChanged, con.toast);
+                }}>Change priority…</button>
+            ) : null}
             {NV_canPark(session) ? (
               <button type="button" className="nv-menu-row"
                 data-testid="nv-session-park" data-verb="session.park"
@@ -3164,6 +3201,20 @@ function NV_SessionDoc(props) {
       run: function () {
         var f = focused(); if (!f) return;
         NV_doInterrupt(f.wid, f.sid, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.priority", label: "Change session priority",
+      contexts: ["session"], requiresLive: true, surfaces: ["palette", "tab-menu"],
+      available: function () {
+        var f = focused();
+        var inst = f && NV_SESSION_INSTANCES[f.sid];
+        return !!(inst && inst.session && inst.session.parked_priority_token && !f.con.wsReadonly);
+      },
+      run: function () {
+        var f = focused(); if (!f || f.con.wsReadonly) return;
+        var inst = NV_SESSION_INSTANCES[f.sid];
+        if (inst) NV_doParkedPriority(f.wid, inst.session, f.refetchAll, f.con.toast);
       },
     });
     reg({

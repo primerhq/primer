@@ -40,7 +40,7 @@ def test_admin_tools_show_mapping_reference_default_policy_and_reviewed_skips(pa
     skips = page.get_by_test_id("nv-plat-skips")
     expect(skips.get_by_role("heading", name="Reviewed skips")).to_be_visible()
     expect(skips.locator("[data-testid^='nv-plat-skip:']")).to_have_count(8)
-    expect(page.get_by_test_id("nv-plat-coverage-counts")).to_contain_text("407 operations")
+    expect(page.get_by_test_id("nv-plat-coverage-counts")).to_contain_text("408 operations")
     for action in ("acknowledge", "reopen"):
         card = _find(page, f"auth__{action}_welcome")
         expect(card).to_contain_text("generated")

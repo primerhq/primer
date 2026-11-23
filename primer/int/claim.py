@@ -224,6 +224,14 @@ class ClaimAdapter(ABC):
         """Authoritative snapshot at arm time; platform work defaults to zero."""
         return 0
 
+    def priority_snapshot_guard_sql(self) -> str:
+        """Optional source fence on a priority-enabled claim (entity e, lease l)."""
+        return "TRUE"
+
+    async def priority_snapshot_matches(self, entity_id: str, priority: int) -> bool:
+        """In-process equivalent of priority_snapshot_guard_sql."""
+        return True
+
     @abstractmethod
     def eligibility_sql(self) -> str: ...
 
@@ -394,9 +402,10 @@ class ClaimEngine(ABC):
     @abstractmethod
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None: ...
 
-    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+    async def has_lease(self, kind: ClaimKind, entity_id: str, *, work_priority: int | None = None) -> bool:
         """Whether a lease ROW exists for ``(kind, entity_id)``: armed, claimed or expired.
 
+        When a priority is supplied, an enabled engine also compares the armed snapshot.
         Distinct from :meth:`has_live_lease`, which is true only while a worker holds an
         unexpired claim. A row that exists is work in the queue (an unclaimed one waits for
         the next free worker, an expired one is reclaimed once its entity is eligible), so its

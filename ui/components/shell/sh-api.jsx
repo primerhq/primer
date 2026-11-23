@@ -168,6 +168,12 @@ var SH_api = {
       { name: name });
   },
 
+  setParkedPriority: function (wid, sid, priority, generation) {
+    return window.primerApi.apiFetch(
+      "PUT", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/priority", { priority: priority, generation: generation });
+  },
+
   // ---- file management (revamp section 6; routes pre-existing) -----------
   fileDelete: function (wid, path) {
     return window.primerApi.apiFetch(

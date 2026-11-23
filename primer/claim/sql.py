@@ -76,6 +76,7 @@ def build_claim_query(
     for adapter in adapters.values():
         entity_ref = _entity_ref(adapter.entity_table)
         kind = adapter.kind.value
+        snapshot_guard = f" AND ({adapter.priority_snapshot_guard_sql()})" if work_priority_enabled else ""
 
         def _branch(claim_state: str, alias: str, entity_ref: str = entity_ref, kind: str = kind, adapter: ClaimAdapter = adapter) -> str:
             # Each branch is locked in its own FROM-subquery: FOR UPDATE cannot be applied to a UNION. ``claim_state`` is one of the two disjoint
@@ -88,7 +89,7 @@ def build_claim_query(
                 f"   WHERE l.kind = '{kind}'"
                 f"     AND {claim_state}"
                 f"     AND l.next_attempt_at <= now(){ceiling}"
-                f"     AND ({adapter.eligibility_sql()})"
+                f"     AND ({adapter.eligibility_sql()}){snapshot_guard}"
                 f"   ORDER BY {qualified_prefix}l.priority_score, l.next_attempt_at"
                 f"   LIMIT $1 FOR UPDATE OF l SKIP LOCKED"
                 f") {alias}"
