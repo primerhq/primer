@@ -79,13 +79,19 @@ Reference: [`workspaces__resume_workspace_session`](reference/tools/workspaces/r
 
 ### Edit priority while parked
 
-Read the current `parked_priority_token` with [`sessions__get_session_by_id`](reference/tools/sessions/get_session_by_id).
-Send that token as `generation` with the desired integer `priority`, workspace ID and session ID.
-You need full workspace access. Only zero is available before scheduling cutover.
-After cutover lower numbers run first among eligible work, and a tool running in a session cannot assign a more urgent priority than its own.
-Changing priority leaves the session waiting for the original event. A conflict means the park changed. Read the session again before deciding whether to edit it.
+Read the session with [`sessions__get_session_by_id`](reference/tools/sessions/get_session_by_id).
 
-Reference: [`sessions__set_parked_session_priority`](reference/tools/sessions/set_parked_session_priority)
+```json
+{"toolset_id":"sessions","tool_name":"get_session_by_id","arguments":{"session_id":"sess-3f9a1c8d2b7e"}}
+```
+
+If the result has a `parked_priority_token`, use its `workspace_id` and replace the example `generation` below with that token. The edit requires full workspace access. [`sessions__set_parked_session_priority`](reference/tools/sessions/set_parked_session_priority)
+
+```json
+{"toolset_id":"sessions","tool_name":"set_parked_session_priority","arguments":{"workspace_id":"ws-docs","session_id":"sess-3f9a1c8d2b7e","body":{"priority":0,"generation":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+```
+
+Only integer `0` is available before cutover. Afterward, lower numbers run first among eligible work. A calling session can assign at most its own urgency. The original wait continues. On conflict, reread the session before deciding whether to edit the new park.
 
 ## Gotchas
 - A success answer to interrupt is not a Stop. Read `interrupt_requested`.
