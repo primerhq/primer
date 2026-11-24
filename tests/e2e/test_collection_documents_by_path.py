@@ -84,6 +84,13 @@ async def test_collection_document_by_path_lifecycle(
         })
         assert r.status_code in (200, 201, 202), r.text
 
+        # Searching the empty collection loads its configured model before the
+        # first indexed write. Only this read gets the cold-start timeout.
+        ready = await client.post(
+            f"/v1/collections/{cid}/search", json={"query": "embedder readiness", "top_k": 1}, timeout=120.0,
+        )
+        assert ready.status_code == 200 and ready.json()["hits"] == [], ready.text
+
         docs_url = f"/v1/collections/{cid}/documents"
 
         # 1. Upsert a document at guide/intro.md.
