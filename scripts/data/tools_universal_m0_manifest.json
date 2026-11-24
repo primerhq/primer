@@ -1,10 +1,10 @@
 {
   "base_commit": "fb18c24b92bec57131bc5e49959344a4d7d97960",
-  "expected_operation_count": 407,
-  "expected_path_count": 276,
+  "expected_operation_count": 408,
+  "expected_path_count": 277,
   "reviewed_gap_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
   "reviewed_skip_sha256": "1db0ea6f6f63eb30bd781f84e212dd9c3829fe48af05fbecde59ad80f288ffe1",
-  "reviewed_surface_revision": "workspace-service-publisher-v1",
+  "reviewed_surface_revision": "parked-session-priority-v1",
   "rows": [
     {
       "aggregation_id": null,
@@ -7763,6 +7763,27 @@
     },
     {
       "aggregation_id": null,
+      "declared_generated_tool_id": "sessions__set_parked_session_priority",
+      "method": "PUT",
+      "mount_auth": "user",
+      "operation_id": "set_parked_session_priority_v1_workspaces__workspace_id__sessions__session_id__priority_put",
+      "path": "/v1/workspaces/{workspace_id}/sessions/{session_id}/priority",
+      "rbac_class": "user",
+      "reason": "generated from immutable route metadata and dispatched through the REST operation",
+      "resource": "workspace-sessions",
+      "route_source": "primer.api.routers.sessions:set_parked_session_priority",
+      "skip_code": null,
+      "source": "PLAN.md#M1-route-metadata-generator-catalogue-join-and-trusted-ASGI-dispatch",
+      "state": "generated",
+      "tags": [
+        "workspace-sessions"
+      ],
+      "tool_ids": [
+        "sessions__set_parked_session_priority"
+      ]
+    },
+    {
+      "aggregation_id": null,
       "declared_generated_tool_id": "workspace_sessions__set_session_response_format",
       "method": "PUT",
       "mount_auth": "user",
@@ -10023,6 +10044,14 @@
       "exposure_reason": null,
       "required_role": "user",
       "scoped_id": "sessions__recent_sessions",
+      "toolset_id": "sessions"
+    },
+    {
+      "bare_id": "set_parked_session_priority",
+      "exposable": true,
+      "exposure_reason": null,
+      "required_role": "user",
+      "scoped_id": "sessions__set_parked_session_priority",
       "toolset_id": "sessions"
     },
     {

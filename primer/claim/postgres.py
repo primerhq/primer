@@ -310,16 +310,20 @@ class PostgresClaimEngine(ClaimEngine):
     # has_live_lease
     # ------------------------------------------------------------------
 
-    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+    async def has_lease(self, kind: ClaimKind, entity_id: str, *, work_priority: int | None = None) -> bool:
         """Whether a lease ROW exists for ``(kind, entity_id)``, claimed or not.
 
         See :meth:`~primer.int.claim.ClaimEngine.has_lease`: an armed lease nobody has
         claimed yet counts, which is the whole difference from :meth:`has_live_lease`.
         """
+        sql = f"SELECT 1 FROM {self._table} WHERE kind = $1 AND entity_id = $2"
+        args = [kind.value, entity_id]
+        if work_priority is not None and self._work_priority_enabled:
+            sql += " AND work_priority = $3"
+            args.append(work_priority)
         async with self._storage.pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT 1 FROM {self._table} WHERE kind = $1 AND entity_id = $2",
-                kind.value, entity_id,
+                sql, *args,
             )
         return row is not None
 

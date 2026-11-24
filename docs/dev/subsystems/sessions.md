@@ -859,6 +859,33 @@ Compaction of session history retains the prefix-string convention: a synthetic 
 
 ## 8. Public surfaces
 
+### Edit the priority of a parked session
+
+`GET /v1/sessions/{session_id}` supplies `parked_priority_token` while the session
+is waiting on a dated park with no cancel, interrupt, pause or responder
+transition pending. Send it as `generation` with an integer `priority` to
+`PUT /v1/workspaces/{workspace_id}/sessions/{session_id}/priority`. The generated
+tool runs the same route. A console user can choose **Change priority** from the
+session menu or command palette. Session detail advertises `parked_priority_max`,
+currently zero. The supported range after coordinated cutover is 0 to 1,000,000.
+Nonzero requests before cutover return 503. There is no client activation control.
+
+The update takes ordered locks on credential witnesses, the caller and target
+session rows, the account and the applicable workspaces. It checks full access
+and revalidates the trusted calling turn. A tool running inside a session cannot
+assign a number smaller than its own priority. HTTP parameters and headers
+cannot name that caller. A 404 conceals an inaccessible target, a 403 refuses
+insufficient rights, and an invalid priority or generation shape returns 422.
+
+The precondition binds the session incarnation, park time and key, lifecycle,
+turn, binding, responder and priority revision. A successful change writes
+only the priority and its storage-only revision. The model defaults a missing
+revision to zero, and the storage guard accepts the historical UTC timestamp
+spellings. Repeating the same value on the same generation is harmless. A
+changed value, re-park, wake or ended session requires a fresh read after a
+409. The client never resubmits the edit against a new generation on its own.
+Wake and crash recovery are described in [Claim machine](../architecture/claim-machine.md).
+
 S1 adds, on the workspace-scoped sessions router:
 
 | endpoint | purpose |

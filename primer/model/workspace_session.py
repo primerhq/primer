@@ -609,6 +609,8 @@ class WorkspaceSession(Identifiable):
         ),
     )
     priority: WorkPriority = 0
+    # A -> B -> A must not revive an old parked-priority edit.
+    priority_revision: int = Field(default=0, ge=0, strict=True, exclude=True)
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
     base_prompt: str | None = Field(
@@ -661,6 +663,7 @@ class WorkspaceSession(Identifiable):
         ),
     )
     _storage_only_fields: ClassVar[frozenset[str]] = frozenset({
+        "priority_revision",
         "responder_seq",
         "responder_epoch",
         "responder_reservation_version",

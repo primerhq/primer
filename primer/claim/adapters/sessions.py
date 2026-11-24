@@ -57,6 +57,21 @@ class SessionClaimAdapter(ClaimAdapter):
         from primer.claim.work_priority import read_priority
         return await read_priority(self._storage, entity_id)
 
+    def priority_snapshot_guard_sql(self) -> str:
+        # A boot arm may predate a parked edit. The durable wake can commit
+        # before its arm does. Never admit the old class in that interval.
+        return ("e.data->>'parked_status' IS DISTINCT FROM 'resumable' "
+                "OR COALESCE(e.data->>'priority_revision', '0') = '0' "
+                f"OR l.work_priority = ({self.work_priority_sql()})")
+
+    async def priority_snapshot_matches(self, entity_id: str, priority: int) -> bool:
+        if self._storage is None:
+            return True
+        row = await read_for_eligibility(self._storage, entity_id)
+        if row is None or row.parked_status == "parked":
+            return False
+        return row.parked_status != "resumable" or not getattr(row, "priority_revision", 0) or row.priority == priority
+
     def eligibility_sql(self) -> str:
         # parked_status lives inside the entity's JSONB ``data`` column, not as
         # a top-level column. Use the JSONB accessor (matching the harness and
