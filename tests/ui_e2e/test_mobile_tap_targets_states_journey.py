@@ -105,7 +105,10 @@ def test_a_pending_questions_answer_button_is_tap_sized(
     assert min(width, height) >= TAP_MIN, f"the answer button is {width}x{height}"
 
     page.get_by_test_id("nv-session-overflow").click()
-    page.get_by_test_id("nv-session-priority").click()
+    priority_action = page.get_by_test_id("nv-session-priority")
+    expect(priority_action).to_have_text("Edit priority…")
+    priority_action.click()
+    expect(page.get_by_text("Edit Session Priority", exact=True)).to_be_visible()
     value = page.get_by_test_id("dialog-input")
     expect(value).to_be_focused()
     expect(value).to_have_value("0")

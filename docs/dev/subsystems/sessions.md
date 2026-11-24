@@ -865,8 +865,8 @@ Compaction of session history retains the prefix-string convention: a synthetic 
 is waiting on a dated park with no cancel, interrupt, pause or responder
 transition pending. Send it as `generation` with an integer `priority` to
 `PUT /v1/workspaces/{workspace_id}/sessions/{session_id}/priority`. The generated
-tool runs the same route. A console user can choose **Change priority** from the
-session menu or command palette. Session detail advertises `parked_priority_max`,
+tool runs the same route. Choose **Edit priority…** from the session menu or
+**Edit Session Priority** from the command palette. Session detail advertises `parked_priority_max`,
 currently zero. The supported range after coordinated cutover is 0 to 1,000,000.
 Nonzero requests before cutover return 503. There is no client activation control.
 

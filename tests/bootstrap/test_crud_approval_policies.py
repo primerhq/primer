@@ -27,12 +27,18 @@ async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
 
     created = await ensure_crud_approval_policies(fake_storage_provider)
     assert set(created) == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
-    assert len(generated_mutators) == 128
+    parked_priority = ("sessions", "set_parked_session_priority")
+    assert parked_priority in generated_mutators
+    assert len(generated_mutators - {parked_priority}) == 128
     assert {("auth", "acknowledge_welcome"), ("auth", "reopen_welcome")} <= generated_mutators
     assert len(curated_gates) == 29
     assert set(DEFAULT_GATED_TOOLS) == generated_mutators | curated_gates
     assert {crud_policy_id(n) for n in CRUD_GATED_TOOL_NAMES} <= set(created), "the crud rows keep their ids"
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)
+    parked_gate = await store.get(default_policy_id(*parked_priority))
+    assert (parked_gate.toolset_id, parked_gate.tool_name) == parked_priority
+    assert parked_gate.enabled is True and parked_gate.approval.type.value == "required"
+    assert parked_gate.approvers is None
     for name in ("acknowledge_welcome", "reopen_welcome"):
         welcome_gate = await store.get(default_policy_id("auth", name))
         assert welcome_gate.enabled is True
@@ -43,7 +49,7 @@ async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
     assert len(CRUD_GATED_TOOL_NAMES) == 8
     assert len(CRUD_TWINS) == 9
     assert len(ADMIN_GATES) == 12
-    assert len(DEFAULT_GATED_TOOLS) == len(set(created)) == 154
+    assert len(DEFAULT_GATED_TOOLS) == len(set(created)) == 154 + 1
     for (toolset_id, tool_name), shipped in ADMIN_GATES.items():
         row = await store.get(default_policy_id(toolset_id, tool_name))
         assert (row.toolset_id, row.tool_name, row.enabled, row.approval) == (toolset_id, tool_name, True, shipped)

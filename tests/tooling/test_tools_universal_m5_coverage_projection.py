@@ -72,11 +72,14 @@ def test_the_script_side_classification_fields_are_pinned(manifest) -> None:
     manifest's own classification must stay exactly as reviewed (section 1).
     """
     rows = manifest["rows"]
+    parked, = (row for row in rows if row["declared_generated_tool_id"] == "sessions__set_parked_session_priority")
+    assert (parked["method"], parked["path"]) == ("PUT", "/v1/workspaces/{workspace_id}/sessions/{session_id}/priority")
+    assert (parked["mount_auth"], parked["rbac_class"]) == ("user", "user")
     assert Counter(row["mount_auth"] for row in rows) == Counter(
-        {"admin": 155, "user": 213, "settings-read": 21, "public": 16, "authenticated": 2}
+        {"admin": 155, "user": 213 + 1, "settings-read": 21, "public": 16, "authenticated": 2}
     )
     assert Counter(row["rbac_class"] for row in rows) == Counter(
-        {"administrator": 155, "user": 204, "global-settings-read": 21, "human-auth": 7, "authenticated-account": 11, "public": 9}
+        {"administrator": 155, "user": 204 + 1, "global-settings-read": 21, "human-auth": 7, "authenticated-account": 11, "public": 9}
     )
     generated = [row for row in rows if row["state"] == "generated"]
     assert all(row["declared_generated_tool_id"] for row in generated)
