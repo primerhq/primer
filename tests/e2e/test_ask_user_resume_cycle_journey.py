@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import AsyncExitStack
 
 import httpx
 import pytest
@@ -59,6 +60,61 @@ import pytest
 from tests._support.runs import wait_completed
 from tests._support.smk import smk
 from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
+
+
+async def _edit_park_over_mcp(client, suffix, detail, generation):
+    """Exercise the shipped approval gate, then an operator-approved MCP exposure."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    from primer.bootstrap.seed import default_policy_id
+
+    tool = "sessions__set_parked_session_priority"
+    arguments = {"scoped_id": tool, "arguments": {
+        "workspace_id": detail["workspace_id"], "session_id": detail["id"],
+        "body": {"priority": 0, "generation": generation},
+    }}
+
+    async def put(path, value):
+        response = await client.put(path, json=value)
+        assert response.status_code in (200, 204), response.text
+
+    async def revoke(tid):
+        response = await client.delete(f"/v1/auth/tokens/{tid}")
+        assert response.status_code in (200, 204), response.text
+
+    def content(result):
+        return json.loads("".join(getattr(part, "text", "") for part in result.content))
+
+    async with AsyncExitStack() as cleanup:
+        exposure_path = "/v1/mcp_exposure"
+        before = await client.get(exposure_path)
+        assert before.status_code == 200, before.text
+        cleanup.push_async_callback(put, exposure_path, {
+            key: before.json()[key] for key in ("enabled", "mode", "allowed_tools")
+        })
+        await put(exposure_path, {"enabled": True, "mode": "allowlist", "allowed_tools": [tool]})
+        policy_path = "/v1/tool_approval_policies/" + default_policy_id("sessions", "set_parked_session_priority")
+        policy = await client.get(policy_path)
+        assert policy.status_code == 200 and policy.json()["enabled"] is True, policy.text
+        token = await client.post("/v1/auth/tokens", json={"name": f"park-{suffix}", "scopes": ["mcp"]})
+        assert token.status_code == 201, token.text
+        cleanup.push_async_callback(revoke, token.json()["id"])
+        headers = {"Authorization": f"Bearer {token.json()['plaintext']}"}
+        async with create_mcp_http_client(headers=headers) as http_client:
+            async with streamable_http_client(f"{str(client.base_url).rstrip('/')}/v1/mcp/", http_client=http_client) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    refused = await session.call_tool("call_tool", arguments=arguments)
+                    assert refused.is_error and content(refused)["error"]["code"] == "tool_unavailable"
+                    cleanup.push_async_callback(put, policy_path, policy.json())
+                    await put(policy_path, {**policy.json(), "enabled": False})
+                    called = await session.call_tool("call_tool", arguments=arguments)
+                    result = content(called)
+                    assert not called.is_error and result["ok"] is True, result
+                    row = json.loads(result["output"])
+                    assert (row["id"], row["parked_status"], row["priority"]) == (detail["id"], "parked", 0)
 
 
 # ===========================================================================
@@ -104,6 +160,18 @@ async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
     )
     initial_turn_no = parked["turn_no"]
 
+    # Edit the real park at the shipping cutover setting. A successful
+    # priority edit must neither answer the question nor wake the session.
+    detail = (await client.get(f"/v1/sessions/{sid}")).json()
+    priority_path = f"/v1/workspaces/{detail['workspace_id']}/sessions/{sid}/priority"
+    generation = detail["parked_priority_token"]
+    assert generation and detail["parked_priority_max"] == 0
+    r = await client.put(priority_path, json={"generation": generation, "priority": 0})
+    assert r.status_code == 200 and r.json()["parked_status"] == "parked", r.text
+    r = await client.put(priority_path, json={"generation": generation, "priority": 1})
+    assert r.status_code == 503, r.text
+    await _edit_park_over_mcp(client, unique_suffix, detail, generation)
+
     # ----- 2. Sanity: /ask_user/pending sees the park ---------------
     r = await client.get(f"/v1/sessions/{sid}/ask_user/pending")
     assert r.status_code == 200, r.text
@@ -122,6 +190,9 @@ async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
 
     # ----- 4. Poll until resume cycle clears parked_status ----------
     body = await wait_for_resume(client, sid, min_turn_no=initial_turn_no + 1)
+
+    r = await client.put(priority_path, json={"generation": generation, "priority": 0})
+    assert r.status_code == 409, r.text
 
     # parked_state fully cleared (clear_park drops every column).
     assert body["parked_status"] is None, body

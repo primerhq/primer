@@ -195,8 +195,11 @@ class InMemoryClaimEngine(ClaimEngine):
         self._priority_changed(key)
         self._read_errors_logged.pop(key, None)
 
-    async def has_lease(self, kind: ClaimKind, entity_id: str) -> bool:
-        return (kind, entity_id) in self._leases
+    async def has_lease(self, kind: ClaimKind, entity_id: str, *, work_priority: int | None = None) -> bool:
+        row = self._leases.get((kind, entity_id))
+        return row is not None and (
+            work_priority is None or not self._work_priority_enabled or row.work_priority == work_priority
+        )
 
     async def lease_exists(self, kind: ClaimKind, entity_ids: Sequence[str]) -> set[str]:
         return {eid for eid in entity_ids if (kind, eid) in self._leases}
@@ -252,6 +255,8 @@ class InMemoryClaimEngine(ClaimEngine):
         key = (row.kind, row.entity_id)
         try:
             eligible = await adapter.is_eligible(row.entity_id, now)
+            if eligible and self._work_priority_enabled:
+                eligible = await adapter.priority_snapshot_matches(row.entity_id, row.work_priority)
         except EligibilityReadError as exc:
             _metrics.claim_eligibility_read_errors_total.labels(row.kind.value).inc()
             cause = type(exc.__cause__ or exc)

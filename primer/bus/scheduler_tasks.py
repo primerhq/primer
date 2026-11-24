@@ -835,7 +835,7 @@ class SessionMessagingSweeper(_BackgroundTask):
                         or not event_key
                         or event_key not in current_keys
                         or not isinstance(payload, dict)
-                        or await self._has_lease(row.id)
+                        or await self._has_lease(row.id, work_priority=row.priority if row.priority_revision else None)
                     ):
                         continue
                     if await durably_mark_session_resumable(
@@ -1113,10 +1113,12 @@ class SessionMessagingSweeper(_BackgroundTask):
             )
         return woken
 
-    async def _has_lease(self, session_id: str) -> bool:
+    async def _has_lease(self, session_id: str, *, work_priority: int | None = None) -> bool:
         """Whether a SESSION lease row exists (a turn running, queued or awaiting reclaim). Errs toward yes: a message left queued costs one
         more tick, a realize racing a turn's own drain costs the order of two messages."""
         try:
+            if work_priority is not None:
+                return await self._claim_engine.has_lease(ClaimKind.SESSION, session_id, work_priority=work_priority)
             return await self._claim_engine.has_lease(ClaimKind.SESSION, session_id)
         except Exception as exc:  # noqa: BLE001 - an unreadable lease table authorises nothing
             logger.warning("session-messaging-sweeper: lease lookup failed for %s, leaving it alone: %s", session_id, exc)

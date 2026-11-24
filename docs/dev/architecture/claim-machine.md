@@ -271,8 +271,19 @@ The claim engines have an internal `work_priority_enabled=False` constructor
 capability. The production factory leaves it off; there is no config, REST,
 MCP or UI switch. Existing deployments continue ordering internal scores as
 before. The additive session and memory-job `priority` fields default to zero
-on older rows. Session creation selects priority from its trusted source and refuses
-new nonzero starts before coordinated cutover. See [workspace-backed creation](../subsystems/sessions.md#workspace-backed-creation).
+on older stored rows. Session creation selects priority from its trusted source.
+Before coordinated cutover, both new sessions and parked-session edits accept
+only priority zero. See [workspace-backed creation](../subsystems/sessions.md#workspace-backed-creation).
+Reserved capacity has a separate readiness contract.
+
+A parked edit changes the session row inside its lifecycle and access locks.
+It does not create a lease. If the edit commits first, the wake's subsequent
+arm snapshots the new priority. If the durable wake commits first, the edit
+returns 409. Boot recovery can have armed a lease before the edit. In strict
+mode, a resumable session with an edit revision can only claim a lease with
+the matching priority. After a crash between flip and arm, wake redelivery or
+the session sweeper repairs a missing or mismatched lease from the stored
+session. A worker already processing a claim keeps its original lease.
 
 With the internal capability enabled, adapters derive a strict integer
 `work_priority` snapshot when a lease is armed. Sessions and memory jobs use

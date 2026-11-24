@@ -2,11 +2,11 @@
 title: "Control a session"
 summary: "Pause, resume, steer, stop, restart or cancel a session, and what each one does to a running turn."
 order: 4
-tools: [workspaces__pause_workspace_session, workspaces__resume_workspace_session, workspaces__steer_workspace_session, workspaces__interrupt_workspace_session, workspaces__cancel_workspace_session, workspaces__restart_workspace_session]
+tools: [workspaces__pause_workspace_session, workspaces__resume_workspace_session, workspaces__steer_workspace_session, workspaces__interrupt_workspace_session, workspaces__cancel_workspace_session, workspaces__restart_workspace_session, sessions__get_session_by_id, sessions__set_parked_session_priority]
 related: [sessions/messaging-other-sessions, human-in-the-loop/ask-user, approvals/policies]
 ---
 ## What it is
-Six tools change what a session does. Pick the one verb that matches your intent: steer it, stop its turn, cancel it, restart it, or pause and resume it.
+Steer a session, stop its turn, cancel it, restart it, or pause and resume it. While it waits on a tool or an event you can also edit its scheduling priority.
 
 ## Concepts
 - **Steer** (`workspaces__steer_workspace_session`) gives the session a new instruction. An idle or ended session starts its next turn with it (`delivery: "woken"`); a busy, parked or paused one reads it at its next turn boundary (`delivery: "queued"`). The answer is the session row plus `delivery`. A steer never answers a question the session asked a person, and it does not lift a pause.
@@ -77,8 +77,17 @@ Reference: [`workspaces__pause_workspace_session`](reference/tools/workspaces/pa
 
 Reference: [`workspaces__resume_workspace_session`](reference/tools/workspaces/resume_workspace_session)
 
+### Edit priority while parked
+
+Read the current `parked_priority_token` with [`sessions__get_session_by_id`](reference/tools/sessions/get_session_by_id).
+Send that token as `generation` with the desired integer `priority`, workspace ID and session ID.
+You need full workspace access. Only zero is available before scheduling cutover.
+After cutover lower numbers run first among eligible work, and a tool running in a session cannot assign a more urgent priority than its own.
+Changing priority leaves the session waiting for the original event. A conflict means the park changed. Read the session again before deciding whether to edit it.
+
+Reference: [`sessions__set_parked_session_priority`](reference/tools/sessions/set_parked_session_priority)
+
 ## Gotchas
-- The default-zero `priority` value is internal groundwork. Public priority changes and reserved interactive capacity are not available yet; pause and resume do not enable them.
 - A success answer to interrupt is not a Stop. Read `interrupt_requested`.
 - A pause does not cut the running turn short: the turn finishes first, and the session then reads `paused`. To stop it now and keep it stopped, interrupt it, then pause it.
 - Interrupt refuses (`conflict`) an ended session and a parked one (waiting on an approval, an answer or a timer) or one resuming from a park: there is no turn to stop. Cancel it instead.

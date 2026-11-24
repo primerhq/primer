@@ -224,7 +224,7 @@ design still validates, because the registry's canonical provider map is
 read, not `get_toolset`), an unknown id raises `ConfigError` and fails boot,
 and an app without a registry fails closed. No production module imports the
 inventory script or reads the reviewed manifest JSON: the freeze digests
-(407 operation identities, 491 scoped tool ids, 264 generated declared ids,
+(408 operation identities, 492 scoped tool ids, 265 generated declared ids,
 the 135 canonically sorted curated pairs, the 8 reviewed skips and the empty
 aggregation set) and the non-vacuous meta-tool and core-kit prompt budgets
 are pinned against the live inventory in
@@ -249,18 +249,23 @@ the shipped `default_approval` (`required`, `policy`, or null), and
 `operation` (`operation_id`, `method`, `path`, or null). Curated aliases
 of one REST operation carry the same mapping; curated tools without a
 REST owner and user-defined tools carry null. The frozen 406-operation
-projection supplies the mapping, not a manifest or a UI table.
+projection originally supplied the mapping. The current projection includes the parked-session priority route.
 
-The workspace publisher restamps the reviewed tool inventory with exactly
+The workspace publisher restamped the reviewed tool inventory with exactly
 `system__publish_service`: 407 operations, 276 paths, 491 reviewed tools,
 264 generated mappings, 135 curated route mappings, eight skips and zero gaps.
-The manifest retains the original M0 `base_commit` and uses
+That manifest retained the original M0 `base_commit` and used
 `reviewed_surface_revision: workspace-service-publisher-v1`. Removing that one
 new ID reproduces the previous 490-ID digest. The publisher is admin-only and
 requires the calling workspace, so its MCP exposure record is `needs_workspace`.
 REST-operation, generated-ID, curated/skip digests, the empty aggregation set and
 fixed prompt byte caps are unchanged. This inventory does not grant execution;
 the shipped required admin approval and the workspace access check still apply.
+
+The subsequent `parked-session-priority-v1` revision adds the PUT route and
+`sessions__set_parked_session_priority`. That brings the inventory to
+408 operations, 277 paths, 492 tool ids and 265 generated mappings. The
+freeze also recomputes the previous three digests after excluding this addition.
 
 The existing built-in item list remains unfiltered by role for picker
 compatibility. New operation mappings for admin REST operations are omitted

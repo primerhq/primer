@@ -2,7 +2,7 @@
 
 ``coverage_projection`` derives every operation's state and tool ids from
 route metadata plus the compiled generated snapshot. This module pins that
-the projection equals the reviewed M0 manifest row-for-row (407/407), that
+the projection equals the reviewed M0 manifest row-for-row (408/408), that
 the build is deterministic, that no ``gap`` row exists, and that no
 production module may import the inventory script or read the manifest.
 """
@@ -43,10 +43,10 @@ def projection(default_app) -> tuple:
 
 
 def test_projection_equals_the_manifest_row_for_row(projection, manifest) -> None:
-    """407/407 on identity, state, canonical ids, aggregation, skip and source."""
+    """408/408 on identity, state, canonical ids, aggregation, skip and source."""
     rows = list(projection)
-    assert len(rows) == 407
-    assert len({row.operation_id for row in rows}) == 407
+    assert len(rows) == 408
+    assert len({row.operation_id for row in rows}) == 408
     by_op = {row.operation_id: row for row in rows}
     for man in manifest["rows"]:
         row = by_op[man["operation_id"]]
@@ -99,7 +99,7 @@ def test_the_projection_is_deterministic_across_builds(default_app, manifest, pr
         (row.operation_id, row.method, row.path, row.state, row.tool_ids, row.skip_code, row.route_source)
         for row in projection
     ]
-    assert len(first) == 407
+    assert len(first) == 408
 
 
 def test_zero_gap_rows(projection) -> None:
@@ -115,7 +115,7 @@ def test_projection_rows_are_immutable_and_cached_per_app(default_app, projectio
     with pytest.raises(FrozenInstanceError):
         projection[0].state = "gap"
     assert Counter(row.state for row in projection) == {
-        "generated": 264, "curated": 135, "skip": 8,
+        "generated": 265, "curated": 135, "skip": 8,
     }
 
 
