@@ -536,7 +536,7 @@ function NV_doParkedPriority(wid, session, refetch, toast) {
   if (!session || !session.parked_priority_token) return;
   var max = session.parked_priority_max;
   return window.promptDialog({
-    title: "Change session priority",
+    title: "Edit Session Priority",
     message: max ? "Enter a whole number from 0 to " + max + ". Lower numbers run first among eligible work."
                  : "Only priority 0 is available before scheduling cutover.",
     defaultValue: String(session.priority || 0),
@@ -553,7 +553,7 @@ function NV_doParkedPriority(wid, session, refetch, toast) {
       toast("Session priority saved");
       refetch();
     }, function (err) {
-      NV_failToast(toast, "Change priority", err);
+      NV_failToast(toast, "Edit priority", err);
       refetch();
     });
   });
@@ -1039,7 +1039,7 @@ function NV_SessionHeader(props) {
                 onClick={function () {
                   setOvf(false);
                   NV_doParkedPriority(con.wid, session, props.onChanged, con.toast);
-                }}>Change priority…</button>
+                }}>Edit priority…</button>
             ) : null}
             {NV_canPark(session) ? (
               <button type="button" className="nv-menu-row"
@@ -3204,7 +3204,7 @@ function NV_SessionDoc(props) {
       },
     });
     reg({
-      id: "session.priority", label: "Change session priority",
+      id: "session.priority", label: "Edit Session Priority",
       contexts: ["session"], requiresLive: true, surfaces: ["palette", "tab-menu"],
       available: function () {
         var f = focused();

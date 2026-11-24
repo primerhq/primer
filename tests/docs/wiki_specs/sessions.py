@@ -29,7 +29,8 @@ SPECS = (
     PageSpec("sessions/control-a-session", "Control a session",
              "Pause, resume, steer, stop, restart or cancel a session, and what each one does to a running turn.",
              "feature", 4,
-             tools=scoped("workspaces", "pause_workspace_session resume_workspace_session steer_workspace_session interrupt_workspace_session cancel_workspace_session restart_workspace_session"),
+             tools=scoped("workspaces", "pause_workspace_session resume_workspace_session steer_workspace_session interrupt_workspace_session cancel_workspace_session restart_workspace_session")
+             + scoped("sessions", "get_session_by_id set_parked_session_priority"),
              related=("sessions/messaging-other-sessions", "human-in-the-loop/ask-user", "approvals/policies"),
              must=("interrupt_requested",)),
     PageSpec("sessions/messaging-other-sessions", "Messaging other sessions",
