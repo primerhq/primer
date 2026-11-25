@@ -111,14 +111,15 @@ class TestSearchUnregisteredCollection:
     with Document rows but no vectorised chunks yet is the common case."""
 
     @pytest.mark.asyncio
-    async def test_search_returns_empty_when_not_registered(self):
+    async def test_collection_reads_return_empty_when_index_is_not_registered(self):
         from unittest.mock import AsyncMock
 
         from primer.api.routers.knowledge import (
             _CollectionSearchBody,
+            list_indexed_documents,
             search_collection,
         )
-        from primer.model.except_ import BadRequestError as _BRE
+        from primer.int.vector_store import VectorCollectionNotRegisteredError
 
         coll = _collection(id="kb-unindexed")
 
@@ -132,14 +133,11 @@ class TestSearchUnregisteredCollection:
         registry = AsyncMock()
         registry.get_embedder.return_value = embedder
 
-        # Store raises the lazy-registration error the way a real backend
-        # does when nothing has been indexed for the collection yet.
-        class _Store:
-            async def search(self, cid, vector, top_k):
-                raise _BRE(f"collection {cid!r} is not registered")
-
+        store = AsyncMock()
+        store.search.side_effect = VectorCollectionNotRegisteredError("no catalogue row")
+        store.search_by_meta.side_effect = VectorCollectionNotRegisteredError("no catalogue row")
         ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=_Store())
+        ssr.get_store.return_value = store
 
         result = await search_collection(
             request=_ADMIN_REQUEST,
@@ -156,18 +154,24 @@ class TestSearchUnregisteredCollection:
         embed_args = embedder.embed.await_args.kwargs
         assert embed_args["model"] == coll.search.embedder.model
         assert [part.text for part in embed_args["inputs"]] == ["anything"]
+        listing = await list_indexed_documents(
+            request=_ADMIN_REQUEST, collection_id=coll.id, limit=5, offset=0,
+            document_id=None, collections=collections, ssr=ssr,
+        )
+        assert listing == {"items": [], "total": 0, "offset": 0, "limit": 5, "truncated": False}
+        store.search_by_meta.assert_awaited_once_with(coll.id, meta={})
 
     @pytest.mark.asyncio
-    async def test_search_reraises_other_bad_requests(self):
+    @pytest.mark.parametrize("message", ["dimension mismatch: expected 384 got 1", "field is not registered"])
+    async def test_collection_reads_reraise_other_bad_requests(self, message):
         from unittest.mock import AsyncMock
-
-        import pytest as _pytest
 
         from primer.api.routers.knowledge import (
             _CollectionSearchBody,
+            list_indexed_documents,
             search_collection,
         )
-        from primer.model.except_ import BadRequestError as _BRE
+        from primer.model.except_ import BadRequestError
 
         coll = _collection(id="kb-x")
         collections = AsyncMock()
@@ -182,14 +186,14 @@ class TestSearchUnregisteredCollection:
         registry = AsyncMock()
         registry.get_embedder = AsyncMock(return_value=_Emb())
 
-        class _Store:
-            async def search(self, cid, vector, top_k):
-                raise _BRE("dimension mismatch: expected 384 got 1")
-
+        error = BadRequestError(message)
+        store = AsyncMock()
+        store.search.side_effect = error
+        store.search_by_meta.side_effect = error
         ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=_Store())
+        ssr.get_store.return_value = store
 
-        with _pytest.raises(_BRE):
+        with pytest.raises(BadRequestError) as search_error:
             await search_collection(
                 request=_ADMIN_REQUEST,
                 collection_id="kb-x",
@@ -198,6 +202,13 @@ class TestSearchUnregisteredCollection:
                 registry=registry,
                 ssr=ssr,
             )
+        assert search_error.value is error
+        with pytest.raises(BadRequestError) as list_error:
+            await list_indexed_documents(
+                request=_ADMIN_REQUEST, collection_id=coll.id, limit=5, offset=0,
+                document_id=None, collections=collections, ssr=ssr,
+            )
+        assert list_error.value is error
 
 
 class TestIndexedDocumentsDocumentIdFilter:

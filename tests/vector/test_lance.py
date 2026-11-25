@@ -350,12 +350,15 @@ async def test_search_by_meta_nested(lance_provider):
 
 @pytest.mark.asyncio
 async def test_unknown_collection_raises_bad_request(lance_provider):
+    from primer.int.vector_store import VectorCollectionNotRegisteredError
     from primer.model.except_ import BadRequestError
     store = lance_provider.get_vector_store()
     with pytest.raises(BadRequestError):
         await store.put(_record(doc="d1", chunk="c1", vec=[0.0, 0.0, 0.0]))
-    with pytest.raises(BadRequestError):
+    with pytest.raises(VectorCollectionNotRegisteredError, match="is not registered"):
         await store.search("missing-coll", [0.0, 0.0, 0.0], k=1)
+    with pytest.raises(VectorCollectionNotRegisteredError):
+        await store.search_by_meta("missing-coll", {})
     with pytest.raises(BadRequestError):
         await store.get("missing-coll", "d1")
 

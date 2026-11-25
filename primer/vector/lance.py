@@ -33,7 +33,7 @@ from typing import Any
 import lancedb
 import pyarrow as pa
 
-from primer.int.vector_store import VectorStore
+from primer.int.vector_store import VectorCollectionNotRegisteredError, VectorStore
 from primer.int.vector_store_provider import (
     MaintenanceAction,
     MaintenanceReport,
@@ -336,11 +336,10 @@ class LanceVectorStore(VectorStore):
     # ---------- Internal helpers -----------------------------------------
 
     async def _open_table(self, collection_id: str) -> "lancedb.AsyncTable":
-        """Resolve the per-collection Lance table; BadRequestError when
-        the collection has never been created."""
+        """Open the table named by the collection's catalogue entry."""
         cat = await self._provider._catalogue_get(collection_id)
         if cat is None:
-            raise BadRequestError(
+            raise VectorCollectionNotRegisteredError(
                 f"collection {collection_id!r} is not registered on this "
                 f"SemanticSearchProvider"
             )
