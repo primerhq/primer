@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import secrets
 import socket
 from collections.abc import Awaitable, Callable, Sequence
@@ -44,6 +43,7 @@ from mcp.types import (
     Tool as McpTool,
 )
 
+from primer.llm.agent_runtime.alias import tool_alias
 from primer.model.chat import Tool
 
 #: Alias length bound (global constraints): scoped ids of at most 56 chars pass
@@ -72,14 +72,14 @@ class _NoSignalServer(uvicorn.Server):
 def alias_for(scoped_id: str) -> str:
     """The alias a scoped tool id is listed under on the bridge.
 
-    Short ids (``_ALIAS_MAX`` chars or fewer) pass through unchanged; longer
-    ones become their first ``_ALIAS_HEAD`` chars, an underscore, and the first
-    8 hex chars of the SHA-256 of the FULL id, so two ids sharing a long prefix
-    still get distinct aliases that map back to their own id.
+    The shared agent-runtime rule (``primer.llm.agent_runtime.alias.tool_alias``)
+    with the bridge's limits: short ids (``_ALIAS_MAX`` chars or fewer) pass
+    through unchanged; longer ones become their first ``_ALIAS_HEAD`` chars, an
+    underscore, and the first 8 hex chars of the SHA-256 of the FULL id, so two
+    ids sharing a long prefix still get distinct aliases that map back to
+    their own id.
     """
-    if len(scoped_id) <= _ALIAS_MAX:
-        return scoped_id
-    return scoped_id[:_ALIAS_HEAD] + "_" + hashlib.sha256(scoped_id.encode("utf-8")).hexdigest()[:8]
+    return tool_alias(scoped_id, max_len=_ALIAS_MAX, keep_len=_ALIAS_HEAD)
 
 
 async def _send_404(send: Any) -> None:
