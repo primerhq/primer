@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from primer.int.vector_store import VectorCollectionNotRegisteredError
 from primer.model.vector import EmbeddingRecord
 from tests.pg_gate import postgres_marks
 from tests.vector.test_halfvec_e2e import _drop_schema, _provider
@@ -17,6 +18,20 @@ pytestmark = [pytest.mark.asyncio, *postgres_marks("the live pgvector table name
 
 def _rec(collection_id: str, text: str) -> EmbeddingRecord:
     return EmbeddingRecord(collection_id=collection_id, document_id="d", chunk_id="0", text=text, vector=[1.0, 0.0, 0.0], meta={})
+
+
+async def test_reads_of_an_unregistered_collection_report_a_catalogue_miss():
+    schema = "names_test_" + uuid.uuid4().hex[:8]
+    provider = await _provider(use_halfvec=False, schema=schema)
+    try:
+        store = provider.get_vector_store()
+        with pytest.raises(VectorCollectionNotRegisteredError, match="has not been created"):
+            await store.search("missing", [1.0, 0.0, 0.0], k=1)
+        with pytest.raises(VectorCollectionNotRegisteredError):
+            await store.search_by_meta("missing", {})
+    finally:
+        await provider.aclose()
+        await _drop_schema(schema)
 
 
 async def test_two_colliding_ids_do_not_share_a_table_or_their_chunks():

@@ -38,7 +38,7 @@ import asyncpg
 from pgvector import HalfVector
 from pgvector.asyncpg import register_vector
 
-from primer.int.vector_store import VectorStore
+from primer.int.vector_store import VectorCollectionNotRegisteredError, VectorStore
 from primer.int.vector_store_provider import (
     MaintenanceAction,
     MaintenanceReport,
@@ -812,7 +812,7 @@ class PgVectorStore(VectorStore):
                 collection_id,
             )
         if row is None:
-            raise BadRequestError(
+            raise VectorCollectionNotRegisteredError(
                 f"collection {collection_id!r} has not been created"
             )
         meta = _CollectionMeta(

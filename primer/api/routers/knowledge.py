@@ -54,6 +54,7 @@ from primer.api.registries import ProviderRegistry, SemanticSearchRegistry
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers.access import make_access_router
+from primer.int.vector_store import VectorCollectionNotRegisteredError
 from primer.model.access import AccessLevel
 from primer.model.chat import TextPart
 from primer.model.embedding import ExtendedEmbeddingConfig
@@ -802,14 +803,8 @@ async def search_collection(
     vector = list(response.embeddings[0].vector)
 
     store = await ssr.get_store(coll.search.vector_store_provider_id)
-    # SSP registration is lazy: the vector store's collection is created
-    # only when the first chunk is indexed. A collection that has Document
-    # rows but no indexed vectors yet (live embedding on create is a
-    # follow-up) is therefore unknown to the store's catalogue, and
-    # search raises BadRequestError("...is not registered..."). Treat
-    # that as "nothing indexed yet" and return an empty hits list rather
-    # than surfacing a 400, matching list_indexed_documents and the
-    # docstring's empty-collection contract.
+    # The vector store registers the collection when its first chunk is
+    # indexed. Until then an existing collection has no search hits.
     #
     # run_collection_search honours the collection's cross-encoder when
     # configured and runs a plain vector search otherwise, reusing the
@@ -824,9 +819,7 @@ async def search_collection(
             cross_encoder_resolver=registry,
             query_vector=vector,
         )
-    except BadRequestError as exc:
-        if "is not registered" not in str(exc):
-            raise
+    except VectorCollectionNotRegisteredError:
         hits = []
     return {
         "hits": [
@@ -895,18 +888,10 @@ async def list_indexed_documents(
             "document tree remain available."
         )
     store = await ssr.get_store(coll.search.vector_store_provider_id)
-    # SSP registration is lazy: VectorStore.create_collection runs only
-    # when the first document is ingested. A freshly-created Collection
-    # row is therefore unknown to the vector store's catalogue until
-    # then, and search_by_meta raises BadRequestError("...is not
-    # registered..."). Treat that as "no indexed entries yet" so the UI
-    # surfaces an empty list instead of an error on the very first
-    # click after creating the collection.
+    # An existing collection can have no catalogue entry until its first ingest.
     try:
         records = await store.search_by_meta(collection_id, meta={})
-    except BadRequestError as exc:
-        if "is not registered" not in str(exc):
-            raise
+    except VectorCollectionNotRegisteredError:
         records = []
     if document_id is not None:
         records = [r for r in records if r.document_id == document_id]

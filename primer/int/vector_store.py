@@ -35,7 +35,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
+from primer.model.except_ import BadRequestError
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+
+
+class VectorCollectionNotRegisteredError(BadRequestError):
+    """The backend catalogue has no entry for the requested collection."""
 
 
 class VectorStore(ABC):
