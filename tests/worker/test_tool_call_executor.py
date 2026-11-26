@@ -406,7 +406,7 @@ async def _build_pool(
     await task_storage.create(_task(TASK_ID))
 
     engine = InMemoryClaimEngine(adapters={
-        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage),
         ClaimKind.SESSION: _NeverClaimedSessionAdapter(),
     })
     wake_calls: list = []

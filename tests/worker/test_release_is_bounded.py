@@ -28,6 +28,7 @@ from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.model.scheduler import WorkerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
+from tests.claim._platform import platform_adapters
 
 WORKER = "wrk-bounded"
 
@@ -45,7 +46,12 @@ async def _until(predicate, message: str, timeout: float = 5.0) -> None:
 
 class _World:
     def __init__(self, heartbeat: int = 1, clock=None) -> None:
-        self.engine = InMemoryClaimEngine(adapters={}, **({} if clock is None else {"clock": clock}))
+        # The stuck/fine leases are release-bound tokens (no storage), so the
+        # armed kinds stand in with the base platform contract.
+        self.engine = InMemoryClaimEngine(
+            adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.TRIGGER),
+            **({} if clock is None else {"clock": clock}),
+        )
         self.scheduler = InMemoryScheduler()
         self.pool = WorkerPool(
             config=WorkerConfig(concurrency=4, heartbeat_interval_seconds=heartbeat, lease_ttl_seconds=5),

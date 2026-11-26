@@ -171,7 +171,23 @@ class ChannelInbox:
         # resume-time write is the remaining safety net for the case
         # where publish() itself succeeds but the listener still never
         # advances the park.
-        await self._event_bus.publish(event_key, payload)
+        #
+        # The publish is DUAL when a storage provider is wired (the
+        # mcp-task bridge's pattern): a durable ``session.wake`` event in
+        # the log (replayed by the dispatcher's flip sink when the volatile
+        # delivery is lost - a mailbox overflow, a NOTIFY that never
+        # reached the listener) plus the legacy key publish for the
+        # transport-fast path. Without a provider (a lightweight test
+        # app) it degrades to the volatile publish alone; a failed
+        # volatile publish is tolerated by the durable half having landed.
+        if self._storage_provider is not None:
+            from primer.events.wake import emit_session_wake
+
+            await emit_session_wake(
+                self._storage_provider, self._event_bus, event_key, payload,
+            )
+        else:
+            await self._event_bus.publish(event_key, payload)
         if captured is not None:
             await self._write_captured_record(
                 env, captured, event_key=event_key,

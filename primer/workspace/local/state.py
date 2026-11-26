@@ -59,6 +59,7 @@ from primer.workspace.state_helpers import (
     validate_session_id as _validate_session_id,
     validate_sha as _validate_sha,
 )
+from primer.workspace.local.tools._common import _curated_subprocess_env
 
 
 from primer.int.state_repo import LogRewrite
@@ -831,9 +832,21 @@ class LocalStateRepo:
             "git",
             "-C",
             str(self._path),
+            # Hooks, the fsmonitor, and gpg signing can all be planted
+            # into this repo by an agent (the .state/.git tree is
+            # agent-reachable through exec), and a planted hook or
+            # gpg.program would run with the API process's environment.
+            # Disable all three on the command line: a -c value outranks
+            # any planted repo config.
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.fsmonitor=false",
+            "-c", "commit.gpgsign=false",
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Never the API process's environment: its DSN passwords and
+            # provider keys must not reach a git subprocess.
+            env=_curated_subprocess_env(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(

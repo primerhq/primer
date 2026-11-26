@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION: str = "1.7"
+PROTOCOL_VERSION: str = "1.8"
 
 
 class OpName(StrEnum):
@@ -51,6 +51,32 @@ class OpName(StrEnum):
     PTY_STDIN = "pty_stdin"
     PTY_RESIZE = "pty_resize"
     PTY_CLOSE = "pty_close"
+    # One recursive walk in the runtime (protocol 1.8): {path, max_entries,
+    # timeout_s} -> {entries: [{path, is_dir, size, mtime}], truncated}.
+    # Replaces the one-list_dir-round-trip-per-directory sandbox glob walk.
+    WALK = "walk"
+    # One recursive regex search in the runtime (protocol 1.8):
+    # {path, pattern, glob, output_mode, context, multiline,
+    # case_insensitive, skip, max_files, max_file_bytes, max_matches,
+    # head_limit, max_output_bytes, timeout_s} -> {lines, match_count,
+    # file_count, truncated, stop_reason, stop_reasons, skipped_large}.
+    # The pattern is compiled and matched with the ``regex`` library (a
+    # runtime image dependency) under a per-match timeout with the GIL
+    # released; a timeout stops the search with stop_reason regex_timeout.
+    # Output paths are relative to the workspace root. ``max_files`` counts
+    # regular files that pass ``glob`` (walked breadth-first); head_limit and
+    # max_output_bytes bound the lines before they are sent; stop_reasons
+    # lists every cap that fired (size_cap, file_cap, match_cap, time_cap,
+    # regex_timeout, output_cap) and skipped_large counts files over
+    # max_file_bytes.
+    SEARCH = "search"
+    # Compare-and-swap write (protocol 1.8): {path, expected_sha256,
+    # content_b64, mode} -> {applied}. Under the same Tier-A write lock as
+    # write_file, the current bytes are hashed and content_b64 written only
+    # if the SHA-256 hex digest equals expected_sha256 (a digest, not the old
+    # bytes, goes on the wire); a mismatch is applied=false, not an error.
+    # Makes the sandbox ``edit`` tool's read-modify-write atomic.
+    WRITE_FILE_CAS = "write_file_cas"
 
 
 class ErrorCode(StrEnum):

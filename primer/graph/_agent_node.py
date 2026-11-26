@@ -189,7 +189,16 @@ class _AgentNodeMixin:
     ) -> NodeOutput:
         """Build a NodeOutput from an agent turn's produced messages: the
         last assistant message's text, plus ``parsed`` (JSON) when the node
-        had a ``response_format``."""
+        had a ``response_format``.
+
+        ``parsed`` is the most recent assistant message (scanning from the
+        end) whose text parses as the schema's JSON, not necessarily the
+        LAST assistant message (X3.5): a round that also carried a real tool
+        call streams its structured answer as text (the adapter's
+        ``structured_output`` emulation), the turn continues, and a later
+        plain-text answer would otherwise win the output and drop the
+        structured answer.
+        """
         last_assistant: Message | None = None
         for msg in reversed(produced_messages):
             if msg.role == "assistant":
@@ -203,12 +212,23 @@ class _AgentNodeMixin:
                 if p.type == "text"
             )
         parsed: dict[str, Any] | None = None
-        if response_format is not None and text:
-            try:
-                loaded = json.loads(_strip_json_fences(text))
+        if response_format is not None:
+            for msg in reversed(produced_messages):
+                if msg.role != "assistant":
+                    continue
+                candidate = "".join(
+                    p.text  # type: ignore[union-attr]
+                    for p in msg.parts
+                    if p.type == "text"
+                )
+                if not candidate:
+                    continue
+                try:
+                    loaded = json.loads(_strip_json_fences(candidate))
+                except json.JSONDecodeError:
+                    continue
                 parsed = loaded if isinstance(loaded, dict) else {"value": loaded}
-            except json.JSONDecodeError:
-                parsed = None
+                break
         return NodeOutput(
             text=text, parsed=parsed, history=history, iteration=iteration,
         )

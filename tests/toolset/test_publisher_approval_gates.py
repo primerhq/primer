@@ -47,7 +47,7 @@ async def test_workspace_publisher_is_not_an_external_mcp_tool(tmp_path):
     try:
         tool = next(t for t in [t async for t in providers['system'].list_tools()] if t.id == 'publish_service')
         assert tool.required_role == 'admin' and tool.requires_workspace
-        assert tool.preview_args == ('name', 'path')
+        assert tool.preview_args == ('name', 'path', 'bundle_digest')
         assert is_exposable(tool, provider=providers['system']) == (False, 'needs_workspace')
         deps = ExposureDeps(storage_provider=sp, provider_registry=registry, approval_resolver=resolver)
         with pytest.raises(ToolNotExposable):

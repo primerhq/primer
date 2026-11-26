@@ -217,8 +217,10 @@ reason rather than skipping it silently.
   Postgres. Run targeted e2e with `-n0` and `PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765`.
 
 - Some tests are environment-gated: real-LLM tests need a reachable LM Studio
-  (`LMSTUDIO_API_KEY` set; the provider must use `max_concurrency: 1` for a
-  single-request backend); the Kubernetes workspace tests need a live cluster.
+  (the bearer token in `PRIMER_E2E_LMSTUDIO_TOKEN` set; the server address
+  defaults to `http://localhost:8080` and `PRIMER_E2E_LMSTUDIO_URL` overrides
+  it; the provider must use `max_concurrency: 1` for a single-request
+  backend); the Kubernetes workspace tests need a live cluster.
 
 - After a code-changing task, restart the dogfood `uv run primer api` and
   confirm `/v1/health` returns 200.

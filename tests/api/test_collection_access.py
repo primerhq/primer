@@ -264,12 +264,25 @@ async def test_a_full_grantee_writes_documents_through_the_flat_routes(env: _Env
 
 
 async def test_moving_a_document_into_an_unwritable_collection_is_refused(env: _Env) -> None:
+    # M1 3.3: the flat /v1/documents door refuses every collection_id change with a 400 that names the move
+    # route, regardless of the caller's access to the target - the target is never probed, so an unwritable
+    # and a nonexistent target get the identical refusal and leak nothing about the target.
     await env.sp.get_storage(Collection).create(Collection(id="other", description="d", access=Access(owners=[ALICE], grants={CAROL: "read"})))
     doc_id = await _doc_id(env, "b")
     body = (await env.client.get(f"/v1/documents/{doc_id}", headers=_as(CAROL))).json()
     r = await env.client.put(f"/v1/documents/{doc_id}", headers=_as(CAROL), json={**body, "collection_id": "other"})
-    assert r.status_code == 403 and r.json()["extensions"]["code"] == "access_denied", r.text
+    assert r.status_code == 400 and r.json()["type"] == "/errors/bad-request", r.text
+    assert "use the move route to relocate it" in r.json()["detail"], r.text
     r = await env.client.put(f"/v1/documents/{doc_id}", headers=_as(CAROL), json={**body, "collection_id": "nope"})
+    assert r.status_code == 400 and r.json()["type"] == "/errors/bad-request", r.text
+    # The document is still in its original collection at its path (the row guard still runs first: a caller
+    # without full on the document's own collection gets 403 access_denied here, see the reader tests).
+    r = await env.client.get(f"/v1/documents/{doc_id}", headers=_as(CAROL))
+    assert r.status_code == 200 and r.json()["collection_id"] == CID and r.json()["path"] == "b", r.text
+    # The targets are untouched: "other" has no documents and "nope" still does not exist.
+    r = await env.client.get("/v1/collections/other/documents", headers=_as(CAROL))
+    assert r.status_code == 200 and r.json()["documents"] == [], r.text
+    r = await env.client.get("/v1/collections/nope", headers=_as(CAROL))
     assert r.status_code == 404, r.text
 
 

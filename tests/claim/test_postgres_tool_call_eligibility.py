@@ -70,8 +70,10 @@ async def _armed_engine(pg_storage, seeder, ids: dict[str, str]) -> PostgresClai
         storage_provider=pg_storage,
         adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=None)},
     )
+    # Arming snapshots the task's parent session, so the tasks all park under one seeded session.
+    await seeder.seed("sessions", ["sess-1"])
     for state, task_id in ids.items():
-        await seeder.seed("toolcalltask", [task_id], data={"state": state})
+        await seeder.seed("toolcalltask", [task_id], data={"state": state, "session_id": "sess-1"})
         await engine.upsert(ClaimKind.TOOL_CALL, task_id)
     return engine
 

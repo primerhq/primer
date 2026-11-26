@@ -256,21 +256,12 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
   }, [items]);
   const ownerNames = window.SHR_useUserNames(ownerIds);
 
-  // Per-row status — batched fetch of /v1/graphs/{id}/status.
-  // Triggered when the list payload changes (or on first paint).
-  const [perRowStatus, setPerRowStatus] = React.useState({});
-  React.useEffect(() => {
-    if (items.length === 0) return undefined;
-    const ctrl = new AbortController();
-    // At most four reads in flight until a batch endpoint exists (UI-L15).
-    PR_mapLimit(items, 4, (g) =>
-      apiFetch("GET", "/graphs/" + encodeURIComponent(g.id) + "/status", null, { signal: ctrl.signal })
-        .then((r) => [g.id, r])
-        .catch((e) => [g.id, { ok: null, error: e.title || e.message }]),
-    ctrl.signal).then((entries) => setPerRowStatus(Object.fromEntries(entries.filter(Boolean))));
-    return () => ctrl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [list.data]);
+  // Per-row status: /graphs/{id}/status for the rows on this page that were not read yet or changed (PR_useRowReads, ui/foundation/api.js), not for
+  // every row on each list change; Refresh reads them all again.
+  const statusReads = PR_useRowReads(items, (g, signal) =>
+    apiFetch("GET", "/graphs/" + encodeURIComponent(g.id) + "/status", null, { signal })
+      .catch((e) => ({ ok: null, error: e.title || e.message })));
+  const perRowStatus = statusReads.byId;
 
   const [createOpen, setCreateOpen] = React.useState(false);
   // "New graph" from the platform page opens the form DIRECTLY.
@@ -292,7 +283,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
           />
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={() => list.refetch()}>Refresh</Btn>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={() => { statusReads.forget(); list.refetch(); }}>Refresh</Btn>
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>
             New graph
           </Btn>

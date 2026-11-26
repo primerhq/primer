@@ -738,6 +738,57 @@ async def test_input_validation_error_none_when_schema_itself_is_malformed(
 
 
 @pytest.mark.asyncio
+async def test_input_validation_error_marker_for_an_overdeep_arguments(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """A caller payload too deep to validate (review 7.1b) answers the
+    fixed 'arguments' marker, bounded and off the loop, instead of
+    stalling the event loop or crashing the handler.
+
+    The deep value sits under call_tool's ``arguments`` field (an object
+    the schema does not constrain further): it is structurally valid, so
+    the marker is the depth bound, not a type mismatch - the unbounded
+    ``jsonschema.validate`` the original code ran would have validated it
+    fine and returned None."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+
+    nested: Any = None
+    for _ in range(500):
+        nested = {"q": nested}
+
+    msg = await _input_validation_error(
+        deps, "call_tool", {"scoped_id": "misc__uuid_v4", "arguments": {"args": nested}},
+    )
+
+    assert msg == "arguments"
+
+
+@pytest.mark.asyncio
+async def test_input_validation_error_uses_the_apps_body_cap(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """Fix round 1: the pre-check validates against the app's
+    request-body cap, not the historical 1 MiB default - a 2 MiB body the
+    body-cap middleware admits (up to the 32 MiB cap) is a valid
+    call_tool instance, so the marker stays None."""
+    from primer.api.config import AppConfig
+
+    from primer.mcp.exposure import ExposureDeps
+
+    deps = ExposureDeps(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry_with_tools,
+        max_body_bytes=AppConfig().limits.max_body_bytes,
+    )
+
+    big = {"scoped_id": "misc__uuid_v4", "arguments": {"args": "a" * (2 * 1024 * 1024)}}
+
+    msg = await _input_validation_error(deps, "call_tool", big)
+
+    assert msg is None
+
+
+@pytest.mark.asyncio
 async def test_call_returns_isError_for_invalid_arguments_before_dispatch(
     fake_storage_provider,
 ) -> None:

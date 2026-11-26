@@ -36,8 +36,12 @@ async def _burst(runner, count, service_id="service-1"):
     version = _version(service_id)
     calls = [asyncio.create_task(gateway.call_function(service_id=service_id, version=version, source="", fn="f", args={},
                                                        runner=runner)) for _ in range(count)]
-    for _ in range(50):
-        await asyncio.sleep(0)
+    # Wait until every call is either refused (done) or running in the runner: admission comes first, but an
+    # admitted call still awaits its threaded argument check before it reaches run().
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while runner.in_flight + sum(1 for c in calls if c.done()) < count and loop.time() < deadline:
+        await asyncio.sleep(0.01)
     runner.release.set()
     return await asyncio.gather(*calls, return_exceptions=True)
 

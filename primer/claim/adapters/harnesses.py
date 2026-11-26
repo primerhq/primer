@@ -43,19 +43,28 @@ class HarnessClaimAdapter(ClaimAdapter):
         # (INSTALLED / READY / OUTDATED / ERROR) AND clears
         # pending_operation. When that has happened we must NOT clobber it
         # here - a hardcoded READY would, for example, demote a successful
-        # INSTALL back to READY. So only finalize the row from this adapter
-        # when dispatch did not (pending_operation still set, e.g. the
-        # worker bailed before dispatch ran its own release).
-        if harness.pending_operation is None:
+        # INSTALL back to READY. A successful release that still sees a
+        # pending_operation is an operation enqueued in the gap between the
+        # row release and this lease release: the new operation is the next
+        # claim's to run, so leave the row (and its lease) alone. Only
+        # finalize the row from this adapter on a FAILED release where
+        # dispatch did not (pending_operation still set, e.g. the worker
+        # bailed before dispatch ran its own release). (Review 2026-11-23
+        # finding 1.3.)
+        if harness.pending_operation is None or outcome.success:
             return
 
+        # Only a FAILED release reaches this far: a release that succeeds
+        # while the row still carries a pending operation is an operation
+        # enqueued in the gap (dispatch always clears the operation on
+        # success, so a pending one after success is a new request whatever
+        # it names), whose row the next claim owns; a success with no
+        # pending operation was already finalised by dispatch. (Review
+        # 2026-11-23 finding 1.3, round 1: the READY branch below used to
+        # handle the success case and is unreachable since the gate above.)
         now = datetime.now(UTC)
-        if outcome.success:
-            new_status = HarnessStatus.READY
-            last_error = None
-        else:
-            new_status = HarnessStatus.ERROR
-            last_error = outcome.last_error
+        new_status = HarnessStatus.ERROR
+        last_error = outcome.last_error
 
         # Only the operation's own fields, guarded on the operation still being the one read: a whole-row write from this read would put back an
         # owner's share that landed in between (final review F18).

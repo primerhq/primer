@@ -237,7 +237,7 @@ async def test_two_concurrent_passes_make_one_default_workspace(fake_storage_pro
     results = await asyncio.gather(
         *(ensure_default_workspace(fake_storage_provider, workspace_registry=registry) for _ in range(2))
     )
-    assert registry.calls == 2, "both passes saw no row, so the race is real"
+    assert registry.calls == 1, "both passes saw no row, but only the one that won the claim materialises (review 7.4)"
     assert sorted(r for r in results if r) == ["prime"], "exactly one pass reports having created it"
     assert await _ids(fake_storage_provider) == ["prime"]
     assert await _recorded(fake_storage_provider) == "prime"
@@ -338,3 +338,57 @@ async def test_a_create_conflict_is_a_concurrent_creator_not_an_error(fake_stora
     ws_store.create = _lose_the_race  # type: ignore[method-assign]
     assert await ensure_default_workspace(fake_storage_provider, workspace_registry=_Registry()) is None
     assert await _recorded(fake_storage_provider) == "prime"
+
+
+# ---- concurrent first boots (review 7.4) -------------------------------------------------------------------------------------
+
+
+async def test_a_failed_materialise_releases_the_claim_so_the_next_boot_retries(fake_storage_provider):
+    await _seed_template(fake_storage_provider)
+
+    class _Boom(_Registry):
+        async def materialise(self, **kw):
+            raise RuntimeError("init command failed")
+
+    with pytest.raises(RuntimeError):
+        await ensure_default_workspace(fake_storage_provider, workspace_registry=_Boom())
+    retry = _Registry()
+    assert await ensure_default_workspace(fake_storage_provider, workspace_registry=retry) == "prime"
+    assert retry.calls == 1
+
+
+async def test_a_live_claim_defers_and_a_stale_claim_is_taken_over(fake_storage_provider):
+    from datetime import timedelta
+
+    from primer.bootstrap.seed import DEFAULT_WORKSPACE_CLAIM_TTL, SeedMarker
+
+    await _seed_template(fake_storage_provider)
+    claims = fake_storage_provider.get_storage(SeedMarker)
+    await claims.create(SeedMarker(id="default-workspace-prime", claimed_at=datetime.now(timezone.utc)))
+    registry = _Registry()
+    assert await ensure_default_workspace(fake_storage_provider, workspace_registry=registry) is None
+    assert registry.calls == 0, "another boot holds a fresh claim"
+
+    stale = datetime.now(timezone.utc) - DEFAULT_WORKSPACE_CLAIM_TTL - timedelta(seconds=1)
+    await claims.delete("default-workspace-prime")
+    await claims.create(SeedMarker(id="default-workspace-prime", claimed_at=stale))
+    assert await ensure_default_workspace(fake_storage_provider, workspace_registry=registry) == "prime"
+    assert registry.calls == 1, "the holder of the stale claim died; this boot takes over"
+
+
+async def test_the_loser_of_a_row_race_closes_its_live_handle(fake_storage_provider):
+    await _seed_template(fake_storage_provider)
+    closed: list[bool] = []
+
+    class _Live(_LiveWorkspace):
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    class _Racing(_Registry):
+        async def materialise(self, *, template, overrides=None, workspace_id=None):
+            # Another process (no claim honoured) wins the row while this one builds.
+            await fake_storage_provider.get_storage(Workspace).create(_row(workspace_id, name="prime"))
+            return _Live(workspace_id)
+
+    assert await ensure_default_workspace(fake_storage_provider, workspace_registry=_Racing()) is None
+    assert closed == [True]

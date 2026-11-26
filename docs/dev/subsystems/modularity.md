@@ -119,7 +119,9 @@ system.
 
 Three moments matter in a process's life. At bootstrap, `BootstrapRunner`
 asks `has_extra` before registering each dep-backed default row and records
-a skip rather than creating a provider that cannot be constructed. At
+a skip rather than creating a provider that cannot be constructed. The
+dep-backed steps run on every boot, marker or not, so installing the extra and
+restarting creates the rows. At
 dispatch, a factory calls `require_extra` before importing its backend. At
 render, the console fetches `/v1/capabilities` once and annotates the
 options it offers. All three read the same map, so they cannot disagree.

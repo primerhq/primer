@@ -12,6 +12,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 
+from primer.coordinator.wait_signal import waiting_for_slot
 from primer.int.coordinator import (
     InvalidationBus,
     InvalidationSubscription,
@@ -107,7 +108,8 @@ class InMemoryRateLimiter(RateLimiter):
         # a release on this event loop cannot be missed.
         state.waiters.append(entry)
         try:
-            await waiter
+            with waiting_for_slot():
+                await waiter
         except BaseException:
             if waiter.done() and not waiter.cancelled():
                 # The grant already counted us, but cancellation won before

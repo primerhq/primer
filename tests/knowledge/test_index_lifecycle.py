@@ -12,6 +12,7 @@ import pytest_asyncio
 from pydantic import SecretStr
 
 from primer.knowledge.indexing import index_document, index_documents, remove_document_index
+from primer.int.vector_store import VectorStore
 from primer.knowledge.lifecycle import enable_search, reset_interrupted_indexing
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig
@@ -46,11 +47,17 @@ class _Emb:
         return _R()
 
 
-class _Store:
+class _Store(VectorStore):
     def __init__(self):
         self.rows: dict[tuple[str, str, str], EmbeddingRecord] = {}
         self.dims: dict[str, int] = {}
         self.dropped: list[str] = []
+
+    async def search(self, cid, vector, k):
+        raise NotImplementedError
+
+    async def count_documents(self, cid):
+        return len({key[1] for key in self.rows if key[0] == cid})
 
     async def create_collection(self, cid, *, dimensions, distance="cosine"):
         if cid in self.dims and self.dims[cid] != dimensions:

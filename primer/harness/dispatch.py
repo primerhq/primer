@@ -2,8 +2,11 @@
 
 One ``run_one_harness_operation`` invocation per claimed HarnessLease.
 The worker pool's harness claim loop creates these as background tasks;
-each task reads the Harness row, runs the pending operation, releases
-the claim, and publishes a ``harness:{id}:done`` event.
+each task reads the Harness row and runs the pending operation. The engine
+handler (``run_engine_harness``) releases the claim and publishes the
+``harness:{id}:done`` event AFTER the release, so a consumer that reacts to
+done by enqueuing the next operation does not land in the gap between the row
+release and the lease release (Review 2026-11-23 finding 1.3).
 
 On lease loss the pool cancels this task; the engine fences the lease
 release so no stale writes land.
@@ -164,7 +167,11 @@ async def run_one_harness_operation(
     engine lease must be held by the worker pool — the pool's claim loop
     has already done that atomically via the ClaimEngine.
 
-    Publishes ``harness:{id}:done`` on completion (success or error).
+    Does NOT publish ``harness:{id}:done``: the engine handler
+    (``run_engine_harness``) publishes it after the lease release, so a
+    consumer reacting to done by enqueuing the next operation does not land
+    in the gap between the row release and the lease release (Review
+    2026-11-23 finding 1.3).
     """
     harness_storage = deps.storage_provider.get_storage(Harness)
 
@@ -220,9 +227,6 @@ async def run_one_harness_operation(
             next_status=HarnessStatus.ERROR,
             last_operation_error=error_json,
         )
-        await deps.event_bus.publish(
-            f"harness:{harness_id}:done", {"harness_id": harness_id},
-        )
         return
 
     try:
@@ -235,10 +239,8 @@ async def run_one_harness_operation(
         elif operation == HarnessOperation.UNINSTALL:
             error_json = await _do_uninstall(deps, harness)
             if error_json is None:
-                # Row is gone, skip release, just publish done.
-                await deps.event_bus.publish(
-                    f"harness:{harness_id}:done", {"harness_id": harness_id},
-                )
+                # Row is gone: skip the release. The engine handler publishes
+                # the done event after the lease release.
                 return
             # It stopped part-way and kept the harness and its snapshot: released as ERROR, a retry finishes it.
             next_status = HarnessStatus.ERROR
@@ -277,24 +279,97 @@ async def run_one_harness_operation(
         last_operation_error=error_json,
     )
 
-    await deps.event_bus.publish(
-        f"harness:{harness_id}:done", {"harness_id": harness_id},
-    )
+
+async def rearm_harness_leases(
+    claim_engine,
+    harness_storage,
+    *,
+    skip_existing: bool = False,
+) -> int:
+    """Re-arm the HARNESS lease of every harness row that still carries a pending operation.
+
+    The one shared helper for the two surfaces that must repair a missing
+    harness lease: the lifespan's boot recovery phase
+    (``recover_trigger_and_harness_leases``, review 2026-11-23 finding 1.2)
+    and the leader-elected ``sweep_harnesses`` (the residual window of
+    finding 1.3, round 1). Idempotent: the upsert re-prioritises an existing
+    lease instead of duplicating one. With ``skip_existing`` a row that
+    already holds a lease is not touched at all (the sweep must not rewrite
+    a live lease; the boot phase passes ``False`` so it also re-prioritises
+    a lease a persistent engine already holds). Returns how many leases were
+    (re-)armed. The read-then-upsert is unfenced on purpose: an operation that
+    completes in the window between the read and the upsert leaves a lease the
+    claim query never delivers - its eligibility predicate
+    (``pending_operation IS NOT NULL``) is re-checked at claim time, so the
+    stale lease is inert until the next operation re-arms it. Never raises: a
+    sweep tick or a boot phase must not break on this.
+    """
+    try:
+        from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
+        from primer.storage.q import Q
+
+        q = Q(Harness).where_not_null("pending_operation").build()
+        offset = 0
+        armed = 0
+        while True:
+            page = await harness_storage.find(
+                q, OffsetPage(offset=offset, length=200),
+            )
+            items = list(page.items)
+            for harness in items:
+                if harness.pending_operation is None:
+                    continue
+                if skip_existing and await claim_engine.has_lease(
+                    ClaimKind.HARNESS, harness.id,
+                ):
+                    continue
+                try:
+                    await claim_engine.upsert(
+                        ClaimKind.HARNESS, harness.id,
+                        priority=CLAIM_PRIORITY_OPERATOR,
+                    )
+                    armed += 1
+                except Exception:
+                    logger.exception(
+                        "harness lease re-arm: upsert failed for %s",
+                        harness.id,
+                    )
+            if len(items) < 200:
+                break
+            offset += 200
+        return armed
+    except Exception:  # noqa: BLE001 -- a sweep tick or boot phase must never break here
+        logger.exception("harness lease re-arm failed")
+        return 0
 
 
 async def sweep_harnesses(
     deps: HarnessDispatchDeps,
     *,
+    claim_engine=None,
     heartbeat_stale_after: timedelta = timedelta(seconds=90),
 ) -> int:
-    """Legacy sweeper — now a no-op.
+    """Leader-elected sweep: re-arm the harness lease the release window can drop.
 
-    Lease-based heartbeating is handled by the ClaimEngine; the pool's
-    heartbeat loop detects lost leases and signals the dispatch task
-    directly. This function is retained for API compatibility but no
-    longer inspects or mutates harness rows.
+    Lease-based heartbeating is handled by the ClaimEngine (
+    ``heartbeat_stale_after`` is a legacy parameter). The one lease the
+    engine cannot repair on its own is a harness lease that a
+    ``drop_lease=True`` release deletes AFTER an enqueue armed it in the
+    window between the handler's fresh re-read and the release (review
+    2026-11-23 finding 1.3, residual window): the row keeps its pending
+    operation, but with no lease every route (delete included) answers 409
+    until a restart. The sweep re-arms exactly those rows - a pending
+    operation and no lease - through the same helper the boot recovery phase
+    uses, so the window self-heals within one sweep interval. Idempotent: a
+    harness that already holds a lease is not touched. Without a claim
+    engine (legacy callers) this stays a no-op returning 0.
     """
-    return 0
+    if claim_engine is None:
+        return 0
+    harness_storage = deps.storage_provider.get_storage(Harness)
+    return await rearm_harness_leases(
+        claim_engine, harness_storage, skip_existing=True,
+    )
 
 
 # ---------------------------------------------------------------------------

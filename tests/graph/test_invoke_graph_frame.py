@@ -39,7 +39,17 @@ class _ParkingExec:
 
 def _svc(build):
     async def _resolve(gid):
-        return {"id": gid}
+        # A real Graph without an input_schema: run_invoke_graph reads the
+        # resolved graph's Begin for its input_schema pre-check (review
+        # 2026-11-23, 7.1b), which stays inert without one.
+        from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
+
+        return Graph(
+            id=gid,
+            description="stub child graph",
+            nodes=[_BeginNode(id="begin"), _EndNode(id="exit")],
+            edges=[_StaticEdge(from_node="begin", to_node="exit")],
+        )
 
     return GraphInvocationServices(
         resolve_graph=_resolve,

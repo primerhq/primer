@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from primer.int.vector_store import VectorStore
 from primer.knowledge.document_service import DocumentService
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig, Document
 from primer.model.except_ import NotFoundError, PrimerError
@@ -36,7 +37,7 @@ from tests.api.test_knowledge_documents_by_path import app, client, collection_i
 from tests.knowledge.test_indexing import _Emb
 
 
-class _Vectors:
+class _Vectors(VectorStore):
     """A vector store that remembers its namespaces, as the real ones do, and can be made to fail."""
 
     def __init__(self) -> None:
@@ -68,6 +69,12 @@ class _Vectors:
         self.dropped.append(cid)
         self.namespaces.discard(cid)
         self.records = [r for r in self.records if r.collection_id != cid]
+
+    async def search(self, cid, vector, k):
+        return []
+
+    async def count_documents(self, cid):
+        return len({r.document_id for r in self.records if r.collection_id == cid})
 
     async def search_by_meta(self, cid, meta=None):
         return [r for r in self.records if r.collection_id == cid]

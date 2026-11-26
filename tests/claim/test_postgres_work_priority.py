@@ -1,4 +1,4 @@
-"""Native PG priority admission and offline migration. Hosted PG lane only."""
+"""Native PG priority admission. Hosted PG lane only."""
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -8,13 +8,12 @@ import pytest
 
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.postgres import PostgresClaimEngine
-from primer.claim.priority_migration import backfill_priority_batch, prepare_priority_indexes
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from tests.claim._entity_seed import EntitySeeder
 from tests.claim.test_postgres_engine import pg_storage  # noqa: F401
 from tests.pg_gate import postgres_marks
 
-pytestmark = postgres_marks("work priority native concurrency and migration")
+pytestmark = postgres_marks("work priority native concurrency")
 
 
 class Sessions(SessionClaimAdapter):
@@ -22,10 +21,9 @@ class Sessions(SessionClaimAdapter):
         pass
 
 
-def queue(sp, enabled=True):
+def queue(sp):
     return PostgresClaimEngine(storage_provider=sp,
-                              adapters={ClaimKind.SESSION: Sessions(session_storage=None)},
-                              work_priority_enabled=enabled)
+                              adapters={ClaimKind.SESSION: Sessions(session_storage=None)})
 
 
 async def test_two_claimers_skip_locked_and_expired_candidates_without_duplicate_ownership(pg_storage):
@@ -90,52 +88,6 @@ async def test_serialized_arm_reads_after_waiting_for_older_arm(pg_storage):
         await seed.cleanup()
 
 
-async def test_bounded_backfill_resumes_and_does_not_rewrite_deadlines_or_retry_state(pg_storage):
-    seed = EntitySeeder(pg_storage)
-    engine = queue(pg_storage, enabled=False)
-    try:
-        for name, data in (("a", {"priority": 8}), ("b", {}), ("c", {"priority": 2})):
-            await seed.seed("sessions", [name], data)
-            await engine.upsert(ClaimKind.SESSION, name, next_attempt_at=datetime.now(UTC)+timedelta(hours=1))
-        async with pg_storage.pool.acquire() as conn:
-            before = await conn.fetch(f"SELECT entity_id,next_attempt_at,attempt_count,memory_occurrence FROM {pg_storage.leases_table} ORDER BY entity_id")
-        cursor = await backfill_priority_batch(pg_storage, engine._adapters, limit=1)
-        assert cursor == ("session", "a")
-        # The second row fails after the first row was updated. The whole
-        # page must roll back, and its original input cursor remains usable.
-        await seed.seed("sessions", ["b"], {"priority": 5})
-        await seed.seed("sessions", ["c"], {"priority": "2"})
-        with pytest.raises(asyncpg.NotNullViolationError):
-            await backfill_priority_batch(pg_storage, engine._adapters, after=cursor, limit=2)
-        async with pg_storage.pool.acquire() as conn:
-            assert await conn.fetchval(f"SELECT work_priority FROM {pg_storage.leases_table} WHERE entity_id='b'") == 0
-        await seed.seed("sessions", ["b"], {})
-        await seed.seed("sessions", ["c"], {"priority": 2})
-        cursor = await backfill_priority_batch(pg_storage, engine._adapters, after=cursor, limit=1)
-        assert cursor == ("session", "b")
-        cursor = await backfill_priority_batch(pg_storage, engine._adapters, after=cursor, limit=1)
-        assert await backfill_priority_batch(pg_storage, engine._adapters, after=cursor, limit=1) is None
-        await prepare_priority_indexes(pg_storage)
-        await prepare_priority_indexes(pg_storage)
-        async with pg_storage.pool.acquire() as conn:
-            after = await conn.fetch(f"SELECT entity_id,next_attempt_at,attempt_count,memory_occurrence FROM {pg_storage.leases_table} ORDER BY entity_id")
-            assert before == after
-            assert await conn.fetchval(f"SELECT array_agg(work_priority ORDER BY entity_id) FROM {pg_storage.leases_table}") == [8, 0, 2]
-            indexes = await conn.fetch(
-                "SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
-                "WHERE i.indrelid=$1::regclass", pg_storage.leases_table,
-            )
-            validity = {r["relname"]: r["indisvalid"] for r in indexes}
-            for name in ("leases_work_priority_unclaimed_v1", "leases_work_priority_expired_v1",
-                         "leases_unclaimed_by_kind", "leases_expiry_by_kind"):
-                assert validity[name] is True
-            await conn.execute(f"UPDATE {pg_storage.leases_table} SET claimed_by='old-worker' WHERE entity_id='a'")
-        with pytest.raises(ValueError, match="drained"):
-            await backfill_priority_batch(pg_storage, engine._adapters)
-    finally:
-        await seed.cleanup()
-
-
 async def test_missing_and_malformed_priority_cannot_be_armed(pg_storage):
     seed = EntitySeeder(pg_storage)
     engine = queue(pg_storage)
@@ -166,8 +118,7 @@ async def test_memory_projection_priority_survives_old_claim_release(pg_storage)
                     expires_at=now+timedelta(days=1), incarnation_id="inc", occurrence_id="old",
                     requested_due_at=now-timedelta(seconds=1), priority=80)
     engine = PostgresClaimEngine(storage_provider=pg_storage,
-                                adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=store)},
-                                work_priority_enabled=True)
+                                 adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=store)})
     await store.create(job)
     try:
         await arm_current(pg_storage, engine, job.id)
@@ -185,7 +136,7 @@ async def test_memory_projection_priority_survives_old_claim_release(pg_storage)
 
 
 async def test_empty_priority_query_binds_ceiling_and_returns_no_claims(pg_storage):
-    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters={}, work_priority_enabled=True)
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters={})
     assert await engine.claim_due("worker", max_count=1, max_work_priority=0) == []
 
 
@@ -194,7 +145,7 @@ async def test_parent_snapshot_and_cross_kind_order_ignore_task_priority(pg_stor
 
     seed = EntitySeeder(pg_storage)
     engine = PostgresClaimEngine(
-        storage_provider=pg_storage, work_priority_enabled=True,
+        storage_provider=pg_storage,
         adapters={ClaimKind.SESSION: Sessions(session_storage=None),
                   ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=None)},
     )
@@ -250,3 +201,47 @@ async def test_additive_upgrade_preserves_legacy_lease_and_old_writer_defaults(p
                 await conn.execute(f"UPDATE {table} SET work_priority=$1 WHERE entity_id='old-insert'", bad)
         with pytest.raises(asyncpg.NotNullViolationError):
             await conn.execute(f"UPDATE {table} SET work_priority=NULL WHERE entity_id='old-insert'")
+
+
+async def _assert_leases_indexes_valid(pg_storage, names) -> None:
+    async with pg_storage.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
+            "WHERE i.indrelid=$1::regclass", pg_storage.leases_table,
+        )
+    validity = {r["relname"]: r["indisvalid"] for r in rows}
+    for name in names:
+        assert validity.get(name) is True, name
+
+
+async def test_boot_creates_the_priority_indexes_on_an_upgraded_lease_table(pg_storage):
+    # The priority-ordered claim needs both branch indexes. Emulate the layout
+    # that predates them (no work_priority column at all), then run the real
+    # boot ensure: it must add the column and create the indexes idempotently,
+    # and keep the branch-filter indexes the expired branch still needs.
+    table = pg_storage.leases_table
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(f"ALTER TABLE {table} DROP COLUMN work_priority")
+    await pg_storage.aclose()
+    await pg_storage.initialize()
+    await _assert_leases_indexes_valid(
+        pg_storage,
+        ("leases_work_priority_unclaimed_v1", "leases_work_priority_expired_v1",
+         "leases_unclaimed_by_kind", "leases_expiry_by_kind"),
+    )
+
+
+async def test_boot_recreates_dropped_priority_indexes_on_reinitialization(pg_storage):
+    # A fresh database gets the same two indexes on its first boot; a database
+    # that has them and loses them (manual maintenance) gets them back on the
+    # next boot instead of needing an explicit offline preparation.
+    async with pg_storage.pool.acquire() as conn:
+        for name in ("leases_work_priority_unclaimed_v1", "leases_work_priority_expired_v1"):
+            await conn.execute(f'DROP INDEX IF EXISTS "{pg_storage.schema}"."{name}"')
+    await pg_storage.aclose()
+    await pg_storage.initialize()
+    await _assert_leases_indexes_valid(
+        pg_storage,
+        ("leases_work_priority_unclaimed_v1", "leases_work_priority_expired_v1",
+         "leases_unclaimed_by_kind", "leases_expiry_by_kind"),
+    )

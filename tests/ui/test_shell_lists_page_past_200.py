@@ -199,6 +199,71 @@ def test_an_open_workspace_with_more_sessions_than_the_window_says_so(rail):
     assert rail.eval("textOf(MR.find('nv-rail-ws-more:w-0'))") == "Showing the newest 200 of 250 sessions."
 
 
+def test_only_the_focused_open_workspace_polls_its_own_sessions(rail):
+    """Review 8.11: every open workspace row used to poll its own /sessions/find every 5 s. Now the focused one does; another open one reads once."""
+    rail.eval('MR.mount(NV_Rail, { selectedWorkspaceId: "w-0" });')
+    settle(rail)
+    rail.eval("MR.click('nv-rail-ws:w-0'); MR.click('nv-rail-ws:w-1'); MR.rerender({ selectedWorkspaceId: 'w-0' });")
+    settle(rail)
+    calls = js(rail, "CALLS")
+    assert "POST /sessions/find w-0" in calls and "POST /sessions/find w-1" in calls, "both open rows list their sessions"
+    # The 5 s timers pending: the install-wide feed and the focused workspace's list; the other open workspace has none.
+    assert js(rail, "TIMERS.filter(function (t) { return t.ms === 5000; }).length") == 2
+    # Its rows still show (merged with the feed, older than the feed's oldest), and the unfocused list is not re-read when the timers fire.
+    assert js(rail, "ids('nv-rail-ws-session:').filter(function (i) { return Number(i.slice(2)) >= 250; }).length") == 100
+    rail.eval("var before = CALLS.filter(function (c) { return c === 'POST /sessions/find w-1'; }).length;"
+              "TIMERS.slice().forEach(function (t) { if (t.ms === 5000) t.fn(); });")
+    settle(rail)
+    assert js(rail, "CALLS.filter(function (c) { return c === 'POST /sessions/find w-1'; }).length") == js(rail, "before")
+
+
+def test_a_whole_install_feed_lists_an_open_workspace_with_no_request_of_its_own(rail):
+    """Under 200 sessions the install-wide feed holds every session: an open workspace not in focus lists its rows from it."""
+    rail.eval("SESSIONS = SESSIONS.slice(0, 120).map(function (s, i) { s.workspace_id = i < 60 ? 'w-0' : 'w-1'; return s; });")
+    rail.eval('MR.mount(NV_Rail, { selectedWorkspaceId: "w-0" });')
+    settle(rail)
+    rail.eval("MR.click('nv-rail-ws:w-1'); MR.rerender({ selectedWorkspaceId: 'w-0' });")
+    settle(rail)
+    assert js(rail, "ids('nv-rail-ws-session:')") == [f"s-{k}" for k in range(60, 120)]
+    assert "POST /sessions/find w-1" not in js(rail, "CALLS")
+
+
+def test_wsrows_merges_the_feed_with_an_unfocused_reads_older_rows(rail):
+    rows = js(rail, """NV_Rail_wsRows(
+        [{ session_id: 'n2', created_at: '2026-10-24T10:00' }, { session_id: 'n1', created_at: '2026-10-24T09:00' }],
+        [{ session_id: 'n2' }, { session_id: 'gone', created_at: '2026-10-24T09:30' },
+         { session_id: 'n1' }, { session_id: 'o1', created_at: '2026-10-24T08:00' }, { session_id: 'o0', created_at: '2026-10-24T07:00' }],
+        false, true, '2026-10-24T08:30')""")
+    # 'gone' is newer than the feed's oldest row yet not in the feed: deleted since the read, so it is dropped.
+    assert [r["session_id"] for r in rows] == ["n2", "n1", "o1", "o0"]
+
+
+def test_the_rail_says_its_lists_may_be_stale_after_three_failed_reads(rail):
+    """Review 8.1: a plain outage froze the rail's sessions with no sign; three failed reads in a row of a list already shown say so, and one success clears it."""
+    rail.eval("""
+    var FAIL_FIND = false; var __orig = window.primerApi.apiFetch;
+    window.primerApi.apiFetch = function (m, p, b) {
+      if (FAIL_FIND && p === '/sessions/find') return Promise.reject(new window.primerApi.ApiError({ status: 503, title: 'Service Unavailable' }));
+      return __orig(m, p, b);
+    };
+    function pollFeed() { var t = TIMERS.filter(function (x) { return x.ms >= 5000; });
+      t.forEach(function (x) { TIMERS = TIMERS.filter(function (y) { return y.id !== x.id; }); x.fn(); }); }
+    """)
+    rail.eval('MR.mount(NV_Rail, { selectedWorkspaceId: "w-0" });')
+    settle(rail)
+    assert js(rail, "MR.find('nv-rail-stale')") is None
+    rail.eval("FAIL_FIND = true;")
+    for _ in range(4):
+        rail.eval("pollFeed();")
+        settle(rail)
+    assert rail.eval("!!MR.find('nv-rail-stale')"), "three failed reads in a row: the note"
+    rail.eval("FAIL_FIND = false;")
+    for _ in range(4):
+        rail.eval("pollFeed();")
+        settle(rail)
+    assert js(rail, "MR.find('nv-rail-stale')") is None, "a read that succeeds clears it"
+
+
 # ---- the palette ----------------------------------------------------------------------------------------------------------------------------------------
 
 

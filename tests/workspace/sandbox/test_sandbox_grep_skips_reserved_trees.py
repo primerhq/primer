@@ -1,4 +1,8 @@
-"""W55e: a sandbox grep walk skips the reserved trees (.state, .tmp): no read RPC for their files."""
+"""W55e: a sandbox grep skips the reserved trees (.state, .tmp): on the 1.8
+search path the walk happens inside the sandbox op (zero read round-trips at
+all, reserved or not); on the legacy walk (a pre-1.8 runtime) no read RPC
+for a reserved file.
+"""
 
 from __future__ import annotations
 
@@ -42,6 +46,10 @@ async def test_walk_reads_no_reserved_file(tmp_path: Path) -> None:
     sb = _CountingSandbox(tmp_path)
     res = await SandboxGrep(sb, workspace_root="/workspace").execute(GrepArgs(pattern="TODO"), _CTX)
     assert res.output == "src/a.py"
+    # The 1.8 search path (FakeSandbox has the op) walks inside the sandbox and
+    # reads each candidate through the read seam: only the one candidate outside
+    # the reserved trees is read - the .state git objects and the .tmp file
+    # never are.
     assert sb.reads == ["/workspace/src/a.py"]
 
 

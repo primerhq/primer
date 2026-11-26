@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from primer.int.vector_store import VectorStore
 from primer.knowledge.collection_query import query_collection
 from primer.knowledge.system_collection import (
     SYSTEM_COLLECTION_ID,
@@ -629,13 +630,23 @@ async def test_generated_providers_feed_the_durable_reference_pages(sp, wiki, fa
     assert "- Origin:" not in curated.body
 
 
-class _VectorStore:
+class _VectorStore(VectorStore):
     """A vector store that keeps every placed record and returns them all (constant fake
     embeddings make every document equally similar, so a hit is a membership check over
     what the indexing pass actually wrote)."""
 
     def __init__(self) -> None:
         self.records: list = []
+
+    async def get(self, collection_id, document_id):
+        return [r for r in self.records
+                if r.collection_id == collection_id and r.document_id == document_id]
+
+    async def count_documents(self, collection_id):
+        return len({r.document_id for r in self.records if r.collection_id == collection_id})
+
+    async def drop_collection(self, collection_id):
+        self.records = [r for r in self.records if r.collection_id != collection_id]
 
     async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
         pass

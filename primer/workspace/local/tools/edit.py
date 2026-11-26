@@ -14,7 +14,10 @@ from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
-from primer.workspace.local.tools._common import resolve_workspace_path
+from primer.workspace.local.tools._common import (
+    inside_git_dir,
+    resolve_workspace_path,
+)
 
 
 class EditArgs(BaseModel):
@@ -70,6 +73,7 @@ class Edit(WorkspaceTool):
         *,
         locks: WorkspaceLockTable | None = None,
         strict: bool = False,
+        git_dir: str = ".state/.git",
     ) -> None:
         """Construct.
 
@@ -78,10 +82,15 @@ class Edit(WorkspaceTool):
         final write is atomic (temp file + os.replace), so a concurrent
         reader never sees a torn buffer and a same-dir writer / exec
         serializes. ``strict`` collapses the scope key to the workspace root.
+        ``git_dir`` -- the workspace's git-internals directory
+        (root-relative) whose files this tool refuses to edit; defaults to
+        ``.state/.git``, the platform default. :meth:`LocalWorkspace
+        .materialise` passes the materialised template's own state path.
         """
         self._root = Path(workspace_root)
         self._locks = locks
         self._strict = strict
+        self._git_dir = git_dir
 
     def parameters(self) -> type[BaseModel]:
         return EditArgs
@@ -100,6 +109,18 @@ class Edit(WorkspaceTool):
         if not args.old_string:   # "" matches between every character
             raise BadRequestError("old_string must not be empty")
         target = resolve_workspace_path(self._root, args.path)
+
+        # The git-internals directory holds primer's own git repo: a file
+        # planted there (a git hook, a clobbered config) is executed or
+        # parsed by the API process on a later commit. Only THIS directory
+        # is refused -- the rest of the .state tree and .tmp are
+        # agent-writable by design.
+        if inside_git_dir(self._root, self._git_dir, target):
+            raise BadRequestError(
+                f"refusing to edit inside the git directory "
+                f"{self._git_dir!r}: {args.path!r}"
+            )
+
         if not target.exists():
             raise NotFoundError(f"{args.path!r} not found")
         if not target.is_file():

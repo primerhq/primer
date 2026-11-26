@@ -152,6 +152,99 @@ class WSSandbox(Sandbox):
     async def read_file(self, path: str) -> bytes:
         return await self._client.read_file(self._resolve(path))
 
+    @property
+    def supports_range_read(self) -> bool:
+        """Whether :meth:`read_file_range` is bounded on the wire (a runtime at protocol 1.8 or later).
+
+        Below 1.8 the runtime ignores ``limit`` and sends the whole file (or everything from the offset), so paging
+        a big file through it would download it once per page; the sandbox ``read`` tool reads such a file whole,
+        once, instead. Known after the first successful hello.
+        """
+        return self._client._runtime_has((1, 8))
+
+    async def read_file_range(self, path: str, offset: int, limit: int) -> bytes:
+        """The ``[offset, offset + limit)`` byte window of *path*.
+
+        The sandbox ``read`` tool uses this to serve any line window of any
+        file with bounded memory (the runtime's ``read_file(limit)`` keeps
+        each frame small, so a big file cannot drop the connection; review
+        2026-11-23, 5.12). A missing file is an ENOENT RuntimeError.
+        """
+        return await self._client.read_file(self._resolve(path), offset=offset, limit=limit)
+
+    async def walk(
+        self,
+        path: str,
+        *,
+        max_entries: int = 25000,
+        timeout_s: float = 30.0,
+    ) -> tuple[list[dict], bool]:
+        """One recursive, capped walk in the runtime (protocol 1.8)."""
+        return await self._client.walk(
+            self._resolve(path), max_entries=max_entries, timeout_s=timeout_s
+        )
+
+    async def search(
+        self,
+        path: str,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        output_mode: str = "files_with_matches",
+        context: int = 0,
+        multiline: bool = False,
+        case_insensitive: bool = False,
+        skip: tuple[str, ...] = (),
+        max_files: int = 2000,
+        max_file_bytes: int = 1 << 20,
+        max_matches: int = 5000,
+        head_limit: int | None = None,
+        max_output_bytes: int | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        """One recursive regex search in the runtime (protocol 1.8).
+
+        The runtime matches with the ``regex`` library under a per-line
+        timeout; output paths are relative to the workspace root and the
+        lines are bounded in the runtime by *head_limit* and
+        *max_output_bytes*.
+        """
+        return await self._client.search(
+            self._resolve(path),
+            pattern,
+            glob=glob,
+            output_mode=output_mode,
+            context=context,
+            multiline=multiline,
+            case_insensitive=case_insensitive,
+            skip=skip,
+            max_files=max_files,
+            max_file_bytes=max_file_bytes,
+            max_matches=max_matches,
+            head_limit=head_limit,
+            max_output_bytes=max_output_bytes,
+            timeout_s=timeout_s,
+        )
+
+    async def write_file_cas(
+        self,
+        path: str,
+        expected: bytes,
+        content: bytes,
+        *,
+        mode: int | None = None,
+    ) -> bool:
+        """Compare-and-swap write in the runtime (protocol 1.8).
+
+        ``True`` when the file's current bytes equaled *expected* (and were
+        replaced by *content*); ``False`` when they did not (the file is
+        untouched). The sandbox ``edit`` tool uses this to make its
+        read-modify-write atomic (review 2026-11-23, 5.9).
+        """
+        return await self._client.write_file_cas(
+            self._resolve(path), expected, content, mode=mode
+        )
+
     async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
         return await self._client.capture_service_bundle(path, reserved)
 

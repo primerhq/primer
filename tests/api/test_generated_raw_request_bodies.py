@@ -102,6 +102,40 @@ async def test_generated_webhook_preserves_signed_bytes_and_query(app, fake_stor
     assert len(fake_storage_provider.get_storage(WebhookDelivery)._data) == 1
 
 
+async def test_generated_webhook_timestamp_argument_reaches_the_header(app, fake_storage_provider):
+    """Round 1 M6: the generated tool's `timestamp` argument must reach the
+    X-Primer-Timestamp header end to end. The trigger below requires the
+    timestamped scheme, so a dropped header cannot be papered over by the
+    legacy body-only fallback - it would answer 401."""
+    import hashlib
+    import hmac
+    import time
+
+    from pydantic import SecretStr
+
+    from primer.model.trigger import WebhookTriggerConfig
+    from primer.trigger.service import ServiceDeps, create_trigger
+
+    secret = "raw-ts-secret"
+    trigger = await create_trigger(
+        slug="raw-ts", name="WH TS", description=None,
+        config=WebhookTriggerConfig(hmac_secret=SecretStr(secret)), enabled=True,
+        deps=ServiceDeps(storage_provider=fake_storage_provider),
+    )
+    assert trigger.config.legacy_body_hmac is False
+    body = b'{"x": 1}'
+    ts = str(int(time.time()))
+    sig = "sha256=" + hmac.new(
+        secret.encode(), f"{ts}\n".encode() + body, hashlib.sha256,
+    ).hexdigest()
+    args = {"token": trigger.config.token, "body": base64.b64encode(body).decode(),
+            "signature": sig, "timestamp": ts}
+    payload = _output(await _call(app, "webhooks__receive_webhook", args))
+    assert payload["status"] == "accepted"
+    row = await fake_storage_provider.get_storage(WebhookDelivery).get(payload["delivery_id"])
+    assert row is not None and row.extra_context["webhook_body"] == body.decode()
+
+
 async def test_generated_webhook_unsigned_binary_and_limits(app, fake_storage_provider):
     from primer.model.except_ import ConfigError
 

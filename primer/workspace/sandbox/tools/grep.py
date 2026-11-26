@@ -1,13 +1,21 @@
 """``grep`` for the sandbox backend.
 
-Walks the sandbox directory tree via :class:`Sandbox.list_dir`, reads
-files via :class:`Sandbox.read_file`, applies the regex in Python.
-Slower than ``rg`` shelled into the container but fully portable.
+For a directory target the search runs as ONE recursive ``search`` op in the
+sandbox (protocol 1.8): one round-trip instead of one walk plus one
+``read_file`` per file, matched in the runtime with the ``regex`` library
+under a per-line timeout, under a file cap, a per-file size cap, a match cap,
+an output byte cap and a deadline (review 2026-11-23, 5.11). Unlike the local
+grep these caps exist, so a result that hit one says so in its text (the
+agent must know what was not searched). A single-file target, a sandbox
+without ``search``, or a runtime that answers EUNSUPPORTED (older than 1.8)
+falls back to the legacy per-file walk, which walks via
+:class:`Sandbox.list_dir`, reads files via :class:`Sandbox.read_file` and
+applies the bounded ``regex`` pattern in Python.
 
 The pattern is bounded exactly as on the local backend (G6-4): the same
-compile, the same per-call budget and per-search bound, and each file is
-matched on the user-regex bulk executor with the GIL released, never inside the
-coroutine.
+compile, the same per-call budget and per-search bound (the legacy path
+matches each file on the user-regex bulk executor with the GIL released,
+never inside the coroutine).
 """
 
 from __future__ import annotations
@@ -42,6 +50,46 @@ _BINARY_SNIFF_BYTES = 1024
 # A runtime read refused for the entry itself (a symlinked directory the runtime lists as a file, a file gone since
 # the walk): the entry is skipped. Any other runtime failure still fails the call.
 _UNREADABLE = frozenset({ErrorCode.ENOENT, ErrorCode.EACCES, ErrorCode.EISDIR, ErrorCode.ENOTDIR})
+
+
+# The caps the search runs under (sent explicitly so the notes below state exactly what applied).
+_MAX_FILES = 2000
+_MAX_FILE_BYTES = 1 << 20
+_MAX_MATCHES = 5000
+_OUTPUT_BYTES = 1 << 20
+_DEADLINE_S = 30.0
+_LINE_TIMEOUT_S = 2.0  # mirrors the runtime's per-line match bound
+
+
+def _stop_notes(result: dict, glob: str | None = None) -> list[str]:
+    """One ``[note: ...]`` line per cap the runtime's search hit: what was NOT searched or shown."""
+    notes: list[str] = []
+    for reason in result.get("stop_reasons") or ([result["stop_reason"]] if result.get("stop_reason") else []):
+        if reason == "size_cap":
+            skipped = int(result.get("skipped_large", 0))
+            notes.append(
+                f"{skipped} file(s) larger than {_MAX_FILE_BYTES} bytes were skipped and not searched"
+            )
+        elif reason == "file_cap":
+            which = f"files matching {glob!r}" if glob else "files"
+            notes.append(
+                f"only the first {_MAX_FILES} {which} (breadth-first, shallow directories first) "
+                "were searched; search a narrower path"
+            )
+        elif reason == "match_cap":
+            notes.append(f"search stopped after {_MAX_MATCHES} matches; results are partial")
+        elif reason == "time_cap":
+            notes.append(f"search stopped at its {_DEADLINE_S:g} s deadline; results are partial")
+        elif reason == "regex_timeout":
+            notes.append(
+                f"a line took longer than {_LINE_TIMEOUT_S:g} s to match (the pattern backtracks; "
+                "simplify it); search stopped, results are partial"
+            )
+        elif reason == "output_cap":
+            notes.append(f"output cut at {_OUTPUT_BYTES} bytes; narrow the search")
+        else:
+            notes.append(f"search stopped early ({reason}); results are partial")
+    return notes
 
 
 class SandboxGrep(WorkspaceTool):
@@ -93,6 +141,68 @@ class SandboxGrep(WorkspaceTool):
         if info is None:
             raise NotFoundError(f"{args.path!r} not found")
 
+        # The same bounded compile the local backend applies (a bad pattern
+        # is a BadRequestError before anything is walked).
+        compile_grep_pattern(args)
+
+        result: dict | None = None
+        if info.kind == "dir":
+            search = getattr(self._sandbox, "search", None)
+            if search is not None:
+                # One recursive search in the sandbox (protocol 1.8) with a
+                # file/size/match/output/time cap (review 2026-11-23, 5.11).
+                # The reserved trees are skipped unless the search starts
+                # inside one, as the legacy walk does. A runtime that answers
+                # EUNSUPPORTED (an older image) falls back to the legacy
+                # walk below.
+                inside = reserved_tree(
+                    workspace_relative(self._root, target_abs), self._reserved
+                )
+                try:
+                    result = await search(
+                        target_abs,
+                        args.pattern,
+                        glob=args.glob,
+                        output_mode=args.output_mode,
+                        context=args.context,
+                        multiline=args.multiline,
+                        case_insensitive=args.case_insensitive,
+                        skip=() if inside else self._reserved,
+                        max_files=_MAX_FILES,
+                        max_file_bytes=_MAX_FILE_BYTES,
+                        max_matches=_MAX_MATCHES,
+                        head_limit=args.head_limit,
+                        max_output_bytes=_OUTPUT_BYTES,
+                        timeout_s=_DEADLINE_S,
+                    )
+                except RuntimeOpError as exc:
+                    if exc.code != ErrorCode.EUNSUPPORTED:
+                        raise
+                    result = None
+        if result is not None:
+            out_lines: list[str] = list(result.get("lines") or [])
+            truncated = bool(result.get("truncated", False))
+            if args.head_limit is not None and len(out_lines) > args.head_limit:
+                out_lines = out_lines[: args.head_limit]
+                truncated = True
+            # Same match_count/file_count/truncated metadata as the local
+            # backend's grep.py, so a "searched N files" chip reads
+            # identically regardless of which workspace backend ran the
+            # call (truncated also covers the sandbox caps).
+            notes = _stop_notes(result, args.glob)
+            output = "\n".join(out_lines + [f"[note: {n}]" for n in notes])
+            return ToolResult(
+                output=output,
+                truncated=truncated,
+                metadata={
+                    "match_count": int(result.get("match_count", 0)),
+                    "file_count": int(result.get("file_count", 0)),
+                    "truncated": truncated,
+                },
+            )
+
+        # Legacy per-file walk: a single-file target, a pattern the runtime
+        # cannot compile (regex-engine only), or a sandbox without search.
         rx = compile_grep_pattern(args)
 
         files: list[str] = []

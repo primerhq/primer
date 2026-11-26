@@ -44,6 +44,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic_core import to_jsonable_python
+
 from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph._node_identity import current_toolcall_id
@@ -205,6 +207,9 @@ provider_registry: Any | None = None,
         # batched commit message keeps per-node attribution.
         self._pending_node_writes: dict[str, str] = {}
         self._pending_node_turn_tags: list[str] = []
+        # The body of the last state.json this executor committed: a cut save
+        # (_save_cancelled) re-commits it marked cancelled (lane K2 round 1).
+        self._last_saved_payload: dict[str, Any] | None = None
 
         # Turn-log writers: bypass the git-backed state_repo.commit
         # path and write directly to .state/graphs/<gsid>/turns.jsonl
@@ -683,18 +688,25 @@ provider_registry: Any | None = None,
         self._pending_node_writes[rel_path] = appended
         self._pending_node_turn_tags.append(f"{node_id}#{iteration}")
 
-    async def _save_state(
+    def _state_payload(
         self,
         *,
         iteration: int,
         node_states: dict[str, NodeRuntimeState],
         status: SessionStatus,
-        ended_reason: str | None = None,
-        ended_detail: str | None = None,
-    ) -> None:
-        """Write graph-level state.json AND git-commit it."""
-        rel_state = self._state_rel("state.json")
-        payload = {
+        ended_reason: str | None,
+        ended_detail: str | None,
+    ) -> dict[str, Any]:
+        """The ``state.json`` body: the run's state at this commit, and everything a reclaim needs to continue it.
+
+        Review 2026-11-23 6.2 and lane K2 round 1: ``run_id`` (whose run this is; a resume
+        requires it to match), ``ready_set`` (what runs next, at ``iteration``), the settled
+        nodes' outputs (history stripped), the initial input, the fan-out bookkeeping and the
+        loop's sticky flags. ``self._context`` is the object the superstep loop mutates, so it
+        is current at every save site.
+        """
+        payload: dict[str, Any] = {
+            "run_id": self._run_id,
             "iteration": iteration,
             "status": status.value,
             "ended_reason": ended_reason,
@@ -710,7 +722,62 @@ provider_registry: Any | None = None,
                 }
                 for nid, ns in node_states.items()
             },
+            "ready_set": sorted(self._ready_set),
         }
+        ctx = self._context
+        if ctx is not None:
+            raw_input = ctx.initial_input
+            if isinstance(raw_input, list) and raw_input and all(
+                isinstance(m, Message) for m in raw_input
+            ):
+                payload["initial_input"] = [
+                    m.model_dump(mode="json") for m in raw_input
+                ]
+                payload["initial_input_kind"] = "messages"
+            else:
+                payload["initial_input"] = to_jsonable_python(raw_input)
+                payload["initial_input_kind"] = "value"
+            payload["outputs"] = self._persistable_outputs(ctx.nodes)
+        payload.update(self._fanout_bookkeeping())
+        payload["max_iter_routed"] = self._max_iter_routed
+        payload["pending_ended_reason"] = self._pending_ended_reason
+        payload["pending_ended_detail"] = self._pending_ended_detail
+        return payload
+
+    async def _save_state(
+        self,
+        *,
+        iteration: int,
+        node_states: dict[str, NodeRuntimeState],
+        status: SessionStatus,
+        ended_reason: str | None = None,
+        ended_detail: str | None = None,
+    ) -> None:
+        """Write graph-level state.json AND git-commit it.
+
+        A cut save (``_save_cancelled``) commits the run as of its last
+        commit, marked ENDED/cancelled, and none of the cut superstep's
+        buffered node turns: what a hard crash at the same point leaves,
+        so a reclaim re-runs the cut superstep whole (lane K2 round 1).
+        """
+        rel_state = self._state_rel("state.json")
+        cut = self._saving_cut
+        if cut and self._last_saved_payload is not None:
+            payload = {
+                **self._last_saved_payload,
+                "status": status.value,
+                "ended_reason": ended_reason,
+                "ended_detail": ended_detail,
+            }
+            iteration = payload["iteration"]
+        else:
+            payload = self._state_payload(
+                iteration=iteration,
+                node_states=node_states,
+                status=status,
+                ended_reason=ended_reason,
+                ended_detail=ended_detail,
+            )
         body = json.dumps(payload, indent=2)
         trailers = {
             _TRAILER_GRAPH: self._graph_session_id,
@@ -728,7 +795,11 @@ provider_registry: Any | None = None,
             f"graph {self._graph_session_id}: state @ iter {iteration} "
             f"({status.value})"
         )
-        if self._pending_node_writes:
+        # 6.2: a cut save commits none of this superstep's buffered node
+        # turns: the reclaimed turn re-runs the cut superstep, so a cut
+        # turn's messages must not land in its messages.jsonl for the re-run
+        # to read back.
+        if self._pending_node_writes and not cut:
             files.update(self._pending_node_writes)
             trailers["X-Primer-Graph-Node-Turns"] = ",".join(
                 self._pending_node_turn_tags
@@ -741,6 +812,8 @@ provider_registry: Any | None = None,
         )
         self._pending_node_writes = {}
         self._pending_node_turn_tags = []
+        if not cut:
+            self._last_saved_payload = payload
 
         # Mirror the agent executor: when the graph reaches its terminal
         # ENDED save, transition the on-disk session holder slot to ENDED
@@ -889,6 +962,15 @@ provider_registry: Any | None = None,
         if data is None:
             return None
         return json.loads(data.decode("utf-8"))
+
+    async def _load_persisted_state(self) -> dict | None:
+        """The base invoke's reclaim-resume read (review 2026-11-23, 6.2): this state subtree's
+        ``state.json`` when THIS run wrote it (its ``run_id`` is the executor's), else ``None``
+        and the run starts fresh (lane K2 round 1)."""
+        state = await self.load_state()
+        if state is None or state.get("run_id") != self._run_id:
+            return None
+        return state
 
     async def write_graph_binding(self) -> None:
         """Snapshot the graph definition under ``<state_root>/graph.json``.

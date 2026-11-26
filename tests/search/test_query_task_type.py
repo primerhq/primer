@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.embedder._prompts import select_prompt
+from primer.int.vector_store import VectorStore
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig, Document
 from primer.model.embedding import EmbedResponse, Embedding
 from primer.model.provider import SqliteConfig
@@ -86,7 +87,7 @@ async def test_documents_are_still_embedded_as_documents():
         async def get(self, document_id):
             return "hello world"
 
-    class _Store:
+    class _Store(VectorStore):
         async def create_collection(self, cid, *, dimensions, distance="cosine"):
             pass
 
@@ -97,6 +98,21 @@ async def test_documents_are_still_embedded_as_documents():
             pass
 
         async def put_many(self, rs):
+            pass
+
+        async def get(self, cid, did):
+            return []
+
+        async def search_by_meta(self, cid, meta):
+            return []
+
+        async def search(self, cid, vector, k):
+            return []
+
+        async def count_documents(self, cid):
+            return 0
+
+        async def drop_collection(self, cid):
             pass
 
     emb = _RecEmb()

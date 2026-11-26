@@ -38,7 +38,7 @@ from primer.bus.scheduler_tasks import (
     _find_due_timer_keys,
     _find_expired_non_timer_keys,
 )
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler
 from primer.storage.sqlite import SqliteStorageProvider
 
 
@@ -113,19 +113,13 @@ async def harness(tmp_path: Path):
 
 
 async def _seed_parked(storage, scheduler, sess: WorkspaceSession) -> None:
-    """Seed a parked session into storage (primary source) and the
-    scheduler's lease dict (so the claim engine can re-arm on resume).
+    """Seed a parked session into storage (the primary source; the resume
+    event re-arms the claim lease, not the scheduler).
 
-    TimerScheduler and TimeoutSweeper now read from storage, not from
-    scheduler._sessions.
+    TimerScheduler and TimeoutSweeper read from storage, not from the
+    scheduler's in-memory state.
     """
     await storage.create(sess)
-    scheduler._leases[sess.id] = _LeaseState(
-        worker_id=None,
-        expires_at=None,
-        runnable=False,
-        next_attempt_at=datetime.now(timezone.utc),
-    )
 
 
 @pytest.mark.asyncio

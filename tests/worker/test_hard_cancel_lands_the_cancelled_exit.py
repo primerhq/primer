@@ -3,7 +3,8 @@
 ``tests/session/test_hard_cancel_lands_the_cancelled_exit.py`` pins the dispatch half with the task cancelled by hand. This runs
 ``WorkerPool._run_engine`` -> ``_run_engine_session`` -> the real ``run_one_session_turn`` over a real workspace, and delivers the
 cancel the way ``_cancel_loop`` / the row reconciler do (``scope.cancel_once``), so what the POOL does with the outcome is under
-test too: the lease is released as a success, the pool's own convergence (``_end_session``) does not run a second time, and the
+test too: the lease is released as a success, the pool's own convergence (the full cancelled terminal of ``_end_cancelled_at_claim``,
+the bare ``_end_session`` write before review 2026-11-23, K1 round 2) does not run a second time, and the
 terminal event and the cancelled metric happen exactly once.
 
 The exit returns its outcome instead of re-raising the ``CancelledError``, on purpose: ``_finish_despite_cancel`` documents (and
@@ -62,7 +63,7 @@ class _BlocksInTheModelCall:
         await asyncio.Event().wait()
 
 
-async def _run_a_cancelled_turn(tmp_path, *, during_the_landing=None):
+async def _run_a_cancelled_turn(tmp_path, *, during_the_landing=None, sessions_hook=None):
     """Run one turn under the real pool until it blocks, flag the Cancel on the row, hard-cancel the scope once, and wait for the
     pool to finish. Returns what the assertions need."""
     backend, workspace, workspace_session = await open_session(tmp_path)
@@ -105,6 +106,8 @@ async def _run_a_cancelled_turn(tmp_path, *, during_the_landing=None):
         assert scope is not None, "the cancel scope must be registered while the turn is in flight"
         if during_the_landing is not None:
             during_the_landing(scope)
+        if sessions_hook is not None:
+            sessions_hook(sessions)
         row = await sessions.get(sid)
         row.cancel_requested = True
         await sessions.update(row)
@@ -179,9 +182,10 @@ async def test_a_second_hard_cancel_during_the_landing_does_not_cut_it(tmp_path)
 
 
 async def test_a_lost_lease_preempt_of_a_flagged_row_is_left_to_the_pools_convergence(tmp_path) -> None:
-    """The heartbeat's lost-lease verdict (``scope.cancel("preempted")``) on a row the user flagged: the dispatch must NOT land the
-    exit (another worker may own the session), so the pool converges the row exactly as it always did: ENDED/cancelled by
-    ``_end_session``, with no CANCELLED record and no terminal event from this worker's dispatch."""
+    """The heartbeat's lost-lease verdict (``scope.cancel("preempted")``) on a row the user flagged: the dispatch must NOT land
+    the exit (another worker may own the session), so the pool converges the row with the full cancelled terminal the
+    claim-time exit takes (review 2026-11-23, K1 round 2): ENDED/cancelled, the CANCELLED record and exactly one terminal
+    event - all written by the POOL's convergence, not by the turn, which re-raised without landing anything."""
     from primer.model.yield_ import CANCEL_REASON_PREEMPTED
 
     def lose_the_lease_instead(scope) -> None:
@@ -197,5 +201,55 @@ async def test_a_lost_lease_preempt_of_a_flagged_row_is_left_to_the_pools_conver
     row = run["row"]
     assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled", "the pool's convergence ended the flagged row"
     kinds = [r["kind"] for r in run["records"]]
-    assert SessionMessageKind.CANCELLED not in kinds, "this execution wrote nothing on its way out"
-    assert _terminal_events(run["published"], run["sid"]) == [], "and published no terminal event"
+    assert kinds.count(SessionMessageKind.CANCELLED) == 1, (
+        "the pool's convergence wrote the CANCELLED record, once (the turn itself wrote nothing on its way out): "
+        f"{kinds!r}"
+    )
+    assert SessionMessageKind.ERROR not in kinds, "a terminal ERROR record after a clean convergence is what a re-raise would cause"
+    assert _terminal_events(run["published"], run["sid"]) == [{"status": "ended", "ended_reason": "cancelled"}], (
+        "the convergence publishes exactly one terminal event (a webhook hold waits on it; it used to publish none)"
+    )
+    assert not run["reclaimable"], "the ended session must not keep a lease"
+
+
+async def test_a_lost_lease_convergence_that_loses_the_race_to_the_new_owner_announces_nothing(tmp_path) -> None:
+    """Another worker may own the session: the heartbeat's lost-lease verdict reaches the stale turn while the NEW owner runs the
+    same claim-time cancelled exit for the same Cancel. The new owner's fenced ENDED write lands first (its record and its
+    announcement are its own); the stale worker's convergence must not add a second CANCELLED record, a second terminal
+    publish or a second ``session.ended`` (review 2026-11-23 round 1, minor 4)."""
+    from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+    def lose_the_lease_instead(scope) -> None:
+        def cancel_once(reason: str) -> bool:
+            scope.cancel(CANCEL_REASON_PREEMPTED)
+            return True
+
+        scope.cancel_once = cancel_once
+
+    peer_ended_it = {"count": 0}
+
+    def the_peer_ends_the_row_first(sessions) -> None:
+        real_patch_if = sessions.patch_if
+
+        async def patch_if(session_id, patch, **kwargs):
+            if patch.get("status") == SessionStatus.ENDED.value and not peer_ended_it["count"]:
+                peer_ended_it["count"] += 1
+                # The peer's own fenced end, committed between this worker's read and its write.
+                await real_patch_if(session_id, patch, **kwargs)
+            return await real_patch_if(session_id, patch, **kwargs)
+
+        sessions.patch_if = patch_if
+
+    run = await _run_a_cancelled_turn(
+        tmp_path, during_the_landing=lose_the_lease_instead, sessions_hook=the_peer_ends_the_row_first,
+    )
+
+    assert peer_ended_it["count"] == 1, "the race never happened: the convergence did not reach its fenced end"
+    row = run["row"]
+    assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled", "the peer's end stands"
+    kinds = [r["kind"] for r in run["records"]]
+    assert SessionMessageKind.CANCELLED not in kinds, (
+        f"the end that lost the race wrote a CANCELLED record (the peer writes its own): {kinds!r}"
+    )
+    assert _terminal_events(run["published"], run["sid"]) == [], "the end that lost the race announced the end a second time"
+    assert not run["reclaimable"], "the ended session must not keep a lease"

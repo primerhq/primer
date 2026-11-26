@@ -55,7 +55,7 @@ from primer.model.except_ import AccessDeniedError, BadRequestError, NotFoundErr
 from primer.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
-from primer.tap.cursor import _EPOCH, TapCursor
+from primer.tap.cursor import _EPOCH, MAX_TOKEN_CHARS, TapCursor
 from primer.tap.event import TapEvent, TapEventClass
 from primer.tap.reader import agent_graph_ids, read_session_since
 from primer.tap.router import WorkspaceTapRouter, WorkspaceTick
@@ -79,6 +79,9 @@ tap_router = APIRouter(tags=["workspace-tap"])
 # Seconds of idle (no tick) before we emit an SSE keepalive comment so
 # intermediary proxies do not reap an otherwise-healthy idle connection.
 _KEEPALIVE_INTERVAL_S = 15.0
+
+# How many sessions a frame's cursor token names (the newest active ones): ~70 bytes each, so a few KB, well under every proxy's header limit.
+_CURSOR_MAX_SESSIONS = 64
 
 _ID_FIELD = "id"
 
@@ -151,7 +154,7 @@ def _read_cursor(request: Request, cursor_q: str | None) -> TapCursor:
     """Resolve the reconnect cursor: ``Last-Event-ID`` header wins over query."""
     header = request.headers.get("last-event-id")
     token = header if header else cursor_q
-    return TapCursor.decode(token)
+    return TapCursor.decode(token, max_chars=MAX_TOKEN_CHARS)
 
 
 async def _resolve_in_scope(
@@ -297,6 +300,11 @@ class _TapInbox:
         return tag, item
 
 
+def _recency(row: Any) -> datetime:
+    """When ``row`` last did something, for ordering (a row without a turn time falls back to its creation)."""
+    return _aware(getattr(row, "last_turn_at", None) or getattr(row, "created_at", None) or _EPOCH)
+
+
 def _aware(moment: datetime) -> datetime:
     """``moment`` as a timezone-aware UTC time (a client-built cursor may carry a naive one)."""
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
@@ -347,6 +355,19 @@ async def _stream_tap(
     """
     # sid -> (row, byte_offset); only positive entries — no negative cache.
     in_scope: dict[str, tuple[WorkspaceSession, int]] = {}
+    # The sessions the cursor names, least recently active first: the frame's token carries only the newest ``_CURSOR_MAX_SESSIONS`` of them, so it
+    # (the ``Last-Event-ID`` a reconnect sends back) stays a few KB however many sessions the stream has seen. Seeded from the rows below.
+    recent: dict[str, None] = {}
+    # A reconnect's connect-time catch-up: the sessions still to be read and the time the cursor's ``known_as_of`` moves to once they all were (the
+    # sessions the token left out are replayed from ``known_as_of``, so until it moves up every reconnect would replay them again).
+    catching_up: set[str] = set()
+    horizon: list[datetime | None] = [None]
+
+    def _caught_up(session_id: str) -> None:
+        catching_up.discard(session_id)
+        if horizon[0] is not None and not catching_up:
+            cursor.known_as_of = horizon[0]
+            horizon[0] = None
 
     # Subscribe BEFORE the rows are read: a tick landing while they load waits in the inbox instead of vanishing (W27).
     tick_sub = router.subscribe(workspace_id)
@@ -383,6 +404,7 @@ async def _stream_tap(
         return None
 
     try:
+        loaded_at = datetime.now(timezone.utc)  # taken BEFORE the rows are read: a record written while they load is after it
         # A reconnect re-reads the rows now that the subscription is live; a fresh connect can use the ones the route resolved to validate the predicate.
         rows = initial_rows if initial_rows is not None and not had_cursor else await _resolve_in_scope(
             sessions_storage, workspace_id=workspace_id, selector=selector
@@ -400,7 +422,14 @@ async def _stream_tap(
         for row in rows:
             in_scope[row.id] = (row, 0)
             if had_cursor and _needs_catch_up(row, cursor, baseline, since):
+                catching_up.add(row.id)
                 inbox.put_tick(WorkspaceTick(session_id=row.id, seq=row.last_seq))
+        # Newest activity last, so the cap keeps the sessions most likely to speak again (the token's keys are in alphabetical order).
+        named = sorted((r for r in rows if r.id in cursor.seqs), key=_recency)
+        recent.update(dict.fromkeys(r.id for r in named[-_CURSOR_MAX_SESSIONS:]))
+        if since is not None:
+            horizon[0] = max(since, loaded_at)
+            _caught_up("")  # nothing to catch up moves the horizon at once; otherwise the last catch-up tick does
 
         while True:
             try:
@@ -434,6 +463,7 @@ async def _stream_tap(
             entry = in_scope.get(sid)
             if entry is None:
                 if pinned is not None and sid not in pinned:
+                    _caught_up(sid)
                     continue  # the predicate pins other ids: no query can put this session in scope (W30)
                 row = await _resolve_single_in_scope(
                     sessions_storage,
@@ -442,6 +472,7 @@ async def _stream_tap(
                     selector=selector,
                 )
                 if row is None:
+                    _caught_up(sid)
                     continue
                 in_scope[sid] = (row, 0)
                 entry = in_scope[sid]
@@ -455,6 +486,7 @@ async def _stream_tap(
                     after_seq=cursor.seqs[sid] if sid in cursor.seqs else baseline.get(sid, 0),
                     selector=selector,
                     from_offset=byte_offset,
+                    since=since if sid not in cursor.seqs else None,
                 )
             except TapSelectorTimeout as exc:
                 # The selector's LIKE patterns ran out of one read's time
@@ -466,6 +498,7 @@ async def _stream_tap(
             if since is not None and sid not in cursor.seqs:
                 events = [ev for ev in events if _aware(ev.ts) > since]
 
+            _caught_up(sid)  # before the frames: the first one's token must already carry the moved horizon (it may be the last one a client gets)
             if events and (refusal := await _denied()) is not None:
                 yield refusal
                 return
@@ -485,7 +518,11 @@ async def _stream_tap(
                 if rebound is not None:
                     ev.agent_id, ev.graph_id = rebound
                 cursor.advance(sid, ev.seq)
-                ev.cursor = cursor.encode()
+                recent.pop(sid, None)
+                recent[sid] = None
+                while len(recent) > _CURSOR_MAX_SESSIONS:
+                    del recent[next(iter(recent))]
+                ev.cursor = cursor.encode(keep=recent.keys())
                 yield _frame(ev)
     finally:
         await tick_sub.aclose()

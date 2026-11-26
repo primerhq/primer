@@ -22,8 +22,9 @@ session is the only legal write path. Bearer tokens can READ both
 endpoints (so an operator-side dashboard authenticated with a token
 can still surface the current state) but mutating the exposure config
 requires a real operator session. The cookie gate is enforced by the
-``_require_cookie_session`` helper, identical in shape to the token
-router so the rejection codes stay symmetric.
+``_require_cookie_session`` helper on the shared ``is_bearer_origin``
+check (review 4.3), so a bearer-initiated generated tool call is
+refused the same way a direct bearer call is.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from primer.api.deps import (
     get_storage_provider,
     require_admin,
 )
+from primer.api.routers._api_tokens_shared import is_bearer_origin
 from primer.api.routers._crud import read_write_routers
 from primer.mcp.exposure import (
     ExposureDeps,
@@ -61,13 +63,14 @@ mcp_exposure_router = APIRouter(prefix="/mcp_exposure", tags=["mcp"])
 def _require_cookie_session(request: Request) -> None:
     """Reject mutating callers that authenticated with a bearer token.
 
-    The cookie path leaves ``request.state.api_token`` as ``None``;
-    bearer auth sets it. MCP exposure config is an operator-only
-    surface — bearer credentials must not be able to widen or narrow
-    the allowlist, even when they otherwise carry the ``mcp`` scope.
+    The cookie path leaves ``request.state.api_token`` as ``None``; bearer
+    auth sets it, and a generated route tool initiated by a bearer token
+    carries that origin instead (review 4.3) -- both are refused here via
+    the shared :func:`is_bearer_origin` check. MCP exposure config is an
+    operator-only surface: bearer credentials must not be able to widen or
+    narrow the allowlist, even when they otherwise carry the ``mcp`` scope.
     """
-    api_token = getattr(request.state, "api_token", None)
-    if api_token is not None:
+    if is_bearer_origin(request):
         raise HTTPException(
             status_code=403,
             detail={

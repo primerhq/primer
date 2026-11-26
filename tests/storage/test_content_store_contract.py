@@ -202,3 +202,40 @@ async def test_delete_collection_removes_every_row_of_that_collection_only(conte
 @pytest.mark.asyncio
 async def test_delete_collection_of_an_empty_or_unknown_collection_is_a_noop(content_store: DocumentContentStore) -> None:
     assert await content_store.delete_collection("nope") == 0
+
+
+@pytest.mark.asyncio
+async def test_list_pages_by_keyset_and_defaults_to_complete(content_store: DocumentContentStore) -> None:
+    """Review 3.8: ``limit``/``after_path`` page a listing in path order; with neither, every entry comes back."""
+    paths = [f"docs/{n:03d}.md" for n in range(7)]
+    for i, path in enumerate(reversed(paths)):
+        await content_store.upsert(document_id=f"d{i}", collection_id="c", path=path, content="x")
+    await content_store.upsert(document_id="o", collection_id="c", path="other/z.md", content="x")
+
+    assert [e.path for e in await content_store.list("c")] == [*paths, "other/z.md"]  # default: complete, path order
+
+    seen: list[str] = []
+    after = None
+    while page := await content_store.list("c", prefix="docs/", limit=3, after_path=after):
+        assert len(page) <= 3
+        seen.extend(e.path for e in page)
+        after = page[-1].path
+    assert seen == paths
+
+
+@pytest.mark.asyncio
+async def test_list_size_is_the_utf8_byte_length(content_store: DocumentContentStore) -> None:
+    """Review 3.8: the size comes from the byte length (no body detoast), identically on both backends."""
+    await content_store.upsert(document_id="d1", collection_id="c", path="a.md", content="héllo €")
+    (entry,) = await content_store.list("c")
+    assert entry.size == len("héllo €".encode())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1])
+async def test_list_rejects_a_limit_below_one(content_store: DocumentContentStore, bad: int) -> None:
+    """m6: the same BadRequestError on both backends (a LIMIT of -1 is "no limit" on SQLite, and an error on Postgres)."""
+    from primer.model.except_ import BadRequestError
+
+    with pytest.raises(BadRequestError):
+        await content_store.list("c", limit=bad)

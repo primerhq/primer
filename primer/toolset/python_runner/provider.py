@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import Awaitable, AsyncIterator, Callable
 from typing import Any
 
 from primer.int.toolset import ToolsetProvider
@@ -38,6 +38,16 @@ from primer.worker.yield_resume_registry import ResumeContext, register_resume_h
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
+
+# Cache marker for "this workspace has no sandbox" (a local-backend
+# workspace): the answer is stable for the workspace's life, so the
+# provider stops re-asking the resolver for it.
+_NO_SANDBOX = object()
+
+# The per-workspace sandbox-runner cache is a small LRU: a long-lived process
+# must not keep one dead handle per distinct workspace id (X3 round 1,
+# M1), so the least-recently-used entry is evicted once the cache is full.
+_SANDBOX_RUNNER_CACHE_MAX = 64
 
 
 def scoped_tool_name(toolset_id: str, tool_id: str) -> str:
@@ -96,12 +106,38 @@ async def python_tool_resume(
 
 
 class PythonToolsetProvider(ToolsetProvider):
+    """One python toolset: its registered tools and the runner each call gets.
+
+    Runner selection is per CALL, keyed on the calling workspace: a call
+    from a container/k8s workspace runs in that workspace's sandbox
+    (``SandboxRunner``, isolation ``container``) when ``sandbox_runner_for``
+    was supplied at construction; every other call (no workspace, or a
+    workspace the resolver says has no sandbox) runs on ``runner`` (the
+    hardened local subprocess). A workspace that HAS a sandbox never falls
+    back to the local runner: if the sandbox cannot be resolved the call
+    fails, because running the tool on the host instead of its container
+    would be a downgrade of the isolation the deployment configured.
+    """
+
     def __init__(
-        self, *, toolset_id: str, config: PythonConfig, runner: Runner
+        self,
+        *,
+        toolset_id: str,
+        config: PythonConfig,
+        runner: Runner,
+        sandbox_runner_for: Callable[[str], Awaitable[Runner | None]] | None = None,
     ) -> None:
         self._toolset_id = toolset_id
         self._config = config
         self._runner = runner
+        # workspace_id -> the runner resolved for it (or the _NO_SANDBOX
+        # marker for a local workspace); a small LRU (_SANDBOX_RUNNER_CACHE_MAX)
+        # whose GONE runners are closed as they leave the cache (evicted or
+        # replaced by a re-resolution), so a long-lived process does not
+        # keep one dead handle per distinct workspace id. A resolution that
+        # RAISED is not cached, so the next call retries it.
+        self._sandbox_runner_for = sandbox_runner_for
+        self._sandbox_runners: dict[str, Runner | object] = {}
         self._registered: dict[str, RegisteredTool] = {}
         self.registration_error: RegistrationError | None = None
 
@@ -129,6 +165,74 @@ class PythonToolsetProvider(ToolsetProvider):
     @property
     def isolation_level(self) -> str:
         return self._runner.isolation_level.value
+
+    @property
+    def container_isolation(self) -> bool:
+        """Whether a call from a container/k8s workspace runs in its sandbox (the ``container`` level). False where no sandbox resolver was wired (standalone construction, tests)."""
+        return self._sandbox_runner_for is not None
+
+    async def _runner_for(self, ctx: ToolContext | None, workspace_id: str | None = None) -> Runner:
+        """The runner for one call: the calling workspace's sandbox runner when one resolves, else the local runner."""
+        workspace_id = (ctx.workspace_id if ctx is not None else None) or workspace_id
+        if not workspace_id or self._sandbox_runner_for is None:
+            return self._runner
+        cached = self._sandbox_runners.get(workspace_id)
+        if cached is _NO_SANDBOX:
+            self._touch_lru(workspace_id)
+            return self._runner
+        if cached is not None and not getattr(cached, "gone", False):
+            self._touch_lru(workspace_id)
+            return cached
+        runner = await self._sandbox_runner_for(workspace_id)
+        await self._store_runner(workspace_id, runner or _NO_SANDBOX)
+        return runner or self._runner
+
+    def _touch_lru(self, workspace_id: str) -> None:
+        """Mark ``workspace_id`` most-recently-used, so an actively used workspace's handle is the last one the LRU drops."""
+        if workspace_id in self._sandbox_runners:
+            self._sandbox_runners[workspace_id] = self._sandbox_runners.pop(workspace_id)
+
+    async def _store_runner(self, workspace_id: str, runner: Runner | object) -> None:
+        """Store the resolved runner for ``workspace_id`` and keep the cache at its bound: the new entry lands at the MRU tail, the least-recently-used entry is dropped at the bound, and a GONE (dead) runner is closed as it leaves the cache.
+
+        Re-storing over a GONE entry (the re-resolve path) closes the
+        replaced handle like an eviction would - its client self-evicted
+        (a 404 handshake), so the close only releases the aiohttp session
+        the dead handle would otherwise keep for the process's life. Only a
+        gone handle is ever closed from here: a closed runtime client cannot
+        reconnect, and the backend still owns a live workspace
+        (X3 round 1, M1; round 1b)."""
+        previous = self._sandbox_runners.pop(workspace_id, None)
+        self._sandbox_runners[workspace_id] = runner
+        if (
+            previous is not None
+            and previous is not _NO_SANDBOX
+            and previous is not runner
+            and getattr(previous, "gone", False)
+        ):
+            await self._close_gone_runner(previous, workspace_id)
+        while len(self._sandbox_runners) > _SANDBOX_RUNNER_CACHE_MAX:
+            evicted_id, evicted = next(iter(self._sandbox_runners.items()))
+            del self._sandbox_runners[evicted_id]
+            if evicted is _NO_SANDBOX or not getattr(evicted, "gone", False):
+                continue
+            await self._close_gone_runner(evicted, evicted_id)
+
+    @staticmethod
+    async def _close_gone_runner(runner: Runner, workspace_id: str) -> None:
+        """Best-effort close of a GONE runner leaving the cache (replaced or
+        evicted): the entry is gone either way, so a failing close is logged,
+        never raised."""
+        close = getattr(runner, "aclose", None)
+        if close is None:
+            return
+        try:
+            await close()
+        except Exception:  # noqa: BLE001 - the entry is out of the cache either way
+            logger.warning(
+                "python toolset: closing the gone sandbox runner of workspace %s failed",
+                workspace_id, exc_info=True,
+            )
 
     async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
         for reg in self._registered.values():
@@ -191,6 +295,12 @@ class PythonToolsetProvider(ToolsetProvider):
             payload=_jsonable(payload),
             meta=(resume_metadata or {}).get("tool_meta"),
             fn_name=reg.resume_fn_name,
+            # The resume rides the runner the call parked on: the park's
+            # metadata carries the workspace (to_yielded stamps it), so the
+            # resume runs in the same sandbox the call ran in. A park from
+            # before the stamp (or one with no workspace) resolves to the
+            # local runner, as before.
+            workspace_id=(resume_metadata or {}).get("workspace_id"),
         )
 
     async def _invoke(
@@ -203,7 +313,24 @@ class PythonToolsetProvider(ToolsetProvider):
         payload: Any = None,
         meta: Any = None,
         fn_name: str | None = None,
+        workspace_id: str | None = None,
     ) -> ToolCallResult:
+        try:
+            runner = await self._runner_for(ctx, workspace_id)
+        except Exception as exc:
+            # The workspace has a sandbox but it could not be resolved.
+            # Fail the call rather than downgrade it to the local runner:
+            # running the tool on the host instead of its container is a
+            # loss of the isolation the deployment configured (see the
+            # class docstring).
+            failed_ws = (ctx.workspace_id if ctx is not None else None) or workspace_id
+            return ToolCallResult(
+                output=(
+                    f"could not resolve the runner for workspace "
+                    f"{failed_ws!r}: {exc}"
+                ),
+                is_error=True,
+            )
         request = build_request(
             module=self._config.source,
             fn=fn_name or reg.fn_name,
@@ -216,7 +343,7 @@ class PythonToolsetProvider(ToolsetProvider):
             address_space_bytes=_DEFAULT_ADDRESS_SPACE_BYTES,
         )
         request["allow_network"] = self._config.allow_network
-        response = await self._runner.run(
+        response = await runner.run(
             request, timeout_seconds=reg.timeout_seconds
         )
 

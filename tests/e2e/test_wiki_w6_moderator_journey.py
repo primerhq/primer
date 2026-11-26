@@ -93,7 +93,10 @@ async def test_operator_moderates_then_rereads_bookkeeper_state(client: httpx.As
         _AfterTool("w6_running_read", when_last_user_contains=survey, emit_text=surveyed),
         step("w6_parked_read", "w6_running_read", "workspaces", "find_sessions", {"state": "running", "limit": 20}, survey),
         step("w6_workspaces", "w6_parked_read", "workspaces", "find_sessions", {"state": "parked", "limit": 20}, survey),
-        step("w6_status_wiki", "w6_workspaces", "workspaces", "list_workspaces", {"limit": 200, "order_by": ["created_at:desc"]}, survey),
+        # The runbook's own limit (20): the operator's read stays inside the
+        # 50 KiB tool-result envelope even in a busy environment, and the
+        # just-created target workspace is newest-first within that window.
+        step("w6_status_wiki", "w6_workspaces", "workspaces", "list_workspaces", {"limit": 20, "order_by": ["created_at:desc"]}, survey),
         Rule(when_last_user_contains=survey, emit_tool="system__wiki_read",
              emit_args={"path": "runbooks/workspace-status"}, emit_tool_call_id="w6_status_wiki"),
         _AfterTool("w6_launched", when_last_user_contains=moderate, emit_text=moderated),

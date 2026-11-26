@@ -167,7 +167,15 @@ async def _resume(world: World, monkeypatch) -> tuple[dict, ToolResultPart]:
     executor = _RecordingExecutor()
     monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws: _async(_NoopPersist()))
     monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async(executor))
-    lease = next(ln for ln in await world.engine.claim_due("wrk-resume", max_count=10) if ln.entity_id == SID)
+    # The wake flips the row, then arms its lease (the arm first reads the session's work priority), so a claim
+    # straight after the flip can find no lease yet: poll for it like the worker's claim loop does.
+    lease = None
+    for _ in range(200):
+        lease = next((ln for ln in await world.engine.claim_due("wrk-resume", max_count=10) if ln.entity_id == SID), None)
+        if lease is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert lease is not None, "the resumable session's lease was never armed"
     await pool._run_engine_session(lease)
     assert executor.injected, "the session did not resume"
     [answered] = [part for message in executor.injected[-1] for part in message.parts if isinstance(part, ToolResultPart)]

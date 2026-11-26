@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -39,6 +41,7 @@ from pydantic import SecretStr
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
+from primer.int.vector_store import VectorStore
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.provider import (
@@ -160,7 +163,10 @@ class _Storage:
             offset=0, length=len(items), total=len(items), items=items
         )
 
-    async def find(self, predicate, page, *, order_by=None):
+    async def find(self, predicate, page, *, order_by=None, conn=None):
+        # ``conn`` (the caller's open transaction connection) is accepted for the Storage
+        # protocol and ignored: the in-memory store reads its own dict, so an in-transaction
+        # re-read (DocumentTreeService's post-write child-set diff) already sees its own writes.
         # The document tree filters by collection_id + parent_id; a fake
         # that ignores the predicate makes every node a child of every
         # other one, so honour the simple equality clauses.
@@ -188,6 +194,7 @@ class _SP:
         return SystemState()
 
     def __init__(self) -> None:
+        self._migration_lock = asyncio.Lock()
         self._stores: dict[type, _Storage] = {}
         # The document tree (and so the system-collection regeneration the
         # lifespan runs) needs a content store and a transaction context.
@@ -195,6 +202,12 @@ class _SP:
 
         self._content_store = _FakeContentStore()
         self._txn = _NoOpTransaction
+
+    @asynccontextmanager
+    async def migration_lock(self):
+        # Serialize like the shared fake: /v1/auth/register takes this lock.
+        async with self._migration_lock:
+            yield
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())
@@ -212,7 +225,7 @@ class _SP:
         return
 
 
-class _FakeStore:
+class _FakeStore(VectorStore):
     def __init__(self) -> None:
         self.collections: dict = {}
         self.records: dict = {}
@@ -225,6 +238,9 @@ class _FakeStore:
         self.records[(record.collection_id, record.document_id, record.chunk_id)] = (
             record
         )
+
+    async def get(self, cid, document_id):
+        return [r for (c, d, _), r in self.records.items() if c == cid and d == document_id]
 
     async def delete(self, cid, doc_id):
         for key in list(self.records.keys()):

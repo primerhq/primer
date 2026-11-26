@@ -133,7 +133,7 @@ def test_a_secret_file_source_is_offered_to_admins_only(ctx) -> None:
 
 
 def test_the_kubernetes_hints_name_the_allowlist(ctx) -> None:
-    """The volume hints name what the server's allowlist takes, and the four pod settings are the four keys of ``_POD_OVERRIDES_ALLOWED``, by name."""
+    """The volume hints name what the server's allowlist takes, and the form's pod settings are allowlisted keys, by name."""
     assert "emptyDir or configMap volumes only" in SRC
     assert "A JSON list of " + ", ".join(_VOLUME_MOUNT_ALLOWED) + "." in SRC
     _create(ctx, "k3s", "admin")
@@ -147,12 +147,18 @@ def test_the_kubernetes_hints_name_the_allowlist(ctx) -> None:
     assert post and post[0]["body"]["backend"]["pod_overrides"] == {
         "shareProcessNamespace": False, "dnsPolicy": "ClusterFirst", "restartPolicy": "Never", "terminationGracePeriodSeconds": 30,
     }
-    assert set(post[0]["body"]["backend"]["pod_overrides"]) == set(_POD_OVERRIDES_ALLOWED)
+    # The form offers a curated subset of the allowlist. The 2026-11-23 review (5.2) added the pod ``securityContext`` and
+    # ``automountServiceAccountToken`` as admin-only, set via raw ``pod_overrides`` JSON (the form is ``ui/``, outside this
+    # lane's write set), so the form's keys are a subset, not the whole. The safety invariant the form must keep: it never
+    # offers a key the server refuses; and the allowlist is exactly those form keys plus the two new security keys.
+    sent = set(post[0]["body"]["backend"]["pod_overrides"])
+    assert sent <= set(_POD_OVERRIDES_ALLOWED)
+    assert set(_POD_OVERRIDES_ALLOWED) == sent | {"automountServiceAccountToken", "securityContext"}
 
 
 def test_the_never_applied_security_context_is_not_shown_and_kept_as_stored(ctx) -> None:
-    """The old form showed ``container_security_context_overrides`` with "any non-empty value is refused". The overlay never shows a field the backend
-    ignores (plan 08 decision 3): an edit carries it as stored."""
+    """The overlay never shows a field it cannot set through the form: ``container_security_context_overrides`` (admin-only, the v1 container
+    securityContext surface, security review 2026-11-23, 5.2) is edited through the REST/tool body, so an edit carries it as stored."""
     assert "container_security_context_overrides" not in SRC[SRC.index("function WT_TemplateOverlay("):SRC.index("window.WT_TemplateOverlay = WT_TemplateOverlay;")]
     row = {**FULL_K8S, "backend": {**FULL_K8S["backend"], "container_security_context_overrides": {}}}
     ctx.eval(f"ROWS[{json.dumps('/workspace_templates/' + row['id'])}] = {json.dumps(row)};")

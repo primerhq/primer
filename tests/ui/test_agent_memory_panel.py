@@ -168,3 +168,31 @@ def test_compaction_activity_explains_preserved_progress_without_echoing_details
         assert "transcript range is incomplete" in shown
         assert "complete verdict" in shown
         assert "PRIVATE_SOURCE_TEXT" not in shown
+
+
+def test_a_too_large_stretch_is_named_and_the_completed_entry_counts_the_left_out_turns() -> None:
+    """Lane L carry: ``input_too_large_skipped`` names the skipped stretch (no "Progress was
+    kept" - the watermark advanced past the learned turns), and a ``completed`` entry with
+    ``skipped_turns`` says how many turns were left out - appended to the compacted sentence
+    when both apply."""
+    activity = [
+        {"id": 5, "type": "memory.reflection.skipped", "actor": "memory:a1", "at": "t",
+         "payload": {"reason": "input_too_large_skipped"}},
+        {"id": 4, "type": "memory.reflection.completed", "actor": "memory:a1", "at": "t",
+         "payload": {"skipped_turns": 3}},
+        {"id": 3, "type": "memory.reflection.completed", "actor": "memory:a1", "at": "t",
+         "payload": {"input_mode": "compacted", "summary_calls": 2, "skipped_turns": 5}},
+    ]
+    with agent_form() as ctx:
+        _resources(ctx, activity=activity)
+        _mount(ctx, "AG_MemoryPanel")
+        click(ctx, "memory-tab-activity")
+        shown = text_of(ctx, "memory-activity")
+        assert "too large to learn from and will not be retried" in shown
+        assert "3 other turn(s) were too large and left out" in shown
+        assert "5 other turn(s) were too large and left out" in shown
+        assert "Learned from the newest turns that fit" in shown
+        # Both sentences on the entry that compacted AND skipped.
+        assert "2 evidence summaries" in shown
+        # The skipped stretch will not be retried: no "Progress was kept" line for it.
+        assert shown.count("Progress was kept") == 0

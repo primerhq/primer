@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 
+from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
 from primer.model.harness import Harness, HarnessDirection, HarnessOperation, HarnessStatus
@@ -46,8 +47,10 @@ def event_bus() -> _EventBus:
 
 
 @pytest.fixture
-def engine() -> InMemoryClaimEngine:
-    return InMemoryClaimEngine(adapters={})
+def engine(sp) -> InMemoryClaimEngine:
+    return InMemoryClaimEngine(
+        adapters={ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=sp.get_storage(Harness))},
+    )
 
 
 @pytest.fixture

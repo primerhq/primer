@@ -295,27 +295,30 @@ class TestResponseFormatEmulation:
             is None
         )
 
-    def test_with_tools_rejected(self) -> None:
-        with pytest.raises(ConfigError, match="cannot be combined with tools"):
-            _response_format_to_emulation(_Schema, has_tools=True, has_tool_choice=False)
+    def test_with_tools_offered_alongside(self) -> None:
+        # Review 2026-11-23, 2.2 round 1: with real tools the synthetic tool
+        # is offered alongside them (tool_choice auto), not rejected.
+        tool, choice = _response_format_to_emulation(_Schema, has_tools=True, has_tool_choice=False)
+        assert tool["name"] == "structured_output"
+        assert choice == {"type": "auto"}
 
     def test_with_tool_choice_rejected(self) -> None:
         with pytest.raises(ConfigError, match="explicit tool_choice"):
             _response_format_to_emulation(_Schema, has_tools=False, has_tool_choice=True)
 
     def test_pydantic_model(self) -> None:
-        tools, choice = _response_format_to_emulation(
+        tool, choice = _response_format_to_emulation(
             _Schema, has_tools=False, has_tool_choice=False
         )
-        assert tools[0]["name"] == "structured_output"
-        assert tools[0]["input_schema"]["properties"]["answer"]["type"] == "string"
+        assert tool["name"] == "structured_output"
+        assert tool["input_schema"]["properties"]["answer"]["type"] == "string"
         assert choice == {"type": "tool", "name": "structured_output"}
 
     def test_dict_schema(self) -> None:
-        tools, choice = _response_format_to_emulation(
+        tool, choice = _response_format_to_emulation(
             {"type": "object"}, has_tools=False, has_tool_choice=False
         )
-        assert tools[0]["input_schema"] == {"type": "object"}
+        assert tool["input_schema"] == {"type": "object"}
 
     def test_invalid_type_rejected(self) -> None:
         with pytest.raises(ConfigError, match="Pydantic class or dict"):
@@ -372,6 +375,11 @@ class TestStopReasonMapping:
         st = _StreamState()
         assert _map_stop_reason("max_tokens", st) == "max_tokens"
         assert _map_stop_reason("stop_sequence", st) == "stop_sequence"
+        # A tool_use stop with NO tool block is the structured_output
+        # emulation (the answer streamed as text), so it reads as stop;
+        # with a real tool block it is a pending tool call.
+        assert _map_stop_reason("tool_use", st) == "stop"
+        st.saw_tool_use = True
         assert _map_stop_reason("tool_use", st) == "tool_use"
         assert _map_stop_reason("pause_turn", st) == "stop"
         assert _map_stop_reason("refusal", st) == "content_filter"

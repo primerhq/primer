@@ -232,10 +232,24 @@ def test_sessions_workspace_id_index_is_a_plain_btree_on_the_scalar():
 def test_document_collection_id_index_is_a_plain_btree_on_the_scalar():
     """Collection reads and the flat document lists (access-control P3) filter
     documents on ``collection_id``; index-backed."""
-    (suffix, unique, expr), = _HOT_FIELD_INDEXES["document"]
+    (suffix, unique, expr), = [e for e in _HOT_FIELD_INDEXES["document"] if e[0] == "collection_id"]
     assert suffix == "collection_id"
     assert unique is False
     assert expr == "((data->>'collection_id'))"
+
+
+def test_document_children_index_covers_the_walk_on_both_backends():
+    """M1 3.5: the batched tree walk lists a collection's children with
+    ``parent_id IN (...)``; the composite (collection_id, parent_id) index
+    covers that lookup, on both backends."""
+    (suffix, unique, expr), = [e for e in _HOT_FIELD_INDEXES["document"] if e[0] == "parent_id"]
+    assert suffix == "parent_id"
+    assert unique is False
+    assert expr == "((data->>'collection_id'), (data->>'parent_id'))"
+    (sqlite_suffix, sqlite_unique, sqlite_expr), = _SQLITE_HOT_FIELD_INDEXES["document"]
+    assert sqlite_suffix == "parent_id"
+    assert sqlite_unique is False
+    assert sqlite_expr == "(json_extract(data,'$.collection_id'), json_extract(data,'$.parent_id'))"
 
 
 def test_channel_index_covers_provider_id_and_external_id():
@@ -318,7 +332,7 @@ def test_session_model_maps_to_the_sessions_table():
         ]),
         ("channel", ["channel_provider_external", "channel_access_members"]),
         ("artifactlocation", ["artifactlocation_provider_id"]),
-        ("document", ["document_collection_id"]),
+        ("document", ["document_collection_id", "document_parent_id"]),
         ("unindexed_table", []),
     ],
 )
@@ -400,6 +414,50 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     assert "channel_provider_external" in await _index_names(sp, "channel")
     assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
     assert "document_collection_id" in await _index_names(sp, "document")
+    assert "document_parent_id" in await _index_names(sp, "document")
+
+
+@pg
+@pytest.mark.asyncio
+async def test_document_children_query_can_use_the_parent_id_index(postgres_storage_provider):
+    """M1 3.5: the children query the tree walk runs can use the composite index. The plan shape depends on table size, so this asserts the index exists and the planner renders the query against it, not a specific plan."""
+    from primer.model.collection import Document
+
+    sp = postgres_storage_provider
+    await sp.get_storage(Document).get("__bootstrap__")
+    async with sp.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = 'document'",
+            sp.schema,
+        )
+        assert "document_parent_id" in {r["indexname"] for r in rows}
+        plan = await conn.fetch(
+            f"EXPLAIN SELECT id FROM \"{sp.schema}\".document "
+            "WHERE data->>'collection_id' = 'c1' AND data->>'parent_id' IN ('p1', 'p2')"
+        )
+    assert len(plan) > 0  # the planner accepts the query; which path it picks is size-dependent
+
+
+@pytest.mark.asyncio
+async def test_sqlite_new_document_table_gets_the_children_index(tmp_path):
+    """M1 3.5: a fresh document table gets the (collection_id, parent_id) children index on the SQLite backend too."""
+    from primer.model.collection import Document
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "docs.sqlite")))
+    await provider.initialize()
+    try:
+        await provider.get_storage(Document).get("__bootstrap__")
+        cursor = await provider.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'document_parent_id'"
+        )
+        row = await cursor.fetchone()
+    finally:
+        await provider.aclose()
+    assert row is not None
+    assert "json_extract(data,'$.collection_id')" in row[0]
+    assert "json_extract(data,'$.parent_id')" in row[0]
 
 
 @pg
@@ -414,21 +472,43 @@ async def test_terminal_tool_wait_query_uses_marker_and_id_order_index(postgres_
     sp = postgres_storage_provider
     store = sp.get_storage(WorkspaceSession)
     await store.get("__bootstrap__")
-    predicate = _terminal_tool_wait_candidate_predicate()
-    translator = store._translator()
-    where_sql = await store._where(translator, predicate)
-    assert "data->>'parked_tool_batches' IS NOT NULL" in where_sql
-    assert "data->>'parked_status' = ANY($1::text[])" in where_sql
-    assert translator._params == [["parked", "resumable"]]
-    limit = translator.append_param(201)
-    sql = (
-        f"EXPLAIN SELECT id, data FROM {store._qualified} "
-        f"WHERE {where_sql} {render_order_by(WorkspaceSession, None)} LIMIT {limit}"
-    )
-    async with sp.pool.acquire() as conn, conn.transaction():
-        await conn.execute("SET LOCAL enable_seqscan = off")
-        rows = await conn.fetch(sql, *translator._params)
-    plan = " ".join(row[0] for row in rows)
+    # The plan shape depends on table statistics: on an empty, unanalyzed table the
+    # planner picks sessions_parked_status + Sort. This test seeds a table large
+    # enough for the planner to prefer the (id) partial index, ANALYZEs it, and
+    # deletes the seeded rows afterwards (stats refreshed), so it passes on its
+    # own and no test depends on rows another test left behind.
+    async with sp.pool.acquire() as conn:
+        await conn.execute(
+            f"INSERT INTO {store._qualified} (id, data) "
+            "SELECT 'twr-seed-' || g, "
+            "jsonb_build_object('id', 'twr-seed-' || g, "
+            "'binding', jsonb_build_object('agent_id', 'a' || (g % 500))) "
+            "FROM generate_series(1, 20000) g ON CONFLICT DO NOTHING"
+        )
+        await conn.execute(f"ANALYZE {store._qualified}")
+    plan = ""
+    try:
+        predicate = _terminal_tool_wait_candidate_predicate()
+        translator = store._translator()
+        where_sql = await store._where(translator, predicate)
+        assert "data->>'parked_tool_batches' IS NOT NULL" in where_sql
+        assert "data->>'parked_status' = ANY($1::text[])" in where_sql
+        assert translator._params == [["parked", "resumable"]]
+        limit = translator.append_param(201)
+        sql = (
+            f"EXPLAIN SELECT id, data FROM {store._qualified} "
+            f"WHERE {where_sql} {render_order_by(WorkspaceSession, None)} LIMIT {limit}"
+        )
+        async with sp.pool.acquire() as conn, conn.transaction():
+            await conn.execute("SET LOCAL enable_seqscan = off")
+            rows = await conn.fetch(sql, *translator._params)
+        plan = " ".join(row[0] for row in rows)
+    finally:
+        async with sp.pool.acquire() as conn:
+            await conn.execute(
+                f"DELETE FROM {store._qualified} WHERE id LIKE 'twr-seed-%'"
+            )
+            await conn.execute(f"ANALYZE {store._qualified}")
     assert "sessions_tool_wait_reconcile_v2" in plan
     assert "Sort" not in plan
 

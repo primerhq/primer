@@ -84,8 +84,8 @@ _GATED_BODIES = {
     "gpu.resource_name": _k8s(gpu={"count": 1, "resource_name": "amd.com/gpu"}),
     "files.secret": {"id": "tpl-s", "provider_id": "p-1", "description": "d", "files": [_SECRET_FILE]},
 }
-# The k8s allowlist refuses every non-empty container_security_context_overrides (the backend never applied it), so an
-# admin cannot set one either (see the allowlist test below); a user gets the 403 first.
+# ``container_security_context_overrides`` is admin-only, and the user's 403 lands before the allowlist runs (the value is a valid v1
+# container securityContext key now, security review 2026-11-23, 5.2, so it is what an admin would set).
 _USER_GATED_BODIES = {
     **_GATED_BODIES,
     "container_security_context_overrides": _k8s(container_security_context_overrides={"readOnlyRootFilesystem": True}),
@@ -440,12 +440,31 @@ async def test_a_user_may_still_write_a_template_without_admin_only_fields(app, 
     {"pod_overrides": {"serviceAccountName": "primer-admin"}},
     {"pod_overrides": {"hostNetwork": True}},
     {"container_security_context_overrides": {"privileged": True}},
+    {"container_security_context_overrides": {"allowPrivilegeEscalation": True}},
+    {"container_security_context_overrides": {"capabilities": {"add": ["SYS_ADMIN"]}}},
+    {"container_security_context_overrides": {"procMount": "Unmasked"}},
+    {"container_security_context_overrides": {"seccompProfile": {"type": "Unconfined"}}},
+    {"container_security_context_overrides": {"seLinuxOptions": {"type": "spc_t"}}},
+    {"container_security_context_overrides": {"bogus": True}},
 ])
 async def test_an_admin_template_outside_the_k8s_allowlist_is_refused(app, admin, backend) -> None:  # noqa: F811
     r = await admin.post("/v1/workspace_templates", json=_k8s(**backend))
 
     assert r.status_code == 422, r.text
     assert await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overrides", [
+    {"readOnlyRootFilesystem": True},
+    {"privileged": False, "allowPrivilegeEscalation": False, "procMount": "Default"},
+    {"seccompProfile": {"type": "Localhost", "localhostProfile": "p.json"}},
+    {"capabilities": {"add": ["NET_BIND_SERVICE"]}},
+])
+async def test_an_admin_may_relax_the_container_defaults_within_the_baseline(app, admin, overrides) -> None:  # noqa: F811
+    r = await admin.post("/v1/workspace_templates", json=_k8s(container_security_context_overrides=overrides))
+
+    assert r.status_code == 201, r.text
 
 
 # ---------------------------------------------------------------------------

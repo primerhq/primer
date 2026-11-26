@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 _FAILS_BEFORE_FAILED = 3
 _HITS_BEFORE_RUNNING = 3
 _LIST_PAGE_SIZE = 200
+#: How many workspaces' pings run at once within one tick (review 5.7). A dead workspace's ping takes the full per-ping
+#: bound, and a serial loop multiplies that cost by the page's size, so one tick can outrun its own interval. Kept small:
+#: a ping may hold a live handle and re-attach (waiting on a k8s pod), and every probe then patches its row, so a larger
+#: fan-out mostly queues more in-flight storage writes behind each other.
+_PROBE_CONCURRENCY = 8
 #: The least time one workspace's ping gets, whatever the interval (the bound is the interval, at least this): a test-sized
 #: interval must not turn a real answer into a miss.
 _MIN_PING_TIMEOUT_S = 5.0
@@ -153,6 +158,7 @@ class WorkspaceProbeTask:
                 OffsetPage(offset=offset, length=_LIST_PAGE_SIZE)
             )
             items = list(page.items)
+            to_probe: list[Any] = []
             for ws in items:
                 if local_provider_ids is not None and ws.provider_id in local_provider_ids:
                     local_count += 1
@@ -161,7 +167,8 @@ class WorkspaceProbeTask:
                     continue
                 if ws.phase not in ("pending", "running", "failed"):
                     continue
-                await self._probe_one(storage, ws)
+                to_probe.append(ws)
+            await self._probe_page(storage, to_probe)
             if len(items) < _LIST_PAGE_SIZE:
                 break
             offset += _LIST_PAGE_SIZE
@@ -186,6 +193,24 @@ class WorkspaceProbeTask:
         except Exception:  # noqa: BLE001 -- best-effort census
             logger.warning("workspace probe: could not list the workspace providers for the census", exc_info=True)
             return None
+
+    async def _probe_page(self, storage: Any, rows: list[Any]) -> None:
+        """Ping one page's rows concurrently under a :data:`_PROBE_CONCURRENCY` bound (review 5.7).
+
+        A workspace whose runtime cannot be reached takes the full per-ping bound, and a serial loop made that cost grow
+        with the page's size: ten dead workspaces meant ten consecutive full-timeout pings before the next row was even
+        reached. The gather bounds the fan-out (see the constant); ``_probe_one`` contains its own errors, so one
+        refusing row cannot take the page down.
+        """
+        if not rows:
+            return
+        semaphore = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+        async def _bounded(row: Any) -> None:
+            async with semaphore:
+                await self._probe_one(storage, row)
+
+        await asyncio.gather(*(_bounded(row) for row in rows))
 
     async def _fail_a_stale_mark(self, storage: Any, ws: Any) -> None:
         """Fail a ``terminating`` row whose mark is older than :data:`_TERMINATING_STALE_AFTER` (review W52).

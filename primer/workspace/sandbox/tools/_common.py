@@ -22,12 +22,19 @@ def resolve_sandbox_path(workspace_root: str, path: str) -> str:
     # If caller already supplied an absolute path that's inside the root,
     # honour it. If it's absolute and outside the root, reject.
     if path.startswith("/"):
-        if path == root or path.startswith(root + "/"):
-            normalised = _normalise_components(path)
-            return normalised
-        raise BadRequestError(
-            f"path resolves outside workspace root {root!r}: {path!r}"
-        )
+        normalised = _normalise_components(path)
+        # Re-check containment on the NORMALISED path: an absolute path with
+        # ``..`` (``/workspace/../etc/passwd``) normalises OUT of the root and
+        # must be refused here, not returned as the normalised outside path
+        # (the runtime would then answer an EACCES runtime error instead of a
+        # clean 400; review 2026-11-23, 5.14).
+        if root != "/" and not (
+            normalised == root or normalised.startswith(root + "/")
+        ):
+            raise BadRequestError(
+                f"path resolves outside workspace root {root!r}: {path!r}"
+            )
+        return normalised
 
     # Relative path: join under the root.
     parts: list[str] = []

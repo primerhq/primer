@@ -57,10 +57,16 @@ class _World:
         self.sp, self.inbox, self.sub = sp, inbox, sub
 
     async def published(self, timeout: float = 0.3):
-        try:
-            return await asyncio.wait_for(anext(self.sub), timeout=timeout)
-        except TimeoutError:
-            return None
+        # The durable emit also publishes the event-log hint; consume
+        # past it.
+        for _ in range(5):
+            try:
+                event = await asyncio.wait_for(anext(self.sub), timeout=timeout)
+            except TimeoutError:
+                return None
+            if event.event_key != "events_appended":
+                return event
+        return None
 
     async def records(self) -> list:
         return (await self.sp.get_storage(ToolApprovalRecord).list(OffsetPage(offset=0, length=20))).items

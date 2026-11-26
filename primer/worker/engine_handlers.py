@@ -54,6 +54,12 @@ async def run_engine_harness(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
         )
         return
 
+    # The operation this claim ran. The fresh re-read in the finally compares
+    # the row's pending_operation against it to detect an operation enqueued
+    # in the gap between the row release and the lease release (Review
+    # 2026-11-23 finding 1.3).
+    dispatched_operation = harness.pending_operation
+
     deps = HarnessDispatchDeps(
         storage_provider=pool._storage,
         event_bus=pool._event_bus,
@@ -74,9 +80,68 @@ async def run_engine_harness(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
             engine_lease.entity_id,
         )
     finally:
-        await pool._release_lease(
-            engine_lease, ReleaseOutcome(success=success, drop_lease=True),
-        )
+        # Re-read the row to catch an operation enqueued between the row release
+        # (dispatch's _release_harness) and this lease release. Such an operation
+        # must survive: release with a success outcome (the adapter's success
+        # gate then leaves the new operation alone) and keep the lease
+        # (drop_lease=False) so the new operation stays claimable. Otherwise
+        # release as the operation actually went. (Review 2026-11-23 finding
+        # 1.3.) A success that still sees the SAME operation as well is a gap
+        # enqueue: dispatch always clears the operation on success, so a
+        # pending operation after success is a new request whatever it names,
+        # and the enqueue routes guard only on pending_operation (not on
+        # status), so a second request for the same operation (FETCH after
+        # FETCH) is the dominant case. A FAILED release that still sees the
+        # same operation is the operation itself (dispatch did not release the
+        # row), not a gap: it is finalised as ERROR by the adapter's failure
+        # branch. (Review 2026-11-23 round 1.)
+        gap = False
+        try:
+            fresh = await harness_storage.get(engine_lease.entity_id)
+            gap = (
+                fresh is not None
+                and fresh.pending_operation is not None
+                and (
+                    success
+                    or fresh.pending_operation != dispatched_operation
+                )
+            )
+        except Exception:
+            logger.exception(
+                "engine harness %s: could not re-read the row to check for a "
+                "gap enqueue",
+                engine_lease.entity_id,
+            )
+        if gap:
+            outcome = ReleaseOutcome(success=True, drop_lease=False)
+        else:
+            outcome = ReleaseOutcome(success=success, drop_lease=True)
+        if not outcome.success:
+            hand_back = pool._hand_back_outcome(engine_lease)
+            if hand_back is not None:
+                # This worker cut the turn itself (the drain timeout, or the staleness self-cancel):
+                # the operation never ran. The default failure would finalise it as ERROR and drop the
+                # lease; the hand-back leaves the row untouched and the lease claimable, so the next
+                # claim re-runs the operation, exactly as a crash leaves it (the H-2 hand-back kinds).
+                outcome = hand_back
+        await pool._release_lease(engine_lease, outcome)
+        # Publish done AFTER the lease release: a consumer that reacts to done
+        # by enqueuing the next operation does so after the lease is free, not
+        # in the gap the release used to leave open. (Review 2026-11-23 finding
+        # 1.3.)
+        # NOT on a hand-back (``entity_noop``): the operation never ran and is still pending for the next claim, so a
+        # done here would mislead a subscriber into enqueueing on top of it (review 2026-11-23, H-1).
+        if not outcome.entity_noop:
+            try:
+                await deps.event_bus.publish(
+                    f"harness:{engine_lease.entity_id}:done",
+                    {"harness_id": engine_lease.entity_id},
+                )
+            except Exception:
+                logger.exception(
+                    "engine harness %s: failed to publish the done event",
+                    engine_lease.entity_id,
+                )
 
 
 async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> None:
@@ -125,6 +190,14 @@ async def run_engine_memory(pool: "WorkerPool", engine_lease: "ClaimLease") -> N
         if deps is not None:
             await report_job_error(deps, engine_lease, exc)
     finally:
+        if not outcome.success:
+            hand_back = pool._hand_back_outcome(engine_lease)
+            if hand_back is not None:
+                # This worker cut the job itself (the drain timeout, or the staleness self-cancel):
+                # it never ran. The default failure would drop the lease and leave the job to its own
+                # trigger (the next turn, or the daily schedule); the hand-back keeps it claimable for
+                # the next claim (the H-2 hand-back kinds).
+                outcome = hand_back
         await pool._release_lease(engine_lease, outcome)
 
 
@@ -345,6 +418,15 @@ async def run_engine_trigger(pool: "WorkerPool", engine_lease: "ClaimLease") -> 
             outcome = ReleaseOutcome(
                 success=success, drop_lease=drop, requeue_after=requeue_after, last_error=last_error, fired_tick=due_tick,
             )
+            if not outcome.success:
+                hand_back = pool._hand_back_outcome(engine_lease)
+                if hand_back is not None:
+                    # This worker cut the fire itself (the drain timeout, or the staleness self-cancel):
+                    # the due tick did not complete. The failure release would advance the schedule and
+                    # drop the lease; the hand-back leaves the row untouched and the lease claimable, and
+                    # the next claim re-fires the unfired ticks (the fired ones are skipped by
+                    # _not_fired_yet), exactly as a crash leaves it (the H-2 hand-back kinds).
+                    outcome = hand_back
         await pool._release_lease(engine_lease, outcome)
 
 

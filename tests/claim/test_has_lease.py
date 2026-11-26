@@ -14,18 +14,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from primer.claim.in_memory import InMemoryClaimEngine
+from tests.claim._platform import platform_adapters
 from primer.int.claim import ClaimEngine, ClaimKind, ReleaseOutcome
 
 
 @pytest.mark.asyncio
 async def test_no_row_before_the_lease_is_armed():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     assert await engine.has_lease(ClaimKind.SESSION, "s-1") is False
 
 
 @pytest.mark.asyncio
 async def test_an_armed_unclaimed_lease_counts_though_it_is_not_live():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.SESSION, "s-1")
 
     assert await engine.has_lease(ClaimKind.SESSION, "s-1") is True
@@ -34,7 +35,7 @@ async def test_an_armed_unclaimed_lease_counts_though_it_is_not_live():
 
 @pytest.mark.asyncio
 async def test_a_claimed_lease_counts_and_is_live():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.SESSION, "s-1")
     await engine.claim_due("worker-A", max_count=1)
 
@@ -44,7 +45,7 @@ async def test_a_claimed_lease_counts_and_is_live():
 
 @pytest.mark.asyncio
 async def test_an_expired_claim_still_counts_and_the_claim_loop_reclaims_it():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.SESSION, "s-1")
     await engine.claim_due("worker-A", max_count=1)
     engine._leases[(ClaimKind.SESSION, "s-1")].expires_at = (
@@ -61,7 +62,7 @@ async def test_an_expired_claim_still_counts_and_the_claim_loop_reclaims_it():
 
 @pytest.mark.asyncio
 async def test_the_row_is_gone_after_a_drop_lease_release_or_a_delete():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.SESSION, "s-1")
     (lease,) = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=False, drop_lease=True))
@@ -74,7 +75,7 @@ async def test_the_row_is_gone_after_a_drop_lease_release_or_a_delete():
 
 @pytest.mark.asyncio
 async def test_the_answer_is_per_kind_and_per_entity():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.HARNESS, "x")
 
     assert await engine.has_lease(ClaimKind.HARNESS, "x") is True

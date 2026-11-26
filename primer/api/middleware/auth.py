@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 
@@ -46,6 +47,8 @@ from primer.model.principal import Principal
 from primer.model.user import User
 from primer.api.route_tools import (
     is_trusted_route_tool_scope,
+    trusted_route_tool_origin_ref,
+    trusted_route_tool_originating_credential,
     trusted_route_tool_person,
 )
 
@@ -73,6 +76,31 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Review 4.6: a bearer client making N requests a second must not cause N
+# last_used_at UPDATEs a second on one row. The stamp only matters at the
+# minute scale, so write it at most once per interval per token.
+_LAST_USED_STALE_SECONDS = 60.0
+# X3.6: the per-token touch records are only ever added (one row per token
+# per window) and never removed, so every distinct bearer token ever used
+# would keep rows in them forever. They are pure throttling state: a record
+# whose window has closed reads exactly like a missing record, and evicting
+# a live one costs at most one duplicate stamp write (or one duplicate
+# failure WARNING) for that token this window. Bounded, not immortal.
+_TOUCH_RECORD_MAX = 1024
+
+
+def _should_touch_last_used(api_token) -> bool:
+    """True when the token's last_used_at stamp is older than the interval
+    (or unset), so the fire-and-forget write runs at most once per interval
+    per token. A naive stored timestamp is read as UTC."""
+    last_used = getattr(api_token, "last_used_at", None)
+    if last_used is None:
+        return True
+    if last_used.tzinfo is None:
+        last_used = last_used.replace(tzinfo=timezone.utc)
+    return (_utcnow() - last_used).total_seconds() >= _LAST_USED_STALE_SECONDS
+
+
 class AuthMiddleware:
     """Pure-ASGI middleware. Populates scope state from cookie or bearer.
 
@@ -82,6 +110,70 @@ class AuthMiddleware:
 
     def __init__(self, app) -> None:
         self.app = app
+        # Review 4.6: the fire-and-forget last_used_at tasks are kept in a set
+        # so the event loop (and nothing else) does not garbage-collect a
+        # task mid-write; done callbacks drop their own task.
+        self._touch_tasks: set[asyncio.Task] = set()
+        # Review 4.6 round 2: the row's last_used_at only changes when a
+        # write COMPLETES, so on a slow or failing store every request
+        # would start its own write. These per-token records hold a write
+        # back while one is in flight (pending) or was attempted since the
+        # last stamp (recent): at most one write per token per window.
+        self._touch_inflight: dict[str, asyncio.Task] = {}
+        self._touch_last_attempt: dict[str, float] = {}
+        # A failing store answers every request, so the failure WARNING +
+        # traceback is logged at most once per token per window.
+        self._touch_last_failure: dict[str, float] = {}
+
+    def _touch_window_open(self, token_id: str) -> bool:
+        """True when no write attempt for this token finished within the
+        interval (the row cannot show an in-flight or just-finished write)."""
+        last_attempt = self._touch_last_attempt.get(token_id)
+        return (
+            last_attempt is None
+            or time.monotonic() - last_attempt >= _LAST_USED_STALE_SECONDS
+        )
+
+    def _on_touch_done(self, token_id: str) -> None:
+        """Drop the write from the in-flight record and stamp the attempt
+        window so the next requests within the interval start nothing new."""
+        self._touch_inflight.pop(token_id, None)
+        self._touch_last_attempt[token_id] = time.monotonic()
+
+    def _prune_touch_records(self) -> None:
+        """Bound the per-token touch records (X3.6), called on the bearer
+        path before a new record is added. Records whose window has closed
+        are indistinguishable from missing ones to the readers (a stale
+        stamp and no stamp both open the window; a stale failure record and
+        no record both allow the WARNING) and go first. If the dicts are
+        still over the cap (a burst of fresh distinct tokens), the OLDEST
+        records are evicted: the cost is at most one duplicate stamp write
+        -- or one duplicate failure WARNING -- per evicted token this
+        window. In-flight write records go only once their task is done:
+        dropping a pending record would let a second write for the same
+        token start while the first is still running."""
+        now = time.monotonic()
+        stale_before = now - _LAST_USED_STALE_SECONDS
+        for name in ("_touch_last_attempt", "_touch_last_failure"):
+            records = getattr(self, name)
+            # Evict down to one under the cap: the record this request is
+            # about to add (or the in-flight done callback adds) fills the
+            # last slot, so the dicts never grow past _TOUCH_RECORD_MAX.
+            if len(records) >= _TOUCH_RECORD_MAX:
+                for token_id, stamp in list(records.items()):
+                    if stamp < stale_before:
+                        records.pop(token_id, None)
+            if len(records) > _TOUCH_RECORD_MAX - 1:
+                overflow = len(records) - (_TOUCH_RECORD_MAX - 1)
+                for token_id, _ in sorted(
+                    records.items(), key=lambda kv: kv[1]
+                )[:overflow]:
+                    records.pop(token_id, None)
+        inflight = self._touch_inflight
+        if len(inflight) > _TOUCH_RECORD_MAX:
+            for token_id, task in list(inflight.items()):
+                if task.done():
+                    inflight.pop(token_id, None)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -101,6 +193,7 @@ class AuthMiddleware:
         state.principal = None
         state.api_token = None
         state.actor = None
+        state.originating_credential = None
 
         app_state = scope.get("app").state if scope.get("app") is not None else None
 
@@ -109,7 +202,16 @@ class AuthMiddleware:
         # Re-read a real user before any route dependency runs: the tool's
         # persisted initiator cannot retain a deleted, disabled or old role.
         if scope["type"] == "http" and is_trusted_route_tool_scope(scope):
+            # Review 4.3: the trusted request carries no token of its own, so
+            # the cookie-only route rules learn the initiating credential's
+            # kind from the dispatch instead (a bearer-originated call must
+            # not pass them).
+            state.originating_credential = trusted_route_tool_originating_credential(scope)
             person = trusted_route_tool_person(scope)
+            # Review 4.3 round 2: the originating PrincipalRef (kind AND
+            # id), used below to rebuild state.actor with the initiator's
+            # real kind.
+            origin_ref = trusted_route_tool_origin_ref(scope)
             config = getattr(app_state, "config", None) if app_state is not None else None
             if person is not None and person.user_id is not None and app_state is not None:
                 storage_provider = getattr(app_state, "storage_provider", None)
@@ -126,14 +228,36 @@ class AuthMiddleware:
                 if user is not None and not user.disabled and user.role == person.role:
                     state.user = user
                     state.principal = user.username
-                    state.actor = Principal(
-                        type="user",
-                        id=user.id,
-                        display=user.username,
-                        role=user.role,
-                        source="internal",
-                        user_id=user.id,
-                    )
+                    # Review 4.3 round 2: rebuild the actor with the
+                    # initiator's real kind. Before the fix it was always
+                    # typed "user", so a call that originated from a bearer
+                    # token was saved as a user creator and could then mint
+                    # tokens on its own turns. A call that originated from
+                    # an api_token is an api_token actor everywhere,
+                    # exactly as a direct bearer REST call would be
+                    # recorded (the owner's role comes from the re-read row,
+                    # as on the bearer path).
+                    if origin_ref is not None and origin_ref.type == "api_token":
+                        state.actor = Principal(
+                            type="api_token",
+                            id=origin_ref.id,
+                            display=origin_ref.display,
+                            role=user.role,
+                            source=origin_ref.source or "internal",
+                            # The actor is the token, the person is its
+                            # owner: access decisions run as the owner's
+                            # re-read user row.
+                            user_id=user.id,
+                        )
+                    else:
+                        state.actor = Principal(
+                            type="user",
+                            id=user.id,
+                            display=user.username,
+                            role=user.role,
+                            source="internal",
+                            user_id=user.id,
+                        )
                     with acting_as(person):
                         interval_s = float(
                             getattr(getattr(config, "auth", None), "revalidate_interval_s", 0)
@@ -356,16 +480,43 @@ class AuthMiddleware:
             logger.exception("auth middleware: bearer lookup failed")
             return None, None
 
-        # Fire-and-forget last_used_at update.
-        try:
-            asyncio.create_task(
-                self._touch_last_used(storage_provider, api_token)
-            )
-        except RuntimeError:
-            # No running loop — extremely rare in ASGI; silently skip.
-            logger.debug(
-                "touch_last_used skipped: no running event loop",
-            )
+        # Fire-and-forget last_used_at update (review 4.6): one write per
+        # ~60 s per token, so N requests a second cause at most one UPDATE a
+        # minute on the row, and the task is referenced so it cannot be
+        # garbage-collected mid-write. Round 2: the row stamp only moves
+        # when a write completes, so the in-process records above also hold
+        # a write back while one is pending or was attempted this window.
+        if _should_touch_last_used(api_token) and self._touch_window_open(
+            api_token.id
+        ):
+            self._prune_touch_records()
+            existing = self._touch_inflight.get(api_token.id)
+            if existing is None or existing.done():
+                # The start-side cap (X3 round 1, B-M2): in-flight
+                # records evict only on completion, so a store whose writes
+                # never return would grow the dict by one per distinct token;
+                # at the cap a token with no write of its own starts none
+                # (the stamp is best-effort and the next request retries).
+                if (
+                    existing is not None
+                    or len(self._touch_inflight) < _TOUCH_RECORD_MAX
+                ):
+                    try:
+                        task = asyncio.create_task(
+                            self._touch_last_used(storage_provider, api_token)
+                        )
+                    except RuntimeError:
+                        # No running loop -- extremely rare in ASGI; silently skip.
+                        logger.debug(
+                            "touch_last_used skipped: no running event loop",
+                        )
+                    else:
+                        self._touch_inflight[api_token.id] = task
+                        self._touch_tasks.add(task)
+                        task.add_done_callback(self._touch_tasks.discard)
+                        task.add_done_callback(
+                            lambda _t, tid=api_token.id: self._on_touch_done(tid)
+                        )
 
         return user, api_token
 
@@ -396,11 +547,23 @@ class AuthMiddleware:
                 api_token.id, {"last_used_at": _utcnow().isoformat()}, where={"revoked_at": [None]},
             )
         except Exception:  # noqa: BLE001
-            logger.debug(
-                "touch_last_used failed for %s",
-                getattr(api_token, "id", "?"),
-                exc_info=True,
-            )
+            # Review 4.6: a lost stamp write is an error an operator can act
+            # on, not debug noise -- but a failing store answers every
+            # request, so at most one WARNING + traceback per token per
+            # window (review 4.6 round 2).
+            token_id = getattr(api_token, "id", "?")
+            now = time.monotonic()
+            last_failure = self._touch_last_failure.get(token_id)
+            if last_failure is None or now - last_failure >= _LAST_USED_STALE_SECONDS:
+                self._touch_last_failure[token_id] = now
+                logger.warning(
+                    "touch_last_used failed for %s", token_id, exc_info=True,
+                )
+            else:
+                logger.debug(
+                    "touch_last_used still failing for %s (suppressed)",
+                    token_id,
+                )
 
 
 def _read_cookie(scope, name: str) -> str | None:

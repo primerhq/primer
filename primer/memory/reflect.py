@@ -22,8 +22,9 @@ from primer.memory.collection import memory_collection_id
 from primer.memory.entry import slugify_name
 from primer.memory.prompts import DEFAULT_REFLECTION_PROMPT
 from primer.memory.reflection_input import (
-    ATTEMPT_SECONDS, Budget, InputRefused, InvalidVerdict, bounded_judge,
-    plan_input, prepare_input, request_size, transcript,
+    ATTEMPT_SECONDS, Budget, EvidenceSummary, InputRefused, InvalidVerdict,
+    MAX_CHUNKS, MEMORY_SUMMARY_PROMPT, Plan, bounded_judge, fragments,
+    plan_input, prepare_input, request_size, summary_input, text_tokens, transcript,
 )
 from primer.memory.scrub import known_names, personal_data_hits
 from primer.model.access import AccessLevel
@@ -111,17 +112,21 @@ def used_entries(messages: list[Message], collection_id: str, lookups: Iterable[
 
 
 async def _lookups(deps: Any, agent: Agent, job: MemoryJob) -> list[dict[str, Any]]:
-    """The ``memory.lookup`` payloads of this session within the turns being reflected on (``reflected_turn < turn <= target_turn``)."""
+    """The ``memory.lookup`` payloads of this session within the turns being reflected on (``reflected_turn < turn <= target_turn``).
+
+    The scan is bounded by the session's own events (the store's ``(session_id, id)`` index), so the agent's lookups of other sessions (the bulk of its 30
+    days of events) are never read, whatever their age.
+    """
     if not job.session_id:
         return []
     events = deps.sp.get_event_store()
     out: list[dict[str, Any]] = []
     after = 0
     while True:
-        page = await events.read_after(after, limit=200, event_type_prefix="memory.lookup", entity_kind="agent", entity_id=agent.id)
+        page = await events.read_after(after, limit=200, event_type_prefix="memory.lookup", entity_kind="agent", entity_id=agent.id, session_id=job.session_id)
         for event in page:
             payload = event.payload or {}
-            if event.session_id == job.session_id and job.reflected_turn < int(payload.get("turn", 0)) <= job.target_turn:
+            if job.reflected_turn < int(payload.get("turn", 0)) <= job.target_turn:
                 out.append(payload)
         if len(page) < 200:
             return out
@@ -132,6 +137,69 @@ def turn_starts(messages: list[Message]) -> list[int]:
     """Where each turn's input begins. A turn's input is a run of user messages (a session starts with its instructions after a greeting
     message, a steer carries its attachments): the run counts once, and the tool results of a round are not user messages."""
     return [i for i, m in enumerate(messages) if m.role == "user" and (i == 0 or messages[i - 1].role != "user")]
+
+
+def plan_newest_window(messages: list[Message], first_turn: int, *, context: str, system: str,
+                       schema: dict, window: int) -> tuple[Plan, int, int]:
+    """``(plan, first, last)``: the plan over the newest whole turns the bounded input can cover, as 0-based indexes into the range's turns.
+
+    A range the plan cannot cover would be refused again on every later attempt, since it only grows. The window ends at the newest turn that fits on
+    its own (a turn too large for the input is left out wherever it is) and reaches back as far as still fits. A turn that does not fit on its own is
+    a wall the window cannot cross: the turns older than it fall into the skipped count as well, even ones that would fit alone, because the window
+    is contiguous and ends at the newest turn. ``input_compaction_limit`` is raised only when no turn fits alone. Refusals that are not about the
+    range (an oversized fixed policy) pass through.
+    """
+    starts = turn_starts(messages)
+    bounds = [*starts, len(messages)]
+
+    def attempt(first: int, last: int) -> Plan | None:
+        try:
+            return plan_input(messages[bounds[first]:bounds[last + 1]], first_turn + first, context=context, system=system,
+                              schema=schema, window=window)
+        except InputRefused as exc:
+            if str(exc) != "input_compaction_limit":
+                raise
+            return None
+
+    last = len(starts) - 1
+    plan = attempt(0, last)
+    if plan is not None:
+        return plan, 0, last
+    # The range will not be covered. Walk back to the newest turn that fits on its own; a turn whose fragments cannot fill the bounded summary chunks
+    # is refused by a cheap token count, not a plan (review 2026-11-23 X2.2), so the oversized tail costs its content, not one plan per turn.
+    # The count is exact in the direction that skips: the estimator's join inequality is exact (T(a+b) <= T(a) + T(b): the CJK count is
+    # additive and the ceil is subadditive, so a join costs no more than the two token counts, no +1 at a join), and by monotonicity a
+    # fitting chunk's joined lines hold T(joined) <= chunk_capacity, so the real cost of combining chunks is only the MAX_CHUNKS - 1
+    # newline separators (at most one token each, the (MAX_CHUNKS - 1) term); the +1 per chunk (and per line) in the thresholds is
+    # deliberate slack - so a turn above MAX_CHUNKS * (chunk_capacity + 1) + (MAX_CHUNKS - 1) total, or one line above chunk_capacity
+    # + 1, is refused by plan_input with input_compaction_limit too: the count never skips a turn the old per-turn walk would reflect
+    # (review 2026-11-23 X2.2 / M1, pinned at the exact boundary in tests/memory/test_reflect.py). The slack errs toward planning: a
+    # turn the count lets through that plan_input still refuses (the packing needs more chunks, or the per-chunk output budget
+    # starves) costs exactly one plan, never an oversized one.
+    summary_budget = Budget.for_model(window, summary=True)
+    fixed_summary = request_size(MEMORY_SUMMARY_PROMPT, summary_input([]), EvidenceSummary.model_json_schema())
+    chunk_capacity = summary_budget.input_tokens - fixed_summary
+    while last >= 0:
+        lines = [f.line for f in fragments(messages[bounds[last]:bounds[last + 1]], first_turn + last)]
+        if (text_tokens("\n".join(lines)) > MAX_CHUNKS * (chunk_capacity + 1) + (MAX_CHUNKS - 1)
+                or max(map(text_tokens, lines), default=0) > chunk_capacity + 1):
+            last -= 1
+            continue
+        plan = attempt(last, last)
+        if plan is not None:
+            break
+        last -= 1
+    if last < 0:
+        raise InputRefused("input_compaction_limit")
+    low, high, found = 0, last, (plan, last)
+    while low < high:  # the fewest older turns left out; fewer turns never need more chunks
+        mid = (low + high) // 2
+        plan = attempt(mid, last)
+        if plan is None:
+            low = mid + 1
+        else:
+            found, high = (plan, mid), mid
+    return found[0], found[1], last
 
 
 def new_turns(messages: list[Message], job: MemoryJob) -> list[Message]:
@@ -184,7 +252,7 @@ async def _build_context(deps: Any, agent: Agent, settings: AgentMemory, session
         f"# Outcome signals\nfinal status: {session.status.value if session else 'unknown'}\ntool errors: {tool_errors}",
         "# Capture topics\n" + ("\n".join(f"- {t}" for t in settings.capture_topics) or "(any topic)"),
         "# Do not capture\n" + ("\n".join(f"- {t}" for t in settings.do_not_capture) or "(nothing listed)"),
-        "# Entries used in this session\n" + (", ".join(sorted(used)) or "(none)"),
+        "# Entries used in the reflected turns\n" + (", ".join(sorted(used)) or "(none)"),
     ]
     related = await _related(deps, agent.id, _first_user_text(turns))
     index = [f"- {e.name}: {e.description}" for e in active]
@@ -262,7 +330,10 @@ async def resolve_agent_llm(deps: Any, agent: Agent) -> tuple[Any, Any] | None:
 
 async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory) -> ReflectionReport:
     """Reflect on the session's new turns and apply the deltas. The budget is counted by the caller."""
-    session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
+    # ``deps.session`` is the session as captured before the log was read (run_memory_job); a direct caller has none and captures it here.
+    session = getattr(deps, "session", None)
+    if session is None:
+        session = await deps.sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
     if session is not None:
         session = session.model_copy(deep=True)
 
@@ -291,7 +362,9 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
         await _mark_reflected(deps, job)
         return await _skip(deps, agent, job, "no_new_turns")
     collection_id = memory_collection_id(agent.id)
-    used, trial = used_entries(messages, collection_id, await _lookups(deps, agent, job))
+    # The "entries used" gate and section cover the turns being reflected on only (review 2026-11-23 X2.2 / M3): an entry consulted in an
+    # already-reflected turn is not in the reflected turns' prompt and its credit must not land from this run.
+    used, trial = used_entries(turns, collection_id, await _lookups(deps, agent, job))
     system = settings.reflection_prompt or DEFAULT_REFLECTION_PROMPT
     schema = ReflectionOutput.model_json_schema()
     budget = Budget.for_model(model.context_length)
@@ -300,13 +373,30 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
             await check()
             context, context_metadata = await _build_context(deps, agent, settings, session, turns, used,
                                            system=system, schema=schema, budget=budget)
-            plan = plan_input(turns, job.reflected_turn + 1, context=context, system=system,
-                              schema=schema, window=model.context_length)
+            try:
+                plan, first, last = plan_newest_window(turns, job.reflected_turn + 1, context=context, system=system,
+                                                       schema=schema, window=model.context_length)
+            except InputRefused as exc:
+                if str(exc) != "input_compaction_limit":
+                    raise
+                # Not even the newest turn fits the bounded input, and the range only grows: retrying could never succeed, so the
+                # watermark moves past it (a skipped range is never read again) and the event says what was given up.
+                await check()
+                await _mark_reflected(deps, job)
+                logger.warning("memory %s: turns %d to %d of session %s are too large to reflect on; skipped", agent.id,
+                               job.reflected_turn + 1, job.target_turn, job.session_id)
+                return await _skip(deps, agent, job, "input_too_large_skipped",
+                                   f"turns {job.reflected_turn + 1} to {job.target_turn} skipped: too large for the bounded input")
             user_message, input_metadata = await prepare_input(
                 plan, llm=llm, model=model, context=context, system=system, schema=schema, check=check,
             )
             input_metadata.update(context_metadata)
             input_metadata["source_turns"] = job.target_turn - job.reflected_turn
+            skipped = len(turn_starts(turns)) - (last - first + 1)
+            input_metadata["skipped_turns"] = skipped
+            if skipped:
+                logger.info("memory %s: session %s reflected on %d of %d turns; %d did not fit the bounded input",
+                            agent.id, job.session_id, last - first + 1, input_metadata["source_turns"], skipped)
             await check()
             try:
                 raw = await bounded_judge(llm, model, system=system, user=user_message, schema=schema, budget=budget)
@@ -318,7 +408,20 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
                 return await _skip(deps, agent, job, "invalid_output")
             await check()
     except InputRefused as exc:
-        return await _skip(deps, agent, job, str(exc))
+        if str(exc) != "input_compaction_limit":
+            return await _skip(deps, agent, job, str(exc))
+        # A range refusal that survived planning: the summarised evidence, or the judge call's own pre-check, still exceeded the bounded
+        # input. It is deterministic for this range (summaries at temperature zero), so retrying it could never succeed: advance the
+        # watermark like the window path (no re-arm loop) and say what was given up (review 2026-11-23 X2.2).
+        try:
+            await check()
+        except InputRefused as current:
+            return await _skip(deps, agent, job, str(current))
+        await _mark_reflected(deps, job)
+        logger.warning("memory %s: turns %d to %d of session %s did not fit the bounded input after planning; skipped", agent.id,
+                       job.reflected_turn + 1, job.target_turn, job.session_id)
+        return await _skip(deps, agent, job, "input_too_large_skipped",
+                           f"turns {job.reflected_turn + 1} to {job.target_turn} skipped: too large for the bounded input")
     except Exception as exc:  # noqa: BLE001 - existing durable retries; never log provider payloads
         raise ReflectionTransient("memory model unavailable") from exc
     try:
@@ -331,7 +434,7 @@ async def reflect(deps: Any, job: MemoryJob, agent: Agent, settings: AgentMemory
     person = person_from_ref(ref)
     trigger_run = bool(ref is not None and ref.type == "trigger")
     needs_approval = settings.promotion == "approve" or (settings.teachers == "owner" and level_of(person, agent.access) != AccessLevel.OWNER)
-    source = {"session_id": job.session_id, "from_turn": job.reflected_turn + 1, "to_turn": job.target_turn}
+    source = {"session_id": job.session_id, "from_turn": job.reflected_turn + 1 + first, "to_turn": job.reflected_turn + 1 + last}
     # The crash-replay guard (EXEC2-03): a stable key for this reflect run (the job id is stable across the re-claims of the same run; the watermark
     # keeps the run apart from later runs on the same session). A delta a crashed run already applied to an entry is recorded under this key, so the
     # re-claim replays as a no-op instead of double-applying (primer/memory/store.py).
@@ -386,6 +489,11 @@ async def _log_lines(sp: Any, read_log: Callable[[str, str], Awaitable[bytes]], 
         current = await sp.get_storage(WorkspaceSession).get(job.session_id)
         if current is None or _session_identity(current) != _session_identity(row):
             raise InputRefused("input_superseded")
+    # The decode and the strict record check are CPU-bound over the whole log: off the worker's event loop, as the executor's own parse is.
+    return await asyncio.to_thread(_checked_lines, raw, strict)
+
+
+def _checked_lines(raw: Any, strict: bool) -> list[str]:
     try:
         lines = (raw.decode("utf-8", "strict" if strict else "replace")
                  if isinstance(raw, (bytes, bytearray)) else str(raw)).split("\n")
@@ -459,7 +567,9 @@ def session_message_loader(sp: Any, read_log: Callable[[str, str], Awaitable[byt
 
     async def load(job: MemoryJob) -> list[Message] | None:
         lines = await _log_lines(sp, read_log, job, strict=True)
-        return None if lines is None else reconstruct_compacted_history(_without_compaction_markers(lines))
+        if lines is None:
+            return None
+        return await asyncio.to_thread(lambda: reconstruct_compacted_history(_without_compaction_markers(lines)))
 
     return load
 

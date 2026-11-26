@@ -304,12 +304,9 @@ async def test_previous_turn_cannot_start_a_child(session_toolset, sp, seeded):
     assert child.status == SessionStatus.CREATED and child.turn_status == "idle"
 
 
-async def test_tool_priority_uses_the_active_caller_and_enforces_its_floor(session_toolset, sp, seeded, monkeypatch):
-    from functools import partial
-
+async def test_tool_priority_uses_the_active_caller_and_enforces_its_floor(session_toolset, sp, seeded):
     from primer.model.session_creation import SessionCreationIntent
     from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
-    from primer.workspace import session_factory
 
     rows = sp.get_storage(WorkspaceSession)
     caller = await rows.create(WorkspaceSession(
@@ -326,18 +323,12 @@ async def test_tool_priority_uses_the_active_caller_and_enforces_its_floor(sessi
     async def create(fields, *, context=ctx):
         return await session_toolset.call(tool_name="create_workspace_session", arguments={**args, **fields}, ctx=context)
 
-    for fields in ({}, {"priority": 14}):
-        refused = await create(fields)
-        assert refused.is_error and json.loads(refused.output)["type"] == "unavailable"
-        assert "scheduling cutover" in refused.output
     escalation = await create({"priority": 0})
     assert escalation.is_error and json.loads(escalation.output)["type"] == "forbidden"
     invalid = await create({"priority": True})
     assert invalid.is_error and json.loads(invalid.output)["type"] == "validation-error"
     assert not sp.get_storage(SessionCreationIntent)._data
 
-    monkeypatch.setattr(session_factory, "SessionFactoryDeps",
-                        partial(session_factory.SessionFactoryDeps, nonzero_priority_available=True))
     for fields, context, expected in [({}, ctx, 14), ({"priority": 14}, ctx, 14), ({"priority": 17}, ctx, 17),
                                       ({"priority": 9}, None, 9), ({}, None, 0)]:
         result = await create(fields, context=context)

@@ -89,11 +89,22 @@ The filter is default-allow with a deny list. A default-deny filter would have
 to enumerate everything CPython touches to start, and one omission is a crash
 rather than a contained tool.
 
-`socket()` and `socketpair()` are deliberately allowed even when network is
-denied. They create a descriptor and move no data, and asyncio builds its
-event-loop self-pipe from one, so denying them breaks every async tool while
-adding no safety. `connect`, `bind`, `listen`, `accept`, `sendto` and `sendmsg`
-are denied instead.
+`socket()` with every address family other than AF_UNIX is denied at creation
+when network is denied (round 1 of 2026-11-23 replaced the first version's
+allow-list of AF_INET/AF_INET6, which left AF_NETLINK, AF_PACKET and AF_VSOCK
+creatable): `read()`/`write()` on an existing fd cannot be judged
+by family, so the network fd is closed at the door instead, which also covers
+TCP fast open through `sendmmsg`. `socketpair()` and `socket(AF_UNIX)` stay
+allowed: asyncio builds its event-loop self-pipe from an AF_UNIX pair, and a
+local pair carries no network bytes. `connect`, `bind`, `listen`, `accept`,
+the send/recv family, `sendmmsg`, `recvmmsg` and the `io_uring_*` calls are
+denied as well (the review 2026-11-23 named bypasses, 5.10).
+
+Setup failures fail closed. A host without libseccomp runs best effort (the
+tool runs, the local runner logs once that the network deny is best effort
+there), but on a host that HAS libseccomp a filter that cannot be built or
+loaded refuses the call with `RunnerError` instead of running unconfined
+under a claim of confinement - the same rule as Landlock.
 
 ## 7. Testing patterns
 

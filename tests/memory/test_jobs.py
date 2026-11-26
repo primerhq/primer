@@ -204,6 +204,7 @@ async def test_agent_deleted_or_memory_disabled_drops_lease(fake_storage_provide
 
 async def test_trivial_session_skipped_without_model_call(fake_storage_provider, engine, ran):
     await _agent(fake_storage_provider)
+    await fake_storage_provider.get_storage(WorkspaceSession).create(_session(turns=1))  # a live session keeps its row
     # fewer than two turns since the last reflection
     await on_turn_completed(fake_storage_provider, engine, _session(turns=1), NOW)
     deps = _deps(fake_storage_provider, engine)
@@ -355,3 +356,179 @@ async def test_a_job_that_raises_reports_it_instead_of_going_quiet(fake_storage_
     await jobs.report_job_error(deps, await _lease(engine, job_id), KeyError("boom"))
     [(event, payload)] = deps.recorder.events
     assert event == "memory.reflection.skipped" and payload["reason"] == "error" and payload["detail"].startswith("KeyError")
+
+
+# --- 2.8: the log is read and parsed once per job -------------------------------------------------------------------------------------------------
+
+
+async def test_the_gate_and_the_reflection_share_one_load_of_the_log(fake_storage_provider, engine, monkeypatch):
+    await _agent(fake_storage_provider)
+    loads = []
+
+    async def worked(job):
+        loads.append(job.id)
+        return [
+            Message(role="user", parts=[TextPart(text="do it")]),
+            Message(role="assistant", parts=[ToolCallPart(id="c1", name="web__fetch", arguments={})]),
+            Message(role="user", parts=[TextPart(text="again")]),
+            Message(role="assistant", parts=[TextPart(text="done again")]),
+            Message(role="user", parts=[TextPart(text="third request")]),
+        ]
+
+    seen = []
+
+    async def reflect_reads_the_log(deps, job, agent, settings):
+        seen.append(await deps.load_messages(job))
+
+    monkeypatch.setattr(jobs, "run_reflect", reflect_reads_the_log)
+    job_id = await _queued(fake_storage_provider, engine)
+    await run_memory_job(_deps(fake_storage_provider, engine, load_messages=worked), await _lease(engine, job_id))
+    assert len(loads) == 1 and len(seen) == 1 and len(seen[0]) == 5
+
+
+# --- 2.9: finished reflect jobs do not accumulate -------------------------------------------------------------------------------------------------
+
+
+async def _finished(sp, engine, *, status=SessionStatus.RUNNING, session_row=True) -> str:
+    await _agent(sp)
+    if session_row:
+        await sp.get_storage(WorkspaceSession).create(_session(turns=1).model_copy(update={"status": status}))
+    await on_turn_completed(sp, engine, _session(turns=1), NOW)
+    lease = await _lease(engine, "reflect:a1:s1")
+    out = await run_memory_job(_deps(sp, engine), lease)  # one turn: too small, retired
+    await engine.release(lease, outcome=out)
+    return "reflect:a1:s1"
+
+
+async def test_a_retired_reflect_of_a_deleted_session_is_deleted(fake_storage_provider, engine, ran):
+    job_id = await _finished(fake_storage_provider, engine, session_row=False)
+    assert await fake_storage_provider.get_storage(MemoryJob).get(job_id) is None
+
+
+async def test_a_retired_reflect_of_a_live_session_keeps_its_watermark(fake_storage_provider, engine, ran):
+    job_id = await _finished(fake_storage_provider, engine)
+    job = await fake_storage_provider.get_storage(MemoryJob).get(job_id)
+    assert job is not None and job.reflected_turn == 1 and job.requested_due_at is None
+
+
+async def test_an_ended_session_keeps_its_watermark_for_a_reopen(fake_storage_provider, engine, monkeypatch):
+    """ENDED is not terminal: a person's message reopens the session and its next turns must not re-reflect turns already learned from."""
+    from primer.memory.scheduling import patch_job_progress
+
+    sp, ranges = fake_storage_provider, []
+
+    async def fake_reflect(deps, job, agent, settings):
+        ranges.append((job.reflected_turn + 1, job.target_turn))
+        await patch_job_progress(deps, job, {"reflected_turn": job.target_turn})
+
+    monkeypatch.setattr(jobs, "run_reflect", fake_reflect)
+    await _agent(sp)
+    ended = _session(turns=3).model_copy(update={"status": SessionStatus.ENDED})
+    await sp.get_storage(WorkspaceSession).create(ended)
+    await on_session_ended(sp, engine, ended, NOW)
+    lease = await _lease(engine, "reflect:a1:s1")
+    out = await run_memory_job(_deps(sp, engine), lease)
+    await engine.release(lease, outcome=out)
+    assert ranges == [(1, 3)]
+    reopened = _session(turns=5)
+    await sp.get_storage(WorkspaceSession).update(reopened)
+    await on_turn_completed(sp, engine, reopened, NOW)
+    out = await run_memory_job(_deps(sp, engine), await _lease(engine, "reflect:a1:s1"))
+    assert ranges == [(1, 3), (4, 5)]
+
+
+async def test_the_sweep_keeps_ended_sessions_and_only_counts_deletions(fake_storage_provider, engine, ran, monkeypatch):
+    sp = fake_storage_provider
+    monkeypatch.setattr(jobs, "SWEEP_LIMIT", 2)
+    await _agent(sp)
+    store, sessions = sp.get_storage(MemoryJob), sp.get_storage(WorkspaceSession)
+    # more kept rows (ended and live sessions) than the limit, sorted before the rows of the deleted sessions
+    for sid in ("a1", "a2", "a3"):
+        status = SessionStatus.ENDED if sid == "a1" else SessionStatus.RUNNING
+        await sessions.create(_session(sid=sid).model_copy(update={"status": status}))
+    for sid in ("a1", "a2", "a3", "z1", "z2"):
+        await on_turn_completed(sp, engine, _session(sid=sid), NOW)
+        await store.update((await store.get(f"reflect:a1:{sid}")).model_copy(update={"requested_due_at": None}))
+    # A legacy row (no occurrence) of a session that still exists keeps staying (the pre-intent claim path may hold it
+    # pending); legacy rows of gone sessions are swept, but the cap stops this pass at the two gone-session rows above.
+    legacy = (await store.get("reflect:a1:z1")).model_copy(
+        update={"id": "reflect:a1:z9", "session_id": "a2", "occurrence_id": None, "incarnation_id": None, "requested_due_at": None})
+    await store.create(legacy)
+    assert await jobs.sweep_retired_reflects(_deps(sp, engine), "a1") == 2
+    assert [await store.get(f"reflect:a1:{sid}") is None for sid in ("a1", "a2", "a3", "z1", "z2", "z9")] == [False, False, False, True, True, False]
+
+
+async def test_a_legacy_reflect_of_a_gone_session_is_swept(fake_storage_provider, engine):
+    # A legacy (no-occurrence) reflect row is swept once its session is gone (review 2026-11-23 X2.2); rows of
+    # sessions that still exist keep staying (the pre-intent claim path may hold them pending).
+    sp = fake_storage_provider
+    await _agent(sp)
+    await sp.get_storage(WorkspaceSession).create(_session(sid="live"))
+    store = sp.get_storage(MemoryJob)
+    for sid in ("gone1", "gone2", "live"):
+        await store.create(MemoryJob(
+            id=f"reflect:a1:{sid}", kind="reflect", agent_id="a1", session_id=sid,
+            reflected_turn=1, target_turn=2, created_at=NOW, expires_at=NOW,
+        ))
+    assert await jobs.sweep_retired_reflects(_deps(sp, engine), "a1") == 2
+    assert await store.get("reflect:a1:gone1") is None
+    assert await store.get("reflect:a1:gone2") is None
+    assert await store.get("reflect:a1:live") is not None
+
+
+async def test_the_session_is_captured_before_the_log_is_read(fake_storage_provider, engine, monkeypatch):
+    """The reflection must judge the log against the session as it was before the gate's read, not as it is by the time the reflection starts."""
+    sp = fake_storage_provider
+    await _agent(sp)
+    store = sp.get_storage(WorkspaceSession)
+    await store.create(_session(turns=3))
+    seen = []
+
+    async def worked(job):
+        row = await store.get("s1")  # the session changes while the log is being read
+        await store.update(row.model_copy(update={"binding_epoch": row.binding_epoch + 1}))
+        return [Message(role="user", parts=[TextPart(text="do it")]), Message(role="assistant", parts=[ToolCallPart(id="c1", name="x__y", arguments={})]),
+                Message(role="user", parts=[TextPart(text="again")]), Message(role="assistant", parts=[TextPart(text="ok")]),
+                Message(role="user", parts=[TextPart(text="third")])]
+
+    async def reflect(deps, job, agent, settings):
+        seen.append(deps.session.binding_epoch)
+
+    monkeypatch.setattr(jobs, "run_reflect", reflect)
+    job_id = await _queued(sp, engine)
+    await run_memory_job(_deps(sp, engine, load_messages=worked), await _lease(engine, job_id))
+    assert seen == [0], "the captured session is the one from before the read"
+
+
+async def test_the_rearm_after_a_give_up_is_too_small_and_spends_no_budget(fake_storage_provider, engine, monkeypatch):
+    """A range the reflection gave up on moves the watermark to the target, so the next turn's re-arm is a one-turn range: too_small, no model, no slot."""
+    from primer.memory.scheduling import patch_job_progress
+
+    sp = fake_storage_provider
+    await _agent(sp)
+    await sp.get_storage(WorkspaceSession).create(_session(turns=3))
+    runs = []
+
+    async def gives_up(deps, job, agent, settings):
+        runs.append((job.reflected_turn, job.target_turn))
+        await patch_job_progress(deps, job, {"reflected_turn": job.target_turn})  # what reflect does on an input_too_large_skipped
+
+    monkeypatch.setattr(jobs, "run_reflect", gives_up)
+
+    async def worked(job):
+        out = []
+        for i in range(job.target_turn):
+            out += [Message(role="user", parts=[TextPart(text=f"ask {i}")]), Message(role="assistant", parts=[ToolCallPart(id=f"c{i}", name="x__y", arguments={})])]
+        return out
+
+    job_id = await _queued(sp, engine)
+    deps = _deps(sp, engine, load_messages=worked)
+    lease = await _lease(engine, job_id)
+    await engine.release(lease, outcome=await run_memory_job(deps, lease))
+    used = (await sp.get_storage(AgentMemory).get("a1")).reflections_count
+    await sp.get_storage(WorkspaceSession).update(_session(turns=4))
+    await on_turn_completed(sp, engine, _session(turns=4), NOW)
+    deps = _deps(sp, engine, load_messages=worked)
+    await run_memory_job(deps, await _lease(engine, job_id))
+    assert runs == [(0, 3)] and (await sp.get_storage(AgentMemory).get("a1")).reflections_count == used
+    assert [e[1]["reason"] for e in deps.recorder.events] == ["too_small"]

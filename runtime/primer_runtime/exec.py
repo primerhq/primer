@@ -29,7 +29,7 @@ from contextlib import nullcontext
 from typing import Any
 
 from primer_runtime.locks import WorkspaceLockTable
-from primer_runtime.ops import OpError, _resolve_safe, _strict_write_locking
+from primer_runtime.ops import OpError, _resolve_safe, _strict_write_locking, _subprocess_timeout
 from primer_runtime.process_group import NEW_SESSION, stop_process_group
 from primer_runtime.protocol import ErrorCode, Event, Response, serialize
 
@@ -38,7 +38,6 @@ log = logging.getLogger(__name__)
 _CHUNK_SIZE: int = 4096
 # Most output events one exec holds while its client is slow (the PTY path caps the same queue at 256).
 _QUEUE_MAX: int = 256
-_DEFAULT_TIMEOUT_S: float = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +76,11 @@ async def run_exec(
     cmd: list[str] = args.get("cmd", [])
     access: str = (args.get("access") or "write").lower()
     writes = args.get("writes")
-    timeout_s: float = float(args.get("timeout_s") or _DEFAULT_TIMEOUT_S)
+    # The configured subprocess deadline (PRIMER_SUBPROCESS_TIMEOUT_SECONDS,
+    # default 120 s) instead of a hard 60 s: init commands and every other
+    # default-timeout exec get the same bound the local backend uses for its
+    # subprocesses (review 2026-11-23, 5.5). An explicit timeout_s still wins.
+    timeout_s: float = float(args.get("timeout_s") or _subprocess_timeout())
     stdin_b64: str = args.get("stdin_b64") or ""
     workdir_raw: str | None = args.get("workdir")
     env_extra: dict[str, str] | None = args.get("env")

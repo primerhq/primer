@@ -117,38 +117,18 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
   const con = (typeof NV_useConsole === "function") ? NV_useConsole() : null;
   const meId = (con && con.viewer && (con.viewer.user_id || con.viewer.id)) || null;
 
-  // Per-row status — fetch /agents/{id}/status once per visible row.
-  const [perRowStatus, setPerRowStatus] = React.useState({});
-  React.useEffect(() => {
-    if (items.length === 0) {
-      setPerRowStatus({});
-      return undefined;
-    }
-    const ctrl = new AbortController();
-    // At most four reads in flight until a batch endpoint exists (UI-L15).
-    PR_mapLimit(items, 4, (a) =>
-      apiFetch("GET", `/agents/${encodeURIComponent(a.id)}/status`, null, { signal: ctrl.signal })
-        .then((r) => [a.id, r])
-        .catch((e) => [a.id, { ok: null, error: e?.title || e?.message }]),
-    ctrl.signal).then((entries) => setPerRowStatus(Object.fromEntries(entries.filter(Boolean))));
-    return () => ctrl.abort();
-  }, [list.data]);
-
-  // Per-row session count, best-effort.
-  const [perRowSessions, setPerRowSessions] = React.useState({});
-  React.useEffect(() => {
-    if (items.length === 0) {
-      setPerRowSessions({});
-      return undefined;
-    }
-    const ctrl = new AbortController();
-    PR_mapLimit(items, 4, (a) =>
-      apiFetch("GET", `/sessions?agent_id=${encodeURIComponent(a.id)}&limit=1`, null, { signal: ctrl.signal })
-        .then((r) => [a.id, r.total ?? (r.items?.length ?? 0)])
-        .catch(() => [a.id, null]),
-    ctrl.signal).then((entries) => setPerRowSessions(Object.fromEntries(entries.filter(Boolean))));
-    return () => ctrl.abort();
-  }, [list.data]);
+  // Per-row status and session count: /agents/{id}/status and a one-row /sessions page, read for the rows on this page that were not read yet or
+  // changed (PR_useRowReads, ui/foundation/api.js), never again for every row on each list change; Refresh reads them all again.
+  const statusReads = PR_useRowReads(items, (a, signal) =>
+    apiFetch("GET", `/agents/${encodeURIComponent(a.id)}/status`, null, { signal })
+      .catch((e) => ({ ok: null, error: e?.title || e?.message })));
+  const sessionReads = PR_useRowReads(items, (a, signal) =>
+    apiFetch("GET", `/sessions?agent_id=${encodeURIComponent(a.id)}&limit=1`, null, { signal })
+      .then((r) => r.total ?? (r.items?.length ?? 0))
+      .catch(() => null));
+  const perRowStatus = statusReads.byId;
+  const perRowSessions = sessionReads.byId;
+  const refreshAll = () => { statusReads.forget(); sessionReads.forget(); list.refetch(); };
 
   const openRow = (aid) => {
     if (typeof onOpen === "function") onOpen(aid);
@@ -171,7 +151,7 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
           />
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={refreshAll}>Refresh</Btn>
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New agent</Btn>
         </div>
       </div>

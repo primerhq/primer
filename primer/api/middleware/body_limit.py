@@ -11,6 +11,14 @@ body without a Content-Length is cut off at the cap too. The counting
 refusal is a Starlette ``HTTPException`` (413): FastAPI re-raises an
 ``HTTPException`` from body parsing instead of turning it into a 400, so
 the registered handler renders it as problem+json.
+
+Review 4.4: an anonymous request (the auth middleware ran and found no
+user, publishing ``user = None`` on the scope state - a Starlette
+``State``, read by attribute) gets the small ``anonymous_max_body_bytes``
+cap on top of the route's cap, so an unauthenticated client cannot
+pre-auth buffer a large body on a route whose cap is meant for
+authenticated callers. A scope with no auth state at all (no auth layer
+in the chain) keeps the historical caps.
 """
 
 from __future__ import annotations
@@ -57,10 +65,17 @@ _FIXED_CAPS: tuple[tuple[str, str, int], ...] = (
 )
 
 
+# Sentinel for "no auth layer published state" (an app that installs this
+# middleware without ``AuthMiddleware`` in front of it): its requests keep
+# the historical caps. Distinct from ``None`` = "auth ran, caller anonymous".
+_NO_AUTH_LAYER = object()
+
+
 def body_limit_options(limits: RequestLimitsConfig) -> dict[str, object]:
     """The keyword arguments ``BodySizeLimitMiddleware`` is installed with, from the config."""
     return {
         "max_body_bytes": limits.max_body_bytes,
+        "anonymous_max_body_bytes": limits.anonymous_max_body_bytes,
         "overrides": tuple(
             (method, pattern, getattr(limits, field)) for method, pattern, field in _OVERRIDES
         ) + tuple(
@@ -75,23 +90,52 @@ class BodySizeLimitMiddleware:
         app: ASGIApp,
         *,
         max_body_bytes: int,
+        anonymous_max_body_bytes: int | None = None,
         overrides: Sequence[tuple[str, str, int]] = (),
     ) -> None:
         self.app = app
         self.max_body_bytes = max_body_bytes
+        # None = no cap for anonymous callers (used when an app installs the
+        # middleware without an auth layer in front of it).
+        self.anonymous_max_body_bytes = anonymous_max_body_bytes
         self._overrides = [(m, re.compile(p), limit) for m, p, limit in overrides]
 
-    def _limit_for(self, method: str, path: str) -> int:
-        for m, pattern, limit in self._overrides:
+    def _limit_for(self, method: str, path: str, user) -> int:
+        limit = self.max_body_bytes
+        for m, pattern, route_limit in self._overrides:
             if m == method and pattern.match(path):
-                return limit
-        return self.max_body_bytes
+                limit = route_limit
+                break
+        # Review 4.4: an anonymous request (the auth middleware ran and found
+        # no user) gets the small cap, applied on top of the route's cap.
+        # ``user is None`` distinguishes "authed layer ran, nobody signed in"
+        # from "no auth layer in the chain at all" (no state, or no user
+        # attribute), which keeps its historical caps.
+        if (
+            user is None
+            and self.anonymous_max_body_bytes is not None
+            and self.anonymous_max_body_bytes < limit
+        ):
+            limit = self.anonymous_max_body_bytes
+        return limit
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        limit = self._limit_for(scope["method"], scope["path"])
+        state = scope.get("state")
+        # AuthMiddleware publishes a Starlette State (attribute access); a
+        # plain dict is tolerated for hand-rolled middleware chains.
+        # ``user is None`` = the auth layer ran and the caller is
+        # anonymous; no state or no user attribute = no auth layer in the
+        # chain, which keeps the historical caps.
+        if isinstance(state, dict):
+            user = state.get("user", _NO_AUTH_LAYER)
+        elif state is None:
+            user = _NO_AUTH_LAYER
+        else:
+            user = getattr(state, "user", _NO_AUTH_LAYER)
+        limit = self._limit_for(scope["method"], scope["path"], user)
 
         declared = None
         for name, value in scope.get("headers") or ():

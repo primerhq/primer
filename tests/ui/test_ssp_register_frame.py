@@ -385,3 +385,28 @@ def test_the_built_in_lance_offers_no_delete(ctx) -> None:
     MR.mount(window.SSPDetail, { sspId: "lance" });
     """)
     assert js(ctx, "MR.find('ssp-detail-delete') == null")
+
+
+def test_overview_shows_the_stored_distance_metric(ctx) -> None:
+    # Deferred X2.4: the server honours the row's distance_metric (new collections are
+    # created with it; an existing collection keeps the metric stored at creation
+    # time), so the overview shows the stored value again instead of a fixed cosine.
+    ctx.eval("""
+    MR.mount(SSPOverview, { p: { id: "ssp-scale", provider: "pgvectorscale", config: { hostname: "pg", port: 5432, database: "d", distance_metric: "l2" } } });
+    """)
+    settle(ctx)
+    texts = js(ctx, "MR.texts()")
+    assert "l2" in texts and "cosine" not in texts
+    assert "distance_metric" not in texts
+
+
+def test_overview_defaults_the_distance_to_cosine_when_unconfigured(ctx) -> None:
+    # Stored rows written before the field existed carry no distance_metric: the
+    # overview shows the default the store would resolve (cosine).
+    ctx.eval("""
+    MR.mount(SSPOverview, { p: { id: "ssp-pg", provider: "pgvector", config: { hostname: "pg", port: 5432, database: "d" } } });
+    """)
+    settle(ctx)
+    texts = js(ctx, "MR.texts()")
+    assert "cosine" in texts
+    assert "distance_metric" not in texts

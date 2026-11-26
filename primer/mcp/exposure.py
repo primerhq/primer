@@ -30,6 +30,7 @@ from typing import Any
 from collections.abc import AsyncIterator
 
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+from primer.common.bounded_jsonschema import MAX_INSTANCE_BYTES
 from primer.mcp.safety import is_exposable, tool_scoped_id
 from primer.model.chat import Tool, tool_catalogue_flags
 from primer.model.mcp_exposure import McpExposure
@@ -62,6 +63,12 @@ class ExposureDeps:
     decision. It is optional (``None``) only for the few callers that
     never dispatch (the CRUD router, exposure-listing tests); the
     production lifespan always supplies it.
+
+    ``max_body_bytes`` is the app's request-body cap
+    (``limits.max_body_bytes``) the MCP mount was installed with: the
+    argument-validation size bound of the meta-tools, so a body the
+    body-cap middleware admits (up to this cap) validates and dispatches
+    instead of being refused at the historical 1 MiB default.
     """
 
     storage_provider: Any
@@ -71,6 +78,7 @@ class ExposureDeps:
     # returns stable wiki reference paths. Discovery always has a lexical
     # fallback, so boot and MCP never depend on an index being configured.
     semantic_search: Any = None
+    max_body_bytes: int = MAX_INSTANCE_BYTES
 
 
 class ToolUnknown(Exception):
@@ -111,6 +119,122 @@ def _person_for_actor(actor: Any) -> Any:
     return Person(actor.user_id, actor.role or "user")
 
 
+async def statically_required(deps: ExposureDeps, *, toolset_id: str, tool_name: str) -> bool:
+    """Return True when the tool's effective approval policy is the ``required`` type.
+
+    This is the one approval-gate decision discovery can make without a
+    model call: a ``required`` policy refuses every call, so its tools are
+    withheld from the catalogue (advertising one could only answer
+    tool_unavailable). An LLM judge or a Rego policy is deliberately not
+    covered: it decides per call in the dispatch path, where a model call
+    is allowed. With no resolver wired (narrow non-dispatch test setups)
+    nothing is withheld, mirroring the dispatch no-op; the resolver lookup
+    itself is cached.
+    """
+    from primer.model.tool_approval import RequiredApprovalConfig
+
+    resolver = getattr(deps, "approval_resolver", None)
+    if resolver is None:
+        return False
+    policy = await resolver.find(toolset_id=toolset_id, tool_name=tool_name)
+    return (
+        policy is not None
+        and policy.enabled
+        and isinstance(policy.approval, RequiredApprovalConfig)
+    )
+
+
+async def _withhold_reason(
+    deps: ExposureDeps,
+    *,
+    exposure: McpExposure,
+    actor: Any,
+    scoped: str,
+    tool: Tool,
+    provider: Any,
+    required_role: str,
+) -> str | None:
+    """Return why ``tool`` is withheld from ``actor``'s catalogue, or ``None``.
+
+    Runs the per-tool discovery checks in :func:`authorized_catalogue`'s
+    order (allowlist, exposable, role floor, static approval gate) and
+    reports the FIRST check that withholds the tool: that outermost check
+    is why the caller never sees it. ``None`` means every check passed.
+    Only the static gate is a reason worth recording (``"approval_required"``);
+    the other withholdings return their check name, and
+    :func:`hidden_rejection_reason` folds them back to ``None``.
+    """
+    from primer.authz import _role_allows
+
+    if exposure.mode == "allowlist" and scoped not in exposure.allowed_tools:
+        return "allowlist"
+    ok, _reason = is_exposable(tool, provider=provider)
+    if not ok:
+        return "not_exposable"
+    if not _role_allows(actor, required_role):
+        return "role_floor"
+    if await statically_required(deps, toolset_id=tool.toolset_id, tool_name=tool.id):
+        return "approval_required"
+    return None
+
+
+async def hidden_rejection_reason(
+    deps: ExposureDeps,
+    *,
+    actor: Any,
+    principal: str | None,
+    api_token_scopes: list[str] | None,
+    scoped_id: str,
+) -> str | None:
+    """Return the audit reason for a target the catalogue does not show.
+
+    ``call_tool`` answers the fixed ``tool_unavailable`` envelope for any
+    target it cannot resolve. The audit trail records the cause when the
+    cause is the static approval gate: a ``required``-gated tool clears the
+    caller's allowlist, exposable and role-floor checks but is withheld by
+    the gate, and the refusal is recorded as ``approval_required`` (the
+    contract in ``skills/using-primer-over-mcp.md``). A target that is
+    unknown, or withheld by any earlier check (exposure off, no mcp scope,
+    allowlist, exposable, role floor), has no recoverable reason and
+    returns ``None``.
+    """
+    from primer.model.api_token import SCOPE_MCP
+
+    exposure = await get_exposure(deps)
+    if not exposure.enabled:
+        return None
+    if api_token_scopes is not None and SCOPE_MCP not in api_token_scopes:
+        return None
+    # An enumeration failure means "no reason known" (the caller answers tool_unavailable), as _iter_catalogue skips a broken toolset.
+    try:
+        route = (await build_routing_map(deps, reserved_only=True)).get(scoped_id)
+        if route is None:
+            return None
+        toolset_id, tool_name = route
+        provider = await deps.provider_registry.get_toolset(toolset_id)
+        tool = None
+        async for item in provider.list_tools(principal=principal):
+            if item.id == tool_name:
+                tool = item
+                break
+    except Exception as exc:  # noqa: BLE001 -- a broken toolset is not resolvable
+        logger.warning(
+            "mcp_exposure: hidden-target lookup for %r failed: %s: %s",
+            scoped_id, type(exc).__name__, exc,
+        )
+        return None
+    if tool is None:
+        return None
+    reason = await _withhold_reason(
+        deps, exposure=exposure, actor=actor, scoped=scoped_id,
+        tool=tool, provider=provider,
+        required_role=provider.required_role(tool.id),
+    )
+    # Only the static gate is an audit reason; the other withholdings
+    # (and a tool that passed every check) stay reasonless.
+    return reason if reason == "approval_required" else None
+
+
 async def authorized_catalogue(
     deps: ExposureDeps,
     *,
@@ -122,11 +246,15 @@ async def authorized_catalogue(
 
     This is the single discovery authorization seam. It applies the global
     switch, legacy allowlist or RBAC mode, MCP bearer scope, exposability,
-    role floor, and per-person toolset use before an identifier is projected.
+    role floor, the approval gate's static rule (a tool whose effective
+    policy is the ``required`` type is withheld: it refuses every call, so
+    advertising it could only answer tool_unavailable; LLM and Rego policies
+    are NOT evaluated here -- a listing must never trigger a model call --
+    and the dispatch path keeps deciding them per call), and per-person
+    toolset use before an identifier is projected.
     User-created toolsets are never walked.
     """
     from primer.access.tools import toolset_use
-    from primer.authz import _role_allows
     from primer.model.api_token import SCOPE_MCP
 
     exposure = await get_exposure(deps)
@@ -142,13 +270,11 @@ async def authorized_catalogue(
         principal=principal,
     ):
         scoped = tool_scoped_id(tool)
-        if exposure.mode == "allowlist" and scoped not in exposure.allowed_tools:
-            continue
-        ok, _reason = is_exposable(tool, provider=provider)
-        if not ok:
-            continue
         required_role = provider.required_role(tool.id)
-        if not _role_allows(actor, required_role):
+        if await _withhold_reason(
+            deps, exposure=exposure, actor=actor, scoped=scoped,
+            tool=tool, provider=provider, required_role=required_role,
+        ):
             continue
         candidates.append((tool, provider, scoped, required_role))
 

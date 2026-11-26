@@ -524,6 +524,13 @@ function NV_Palette() {
               })}
             </div>
           ) : null}
+          {wikiDocs.data && wikiDocs.data.more ? (
+            // The wiki listing stopped at the seam's cap (collectionDocuments):
+            // say so, so the first page is never mistaken for the whole collection.
+            <div className="nv-palette-wiki-more muted text-sm" data-testid="nv-palette-wiki-more">
+              Wiki: showing the first {SH_COLLECTION_DOCS_MAX} documents; the collection has more.
+            </div>
+          ) : null}
           {!flat.length && !anySourceError ? (
             <div className="nv-palette-empty">
               Nothing matches {JSON.stringify(q)}.

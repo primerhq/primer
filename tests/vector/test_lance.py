@@ -90,6 +90,23 @@ async def test_create_collection_basic(lance_provider):
 
 
 @pytest.mark.asyncio
+async def test_create_collection_uses_the_configured_distance_metric(tmp_path):
+    # Deferred X2.4: a ``create_collection`` with no explicit distance resolves
+    # the provider's configured metric (mapped into LanceDB's vocabulary, so
+    # ``ip`` stores as ``dot``).
+    p = LanceVectorStoreProvider(LanceConfig(path=tmp_path / "lance", distance_metric="ip"))
+    try:
+        await p.initialize()
+        store = p.get_vector_store()
+        await store.create_collection("col-m", dimensions=4)
+        rows = await p._read_catalogue()
+        assert len(rows) == 1
+        assert rows[0]["distance"] == "dot"
+    finally:
+        await p.aclose()
+
+
+@pytest.mark.asyncio
 async def test_create_collection_idempotent_same_args(lance_provider):
     store = lance_provider.get_vector_store()
     await store.create_collection("col-a", dimensions=4)

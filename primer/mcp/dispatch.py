@@ -39,6 +39,7 @@ from primer.model.api_token import SCOPE_MCP
 from primer.model.chat import Tool, ToolCallResult
 
 if TYPE_CHECKING:
+    from primer.agent.approval import ApprovalVerdict
     from primer.model.principal import Principal
 
 
@@ -93,6 +94,63 @@ async def list_exposed_tools(
     return out
 
 
+async def _approval_gate_verdict(
+    *,
+    toolset_id: str,
+    bare_name: str,
+    arguments: dict,
+    deps: "ExposureDeps",
+    actor: "Principal | None" = None,
+) -> "ApprovalVerdict | None":
+    """The approval gate's verdict for one tool: ``None`` when no resolver
+    is wired (narrow non-dispatch setups) or no enabled policy applies,
+    the verdict otherwise.
+
+    The call path's own rule: :func:`_enforce_approval_gate` refuses a
+    call the gate requires approval for. Discovery does NOT call this --
+    a verdict may cost a model call, so ``authorized_catalogue`` applies
+    only the static ``required``-type rule instead and leaves LLM and
+    Rego policies to this gate at call time.
+    """
+    from datetime import datetime, timezone
+
+    from primer.access.person import direct_actor, gate_identity
+    from primer.agent.approval import (
+        ApprovalContext,
+        evaluate_approval_gate,
+    )
+
+    resolver = getattr(deps, "approval_resolver", None)
+    if resolver is None:
+        return None
+    # The fallback first-``__`` split in the dispatch path can hand the
+    # gate the retired alias spelling of a live toolset (``_misc`` for
+    # ``misc``); the registry resolves that alias and the call IS
+    # dispatched, so the gate must see the canonical id the policies
+    # are written against, or a Rego or LLM gate reading
+    # ``input.toolset_id`` would never match it.
+    toolset_id = canonical_toolset_id(toolset_id)
+    policy = await resolver.find(toolset_id=toolset_id, tool_name=bare_name)
+    if policy is None or not policy.enabled:
+        return None
+    ctx = ApprovalContext(
+        tool_name=bare_name,
+        toolset_id=toolset_id,
+        arguments=arguments or {},
+        agent_id=None,
+        session_id=None,
+        chat_id=None,
+        requested_at=datetime.now(timezone.utc),
+        # The caller acting directly: the person (a token's owner) and actor ``user`` (``system`` with auth disabled).
+        identity=await gate_identity(actor, direct_actor(actor), getattr(deps.provider_registry, "storage_provider", None)),
+    )
+    return await evaluate_approval_gate(
+        policy=policy,
+        context=ctx,
+        provider_registry=deps.provider_registry,
+    )
+
+
 async def _enforce_approval_gate(
     *,
     scoped_id: str,
@@ -116,44 +174,12 @@ async def _enforce_approval_gate(
     test setups) we skip, mirroring the agent path which no-ops when no
     resolver is configured.
     """
-    from datetime import datetime, timezone
-
-    from primer.access.person import direct_actor, gate_identity
-    from primer.agent.approval import (
-        ApprovalContext,
-        evaluate_approval_gate,
+    del principal  # the identity travels on ``actor``; the gate needs no bare principal
+    verdict = await _approval_gate_verdict(
+        toolset_id=toolset_id, bare_name=bare_name,
+        arguments=arguments, deps=deps, actor=actor,
     )
-
-    resolver = getattr(deps, "approval_resolver", None)
-    if resolver is None:
-        return
-    # The fallback first-``__`` split in the dispatch path can hand the
-    # gate the retired alias spelling of a live toolset (``_misc`` for
-    # ``misc``); the registry resolves that alias and the call IS
-    # dispatched, so the gate must see the canonical id the policies
-    # are written against, or a Rego or LLM gate reading
-    # ``input.toolset_id`` would never match it.
-    toolset_id = canonical_toolset_id(toolset_id)
-    policy = await resolver.find(toolset_id=toolset_id, tool_name=bare_name)
-    if policy is None or not policy.enabled:
-        return
-    ctx = ApprovalContext(
-        tool_name=bare_name,
-        toolset_id=toolset_id,
-        arguments=arguments or {},
-        agent_id=None,
-        session_id=None,
-        chat_id=None,
-        requested_at=datetime.now(timezone.utc),
-        # The caller acting directly: the person (a token's owner) and actor ``user`` (``system`` with auth disabled).
-        identity=await gate_identity(actor, direct_actor(actor), getattr(deps.provider_registry, "storage_provider", None)),
-    )
-    verdict = await evaluate_approval_gate(
-        policy=policy,
-        context=ctx,
-        provider_registry=deps.provider_registry,
-    )
-    if verdict.required:
+    if verdict is not None and verdict.required:
         raise NotExposed(scoped_id, reason="approval_required")
 
 

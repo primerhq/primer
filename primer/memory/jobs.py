@@ -25,6 +25,9 @@ from primer.memory.reflection_input import InputRefused
 from primer.model.memory import AgentMemory, MemoryJob
 from primer.memory.scheduling import arm_current, locked_occurrence, new_occurrence, patch_job_progress
 from primer.model.scheduler import WorkerConfig
+from primer.model.storage import CursorPage
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.storage.q import Q
 from primer.worker.turn import compute_backoff
 from primer.storage._locking import LockingTransaction
 
@@ -38,6 +41,8 @@ MIN_TURNS = 2
 MAX_ATTEMPTS = 3
 #: The curator runs at most once in this long.
 CURATE_EVERY = timedelta(hours=24)
+#: The curator's sweep deletes at most this many retired reflect rows per pass; the rest wait for the next day's.
+SWEEP_LIMIT = 500
 
 
 @dataclass
@@ -59,6 +64,22 @@ class MemoryDeps:
     describe_log: Callable[[MemoryJob], Awaitable[str]] | None = None
     worker_config: WorkerConfig = field(default_factory=WorkerConfig)
     lease: Lease | None = None
+    #: A reflect run's session as it was captured before the log was read (set by ``run_memory_job``); the reflection compares it with the current row.
+    session: WorkspaceSession | None = None
+
+
+def _load_once(load: Callable[[MemoryJob], Awaitable[list[Message] | None]] | None):
+    """One read and parse of the session log per job: the triviality gate and the reflection are handed the same messages."""
+    if load is None:
+        return None
+    loaded: list[list[Message] | None] = []
+
+    async def once(job: MemoryJob) -> list[Message] | None:
+        if not loaded:
+            loaded.append(await load(job))
+        return loaded[0]
+
+    return once
 
 
 def reflect_job_id(agent_id: str, session_id: str) -> str:
@@ -228,6 +249,10 @@ async def run_curate(deps: MemoryDeps, job: MemoryJob, agent: Agent, settings: A
     jobs = deps.sp.get_storage(MemoryJob)
     # Legacy tool-created rows had no durable due time. Keep their daily fallback.
     # Managed topics run only on their own deadline and occurrence.
+    try:
+        await sweep_retired_reflects(deps, agent.id)
+    except Exception:  # noqa: BLE001 - housekeeping; tomorrow's pass tries again
+        logger.warning("memory job %s: could not sweep retired reflect jobs", job.id, exc_info=True)
     pending = await jobs.get(topics_job_id(agent.id))
     if pending is not None and pending.occurrence_id is None:
         await run_topics(deps, pending, agent, settings)
@@ -336,6 +361,38 @@ async def run_memory_job(deps: MemoryDeps, lease: Lease) -> ReleaseOutcome:
     return outcome
 
 
+async def _session_over(sp: Any, job: MemoryJob) -> bool:
+    """Whether the job's session row is gone, so that nothing can enqueue it again. An ``ENDED`` session is not over: a new message reopens it. Unsure counts as no."""
+    try:
+        return not job.session_id or await sp.get_storage(WorkspaceSession).get(job.session_id) is None
+    except Exception:  # noqa: BLE001 - the row is kept; the curator's sweep tries again
+        logger.warning("memory job %s: could not read its session", job.id, exc_info=True)
+        return False
+
+
+async def sweep_retired_reflects(deps: MemoryDeps, agent_id: str) -> int:
+    """Delete the agent's retired reflect rows whose session is gone (the rows that deleted sessions left behind); returns how many.
+
+    Only deletions count toward ``SWEEP_LIMIT``, so rows of live sessions cannot block the sweep. Legacy rows (no occurrence) of a gone session are
+    swept too; of a session that still exists they keep staying (the pre-intent claim path may still hold them pending). A retired row is deleted
+    under its own occurrence guard, so a request that re-armed it wins.
+    """
+    sp, deleted, cursor = deps.sp, 0, None
+    retired = Q(MemoryJob).where("agent_id", agent_id).where("kind", "reflect").where_null("requested_due_at").build()
+    while deleted < SWEEP_LIMIT:
+        page = await sp.get_storage(MemoryJob).find(retired, CursorPage(cursor=cursor, length=100))
+        for job in page.items:
+            if deleted >= SWEEP_LIMIT or not await _session_over(sp, job):
+                continue
+            async with locked_occurrence(sp, job) as (current, conn):
+                if current is not None and await sp.get_storage(MemoryJob).delete_if(job.id, where=job.occurrence_guard(), conn=conn):
+                    deleted += 1
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return deleted
+
+
 async def _settle(deps: MemoryDeps, job: MemoryJob, lease: Lease, outcome: ReleaseOutcome, now: datetime) -> None:
     """Durably retire or schedule the next attempt before the old lease releases."""
     if job.occurrence_id is None and outcome.drop_lease:
@@ -349,12 +406,19 @@ async def _settle(deps: MemoryDeps, job: MemoryJob, lease: Lease, outcome: Relea
             due = deps.now() + timedelta(seconds=seconds)
         else:
             due = now + (outcome.requeue_after or timedelta())
+    over = due is None and job.kind == "reflect" and await _session_over(deps.sp, job)
     async with locked_occurrence(deps.sp, job, engine=deps.engine, lease=lease) as (current, conn):
         store = deps.sp.get_storage(MemoryJob)
         if current is None:
             return
         if current.occurrence_id is not None and current.requested_due_at is None:
             return  # another execution already retired this occurrence
+        if over:
+            # The session row is gone, so nothing will enqueue this session again and the row (its reflected-turn watermark) has no further use.
+            # Any session that still exists keeps its retired row, ENDED ones too: a message reopens an ended session, and without the
+            # watermark its next turns would reflect from turn 1 again.
+            await store.delete_if(job.id, where=job.occurrence_guard(), conn=conn)
+            return
         patch = {
             "incarnation_id": job.incarnation_id or new_occurrence(),
             "occurrence_id": job.occurrence_id if due is None else new_occurrence(),
@@ -393,6 +457,9 @@ async def _run(deps: MemoryDeps, job: MemoryJob, lease: Lease, now: datetime) ->
             await _skipped(deps, job, "budget", retrying=True)
             return ReleaseOutcome(success=True, requeue_after=_until_next_utc_midnight(now))
         # 4. a session too small to learn from: marked reflected, no model call
+        # The session is captured before the log is read, as the reflection's own capture used to be, so its identity check covers the read.
+        captured = await sp.get_storage(WorkspaceSession).get(job.session_id) if job.session_id else None
+        deps = replace(deps, load_messages=_load_once(deps.load_messages), session=captured.model_copy(deep=True) if captured else None)
         try:
             small = await _trivial(deps, job)
         except InputRefused as exc:

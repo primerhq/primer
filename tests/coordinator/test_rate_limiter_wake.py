@@ -18,6 +18,7 @@ class _Limiter(PostgresRateLimiter):
         self._bus = bus
         self.state = limit_state  # {"held": n}
         self.attempts = 0
+        self._queues: dict = {}
 
     async def _try_insert(self, key, max_concurrency):
         self.attempts += 1

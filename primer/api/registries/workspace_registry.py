@@ -116,7 +116,9 @@ def new_workspace_row(
 def _make_default_factory(
     subprocess_timeout_seconds: float = 120.0,
 ) -> "Callable[[WorkspaceProvider], WorkspaceBackend]":
-    """Return a backend factory that threads ``subprocess_timeout_seconds`` through."""
+    """Return a backend factory that threads the subprocess deadline through.
+    The k8s default-deny egress opt-in is the provider's own config field,
+    so nothing else is captured."""
     def _factory(provider: WorkspaceProvider) -> "WorkspaceBackend":  # pragma: no cover
         from primer.workspace.factory import WorkspaceBackendFactory
         return WorkspaceBackendFactory.create(
@@ -160,7 +162,9 @@ class WorkspaceRegistry(BusInvalidated):
         self._local_policy = local_policy or LocalWorkspacePolicy()
         # If a custom factory is supplied, use it as-is; otherwise build a
         # default factory that captures the configured subprocess timeout.
-        self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
+        self._factory = factory or _make_default_factory(
+            subprocess_timeout_seconds
+        )
         self._cache: dict[str, "WorkspaceBackend"] = {}
         self._lock = asyncio.Lock()
         self._retirement = AdapterRetirement()                 # only a bus-reconnect flush retires; an edit still closes the backend at once

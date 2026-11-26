@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from primer.int.vector_store import VectorStore
 from primer.knowledge.document_service import DocumentService
 from primer.model.collection import Document
 
@@ -24,7 +25,7 @@ from tests.api.test_knowledge_documents_by_path import app, client, collection_i
 from tests.knowledge.test_indexing import _Emb
 
 
-class _Vectors:
+class _Vectors(VectorStore):
     """A vector store that upserts by (collection, document, chunk) like a real one, and can be made to fail on delete."""
 
     def __init__(self) -> None:
@@ -50,6 +51,16 @@ class _Vectors:
 
     async def search_by_meta(self, cid, meta=None):
         return [r for k, r in self.rows.items() if k[0] == cid]
+
+    async def search(self, cid, vector, k):
+        return []
+
+    async def count_documents(self, cid):
+        return len({d for (c, d, _) in self.rows if c == cid})
+
+    async def drop_collection(self, cid):
+        for key in [k for k in self.rows if k[0] == cid]:
+            del self.rows[key]
 
     def chunks(self, cid: str, document_id: str | None = None) -> list:
         return [r for k, r in self.rows.items() if k[0] == cid and (document_id is None or k[1] == document_id)]

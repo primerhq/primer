@@ -75,6 +75,10 @@ def to_yielded(
         "source_version": source_version,
         "tool_meta": yield_request.get("meta") or {},
         "params": params,
+        # The park's workspace: the resume rides the call's runner
+        # (PythonToolsetProvider._runner_for), so it must know where the
+        # call ran. For a watch the WATCH branch restamps the same value.
+        "workspace_id": ctx.workspace_id,
     }
     if kind == WATCH:
         # The watcher and the write wake read the park's paths from the TOP of resume_metadata, where the built-in watch_files puts them (GS-12).

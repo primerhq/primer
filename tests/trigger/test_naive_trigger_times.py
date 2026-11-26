@@ -22,6 +22,7 @@ from primer.int.claim import ClaimKind
 from primer.model.provider import SqliteConfig
 from primer.model.trigger import DelayedTriggerConfig, ScheduledTriggerConfig, Trigger
 from primer.storage.sqlite import SqliteStorageProvider
+from tests.claim._platform import platform_adapters, platform_adapter
 
 UTC = timezone.utc
 NAIVE = datetime(2026, 5, 1, 9, 30)                      # noqa: DTZ001 - a time given without a zone is the point
@@ -102,8 +103,11 @@ async def test_a_delayed_trigger_made_with_a_naive_fire_at_does_not_stop_the_cla
     """Probe p8 of the review, the other way round: red on main (``claim_due`` raised ``TypeError``)."""
     from primer.trigger import service
 
-    engine = InMemoryClaimEngine(adapters={ClaimKind.TRIGGER: TriggerClaimAdapter(storage=sp.get_storage(Trigger))})
-    await engine.upsert(ClaimKind.SESSION, "some-other-work")       # any other due lease, of a kind with no adapter here
+    engine = InMemoryClaimEngine(adapters={
+        ClaimKind.TRIGGER: TriggerClaimAdapter(storage=sp.get_storage(Trigger)),
+        ClaimKind.SESSION: platform_adapter(ClaimKind.SESSION),
+    })
+    await engine.upsert(ClaimKind.SESSION, "some-other-work")       # any other due lease, of a kind the test does not store
     naive = datetime.now() + timedelta(hours=1)                      # noqa: DTZ005 - a body without an offset
     made = await service.create_trigger(
         slug="once-naive", name="o", description=None, config=DelayedTriggerConfig(fire_at=naive),
@@ -119,7 +123,7 @@ async def test_a_delayed_trigger_made_with_a_naive_fire_at_does_not_stop_the_cla
 async def test_a_lease_armed_with_a_naive_next_attempt_at_is_read_as_utc(offset, claimed):
     """A naive ``next_attempt_at`` (a legacy arm) neither raises in ``_due`` nor in the claim order beside aware leases."""
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
-    engine = InMemoryClaimEngine(adapters={}, clock=lambda: now)
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.TRIGGER), clock=lambda: now)
     await engine.upsert(ClaimKind.HARNESS, "aware", next_attempt_at=now - timedelta(minutes=1))
     await engine.upsert(ClaimKind.TRIGGER, "naive", next_attempt_at=(now + offset).replace(tzinfo=None))
 

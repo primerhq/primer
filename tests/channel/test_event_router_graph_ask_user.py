@@ -79,7 +79,8 @@ async def test_a_routed_thread_reply_reaches_a_graph_node_ask_user() -> None:
     outcome, _gate_after = await _reply(router, sp)
 
     assert bus.flipped == 1, f"the answer was published to {[k for k, _ in bus.published]} and woke nothing"
-    assert [k for k, _ in bus.published] == [NODE_KEY]
+    # The durable emit also publishes the event-log hint; assert the wake.
+    assert [k for k, _ in bus.published if k != "events_appended"] == [NODE_KEY]
     assert outcome.kind == "gate" and (await store.get(GS)).parked_status == "resumable"
 
 
@@ -89,7 +90,7 @@ async def test_the_published_answer_is_the_text_of_the_reply() -> None:
 
     await _reply(router, sp)
 
-    [(_key, payload)] = bus.published
+    [(_key, payload)] = [p for p in bus.published if p[0] != "events_appended"]
     assert payload["response"] == "blue"
 
 
@@ -121,7 +122,7 @@ async def test_an_ask_user_outside_a_graph_node_is_unchanged() -> None:
 
     outcome, _gate_after = await _reply(router, sp)
 
-    assert [k for k, _ in bus.published] == [FLAT_KEY] and bus.flipped == 1
+    assert [k for k, _ in bus.published if k != "events_appended"] == [FLAT_KEY] and bus.flipped == 1
     assert outcome.kind == "gate" and (await store.get(GS)).parked_status == "resumable"
 
 
@@ -142,5 +143,5 @@ async def test_the_routed_reply_names_the_prompt_it_answers() -> None:
 
     await _reply(router, sp)
 
-    [(_key, payload)] = bus.published
+    [(_key, payload)] = [p for p in bus.published if p[0] != "events_appended"]
     assert payload["__yield_gate_id__"] == GA

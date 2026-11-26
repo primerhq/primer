@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from primer.llm.counting import count_prompt_tokens
 from primer.model.chat import Message, Tool
 
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.chat import StreamEvent
     from primer.model.model_profile import ModelProfileConfig
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,7 @@ class CompactionResult:
 async def should_compact(
     *,
     llm: "LLM",
-    model_name: str,
+    model: "ResolvedModel",
     context_length: int,
     history: Sequence[Message],
     tools: Sequence[Tool] | None = None,
@@ -88,12 +90,20 @@ async def should_compact(
     """Decide whether the next turn should be preceded by compaction.
 
     Threshold: ``count >= (context_length - reserved_output_tokens) * trigger_ratio``.
+
+    The count goes through ``primer.llm.counting.count_prompt_tokens`` (the
+    never-raises wrapper) rather than ``llm.count_tokens`` directly: a failed
+    or slow counter degrades to a labelled estimate and never crashes the
+    turn that asked whether to compact.
     """
-    count = await llm.count_tokens(
-        model=model_name,
-        messages=list(history),
-        tools=list(tools) if tools else None,
-    )
+    count = (
+        await count_prompt_tokens(
+            llm,
+            model=model,
+            messages=list(history),
+            tools=list(tools) if tools else None,
+        )
+    ).total
     budget = max(0, context_length - reserved_output_tokens)
     trigger = int(trigger_ratio * budget)
     return count >= trigger, count

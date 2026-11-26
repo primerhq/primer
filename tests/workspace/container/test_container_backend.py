@@ -509,3 +509,45 @@ async def test_a_refused_size_from_the_template_names_the_template_field(tmp_pat
     )
     assert caught.value.problem_extensions == {}, "stored in the template, not sent in this request: no loc"
     await backend.aclose()
+
+
+# --- the configured subprocess deadline reaches the container env ---------
+
+
+class _EnvRecordingAdapter(_FakeAdapter):
+    """The fake adapter, remembering the ``env`` of every create_sandbox."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self.envs: list[dict[str, str]] = []
+
+    async def create_sandbox(self, **kwargs):
+        self.envs.append(dict(kwargs["env"]))
+        return await super().create_sandbox(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_the_backend_injects_the_configured_subprocess_deadline(tmp_path: Path) -> None:
+    """The runtime's default exec deadline is the value of
+    PRIMER_SUBPROCESS_TIMEOUT_SECONDS; the backend injects the deployment's
+    configured deadline so a containerized exec matches the local backend's
+    bound, not just the 120 s default."""
+    adapter = _EnvRecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(
+        _config(), adapter=adapter, subprocess_timeout_seconds=30.0
+    )
+    await backend.initialize()
+    await backend.create(_template())
+    assert adapter.envs and adapter.envs[0].get("PRIMER_SUBPROCESS_TIMEOUT_SECONDS") == "30"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_backend_does_not_inject_the_deadline_unless_given(tmp_path: Path) -> None:
+    """Without a value the container keeps the runtime's own 120 s default."""
+    adapter = _EnvRecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    await backend.create(_template())
+    assert adapter.envs and "PRIMER_SUBPROCESS_TIMEOUT_SECONDS" not in adapter.envs[0]
+    await backend.aclose()

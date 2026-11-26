@@ -3694,6 +3694,10 @@ input, textarea, select { font: inherit; color: inherit; }
   cursor: pointer;
   font-size: 12.5px;
   color: var(--text-2);
+  /* Review 8.4: a capped-but-still-large listing (5000 rows) must not cost
+     offscreen layout work: the same opt .st-file-row already uses. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--frow-h, 30px);
 }
 .nv-file-row:hover { background: var(--bg-hover); }
 .nv-file-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

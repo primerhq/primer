@@ -111,3 +111,57 @@ async def test_an_error_that_carries_no_header_secret_is_reported_as_it_was(clie
 
     assert got.status_code == 504, got.text      # a refused connection is a NetworkError (504), not the ProviderError (502) of a refused header
     assert _clean(got.text) and "could not connect to the MCP server" in got.text
+
+
+class _ExplodingProvider:
+    """A provider whose ``list_tools`` fails with a fixed exception: it
+    drives the route's catch-all (the exception text the 502 detail is
+    built from), without any MCP transport in play."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def list_tools(self, *, principal=None):
+        raise self._exc
+        yield  # unreachable: makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_the_toolset_tools_route_redacts_credentials_in_a_provider_error(client, app, monkeypatch) -> None:
+    """Review 4.9: a non-Primer provider exception that quotes a
+    credentialed URL or a bearer token is masked in the 502 detail, the
+    way the list_toolset_tools system tool already is."""
+    async def _get_toolset(toolset_id):
+        return _ExplodingProvider(
+            RuntimeError(
+                "connection refused by http://svc:pw9@10.0.0.9:8443/mcp "
+                "while sending Authorization: Bearer sk-live-abcdef1234567890"
+            )
+        )
+
+    monkeypatch.setattr(app.state.provider_registry, "get_toolset", _get_toolset)
+
+    r = await client.get("/v1/toolsets/ts-leaky/tools")
+
+    assert r.status_code == 502, r.text
+    assert "pw9@" not in r.text and "sk-live-abcdef1234567890" not in r.text, (
+        f"a credentialed URL or bearer token leaked in the 502: {r.text}"
+    )
+    assert "[REDACTED]" in r.text, r.text
+    assert "failed to enumerate tools" in r.text, r.text
+
+
+@pytest.mark.asyncio
+async def test_a_provider_error_with_no_credentials_is_reported_verbatim(client, app, monkeypatch) -> None:
+    """The tightening must not swallow the diagnosis: an exception whose
+    text carries no credential is served as it was."""
+    async def _get_toolset(toolset_id):
+        return _ExplodingProvider(RuntimeError("handshake refused after 3 attempts"))
+
+    monkeypatch.setattr(app.state.provider_registry, "get_toolset", _get_toolset)
+
+    r = await client.get("/v1/toolsets/ts-verbatum/tools")
+
+    assert r.status_code == 502, r.text
+    assert "handshake refused after 3 attempts" in r.text, r.text
+    assert "[REDACTED]" not in r.text, r.text

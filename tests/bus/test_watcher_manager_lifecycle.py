@@ -21,7 +21,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler
 from tests.conftest import _FakeStorageProvider
 
 EVENT_KEY = "watch:s1:tc1"
@@ -63,12 +63,6 @@ async def _manager_with(probe) -> WatcherManager:
         worker_id="wrk-1", host="h", pid=1, capacity=1,
     )
     await sp.get_storage(WorkspaceSession).create(_parked_session())
-    sched._leases["s1"] = _LeaseState(
-        worker_id=None,
-        expires_at=None,
-        runnable=False,
-        next_attempt_at=datetime.now(timezone.utc),
-    )
 
     async def resolve(_workspace_id: str):
         return probe

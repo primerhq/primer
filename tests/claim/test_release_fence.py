@@ -80,8 +80,11 @@ async def test_harnesses_adapter_forwards_conn():
     storage = _RecordingStorage(row)
     adapter = HarnessClaimAdapter(harness_storage=storage)
     sentinel = object()
+    # A FAILED release is the one that finalizes the row (a successful release
+    # that still sees a pending operation leaves it alone: an operation enqueued
+    # in the gap, review 2026-11-23 finding 1.3).
     await adapter.on_release(
-        sentinel, "h1", outcome=ReleaseOutcome(success=True, drop_lease=True)
+        sentinel, "h1", outcome=ReleaseOutcome(success=False, drop_lease=True),
     )
     assert storage.get_conns == [sentinel]
     # One field-scoped patch_if on the caller's transaction (no whole-row update that could put back a share).

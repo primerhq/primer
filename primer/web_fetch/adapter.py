@@ -6,10 +6,14 @@ signals the registry + service treat specially; anything else propagates.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from typing import Any
 
+import httpx
 from pydantic import BaseModel, Field
 
+from primer.common.bounded_read import ACCEPT_ENCODING, UnsupportedContentEncoding, read_capped
 from primer.model.except_ import PrimerError
 
 
@@ -23,10 +27,52 @@ from primer.model.except_ import PrimerError
 # smaller max_chars / max_lines.
 DEFAULT_MAX_CHARS = 100 * 1024
 
+# Most bytes read from a remote provider's reply (review 7.5). The reply is read as a stream and stopped here, so a hostile or runaway page cannot be
+# held whole in memory. Far above DEFAULT_MAX_CHARS, so an explicit large max_chars still has its content; a JSON reply cut at the cap is not parseable,
+# so those adapters refuse it, and Jina's plain-markdown reply is cut and marked.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
 # Below this many chars of extracted HTML content, the local adapter marks the
 # page is_thin (likely JS-rendered) so aggregated mode escalates to a JS-capable
 # provider.
 THIN_CONTENT_THRESHOLD = 200
+
+
+class CappedResponse:
+    """A provider reply read only to its byte cap: the status, the (possibly cut) body, and whether more followed the cap."""
+
+    def __init__(self, status_code: int, body: bytes | bytearray, truncated: bool) -> None:
+        self.status_code = status_code
+        self.body = body
+        self.truncated = truncated
+
+    @property
+    def text(self) -> str:
+        return self.body.decode("utf-8", errors="replace")
+
+    def json(self) -> Any:
+        """The body as JSON; ``ValueError`` when it is not (a body cut at the cap is not)."""
+        return json.loads(self.body)
+
+
+async def send_capped(
+    client: httpx.AsyncClient, method: str, url: str, *, cap: int = MAX_RESPONSE_BYTES, **kwargs: Any,
+) -> CappedResponse:
+    """Send a request and read the reply as a stream, stopping at ``cap`` decoded bytes (the shared body of every remote fetch and search adapter).
+
+    Raises ``httpx.HTTPError`` like ``client.request`` does, and for a reply it cannot bound (an unsupported ``Content-Encoding``) too, so the
+    adapters' transport handling covers it. Only the status and body are returned: the connection is released before this returns.
+    """
+    headers = {"Accept-Encoding": ACCEPT_ENCODING, **(kwargs.pop("headers", None) or {})}
+    request = client.build_request(method, url, headers=headers, **kwargs)
+    response = await client.send(request, stream=True)
+    try:
+        body, truncated = await read_capped(response, cap)
+    except UnsupportedContentEncoding as exc:
+        raise httpx.DecodingError(str(exc)) from None
+    finally:
+        await response.aclose()
+    return CappedResponse(response.status_code, body, truncated)
 
 
 class FetchedPage(BaseModel):
@@ -69,7 +115,10 @@ class WebFetchAdapter(ABC):
 
 
 __all__ = [
+    "CappedResponse",
     "DEFAULT_MAX_CHARS",
+    "MAX_RESPONSE_BYTES",
+    "send_capped",
     "THIN_CONTENT_THRESHOLD",
     "FetchedPage",
     "WebFetchAdapter",

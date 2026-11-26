@@ -209,11 +209,11 @@ def test_a_freed_session_takes_only_status_from_frames_and_reloads_its_history_w
         "LAST = 55; var plain = record;"
         " record = function (s) { return s === LAST ? { seq: s, kind: 'tool_call', ts: plain(s).ts, payload: { name: 'grep', id: 'g' } } : plain(s); };"
         " var TIMERS = [];"
-        " window.setTimeout = function (fn) { TIMERS.push(fn); return TIMERS.length; }; window.clearTimeout = function () {};"
+        " window.setTimeout = function (fn, ms) { TIMERS.push({ fn: fn, ms: ms }); return TIMERS.length; }; window.clearTimeout = function () {};"
         " var gone = SS_getStore('w1', 'gone'); SS_retain(gone);"
         " var unsub = SS_subscribe(gone, 'transcript', function () {});"
         " for (var s = 1; s <= 5; s++) SS_apply(gone, Object.assign({ session_id: 'gone' }, record(s)));"
-        " unsub(); SS_dispose(gone); TIMERS.splice(0).forEach(function (f) { f(); });"
+        " unsub(); SS_dispose(gone); TIMERS.splice(0).filter(function (t) { return t.ms === SS_FREE_AFTER_MS; }).forEach(function (t) { t.fn(); });"
     )
     assert js(ctx, "gone.recordsBySeq.length") == 0, "freed"
     ctx.eval(
@@ -296,3 +296,67 @@ def test_every_pulse_dot_declares_it_needs_no_records() -> None:
     for rel in ("nv-rail.jsx", "nv-mobile-shell.jsx", "nv-tab-groups.jsx"):
         src = (ROOT / "ui" / "components" / "console" / rel).read_text(encoding="utf-8")
         assert '"status", { records: false })' in src, rel
+
+
+# ---- review 8.5: stores are evicted, a reconnect catches up only held stores, a few at a time, and the cursor stays bounded -----------
+
+
+def _hold(c, sid: str, channel: str = "status") -> None:
+    c.eval("SS_retain(SS_getStore('w1', " + json.dumps(sid) + "), { records: " + ("true" if channel == "transcript" else "false") + " });")
+
+
+def test_a_store_nobody_holds_is_not_caught_up_and_not_in_the_cursor(ctx) -> None:
+    """A session the console once showed (store kept, every consumer gone) is not read again on a reconnect and does not lengthen the cursor."""
+    dots(ctx, 2)
+    ctx.eval("var gone = SS_getStore('w1', 'gone'); SS_retain(gone); SS_apply(gone, record(1)); SS_dispose(gone);")
+    ctx.eval("SS_apply(SS_getStore('w1', 'dot-0'), record(2));")
+    tap_opens(ctx)
+    assert not any("/sessions/gone/" in u for u in js(ctx, "CALLS")), "no catch-up for a store nobody holds"
+    seqs = js(ctx, "cursorSeqs(WTAP_cursorUrl(WTAP_getHub('w1')))")
+    assert "gone" not in seqs and "dot-0" in seqs
+
+
+def test_a_reconnect_reads_a_few_stores_at_a_time(ctx) -> None:
+    ctx.eval("window.React = {};")
+    ctx.eval((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))
+    ctx.eval(
+        "var LIVE = 0, PEAK = 0, DONE = 0, PENDING = [];"
+        "window.primerApi.apiFetch = function () { LIVE += 1; PEAK = Math.max(PEAK, LIVE);"
+        " return new Promise(function (res) { PENDING.push(function () { LIVE -= 1; DONE += 1; res({ items: [] }); }); }); };"
+    )
+    dots(ctx, 30)
+    tap_opens(ctx)
+    assert js(ctx, "PEAK") == 4 and js(ctx, "PENDING.length") == 4
+    for _ in range(60):
+        ctx.eval("var f = PENDING.shift(); if (f) f();")
+    assert js(ctx, "PEAK") == 4, "never more than four in flight"
+    assert js(ctx, "DONE") == 30 and js(ctx, "LIVE") == 0, "every store was read, and the reads all finished"
+
+
+def test_the_resume_cursor_names_at_most_fifty_sessions_open_documents_first(ctx) -> None:
+    dots(ctx, 80)
+    ctx.eval("for (var i = 0; i < 80; i++) SS_apply(SS_getStore('w1', 'dot-' + i), record(1000 + i));")
+    open_session(ctx, "open")
+    ctx.eval("SS_apply(SS_getStore('w1', 'open'), record(1)); SS_retain(SS_getStore('w1', 'open'));")
+    ctx.eval("window.primerApi.apiFetch = function () { return new Promise(function () {}); };")
+    ctx.eval("WTAP_retain('w1');")
+    seqs = js(ctx, "cursorSeqs(OPENED[0].url)")
+    assert len(seqs) == 50
+    assert "open" in seqs, "a session an open document reads is always named"
+
+
+def test_a_store_every_consumer_left_is_evicted_after_the_grace_and_a_held_one_is_not(ctx) -> None:
+    ctx.eval(
+        "var TIMERS = [];"
+        "window.setTimeout = function (fn, ms) { TIMERS.push({ fn: fn, ms: ms, live: true }); return TIMERS.length; };"
+        "window.clearTimeout = function (id) { if (TIMERS[id - 1]) TIMERS[id - 1].live = false; };"
+        "var gone = SS_getStore('w1', 'gone'); SS_retain(gone); SS_dispose(gone);"
+        "var held = SS_getStore('w1', 'held'); SS_retain(held);"
+        "var back = SS_getStore('w1', 'back'); SS_retain(back); SS_dispose(back); SS_retain(back);"
+        "var never = SS_getStore('w1', 'never');"   # created, never held: evicted too
+    )
+    assert js(ctx, "Object.keys(SS_STORES).length") == 4
+    ctx.eval("TIMERS.forEach(function (t) { if (t.live && t.ms === SS_EVICT_AFTER_MS) t.fn(); });")
+    assert sorted(k.split(":", 2)[2] for k in js(ctx, "Object.keys(SS_STORES)")) == ["back", "held"]
+    # A session shown again after its eviction starts a fresh store.
+    assert js(ctx, "SS_getStore('w1', 'gone') !== gone") is True

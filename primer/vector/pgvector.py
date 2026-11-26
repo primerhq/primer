@@ -54,7 +54,7 @@ from primer.model.except_ import (
 from primer.model.provider import PgVectorConfig
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
 from primer.vector.names import table_name_for_collection
-from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
+from primer.storage._pg_pool import BoundedPool, keepalive_init_hook, warn_unenforced_pool_options
 
 
 logger = logging.getLogger(__name__)
@@ -253,18 +253,25 @@ class PgVectorStoreProvider(VectorStoreProvider):
             await self._init_connection(conn)
 
         try:
-            self._pool = await asyncpg.create_pool(
-                host=cfg.hostname,
-                port=cfg.port,
-                user=cfg.username,
-                password=cfg.password.get_secret_value(),
-                database=cfg.database,
-                min_size=cfg.pool.min_size,
-                max_size=cfg.pool.max_size,
+            # The pool is wrapped so that every acquire() without its own
+            # timeout is bounded by the configured acquire_timeout (an
+            # unbounded acquire waits forever on a saturated pool).
+            self._pool = BoundedPool(
+                await asyncpg.create_pool(
+                    host=cfg.hostname,
+                    port=cfg.port,
+                    user=cfg.username,
+                    password=cfg.password.get_secret_value(),
+                    database=cfg.database,
+                    min_size=cfg.pool.min_size,
+                    max_size=cfg.pool.max_size,
+                    timeout=cfg.pool.acquire_timeout,
+                    max_inactive_connection_lifetime=cfg.pool.max_idle,
+                    command_timeout=cfg.pool.acquire_timeout,
+                    init=_init,
+                    setup=self._apply_search_guc,
+                ),
                 timeout=cfg.pool.acquire_timeout,
-                max_inactive_connection_lifetime=cfg.pool.max_idle,
-                command_timeout=cfg.pool.acquire_timeout,
-                init=_init,
             )
         except Exception as exc:
             raise ProviderError(
@@ -279,9 +286,6 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # Re-register the vector codec on the pooled connection
             # (the extension may not have existed when init ran).
             await register_vector(conn)
-            # The connections the pool opened before the extension existed could not register the codec, so they skipped the search GUC too and would
-            # search at pgvector's default for their whole life: set it here, then recycle them (GI-29).
-            await self._apply_search_guc(conn)
             await conn.execute(
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}".primer_collections ('
                 'collection_id text PRIMARY KEY, '
@@ -302,6 +306,7 @@ class PgVectorStoreProvider(VectorStoreProvider):
                 "DEFAULT 'vector'"
             )
 
+        # The connections the pool opened before the extension existed could not register the codec: recycle them.
         expire = getattr(self._pool, "expire_connections", None)
         if expire is not None:
             await expire()
@@ -328,7 +333,6 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # Extension may not exist yet on first connection. The
             # ``initialize`` body re-registers explicitly.
             return
-        await self._apply_search_guc(conn)
 
     def candidate_list_sql(self, k: int) -> str | None:
         """The statement that lets one query return ``k`` rows from the HNSW index (``SET LOCAL``, so it ends with the query's transaction), or ``None``
@@ -341,6 +345,9 @@ class PgVectorStoreProvider(VectorStoreProvider):
     async def _apply_search_guc(self, conn: asyncpg.Connection) -> None:
         """Set the query-time index search-list size GUC for this session.
 
+        Runs as the pool ``setup`` hook, i.e. on every acquire: asyncpg's
+        release ``RESET ALL``s a used connection, so a one-time ``init``
+        setting is gone after the connection's first use (review 3.2).
         Default implementation sets ``hnsw.ef_search``. Subclasses
         that use a different index type (DiskANN) override to set
         their own GUC.
@@ -665,8 +672,15 @@ class PgVectorStore(VectorStore):
         collection_id: str,
         *,
         dimensions: int,
-        distance: Literal["cosine", "l2", "ip"] = "cosine",
+        distance: Literal["cosine", "l2", "ip"] | None = None,
     ) -> None:
+        # An omitted distance resolves to the provider's configured metric
+        # (deferred X2.4): NEW collections take it, an EXISTING one keeps its
+        # stored metric (the _adopt below raises ConflictError on a drift,
+        # which the indexing path treats as "keep going under the stored
+        # metric").
+        if distance is None:
+            distance = self._provider.config.distance_metric
         if dimensions < 1:
             raise BadRequestError(
                 f"dimensions must be >= 1, got {dimensions}"
@@ -899,6 +913,58 @@ class PgVectorStore(VectorStore):
                         await conn.executemany(sql, args)
             except Exception as exc:
                 raise self._wrap_db_error(exc) from exc
+
+    @_recreated_elsewhere
+    async def replace_document(
+        self,
+        collection_id: str,
+        document_id: str,
+        records: list[EmbeddingRecord],
+        *,
+        stored_count: int | None = None,
+    ) -> None:
+        """Replace the document's chunks in ONE transaction (delete + upsert): a failed replace
+        rolls back to the old chunks, so a shrunken re-index has no window in which the document
+        is unsearchable (the M3 residual). ``stored_count`` is accepted for the ABC signature
+        and ignored: the replace deletes unconditionally, so no stored count is consulted."""
+        records = list(records or [])
+        try:
+            meta = await self._resolve(collection_id)
+        except BadRequestError:
+            return  # delete's idempotency: a collection that does not exist holds no chunks
+        for record in records:
+            if len(record.vector) != meta.dimensions:
+                raise _DimensionMismatch(
+                    f"vector dimensionality {len(record.vector)} does not match "
+                    f"collection {collection_id!r} dimensions={meta.dimensions}"
+                )
+        sql = (
+            f'INSERT INTO "{self._schema}"."{meta.table_name}" '
+            f'(document_id, chunk_id, text, vector, meta) '
+            f'VALUES ($1, $2, $3, $4, $5::jsonb) '
+            f'ON CONFLICT (document_id, chunk_id) DO UPDATE SET '
+            f'text = EXCLUDED.text, vector = EXCLUDED.vector, meta = EXCLUDED.meta'
+        )
+        args = [
+            (
+                r.document_id, r.chunk_id, r.text,
+                HalfVector(r.vector) if meta.vector_type == "halfvec" else r.vector,
+                json.dumps(r.meta),
+            )
+            for r in records
+        ]
+        try:
+            async with self._provider.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        f'DELETE FROM "{self._schema}"."{meta.table_name}" '
+                        f'WHERE document_id = $1',
+                        document_id,
+                    )
+                    if args:
+                        await conn.executemany(sql, args)
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
 
     @_recreated_elsewhere
     async def list_chunk_texts(

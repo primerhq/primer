@@ -126,6 +126,17 @@ _CALL_TOOL_LOOKTHROUGH_DEPTH = 4
 # The longest ``name`` label the tool metrics carry (GS-38): an MCP server's tool names are its own, of any length.
 _METRIC_LABEL_MAX = 128
 
+# The output envelope every NON-ERROR tool result the model sees must fit in (review
+# 2026-11-23 findings 2.6 + 5.4): toolset results (MCP and internal) had no cap at all,
+# and the workspace cap was skipped when the tool itself reported ``truncated``. A
+# result over the envelope is spilled to the session's tmp cache when one is bound,
+# else reduced to a byte-bounded head and tail.
+_TOOL_OUTPUT_MAX_BYTES = 50 * 1024
+_TOOL_OUTPUT_MAX_LINES = 2000
+# A preview line count, and the byte bound of a preview (a single 5 MiB line must not
+# become the "preview").
+_TOOL_OUTPUT_PREVIEW_LINES = 50
+
 
 def _wrapped_call(arguments: object) -> tuple[str, dict] | None:
     """The (scoped tool id, arguments) a ``call_tool`` call wraps, or None when its arguments do not name a tool."""
@@ -852,6 +863,46 @@ class ToolExecutionManager:
                 result = _without_credentials(await self._execute_inner(
                     call, principal=principal, bypass_approval=bypass_approval,
                 ))
+                # The 50 KiB / 2000-line envelope every tool result passes
+                # through (finding 2.6): MCP and internal toolset results,
+                # workspace results, and error results alike (a megabyte of
+                # error text is as much context as one of output; review
+                # 2026-11-23, 2.6 round 1). A bound session spills to its tmp
+                # cache; without one (chat path) the model gets a
+                # byte-bounded head and tail. A workspace tool that bounded
+                # its own output (read/exec self-cap to TOOL_RESULT_CAP_BYTES,
+                # reported via the reserved ``_self_capped`` metadata key)
+                # opts out WITH a hard ceiling: re-capping would spill what
+                # the tool deliberately kept (read's window note, exec's
+                # stderr tail); anything above the ceiling is capped whatever
+                # the flag says (5.4 stays closed).
+                _meta = result.metadata
+                _self_capped = bool(_meta and _meta.pop("_self_capped", None))
+                if not _meta:
+                    # Nothing left (or nothing was there): keep the field
+                    # absent, as before the key existed.
+                    result.metadata = None
+                _capped = result.output
+                if _self_capped:
+                    from primer.workspace.local.tools._common import (
+                        TOOL_RESULT_CAP_BYTES,
+                    )
+
+                    # 2 x the tool's own budget + room for its truncation note:
+                    # more than that is not a self-bounded output anymore.
+                    _self_capped_ceiling = 2 * TOOL_RESULT_CAP_BYTES + 4 * 1024
+                    if len(result.output.encode("utf-8")) > _self_capped_ceiling:
+                        _self_capped = False
+                if not _self_capped:
+                    _capped = await self._maybe_truncate_output(
+                        result.output, self._workspace_session,
+                        error=result.error,
+                    )
+                if _capped is not result.output:
+                    # model_copy (not a rebuild): an error result keeps its
+                    # ``error=True`` through the cap (round 0 rebuilt it as a
+                    # success, review 2026-11-23, 2.6 round 1).
+                    result = result.model_copy(update={"output": _capped})
                 _metrics.tool_calls_total.labels(self._metric_label(call.name), "ok").inc()
                 await self._emit_tool_called(call, ok=not result.error)
                 return result
@@ -1293,10 +1344,25 @@ class ToolExecutionManager:
             )
             return ToolResultPart(id=call.id, output=str(exc), error=True)
 
-        # Apply the outer truncation envelope unless the tool already truncated.
-        output = result.output
-        if not result.truncated:
-            output = await self._maybe_truncate_output(output, sess)
+        # The 50 KiB / 2000-line envelope is applied at the single point every
+        # result passes through (``_execute``, finding 5.4). A tool that bounded
+        # its own output opts out of it WITH a hard ceiling (the ``_self_capped``
+        # key below); the cap itself still owns everything else (review
+        # 2026-11-23, 2.6 round 1).
+
+        # ``_self_capped`` is reserved runtime state (not tool metadata): a
+        # workspace tool that bounded its own output (read/exec self-cap to
+        # TOOL_RESULT_CAP_BYTES) tells the single choke point (``_execute``)
+        # not to re-cap and re-spill what the tool deliberately kept (review
+        # 2026-11-23, 2.6 round 1). ``_execute`` reads and strips the key
+        # before the result leaves, so nothing persists or displays it.
+        # The flag -- NOT ``result.truncated`` -- decides: a tool that merely
+        # reports a truncated window (grep's head_limit / search caps) does
+        # not bound its own output and takes the standard envelope (X3.5:
+        # the truncated flag rode grep/glob into the 2x self-cap allowance).
+        metadata = result.metadata or None
+        if getattr(tool, "self_bounded", False):
+            metadata = {**(result.metadata or {}), "_self_capped": True}
 
         # UX reconcile wave 5: a workspace tool's own ToolResult.metadata
         # (grep's match_count/file_count, an edit's future diff-stat, ...)
@@ -1304,31 +1370,94 @@ class ToolExecutionManager:
         # in `output`), but neither did anything downstream, so a UI chip
         # wanting an exact count had nothing to read.
         return ToolResultPart(
-            id=call.id, output=output, error=False,
-            metadata=result.metadata or None,
+            id=call.id, output=result.output, error=False,
+            metadata=metadata,
         )
 
     async def _maybe_truncate_output(
         self,
         output: str,
-        session: "AgentSession",
+        session: "AgentSession | None",
+        *,
+        error: bool = False,
     ) -> str:
         # Threshold mirrors opencode's defaults: 2000 lines, 50 KiB.
-        max_bytes = 50 * 1024
-        max_lines = 2000
-        if len(output.encode("utf-8")) <= max_bytes and output.count("\n") <= max_lines:
+        if (
+            len(output.encode("utf-8")) <= _TOOL_OUTPUT_MAX_BYTES
+            and output.count("\n") <= _TOOL_OUTPUT_MAX_LINES
+        ):
             return output
-        cache_path = await session.cache_output(output)
-        # Show the head as preview, plus the standard hint.
-        preview_lines = output.splitlines()[:50]
-        preview = "\n".join(preview_lines)
-        return (
-            f"{preview}\n\n"
-            "[the tool succeeded but the output was truncated]\n"
-            f"Full output saved to: {cache_path}\n"
-            "Use the read tool with offset/limit or grep to inspect "
-            "specific sections; do NOT try to dump the file with cat."
+        # The note says what actually happened: a capped error result must not
+        # read as "the tool succeeded" (review 2026-11-23, 2.6 round 1).
+        state = (
+            "the tool failed and the error output was truncated"
+            if error
+            else "the tool succeeded but the output was truncated"
         )
+        if session is not None:
+            # Show the head as preview, plus the standard hint.
+            cache_path = await session.cache_output(output)
+            return (
+                f"{_head_preview(output)}\n\n"
+                f"[{state}]\n"
+                f"Full output saved to: {cache_path}\n"
+                "Use the read tool with offset/limit or grep to inspect "
+                "specific sections; do NOT try to dump the file with cat."
+            )
+        # No session to spill to (chat path): head and tail, both byte-bounded (finding 2.6).
+        return (
+            f"{_head_preview(output)}\n\n"
+            f"[{state}; the full output is not available]\n"
+            f"End of the output:\n{_tail_preview(output)}"
+        )
+
+
+def _head_preview(output: str) -> str:
+    """The first ``_TOOL_OUTPUT_PREVIEW_LINES`` lines of ``output``, at most
+    ``_TOOL_OUTPUT_MAX_BYTES`` bytes (a preview is bounded in bytes, not only
+    in lines: a single 5 MiB line must not become the whole preview).
+
+    The head window is sliced off ``output`` FIRST (review 2026-11-23, 2.6
+    round 1): ``splitlines`` over the whole output would materialise every
+    line of a multi-megabyte string to keep the first 50."""
+    out: list[str] = []
+    size = 0
+    for line in output[:_TOOL_OUTPUT_MAX_BYTES].splitlines():
+        if len(out) >= _TOOL_OUTPUT_PREVIEW_LINES:
+            break
+        extra = len(line.encode("utf-8")) + (1 if out else 0)
+        if size + extra > _TOOL_OUTPUT_MAX_BYTES:
+            if not out:
+                # One line over the budget: as much head as fits.
+                out.append(
+                    line.encode("utf-8")[: _TOOL_OUTPUT_MAX_BYTES].decode("utf-8", "ignore")
+                )
+            break
+        out.append(line)
+        size += extra
+    return "\n".join(out)
+
+
+def _tail_preview(output: str) -> str:
+    """The last ``_TOOL_OUTPUT_PREVIEW_LINES`` lines of ``output``, at most
+    ``_TOOL_OUTPUT_MAX_BYTES`` bytes.
+
+    The tail window is sliced off ``output`` FIRST (review 2026-11-23, 2.6
+    round 1), and the slice's leading partial line is dropped (the cut lands
+    mid-line; a half line is not the start of the tail's last lines)."""
+    tail = output[-_TOOL_OUTPUT_MAX_BYTES:]
+    cut = tail.find("\n")
+    if cut != -1:
+        tail = tail[cut + 1:]
+    out: list[str] = []
+    size = 0
+    for line in reversed(tail.splitlines()[-_TOOL_OUTPUT_PREVIEW_LINES:]):
+        extra = len(line.encode("utf-8")) + (1 if out else 0)
+        if size + extra > _TOOL_OUTPUT_MAX_BYTES:
+            break
+        out.append(line)
+        size += extra
+    return "\n".join(reversed(out))
 
 
 def _workspace_tool_descriptor(

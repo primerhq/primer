@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import pytest
 
 from primer.api._app_lifespan_phases import sweep_orphaned_tool_call_tasks
+from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import CLAIM_PRIORITY_RESUME, ClaimKind
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -29,6 +30,7 @@ from primer.model.workspace_session import (
 from primer.model.agent import Agent, AgentModel
 from primer.session.yields import tool_wait_event_key
 from primer.worker.yield_runtime import ToolWaitParkedState
+from tests.claim._platform import platform_adapters
 from tests.conftest import _InMemoryStorage
 
 SESSION_ID = "sess-sweep"
@@ -124,7 +126,7 @@ async def test_a_row_of_an_ended_session_is_voided_and_its_lease_deleted():
     _session(session_storage, status=SessionStatus.ENDED)
     _task(task_storage, f"{SESSION_ID}/x:tool:0:1")
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     task_id = f"{SESSION_ID}/x:tool:0:1"
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
@@ -141,7 +143,9 @@ async def test_a_row_missing_its_session_row_is_voided():
     session_storage = _InMemoryStorage(WorkspaceSession)  # no session row at all
     _task(task_storage, f"{SESSION_ID}/x:tool:0:1")
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    # The session row the arm would snapshot is gone (purge), so this kind
+    # stands in with the base platform contract (snapshot 0, no entity read).
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.TOOL_CALL))
     task_id = f"{SESSION_ID}/x:tool:0:1"
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
@@ -158,7 +162,7 @@ async def test_a_row_not_referenced_by_the_live_park_is_voided():
              parked_state=_tool_wait_park([f"{SESSION_ID}/x:tool:9:1"]))
     _task(task_storage, f"{SESSION_ID}/x:tool:0:1")
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     task_id = f"{SESSION_ID}/x:tool:0:1"
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
@@ -174,7 +178,7 @@ async def test_a_row_from_a_turn_the_session_has_moved_past_is_voided():
     _session(session_storage, status=SessionStatus.RUNNING, turn_no=3)
     _task(task_storage, f"{SESSION_ID}/x:tool:0:1", turn_no=0)
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     task_id = f"{SESSION_ID}/x:tool:0:1"
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
@@ -189,7 +193,7 @@ async def test_a_cancelled_session_voids_its_rows():
     _session(session_storage, status=SessionStatus.RUNNING, cancel_requested=True)
     _task(task_storage, f"{SESSION_ID}/x:tool:0:1")
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     task_id = f"{SESSION_ID}/x:tool:0:1"
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
@@ -208,7 +212,7 @@ async def test_a_gated_row_of_an_ended_session_is_voided():
         gate_event_key="tool_approval:sess-sweep:call-1",
     )
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     task_id = f"{SESSION_ID}/x:tool:0:1"
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
@@ -229,7 +233,7 @@ async def test_a_row_referenced_by_the_live_park_is_kept_with_its_lease():
              parked_state=_tool_wait_park([task_id]))
     _task(task_storage, task_id)
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
     assert task_storage._data[task_id].state is ToolCallTaskState.QUEUED  # noqa: SLF001
@@ -247,7 +251,7 @@ async def test_a_current_turn_row_of_an_unparked_running_session_is_kept():
     _session(session_storage, status=SessionStatus.RUNNING, turn_no=0)
     _task(task_storage, task_id, turn_no=0)
     provider = _provider_for(task_storage, session_storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage, session_storage=session_storage)})
     await engine.upsert(ClaimKind.TOOL_CALL, task_id, priority=CLAIM_PRIORITY_RESUME)
     await sweep_orphaned_tool_call_tasks(engine, provider)
     assert task_storage._data[task_id].state is ToolCallTaskState.QUEUED  # noqa: SLF001

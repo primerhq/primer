@@ -15,10 +15,12 @@ import pytest
 
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.adapters.tool_calls import ToolCallClaimAdapter
-from primer.claim.in_memory import InMemoryClaimEngine
+from primer.claim.in_memory import InMemoryClaimEngine, _LeaseRow
 from primer.int.claim import ClaimAdapter, ClaimEngine, ClaimKind, ReleaseOutcome
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
+from tests.claim._platform import platform_adapters
 from tests.conftest import _InMemoryStorage
+from types import SimpleNamespace
 
 
 def _task(task_id: str, state: ToolCallTaskState) -> ToolCallTask:
@@ -32,10 +34,18 @@ async def _engine_with(*tasks: ToolCallTask) -> InMemoryClaimEngine:
     storage = _InMemoryStorage(ToolCallTask)
     for task in tasks:
         await storage.create(task)
+    # Arming snapshots the task's parent session; the tasks all park under "s1".
     return InMemoryClaimEngine(adapters={
-        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage, session_storage=_Sessions()),
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
     })
+
+
+class _Sessions:
+    """A parent session at its default priority; the tool-call tests do not model the session row."""
+
+    async def get(self, session_id: str, *, conn=None):
+        return SimpleNamespace(priority=0)
 
 
 # ---- lease_exists -------------------------------------------------------------------------------------
@@ -43,7 +53,7 @@ async def _engine_with(*tasks: ToolCallTask) -> InMemoryClaimEngine:
 
 @pytest.mark.asyncio
 async def test_lease_exists_answers_the_subset_that_has_a_row():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.TOOL_CALL, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.TOOL_CALL, "a")
     await engine.upsert(ClaimKind.TOOL_CALL, "b")
 
@@ -55,7 +65,7 @@ async def test_lease_exists_answers_the_subset_that_has_a_row():
 
 @pytest.mark.asyncio
 async def test_lease_exists_counts_claimed_and_expired_rows_and_is_per_kind():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.TOOL_CALL, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.TOOL_CALL, "claimed")
     await engine.upsert(ClaimKind.TOOL_CALL, "expired")
     await engine.upsert(ClaimKind.HARNESS, "other-kind")
@@ -69,7 +79,7 @@ async def test_lease_exists_counts_claimed_and_expired_rows_and_is_per_kind():
 
 @pytest.mark.asyncio
 async def test_lease_exists_agrees_with_has_lease_row_by_row():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.TOOL_CALL, ClaimKind.HARNESS))
     await engine.upsert(ClaimKind.TOOL_CALL, "a")
     ids = ["a", "b"]
     assert await engine.lease_exists(ClaimKind.TOOL_CALL, ids) == {
@@ -109,8 +119,12 @@ async def test_prune_deletes_leases_of_finished_and_missing_tasks_and_keeps_the_
         _task("gated", ToolCallTaskState.GATED), _task("done", ToolCallTaskState.DONE),
         _task("failed", ToolCallTaskState.FAILED),
     )
-    for tid in ("queued", "running", "gated", "done", "failed", "ghost"):
+    for tid in ("queued", "running", "gated", "done", "failed"):
         await engine.upsert(ClaimKind.TOOL_CALL, tid)
+    # A ghost lease cannot be armed (arming reads the task); plant the row directly.
+    engine._leases[(ClaimKind.TOOL_CALL, "ghost")] = _LeaseRow(
+        kind=ClaimKind.TOOL_CALL, entity_id="ghost", next_attempt_at=datetime.now(UTC),
+    )
 
     assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 3
     survivors = {tid for tid in ("queued", "running", "gated", "done", "failed", "ghost")
@@ -192,7 +206,7 @@ async def test_a_lease_claimed_while_prune_awaits_the_entity_is_not_deleted():
     import asyncio
 
     class _Storage(_InMemoryStorage):
-        slow_reads = 1                        # the prune's read: taken, then suspended while other tasks run
+        slow_reads = 1                        # one slow read; the test re-arms it for the prune after the arm read
 
         async def get(self, id, *, conn=None):
             row = await super().get(id, conn=conn)
@@ -204,8 +218,11 @@ async def test_a_lease_claimed_while_prune_awaits_the_entity_is_not_deleted():
 
     storage = _Storage(ToolCallTask)
     await storage.create(_task("t1", ToolCallTaskState.DONE))
-    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage)})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
+        task_storage=storage, session_storage=_Sessions(),
+    )})
     await engine.upsert(ClaimKind.TOOL_CALL, "t1")
+    storage.slow_reads = 1         # the arm's own entity read already ran; the slow read is the prune's
 
     pruning = asyncio.create_task(engine.prune_dead_leases(ClaimKind.TOOL_CALL))
     await asyncio.sleep(0)                    # prune has decided the lease is unheld and is awaiting the entity
@@ -227,8 +244,11 @@ async def test_an_adapter_with_no_storage_cannot_judge_so_the_in_memory_engine_k
     from primer.claim.in_memory import InMemoryClaimEngine
 
     engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=None)})
+    now = datetime.now(UTC)
     for tid in ("done", "ghost"):
-        await engine.upsert(ClaimKind.TOOL_CALL, tid)
+        engine._leases[(ClaimKind.TOOL_CALL, tid)] = _LeaseRow(
+            kind=ClaimKind.TOOL_CALL, entity_id=tid, next_attempt_at=now,
+        )
 
     assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 0
     assert await engine.has_lease(ClaimKind.TOOL_CALL, "done") and await engine.has_lease(ClaimKind.TOOL_CALL, "ghost")

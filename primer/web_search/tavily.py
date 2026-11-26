@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from primer.common.transport_text import transport_failure, unexpected_status
+from primer.web_fetch.adapter import MAX_RESPONSE_BYTES, send_capped
 from primer.web_search.adapter import (
     SafeSearchLevel,
     SearchHit,
@@ -88,7 +89,8 @@ class TavilyAdapter(WebSearchAdapter):
         }
 
         try:
-            r = await self._client.post(
+            r = await send_capped(
+                self._client, "POST",
                 f"{self._base_url}/search", json=body,
             )
         except httpx.HTTPError as exc:
@@ -106,6 +108,9 @@ class TavilyAdapter(WebSearchAdapter):
             )
         if r.status_code != 200:
             raise WebSearchProviderError(unexpected_status("tavily", r.status_code, r.text, self._config))
+
+        if r.truncated:
+            raise WebSearchUnavailable(f"tavily response is larger than {MAX_RESPONSE_BYTES} bytes")
 
         try:
             data = r.json()

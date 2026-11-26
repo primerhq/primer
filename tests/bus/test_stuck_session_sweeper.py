@@ -308,10 +308,11 @@ async def test_leaves_a_first_turn_queued_behind_a_busy_pool_alone(fake_storage_
     it as never_started while its lease sat in the queue was a second false positive.
     """
     from primer.claim.in_memory import InMemoryClaimEngine
+    from tests.claim._platform import platform_adapters
 
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     await storage.create(_session("se-queued", age_seconds=3600, turn_no=0))
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION))
     await engine.upsert(ClaimKind.SESSION, "se-queued")
     assert await engine.has_live_lease(ClaimKind.SESSION, "se-queued") is False
 
@@ -326,10 +327,11 @@ async def test_leaves_a_first_turn_whose_worker_died_to_the_claim_loop(fake_stor
     """A dead worker's lease row survives until reclaimed; the next worker re-runs the turn
     (the system's ordinary at-least-once recovery) instead of the sweeper ending it."""
     from primer.claim.in_memory import InMemoryClaimEngine
+    from tests.claim._platform import platform_adapters
 
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     await storage.create(_session("se-dead-worker", age_seconds=3600, turn_no=0))
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION))
     await engine.upsert(ClaimKind.SESSION, "se-dead-worker")
     await engine.claim_due("worker-A", max_count=1)
     engine._leases[(ClaimKind.SESSION, "se-dead-worker")].expires_at = (

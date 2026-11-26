@@ -199,30 +199,42 @@ async def test_a_double_clicked_cancel_is_delivered_to_the_turn_once():
 
 
 class _Store:
+    """A stub storage covering the whole cancelled terminal the convergence takes
+    (``_end_cancelled_at_claim``: ``reserve_next_seq``'s get + patch_if, the ENDED patch_if,
+    the drain cursor): every get is a live read, every patch_if lands."""
+
     def __init__(self, gate: asyncio.Event) -> None:
         self.gets = 0
         self.gate = gate
         self.in_convergence = asyncio.Event()
+        self._row = SimpleNamespace(
+            id="sess-1", workspace_id="ws-1", parked_status=None, cancel_requested=True,
+            status=SessionStatus.RUNNING, last_seq=0, next_unprocessed_seq=0,
+            ended_reason=None, ended_at=None, pending_binding_switch=None,
+        )
 
     async def get(self, sid):
         self.gets += 1
-        if self.gets >= 2:                  # the get() inside the preempt-convergence handler
+        if self.gets >= 2:                  # the get() inside _end_cancelled_at_claim
             self.in_convergence.set()
             await self.gate.wait()
-        return SimpleNamespace(
-            id=sid, parked_status=None, cancel_requested=True, status=SessionStatus.RUNNING,
-        )
+        return self._row
+
+    async def patch_if(self, sid, patch, where=None, **kw):
+        for field, value in dict(patch).items():
+            setattr(self._row, field, value)
+        return self._row
 
 
 async def test_a_second_cancel_no_longer_strands_a_session_being_ended():
     """The REAL WorkerPool._run_engine_session, storage stubbed. On a preempt it re-reads the
-    row and ends the session; a second cancel landing in that await used to skip _end_session
-    and release the lease with success=False, leaving the session RUNNING and unclaimable."""
+    row and ends the session through the full cancelled terminal (_end_cancelled_at_claim,
+    review 2026-11-23, K1 round 2); a second cancel landing in that await used to skip the
+    end and release the lease with success=False, leaving the session RUNNING and unclaimable."""
     gate = asyncio.Event()
     store = _Store(gate)
     notify = _Notify()
     released: list[ReleaseOutcome] = []
-    ended: list[str] = []
 
     class Engine:
         async def release(self, lease, *, outcome):
@@ -235,17 +247,12 @@ async def test_a_second_cancel_no_longer_strands_a_session_being_ended():
     )
     pool._worker_id = "wrk-test"
 
-    async def fake_end_session(session, *, reason):
-        ended.append(reason)
-        return ReleaseOutcome(success=True, drop_lease=True)
-
     async def no_rearm(sid):
         return None
 
     async def stuck_turn(lease, deps):
         await asyncio.Event().wait()                # a turn blocked in a long LLM or tool call
 
-    pool._end_session = fake_end_session            # type: ignore[method-assign]
     pool._maybe_rearm_session = no_rearm            # type: ignore[method-assign]
     lease = Lease(
         kind=SESSION, entity_id="sess-1", claimed_by="w", claimed_at=datetime.now(timezone.utc),
@@ -267,7 +274,8 @@ async def test_a_second_cancel_no_longer_strands_a_session_being_ended():
         finally:
             await _stop(loop)
 
-    assert ended == ["cancelled"], "the second cancel skipped ending the session"
+    assert store._row.status == "ended", "the second cancel skipped ending the session"
+    assert store._row.ended_reason == "cancelled"
     assert released and released[0].success is True
 
 

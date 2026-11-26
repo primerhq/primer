@@ -78,6 +78,8 @@ class WorkspaceEventBridge(_BackgroundTask):
         self._bus = event_bus
         self._scan = scan_interval_seconds
         self._streams: dict[str, asyncio.Task] = {}
+        # The config each held stream was started with: an edit to a workspace's ``events`` restarts its stream.
+        self._configs: dict[str, WorkspaceEventsConfig] = {}
 
     async def _run(self) -> None:
         try:
@@ -99,6 +101,7 @@ class WorkspaceEventBridge(_BackgroundTask):
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
             self._streams.clear()
+            self._configs.clear()
 
     async def _scan_once(self) -> None:
         """Reconcile held streams with the opted-in workspace set."""
@@ -118,13 +121,19 @@ class WorkspaceEventBridge(_BackgroundTask):
         for workspace_id in list(self._streams):
             if workspace_id not in wanted:
                 self._streams.pop(workspace_id).cancel()
+                self._configs.pop(workspace_id, None)
                 logger.info(
                     "workspace-event-bridge: stopped stream for %s",
                     workspace_id,
                 )
         for workspace_id, config in wanted.items():
             task = self._streams.get(workspace_id)
+            if task is not None and not task.done() and self._configs.get(workspace_id) != config:
+                task.cancel()  # the operator edited kinds / path_prefixes: the live stream filters on the old ones
+                logger.info("workspace-event-bridge: restarting stream for %s (events config changed)", workspace_id)
+                task = None
             if task is None or task.done():
+                self._configs[workspace_id] = config
                 self._streams[workspace_id] = asyncio.create_task(
                     self._stream_loop(workspace_id, config),
                     name=f"ws-events:{workspace_id}",

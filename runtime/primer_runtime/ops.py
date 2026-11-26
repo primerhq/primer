@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
+import fnmatch
+import hashlib
 import logging
 import os
 import pathlib
@@ -25,8 +27,11 @@ import stat as _stat_mod
 import tempfile
 import time as _time
 
+from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import Any
+
+import regex
 
 from primer_runtime.locks import WorkspaceLockTable
 from primer_runtime.protocol import ErrorCode, Response, serialize
@@ -377,7 +382,10 @@ def _refuse_unless_regular(mode: int, raw_path: str) -> None:
 async def read_file(
     args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
 ) -> dict:
-    """``read_file`` op → ``{content_b64}``; read-only, takes no lock. ``offset`` (protocol 1.5, optional) starts the read at that byte.
+    """``read_file`` op → ``{content_b64}``; read-only, takes no lock. ``offset`` (protocol 1.5, optional) starts the read at that byte,
+    and ``limit`` (protocol 1.8, optional) caps how many bytes are returned (offset + limit, so the platform can page any window of a
+    big file in bounded-size frames; a whole-file read would land in one frame and can drop the connection for very large files,
+    review 2026-11-23, 5.12).
 
     Only a regular file is read. The ``stat`` of the path is checked first, and then the file is opened with ``O_NONBLOCK`` and the
     DESCRIPTOR is checked with ``fstat``, so the check and the read are about the same file: a process in the workspace that swaps a
@@ -391,6 +399,12 @@ async def read_file(
     offset = args.get("offset")
     if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int) or offset < 0):
         raise OpError(ErrorCode.EPROTOCOL, f"offset must be a non-negative integer, got {offset!r}")
+    # Protocol 1.8: return at most this many bytes. Absent or null: as many as the file has (the legacy whole-file read).
+    limit = args.get("limit")
+    if limit is not None and (
+        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+    ):
+        raise OpError(ErrorCode.EPROTOCOL, f"limit must be a positive integer, got {limit!r}")
 
     def _read() -> bytes:
         try:
@@ -411,8 +425,15 @@ async def read_file(
             if offset:
                 os.lseek(fd, offset, os.SEEK_SET)  # past the end reads nothing
             chunks: list[bytes] = []
-            while chunk := os.read(fd, 1 << 20):
+            remaining = limit
+            while remaining is None or remaining > 0:
+                n = 1 << 20 if remaining is None else min(1 << 20, remaining)
+                chunk = os.read(fd, n)
+                if not chunk:
+                    break
                 chunks.append(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
             return b"".join(chunks)
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
@@ -588,6 +609,558 @@ async def delete(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> 
             log.debug("delete waited %.3fs on busy lock for %r", waited, raw_path)
         await asyncio.to_thread(_delete)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# walk / search / write_file_cas ops (protocol 1.8)
+# ---------------------------------------------------------------------------
+#
+# The sandbox ``glob`` and ``grep`` tools used to make one ``list_dir``
+# round-trip per directory (and one ``read_file`` round-trip per file) with
+# no caps, so a wide tree meant thousands of WebSocket frames in the API
+# process (review 2026-11-23, 5.11). Both now run in the runtime in ONE call,
+# under an entry/file cap and a wall-clock deadline.
+
+
+_WALK_MAX_ENTRIES_DEFAULT: int = 25000
+_OP_TIMEOUT_S_DEFAULT: float = 30.0
+_SEARCH_MAX_FILES_DEFAULT: int = 2000
+_SEARCH_MAX_FILE_BYTES_DEFAULT: int = 1 << 20
+_SEARCH_MAX_MATCHES_DEFAULT: int = 5000
+_BINARY_SNIFF_BYTES: int = 1024
+_SEARCH_MAX_OUTPUT_BYTES_DEFAULT: int = 4 << 20
+# One line's regex match may run this long before the search stops with ``regex_timeout``
+# (well under the op deadline); matching releases the GIL, so the event loop keeps running.
+_SEARCH_LINE_TIMEOUT_S: float = 2.0
+
+
+def _float_arg(value: Any, name: str, default: float) -> float:
+    """A positive float op argument; absent/null means *default*."""
+    if value is None:
+        return default
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise OpError(ErrorCode.EPROTOCOL, f"{name} must be a number, got {value!r}") from exc
+    if result <= 0:
+        raise OpError(ErrorCode.EPROTOCOL, f"{name} must be positive, got {value!r}")
+    return result
+
+
+def _int_arg(value: Any, name: str, default: int) -> int:
+    """A positive integer op argument; absent/null means *default*."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise OpError(ErrorCode.EPROTOCOL, f"{name} must be a positive integer, got {value!r}")
+    return value
+
+
+def _glob_filter_matches(rel: str, pattern: str) -> bool:
+    """Whether a grep ``glob`` filter keeps the file at *rel* (ported from
+    the platform's ``primer.workspace.local.tools.grep.glob_matches``; the
+    runtime image has no ``primer`` package). A pattern without ``/`` matches
+    the basename, one with ``/`` the relative path; fnmatch's ``*`` crosses
+    ``/``, so ``**/`` must also match no directory (``**/*.py`` keeps
+    ``a.py``)."""
+    if "/" not in pattern:
+        return fnmatch.fnmatch(rel.rsplit("/", 1)[-1], pattern)
+    return fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(
+        rel, pattern.replace("**/", "")
+    )
+
+
+def _walk_tree(
+    root: pathlib.Path,
+    max_entries: int,
+    deadline: float,
+    skip: tuple[str, ...] = (),
+    files_only: bool = False,
+    skip_prefix: str = "",
+    file_filter: Callable[[str], bool] | None = None,
+) -> tuple[list[dict], bool, bool, bool]:
+    """One recursive walk of *root*, meant to run in a worker thread, breadth-first with each
+    directory's children name-sorted (so shallow directories are reached before deep ones and a big
+    early directory cannot use up the cap before its siblings are listed). Returns
+    ``(entries, entry_cap_hit, deadline_hit, pending_at_cap)``: one dict per entry (``path``
+    relative to *root*, ``is_dir``, ``size``, ``mtime``; directories always ``size`` 0), whether
+    the entry cap stopped the walk, whether the deadline did, and whether entries were left
+    UNVISITED when the cap stopped it (later children of the directory in hand, or directories
+    still queued) - i.e. whether the cap actually dropped something. A walk that fills the cap
+    on the tree's very last entry hit it but dropped nothing (exactly ``max_entries`` exist).
+    Either of the first two flags stops the WHOLE walk, not just the directory in hand.
+
+    Symlinks are reported (in the all-entries walk) but never FOLLOWED: a symlinked directory is a
+    non-directory entry, as ``list_dir``'s ``stat(follow_symlinks=False)`` does. The files-only walk
+    lists REGULAR files only (``lstat``): a symlink, FIFO, socket or device is skipped, because
+    opening a FIFO would block a worker thread until something writes to it. A *skip* name (the
+    reserved trees) is neither listed nor descended into; it is compared against the path relative
+    to the workspace root (*skip_prefix* is *root*'s own workspace-relative path), not against
+    *root*. *file_filter* (files-only walk) is applied to a file's path relative to *root* BEFORE it is
+    counted against *max_entries*, so a cap fills with files the caller wants (a ``*.py`` search is not
+    used up by ``node_modules`` data files that the glob would discard).
+    """
+    entries: list[dict] = []
+    cap_hit = False
+    deadline_hit = False
+    pending_at_cap = False
+    queue: deque[tuple[pathlib.Path, str]] = deque([(root, "")])
+    while queue and not cap_hit and not deadline_hit:
+        directory, rel_prefix = queue.popleft()
+        if _time.monotonic() > deadline:
+            deadline_hit = True
+            break
+        try:
+            scandir_it = os.scandir(directory)
+        except OSError:
+            continue  # raced with a delete, or not a directory
+        with scandir_it:
+            children = list(scandir_it)
+        children.sort(key=lambda e: e.name)
+        for index, entry in enumerate(children):
+            if _time.monotonic() > deadline:
+                deadline_hit = True
+                break
+            rel = f"{rel_prefix}/{entry.name}" if rel_prefix else entry.name
+            if skip:
+                ws_rel = f"{skip_prefix}/{rel}" if skip_prefix else rel
+                if any(ws_rel == s or ws_rel.startswith(s + "/") for s in skip):
+                    continue
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir:
+                queue.append((pathlib.Path(entry.path), rel))
+                if not files_only:
+                    entries.append({"path": rel, "is_dir": True, "size": 0, "mtime": 0.0})
+                    if len(entries) >= max_entries:
+                        cap_hit = True
+                        # Were entries left unvisited? (later children of this
+                        # directory, or directories still queued)
+                        pending_at_cap = index + 1 < len(children) or bool(queue)
+                        break
+                continue
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue  # raced with a delete
+            if files_only and not _stat_mod.S_ISREG(st.st_mode):
+                continue
+            if files_only and file_filter is not None and not file_filter(rel):
+                continue
+            entries.append(
+                {
+                    "path": rel,
+                    "is_dir": False,
+                    "size": int(st.st_size),
+                    "mtime": float(st.st_mtime),
+                }
+            )
+            if len(entries) >= max_entries:
+                cap_hit = True
+                # Were entries left unvisited? (later children of this
+                # directory, or directories still queued)
+                pending_at_cap = index + 1 < len(children) or bool(queue)
+                break
+    return entries, cap_hit, deadline_hit, pending_at_cap
+
+
+async def walk(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
+    """``walk`` op (protocol 1.8) → ``{entries, truncated}``; read-only, takes no lock.
+
+    One recursive directory walk in the runtime instead of one ``list_dir``
+    round-trip per directory (review 2026-11-23, 5.11). Entries carry their
+    path relative to the walked root plus kind, size and mtime, so the
+    platform can match globs and sort newest-first with no further calls.
+    Caps: at most ``max_entries`` entries (default 25000) and a ``timeout_s``
+    deadline (default 30 s) checked between directories and between entries;
+    hitting either stops the walk and sets ``truncated``.
+    """
+    raw_path: str = args.get("path", "")
+    resolved = _resolve_safe(raw_path, workspace_root)
+    max_entries = _int_arg(args.get("max_entries"), "max_entries", _WALK_MAX_ENTRIES_DEFAULT)
+    timeout_s = _float_arg(args.get("timeout_s"), "timeout_s", _OP_TIMEOUT_S_DEFAULT)
+
+    def _do_walk() -> tuple[list[dict], bool]:
+        try:
+            st = os.stat(resolved)
+        except FileNotFoundError:
+            raise OpError(ErrorCode.ENOENT, f"No such file or directory: {raw_path!r}")
+        except OSError as exc:
+            raise _os_err_to_op_error(exc, raw_path)
+        if not _stat_mod.S_ISDIR(st.st_mode):
+            raise OpError(ErrorCode.ENOTDIR, f"Not a directory: {raw_path!r}")
+        entries, cap_hit, deadline_hit, _pending = _walk_tree(
+            resolved, max_entries, _time.monotonic() + timeout_s
+        )
+        return entries, cap_hit or deadline_hit
+
+    entries, truncated = await asyncio.to_thread(_do_walk)
+    return {"entries": entries, "truncated": truncated}
+
+
+def _read_capped(fd: int, limit: int) -> bytes | None:
+    """Up to *limit* bytes of the open file, or ``None`` for a binary file (a NUL in its first
+    ``_BINARY_SNIFF_BYTES``). Chunks are joined once, not concatenated one by one."""
+    parts: list[bytes] = []
+    total = 0
+    while total < limit:
+        chunk = os.read(fd, min(1 << 20, limit - total))
+        if not chunk:
+            break
+        if total < _BINARY_SNIFF_BYTES and b"\x00" in (chunk[: _BINARY_SNIFF_BYTES - total]):
+            return None
+        parts.append(chunk)
+        total += len(chunk)
+    return b"".join(parts)
+
+
+async def search(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
+    """``search`` op (protocol 1.8) → ``{lines, match_count, file_count, truncated, stop_reason, stop_reasons, skipped_large}``; read-only, takes no lock.
+
+    One recursive regex search in the runtime instead of one walk plus one
+    ``read_file`` round-trip per file (review 2026-11-23, 5.11). The pattern
+    is matched with the ``regex`` library (the same engine the platform
+    validates it with), every match under a per-line ``timeout=`` and with
+    the GIL released (``concurrent=True``), so a catastrophic pattern ends
+    that search with ``stop_reason: regex_timeout`` and never freezes the
+    runtime's event loop; stdlib ``re`` holds the GIL for the whole of one
+    match. A pattern that does not compile is an EPROTOCOL refusal. Output
+    lines are shaped exactly like the platform's ``grep_text``, with paths
+    RELATIVE TO THE WORKSPACE ROOT (so the agent can pass one to ``read``):
+    ``files_with_matches`` is one path per file, ``count`` is ``path:hits``
+    (hits = matching LINES), ``content`` is ``path:lineno:line`` with
+    ``context`` merged, and multiline ``content`` is ``path::snippet``
+    (newlines escaped). ``match_count`` counts the same thing per file
+    (lines, or whole-file matches in multiline mode) and ``file_count`` the
+    files with at least one.
+
+    Caps. ``stop_reasons`` lists every one that fired (``stop_reason`` is
+    the first) and ``truncated`` is true when any did: ``size_cap`` (a file
+    bigger than ``max_file_bytes`` is skipped, counted in ``skipped_large``,
+    and the search continues), ``file_cap`` (at most ``max_files`` regular
+    files that PASS the ``glob`` filter are even listed: the filter runs inside
+    the walk, before the count; the walk is breadth-first in sorted order -
+    flagged only when the cap left files UNVISITED, i.e. a file was actually
+    dropped; a tree of exactly ``max_files`` fills the cap on its last entry
+    and is not flagged),
+    ``match_cap`` (at most ``max_matches`` matches are counted),
+    ``time_cap`` (a ``timeout_s`` deadline), ``regex_timeout`` (one line's
+    match ran past the per-line bound), and ``output_cap`` (the emitted
+    lines would exceed ``max_output_bytes``). ``head_limit`` cuts the lines
+    (``truncated`` only); both bound the response BEFORE it is sent, so a
+    content search over minified one-line files cannot exceed the transport
+    frame limit. Counting continues past a line cut, so ``match_count`` is
+    the same as the local backend reports.
+    """
+    raw_path: str = args.get("path", "")
+    resolved = _resolve_safe(raw_path, workspace_root)
+    pattern: str = args.get("pattern") or ""
+    if not isinstance(pattern, str) or not pattern:
+        raise OpError(ErrorCode.EPROTOCOL, "search: 'pattern' must be a non-empty string")
+    glob_filter: str | None = args.get("glob")
+    if glob_filter is not None and not isinstance(glob_filter, str):
+        raise OpError(ErrorCode.EPROTOCOL, f"glob must be a string, got {glob_filter!r}")
+    output_mode: str = args.get("output_mode") or "files_with_matches"
+    if output_mode not in ("files_with_matches", "count", "content"):
+        raise OpError(
+            ErrorCode.EPROTOCOL,
+            f"output_mode must be files_with_matches, count or content, got {output_mode!r}",
+        )
+    context: Any = args.get("context")
+    if context is None:
+        context = 0
+    if isinstance(context, bool) or not isinstance(context, int) or context < 0:
+        raise OpError(ErrorCode.EPROTOCOL, f"context must be a non-negative integer, got {context!r}")
+    multiline: bool = bool(args.get("multiline", False))
+    case_insensitive: bool = bool(args.get("case_insensitive", False))
+    skip_raw = args.get("skip") or []
+    if not isinstance(skip_raw, list) or not all(isinstance(s, str) for s in skip_raw):
+        raise OpError(ErrorCode.EPROTOCOL, f"skip must be a list of strings, got {skip_raw!r}")
+    skip: tuple[str, ...] = tuple(skip_raw)
+    max_files = _int_arg(args.get("max_files"), "max_files", _SEARCH_MAX_FILES_DEFAULT)
+    max_file_bytes = _int_arg(
+        args.get("max_file_bytes"), "max_file_bytes", _SEARCH_MAX_FILE_BYTES_DEFAULT
+    )
+    max_matches = _int_arg(args.get("max_matches"), "max_matches", _SEARCH_MAX_MATCHES_DEFAULT)
+    max_output_bytes = _int_arg(
+        args.get("max_output_bytes"), "max_output_bytes", _SEARCH_MAX_OUTPUT_BYTES_DEFAULT
+    )
+    head_limit: int | None = (
+        _int_arg(args["head_limit"], "head_limit", 1) if args.get("head_limit") is not None else None
+    )
+    timeout_s = _float_arg(args.get("timeout_s"), "timeout_s", _OP_TIMEOUT_S_DEFAULT)
+
+    flags = 0
+    if case_insensitive:
+        flags |= regex.IGNORECASE
+    if multiline:
+        flags |= regex.DOTALL | regex.MULTILINE
+    try:
+        rx = regex.compile(pattern, flags)
+    except (regex.error, OverflowError, RecursionError, MemoryError) as exc:
+        raise OpError(
+            ErrorCode.EPROTOCOL,
+            f"search: pattern does not compile: {exc}",
+        ) from None
+
+    # The workspace-relative path of the search root: output paths and the
+    # reserved-tree skip are both relative to the WORKSPACE, not to *path*.
+    try:
+        base_rel = resolved.relative_to(pathlib.Path(workspace_root).resolve()).as_posix()
+    except ValueError:
+        base_rel = ""
+    if base_rel == ".":
+        base_rel = ""
+
+    def _do_search() -> dict:
+        deadline = _time.monotonic() + timeout_s
+        reasons: list[str] = []
+
+        def note(reason: str) -> None:
+            if reason not in reasons:
+                reasons.append(reason)
+
+        if os.path.isdir(resolved):
+            file_entries, cap_hit, deadline_hit, pending_at_cap = _walk_tree(
+                resolved, max_files, deadline, skip=skip, files_only=True, skip_prefix=base_rel,
+                file_filter=(
+                    None if glob_filter is None
+                    else (lambda rel: _glob_filter_matches(rel, glob_filter))
+                ),
+            )
+            candidates: list[str] = [e["path"] for e in file_entries]
+            if cap_hit and pending_at_cap:
+                # The cap dropped a file (entries were left unvisited): a tree of
+                # exactly max_files fills the cap on its last entry and is NOT cut.
+                note("file_cap")
+            if deadline_hit:
+                note("time_cap")
+        else:
+            # A file target searches the file itself (the platform sends
+            # directories, but a direct file stays a one-file search).
+            try:
+                if not os.path.isfile(resolved):
+                    raise OpError(ErrorCode.ENOENT, f"No such file or directory: {raw_path!r}")
+            except OpError:
+                raise
+            except OSError as exc:
+                raise _os_err_to_op_error(exc, raw_path)
+            candidates = [""]
+
+        out_lines: list[str] = []
+        out_bytes = 0
+        lines_cut = False
+        match_count = 0
+        file_count = 0
+        skipped_large = 0
+        halt = False
+
+        def emit(line: str) -> None:
+            nonlocal out_bytes, lines_cut
+            if lines_cut:
+                return
+            if head_limit is not None and len(out_lines) >= head_limit:
+                lines_cut = True
+                return
+            size = len(line.encode("utf-8", errors="replace")) + 1
+            if out_bytes + size > max_output_bytes:
+                lines_cut = True
+                note("output_cap")
+                return
+            out_lines.append(line)
+            out_bytes += size
+
+        def one_search_timeout() -> float:
+            return min(_SEARCH_LINE_TIMEOUT_S, max(deadline - _time.monotonic(), 0.001))
+
+        for rel in candidates:
+            if halt:
+                break
+            if _time.monotonic() > deadline:
+                note("time_cap")
+                break
+            if rel:
+                rel_out = f"{base_rel}/{rel}" if base_rel else rel
+            else:
+                rel_out = base_rel
+            if glob_filter is not None and not _glob_filter_matches(
+                rel or resolved.name, glob_filter
+            ):
+                continue
+            path = resolved if rel == "" else resolved / rel
+            try:
+                fd = os.open(
+                    path,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+                )
+            except OSError:
+                continue  # a symlink swapped in, or a file gone: skip as the per-file read did
+            try:
+                st = os.fstat(fd)
+                if not _stat_mod.S_ISREG(st.st_mode):
+                    continue  # a FIFO or device swapped in after the walk: never read it
+                if st.st_size > max_file_bytes:
+                    skipped_large += 1
+                    note("size_cap")
+                    continue  # skip this file, keep searching the rest
+                body = _read_capped(fd, max_file_bytes)
+            except OSError:
+                continue
+            finally:
+                os.close(fd)
+            if body is None:
+                continue
+            text = body.decode("utf-8", errors="replace")
+
+            if multiline:
+                matches: list = []
+                try:
+                    for m in rx.finditer(text, timeout=one_search_timeout(), concurrent=True):
+                        matches.append(m)
+                        if match_count + len(matches) >= max_matches:
+                            break
+                except TimeoutError:
+                    note("time_cap" if _time.monotonic() > deadline else "regex_timeout")
+                    halt = True
+                if match_count + len(matches) >= max_matches:
+                    note("match_cap")
+                    halt = True
+                if not matches:
+                    continue
+                if output_mode == "files_with_matches":
+                    emit(rel_out)
+                elif output_mode == "count":
+                    emit(f"{rel_out}:{len(matches)}")
+                else:
+                    for m in matches:
+                        emit(f"{rel_out}::{m.group(0).replace(chr(10), chr(92) + 'n')}")
+                match_count += len(matches)
+                file_count += 1
+                continue
+
+            all_lines = text.splitlines()
+            hits: list[int] = []
+            for index, line in enumerate(all_lines):
+                if _time.monotonic() > deadline:
+                    note("time_cap")
+                    halt = True
+                    break
+                try:
+                    found = (
+                        rx.search(line, timeout=one_search_timeout(), concurrent=True) is not None
+                    )
+                except TimeoutError:
+                    note("time_cap" if _time.monotonic() > deadline else "regex_timeout")
+                    halt = True
+                    break
+                if found:
+                    hits.append(index)
+                    if match_count + len(hits) >= max_matches:
+                        note("match_cap")
+                        halt = True
+                        break
+            if not hits:
+                continue
+            match_count += len(hits)
+            file_count += 1
+            if output_mode == "files_with_matches":
+                emit(rel_out)
+            elif output_mode == "count":
+                emit(f"{rel_out}:{len(hits)}")
+            else:
+                emitted: set[int] = set()
+                for index in hits:
+                    start = max(0, index - context)
+                    end = min(len(all_lines), index + 1 + context)
+                    for i in range(start, end):
+                        if i in emitted:
+                            continue
+                        emitted.add(i)
+                        emit(f"{rel_out}:{i + 1}:{all_lines[i]}")
+
+        return {
+            "lines": out_lines,
+            "match_count": match_count,
+            "file_count": file_count,
+            "truncated": bool(reasons) or lines_cut,
+            "stop_reason": reasons[0] if reasons else None,
+            "stop_reasons": reasons,
+            "skipped_large": skipped_large,
+        }
+
+    return await asyncio.to_thread(_do_search)
+
+
+async def write_file_cas(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
+    """``write_file_cas`` op (protocol 1.8) → ``{applied}``; Tier-A locked exactly like ``write_file``.
+
+    Compare-and-swap write: under the SAME write lock ``write_file`` holds,
+    the current bytes are streamed through SHA-256 (``O_NOFOLLOW``, so a
+    symbolic link swapped in after the path was resolved is refused, not
+    followed) and ``content_b64`` is written only if the digest equals
+    ``expected_sha256`` (the hex digest of the bytes the caller read; the
+    caller sends a hash, not the whole old file). A mismatch leaves the file
+    untouched and answers ``applied: false`` (a signal for the caller to
+    re-read and retry, NOT an error); a missing file is ENOENT. This makes
+    the sandbox ``edit`` tool's read-modify-write atomic against concurrent
+    edits (review 2026-11-23, 5.9).
+    """
+    raw_path: str = args.get("path", "")
+    expected_sha256 = args.get("expected_sha256", "")
+    content_b64: str = args.get("content_b64", "")
+    mode: int | None = args.get("mode")
+    resolved = _resolve_safe(raw_path, workspace_root)
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(c not in "0123456789abcdefABCDEF" for c in expected_sha256)
+    ):
+        raise OpError(ErrorCode.EPROTOCOL, "expected_sha256 must be a 64-character hex digest")
+    expected_digest = expected_sha256.lower()
+    try:
+        content = base64.b64decode(content_b64)
+    except Exception as exc:
+        raise OpError(ErrorCode.EPROTOCOL, f"Invalid base64 for content_b64: {exc}")
+
+    def _cas() -> bool:
+        try:
+            fd = os.open(
+                resolved, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OpError(ErrorCode.EACCES, f"A symbolic link was swapped in and is not followed: {raw_path!r}")
+            raise _os_err_to_op_error(exc, raw_path)
+        digest = hashlib.sha256()
+        try:
+            while chunk := os.read(fd, 1 << 20):
+                digest.update(chunk)
+        except OSError as exc:
+            raise _os_err_to_op_error(exc, raw_path)
+        finally:
+            os.close(fd)
+        if digest.hexdigest() != expected_digest:
+            return False
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_bytes(resolved, content, mode)
+        except OSError as exc:
+            raise _os_err_to_op_error(exc, raw_path)
+        return True
+
+    _t0 = _time.monotonic()
+    async with locks.hold_write(_scope_key(resolved, workspace_root), str(resolved)):
+        waited = _time.monotonic() - _t0
+        if waited > _LOCK_WAIT_TRACE_S:
+            log.debug("write_file_cas waited %.3fs on busy lock for %r", waited, raw_path)
+        applied = await asyncio.to_thread(_cas)
+    return {"applied": applied}
 
 
 # ---------------------------------------------------------------------------
@@ -815,6 +1388,9 @@ HANDLERS: dict[str, object] = {
     "list_dir": list_dir,
     "stat": stat,
     "delete": delete,
+    "walk": walk,
+    "search": search,
+    "write_file_cas": write_file_cas,
     "state_commit": state_commit,
     "state_read": state_read,
     "state_history": state_history,

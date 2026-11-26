@@ -97,7 +97,47 @@ def current_toolcall_node_id() -> str | None:
     return active[0] if active is not None else None
 
 
+class NodeRun:
+    """One execution of one graph node: the key the runs it starts are identified by (lane K2 round 1).
+
+    ``key`` is ``<executor run id>/<node instance id>@<iteration>``: a node runs at most once per superstep,
+    and a resumed superstep re-runs at the iteration it was cut at, so a reclaim gives a node execution
+    the same key and any other execution a different one. A child graph the node starts takes its run
+    identity from it (a ``graph`` node's child: the key itself; an ``invoke_graph`` call: the key plus the
+    call's position among the node execution's calls), never from a provider's tool call id alone.
+    """
+
+    __slots__ = ("key", "_calls")
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self._calls = 0
+
+    def next_call_run_id(self) -> str:
+        """The run identity of the next ``invoke_graph`` child this node execution starts."""
+        self._calls += 1
+        return f"{self.key}/invoke#{self._calls}"
+
+
+_NODE_RUN: contextvars.ContextVar[NodeRun | None] = contextvars.ContextVar(
+    "primer_graph_node_run", default=None,
+)
+
+
+def enter_node_run(key: str) -> None:
+    """Publish the node execution ``key`` for the current task. Called first thing in a node's own task, whose context dies with it."""
+    _NODE_RUN.set(NodeRun(key))
+
+
+def current_node_run() -> NodeRun | None:
+    """The graph node execution this task runs inside, or None outside a graph node."""
+    return _NODE_RUN.get()
+
+
 __all__ = [
+    "NodeRun",
+    "current_node_run",
+    "enter_node_run",
     "current_graph_node_id",
     "current_toolcall_id",
     "current_toolcall_node_id",

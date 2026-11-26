@@ -22,7 +22,7 @@ semantics; see d6cce8ad's CI-red report).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -66,12 +66,14 @@ class _RecordingScheduler:
 
 def _sess(
     id: str, *, status: SessionStatus, turn_status: str = "idle", turn_no: int = 0,
+    parked_status: str | None = None, parked_until: datetime | None = None,
 ) -> WorkspaceSession:
     return WorkspaceSession(
         id=id, workspace_id="w1",
         binding=AgentSessionBinding(agent_id="ag1"),
         status=status, created_at=datetime.now(UTC),
         turn_status=turn_status, turn_no=turn_no,
+        parked_status=parked_status, parked_until=parked_until,
     )
 
 
@@ -132,6 +134,75 @@ async def test_resting_parked_session_is_not_recovered(fake_storage_provider):
 
 
 @pytest.mark.asyncio
+async def test_parked_session_without_resumable_work_is_not_recovered(
+    fake_storage_provider,
+):
+    """Review 2026-11-23 finding 1.8: a row parked on a yield that has nothing to
+    resume (``parked_status="parked"`` with a ``parked_until`` still ahead) must NOT
+    be re-armed: the claim loop would only spend a poll re-reading a row it cannot
+    claim, and the park's own timer is what re-arms it when the deadline passes."""
+    from primer.api._app_lifespan_phases import recover_sessions
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_sess(
+        "s-parked-idle", status=SessionStatus.RUNNING, turn_status="running",
+        parked_status="parked",
+        parked_until=datetime.now(UTC) + timedelta(hours=1),
+    ))
+
+    claim_engine = _RecordingClaimEngine()
+    scheduler = _RecordingScheduler()
+    await recover_sessions(claim_engine, scheduler, fake_storage_provider)
+
+    assert claim_engine.upserted == []
+    assert scheduler.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_parked_session_with_a_due_parked_until_is_recovered(
+    fake_storage_provider,
+):
+    """Review 2026-11-23 finding 1.8: a parked row whose ``parked_until`` is already
+    due (the timer's auto-resume) still has work to resume, so it keeps its lease."""
+    from primer.api._app_lifespan_phases import recover_sessions
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_sess(
+        "s-parked-due", status=SessionStatus.RUNNING, turn_status="running",
+        parked_status="parked",
+        parked_until=datetime.now(UTC) - timedelta(minutes=1),
+    ))
+
+    claim_engine = _RecordingClaimEngine()
+    scheduler = _RecordingScheduler()
+    await recover_sessions(claim_engine, scheduler, fake_storage_provider)
+
+    assert claim_engine.upserted == ["s-parked-due"]
+    assert scheduler.enqueued == ["s-parked-due"]
+
+
+@pytest.mark.asyncio
+async def test_resumable_parked_session_is_recovered(fake_storage_provider):
+    """Review 2026-11-23 finding 1.8: a row whose park event already fired
+    (``parked_status="resumable"``) must stay claimable: the next worker claim
+    resumes its parked turn."""
+    from primer.api._app_lifespan_phases import recover_sessions
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_sess(
+        "s-resumable", status=SessionStatus.RUNNING, turn_status="running",
+        parked_status="resumable",
+    ))
+
+    claim_engine = _RecordingClaimEngine()
+    scheduler = _RecordingScheduler()
+    await recover_sessions(claim_engine, scheduler, fake_storage_provider)
+
+    assert claim_engine.upserted == ["s-resumable"]
+    assert scheduler.enqueued == ["s-resumable"]
+
+
+@pytest.mark.asyncio
 async def test_ended_session_is_never_recovered(fake_storage_provider):
     from primer.api._app_lifespan_phases import recover_sessions
 
@@ -154,12 +225,14 @@ async def test_ended_session_is_never_recovered(fake_storage_provider):
 
 def _boot_session(
     sid: str, status: SessionStatus, turn_status: str = "idle",
+    parked_status: str | None = None, parked_until: datetime | None = None,
 ) -> WorkspaceSession:
     return WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="agent-1"),
         status=status, created_at=datetime.now(UTC),
         turn_status=turn_status,
+        parked_status=parked_status, parked_until=parked_until,
     )
 
 
@@ -187,6 +260,16 @@ async def _seed_boot_matrix(db_path: Path) -> None:
     try:
         await storage.create(_boot_session("s-running", SessionStatus.RUNNING, "running"))
         await storage.create(_boot_session("s-claimable", SessionStatus.WAITING, "claimable"))
+        await storage.create(_boot_session(
+            "s-parked-idle", SessionStatus.RUNNING, "running",
+            parked_status="parked",
+            parked_until=datetime.now(UTC) + timedelta(hours=1),
+        ))
+        await storage.create(_boot_session(
+            "s-parked-due", SessionStatus.RUNNING, "running",
+            parked_status="parked",
+            parked_until=datetime.now(UTC) - timedelta(minutes=1),
+        ))
         await storage.create(_boot_session("s-resting-waiting", SessionStatus.WAITING, "idle"))
         await storage.create(_boot_session("s-paused-idle", SessionStatus.PAUSED, "idle"))
         await storage.create(_boot_session("s-created", SessionStatus.CREATED, "idle"))
@@ -246,7 +329,10 @@ class TestBootRecovery:
         turn_status="claimable" only. A resting WAITING/idle session -
         the exact shape a clean, parked-flip turn now leaves behind -
         must NOT be re-armed on every restart, nor must a merely-CREATED
-        or idle-PAUSED row that never had a lease to begin with."""
+        or idle-PAUSED row that never had a lease to begin with. A parked
+        row with nothing to resume (s-parked-idle) is left out too, while a
+        parked row whose parked_until is due (s-parked-due) keeps its lease
+        (review 2026-11-23 finding 1.8)."""
         monkeypatch.setenv("HOME", str(tmp_path))
         db_path = tmp_path / "recovery2.sqlite"
         await _seed_boot_matrix(db_path)
@@ -262,4 +348,4 @@ class TestBootRecovery:
                 if kind == ClaimKind.SESSION
             }
 
-        assert armed == {"s-running", "s-claimable"}, armed
+        assert armed == {"s-running", "s-claimable", "s-parked-due"}, armed

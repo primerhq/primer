@@ -53,26 +53,33 @@ def _apply_seccomp(allow_network):
     enumerate everything CPython touches to start up and one omission is a
     crash rather than a contained tool.
 
-    Returns True when a filter was loaded.
+    Returns one of three states: "loaded" (the filter is in force),
+    "unavailable" (this host has no libseccomp: the caller runs best
+    effort, exactly as before this host gained nothing), and "failed"
+    (libseccomp is present but the filter could not be built or loaded:
+    the caller must REFUSE the call, because running unconfined under a
+    claim of confinement is the hole the filter exists to close).
     """
     import ctypes
     import ctypes.util
 
     name = ctypes.util.find_library("seccomp")
     if not name:
-        return False
+        return "unavailable"
     try:
         lib = ctypes.CDLL(name, use_errno=True)
     except OSError:
-        return False
+        return "unavailable"
 
     SCMP_ACT_ALLOW = 0x7FFF0000
     EPERM = 1
     ENOSYS = 38
     SCMP_ACT_ERRNO = 0x00050000 | (EPERM & 0x0000FFFF)
     SCMP_ACT_ENOSYS = 0x00050000 | ENOSYS
+    SCMP_CMP_NE = 1
     SCMP_CMP_MASKED_EQ = 7
     CLONE_THREAD = 0x00010000
+    AF_UNIX = 1                     # 1 on every arch libseccomp supports
 
     class _ArgCmp(ctypes.Structure):
         _fields_ = [("arg", ctypes.c_uint), ("op", ctypes.c_int),
@@ -88,13 +95,18 @@ def _apply_seccomp(allow_network):
         "kexec_load", "reboot", "swapon", "swapoff",
     ]
     if not allow_network:
-        # socket() and socketpair() are deliberately NOT denied: they create
-        # an fd and move no data, and asyncio builds its event loop self-pipe
-        # from one. Denying them blocks every async tool while adding no
-        # safety. What actually reaches the network is denied instead.
+        # socketpair() is deliberately NOT denied: asyncio builds its event loop
+        # self-pipe from an AF_UNIX pair, and local pairs carry no network bytes.
+        # socket() for any family other than AF_UNIX is denied at the family
+        # level below, which is what actually stops a network fd from ever existing.
         denied += [
             "connect", "bind", "listen", "accept", "accept4",
             "sendto", "sendmsg", "recvfrom", "recvmsg",
+            # The named 2026-11-23 bypasses (5.10): sendmmsg (which also opens
+            # TCP with MSG_FASTOPEN) and io_uring both move bytes without any
+            # of the syscalls above.
+            "sendmmsg", "recvmmsg",
+            "io_uring_setup", "io_uring_enter", "io_uring_register",
         ]
 
     lib.seccomp_init.restype = ctypes.c_void_p
@@ -115,35 +127,61 @@ def _apply_seccomp(allow_network):
 
     ctx = lib.seccomp_init(ctypes.c_uint32(SCMP_ACT_ALLOW))
     if not ctx:
-        return False
+        return "failed"
     try:
         for sysname in denied:
             nr = lib.seccomp_syscall_resolve_name(sysname.encode())
             if nr < 0:
                 # Not present on this architecture; nothing to deny.
                 continue
-            lib.seccomp_rule_add(
+            if lib.seccomp_rule_add(
                 ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ERRNO),
                 ctypes.c_int(nr), ctypes.c_uint(0),
-            )
+            ) != 0:
+                # A half-built filter is worse than none: it would let the
+                # tool run unconfined while the caller still claims a filter.
+                return "failed"
         # clone without CLONE_THREAD is a new process; with it, a thread, which stays allowed. Flags are argument 0 on
-        # x86_64 and arm64 (s390 swaps the first two arguments).
+        # x86_64 and arm64 (s390 swaps the first two arguments). The 4th C argument of seccomp_rule_add_array is
+        # arg_cnt (how many comparison structs to read), not a flag: passing 0 builds an UNCONDITIONAL rule.
         nr = lib.seccomp_syscall_resolve_name(b"clone")
         if nr >= 0:
+            # MASKED_EQ is (arg & datum_a) == datum_b: datum_a is the mask (seccomp_rule_add(3):
+            # SCMP_CMP(arg, SCMP_CMP_MASKED_EQ, mask, datum)), so this refuses (flags & CLONE_THREAD) == 0.
             no_thread = _ArgCmp(0, SCMP_CMP_MASKED_EQ, CLONE_THREAD, 0)
-            lib.seccomp_rule_add_array(
+            if lib.seccomp_rule_add_array(
                 ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ERRNO),
                 ctypes.c_int(nr), ctypes.c_uint(1), ctypes.byref(no_thread),
-            )
+            ) != 0:
+                return "failed"
         # clone3 passes its flags behind a pointer the filter cannot read. ENOSYS makes glibc fall back to clone, which
         # the rule above judges.
         nr = lib.seccomp_syscall_resolve_name(b"clone3")
         if nr >= 0:
-            lib.seccomp_rule_add(
+            if lib.seccomp_rule_add(
                 ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ENOSYS),
                 ctypes.c_int(nr), ctypes.c_uint(0),
-            )
-        return lib.seccomp_load(ctypes.c_void_p(ctx)) == 0
+            ) != 0:
+                return "failed"
+        if not allow_network:
+            # read()/write() on an existing fd cannot be judged by family, so
+            # the network is closed at creation: socket() is refused for every
+            # family except AF_UNIX (it is how asyncio builds its event-loop
+            # self-pipe, and it carries no network bytes). Round 1 of 2026-11-23:
+            # the earlier allow-list of AF_INET/AF_INET6 left AF_NETLINK,
+            # AF_PACKET and AF_VSOCK creatable. family is argument 0 on every
+            # arch libseccomp supports.
+            nr = lib.seccomp_syscall_resolve_name(b"socket")
+            if nr >= 0:
+                not_unix = _ArgCmp(0, SCMP_CMP_NE, AF_UNIX, 0)
+                if lib.seccomp_rule_add_array(
+                    ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ERRNO),
+                    ctypes.c_int(nr), ctypes.c_uint(1), ctypes.byref(not_unix),
+                ) != 0:
+                    return "failed"
+        if lib.seccomp_load(ctypes.c_void_p(ctx)) != 0:
+            return "failed"
+        return "loaded"
     finally:
         lib.seccomp_release(ctypes.c_void_p(ctx))
 
@@ -265,7 +303,13 @@ def _err(kind, message, tb=""):
 def _main():
     req = json.loads(sys.stdin.read())
     _apply_limits(req.get("limits") or {})
-    _apply_seccomp(bool(req.get("allow_network")))
+    if _apply_seccomp(bool(req.get("allow_network"))) == "failed":
+        # The host HAS libseccomp but the filter could not be loaded: running
+        # unconfined under a claim of confinement is exactly the hole the
+        # filter exists to close (review 2026-11-23, 5.10).
+        return _err("RunnerError",
+                    "the seccomp filter could not be applied, so the tool "
+                    "was refused rather than run unconfined")
     if req.get("landlock") is not None and not _apply_landlock(req["landlock"]):
         # The runner reported Landlock for this host: running unconfined under that claim would be a lie.
         return _err("RunnerError", "the Landlock confinement could not be applied")

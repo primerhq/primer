@@ -60,6 +60,7 @@ class EventStore(ABC):
         entity_kind: str | None = None,
         entity_id: str | None = None,
         workspace_id: str | None = None,
+        session_id: str | None = None,
         since: datetime | None = None,
     ) -> list[Event]:
         """Events with ``id > after_id`` in id order, up to ``limit``.

@@ -112,6 +112,19 @@ function AuthGate({ children }) {
   // account on an install that has users).
   const [failure, setFailure] = React.useState(null);
   const [attempt, setAttempt] = React.useState(0);
+  // The session ended while the console was open (api.js noticeUnauthorized confirmed it with /auth/status): the console unmounts, which stops
+  // its polls and streams, and the sign-in screen says why. A sign-in reloads the page.
+  const [expired, setExpired] = React.useState(false);
+
+  React.useEffect(() => {
+    const onExpired = () => {
+      setExpired(true);
+      setFailure(null);
+      setStatus({ has_user: true, authenticated: false });
+    };
+    window.addEventListener("primer:session-expired", onExpired);
+    return () => window.removeEventListener("primer:session-expired", onExpired);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -169,7 +182,7 @@ function AuthGate({ children }) {
     return children;
   }
   if (!status.has_user) return <RegisterScreen onDone={() => window.location.reload()} />;
-  return <LoginScreen onDone={() => window.location.reload()} />;
+  return <LoginScreen onDone={() => window.location.reload()} notice={expired ? AUTH_SESSION_ENDED : null} />;
 }
 
 function _AuthBrand() {
@@ -545,7 +558,9 @@ function _SsoButtons() {
   );
 }
 
-function LoginScreen({ onDone }) {
+const AUTH_SESSION_ENDED = { title: "You have been signed out", detail: "Your session ended. Sign in again to continue; the data you were looking at is no longer current." };
+
+function LoginScreen({ onDone, notice }) {
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [remember, setRemember] = React.useState(true);
@@ -587,7 +602,7 @@ function LoginScreen({ onDone }) {
             <_InstancePill />
           </div>
           <form className="auth-body" onSubmit={submit} noValidate>
-            <_ServerBanner {...(server || {})} />
+            <_ServerBanner {...(server || notice || {})} />
 
             <div className={"auth-field" + (fieldErrs.username ? " has-err" : "")}>
               <label htmlFor="login-username">Username</label>

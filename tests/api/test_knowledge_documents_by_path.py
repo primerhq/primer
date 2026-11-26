@@ -152,6 +152,59 @@ async def test_list_by_prefix_has_no_bodies(client, collection_id):
 
 
 @pytest.mark.asyncio
+async def test_listing_pages_back_by_the_next_cursor(client, collection_id):
+    for path in ("a.md", "b.md", "c.md"):
+        await client.put(
+            _docs_url(collection_id), params={"path": path}, json={"content": "x"}
+        )
+
+    r = await client.get(_docs_url(collection_id), params={"limit": 2})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [i["path"] for i in body["documents"]] == ["a.md", "b.md"]
+    assert body["next_after_path"] == "b.md"
+
+    r = await client.get(
+        _docs_url(collection_id), params={"limit": 2, "after_path": "b.md"}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [i["path"] for i in body["documents"]] == ["c.md"]
+    assert body["next_after_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_default_listing_is_bounded_by_the_page_limit(
+    client, collection_id, provider
+):
+    from primer.knowledge.document_service import MAX_LIST_LIMIT
+
+    store = provider.get_content_store()
+    for i in range(MAX_LIST_LIMIT + 1):
+        await store.upsert(
+            document_id=f"seed-{i}",
+            collection_id=collection_id,
+            path=f"p/{i:04d}.md",
+            content="x",
+        )
+
+    r = await client.get(_docs_url(collection_id))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["documents"]) == MAX_LIST_LIMIT
+    assert body["next_after_path"] == "p/0999.md"
+
+
+@pytest.mark.asyncio
+async def test_a_limit_outside_the_page_range_is_400(client, collection_id):
+    r = await client.get(_docs_url(collection_id), params={"limit": 0})
+    assert r.status_code == 400, r.text
+    assert r.headers["content-type"].startswith("application/problem+json")
+    r = await client.get(_docs_url(collection_id), params={"limit": 1001})
+    assert r.status_code == 400, r.text
+
+
+@pytest.mark.asyncio
 async def test_move(client, collection_id):
     await client.put(
         _docs_url(collection_id), params={"path": "a.md"}, json={"content": "x"}

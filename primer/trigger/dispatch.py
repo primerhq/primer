@@ -6,6 +6,7 @@ via the claim engine OR event-based via channel listener).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -25,6 +26,7 @@ from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger, Tr
 from primer.storage.q import Q
 from primer.trigger.fire_id import make_fire_id
 from primer.trigger.payload import PayloadTemplateError, render_payload
+from primer.trigger.skip_claim import acquire_skip_claim, release_skip_claim
 from primer.trigger.sources import get_source
 from primer.trigger.subscribers import DispatchDeps, TriggerFireMetadata, get_dispatcher
 
@@ -39,6 +41,50 @@ from primer.trigger.subscribers import session_append as _sa  # noqa: F401
 
 
 logger = logging.getLogger(__name__)
+
+#: Fire locks, keyed subscription id -> (loop, lock), taken ONLY around a
+#: ``parallelism="skip"`` subscription's dispatch (review 2026-11-23 6.8
+#: follow-up). The claim engine serializes claim-DRIVEN fires only; a
+#: webhook fire has no claim (every POST gets its own background task,
+#: primer/api/routers/webhooks.py), so N concurrent deliveries of one
+#: trigger otherwise drive the check-then-act of a skip dispatcher
+#: concurrently. Across processes the arbitration is the DB-level claim on
+#: the subscription id (primer/trigger/skip_claim.py); this in-process lock
+#: stays as the fast path, narrowed to skip-policy subscriptions - a
+#: queue-policy sub has no check-then-act (each fire just enqueues), so a
+#: burst of queue fires on one trigger is not serialized (review M2). No
+#: dispatcher calls ``fire_trigger`` recursively (verified at the callers),
+#: and every fire takes subscription locks in the same enabled-subs order,
+#: so no deadlock.
+_fire_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+_FIRE_LOCK_MAX_KEYS = 10_000
+
+
+def _fire_lock(key: str) -> asyncio.Lock:
+    """Return the fire lock for *key* (a skip-policy subscription id) on the
+    CURRENT event loop.
+
+    ``asyncio.Lock`` is bound to the loop it was created on and tests
+    rotate loops, so the lock is recreated when the loop identity changes.
+    Bounded like the rate-limit windows: past the cap the oldest inserted
+    entry is dropped - but never a HELD lock (evicting one lets a second
+    fire of the same trigger start on a fresh lock, unserialized, round 1
+    M1); when every entry is held the oldest goes anyway, so the map
+    stays bounded and the scan terminates.
+    """
+    loop = asyncio.get_running_loop()
+    held = _fire_locks.get(key)
+    if held is not None and held[0] is loop:
+        return held[1]
+    lock = asyncio.Lock()
+    _fire_locks[key] = (loop, lock)
+    while len(_fire_locks) > _FIRE_LOCK_MAX_KEYS:
+        try:
+            victim = next(k for k, (_, l) in _fire_locks.items() if not l.locked())
+        except StopIteration:
+            victim = next(iter(_fire_locks))
+        del _fire_locks[victim]
+    return lock
 
 
 @dataclass
@@ -246,6 +292,40 @@ async def fire_trigger(
     deps: DispatchDeps,
     extra_context: dict | None = None,
 ) -> FireResult:
+    """Fire a single trigger.
+
+    Fires of the SAME trigger race only at the subscription level: a
+    ``parallelism='skip'`` subscription's busy check + create is a
+    check-then-act with no claim upstream (a webhook fire has no claim -
+    every POST gets its own background task), and it is serialized by the
+    DB-level claim on the subscription id (across processes; review
+    2026-11-23 6.8 follow-up) and, inside one process, by that
+    subscription's fire lock (the fast path, :func:`_fire_lock`). A
+    queue-policy subscription has no check-then-act (each fire just
+    enqueues on its target), so it runs with no claim and no lock: a burst
+    of queue fires on one trigger is not serialized (review M2).
+
+    The ``last_fired_id`` dedup gate's own check-then-act window is closed
+    upstream for every fire the gate guards: scheduled ticks are serialized
+    by the claim engine (one TRIGGER claim per entity at a time), and
+    webhook and manual fires each carry a wall-clock fire_id, so the gate
+    only ever matches a redelivery of a fire that already FINISHED.
+    """
+    return await _fire_trigger_once(
+        trigger_id=trigger_id,
+        scheduled_for=scheduled_for,
+        deps=deps,
+        extra_context=extra_context,
+    )
+
+
+async def _fire_trigger_once(
+    *,
+    trigger_id: str,
+    scheduled_for: datetime | None,
+    deps: DispatchDeps,
+    extra_context: dict | None = None,
+) -> FireResult:
     """Fire a single trigger: load enabled subs, dispatch each.
 
     Per-subscription failures are isolated — a dispatcher raising or
@@ -295,9 +375,13 @@ async def fire_trigger(
     fire_context["fire_id"] = fire_id
 
     # Idempotency gate: if this exact fire_id already dispatched, treat
-    # the redelivery as a no-op. Per-trigger serialization is provided
-    # by the claim engine (one TRIGGER claim per entity_id at a time),
-    # so redeliveries arrive sequentially. The marker (last_fired_id) is
+    # the redelivery as a no-op. Claim-driven fires serialize upstream (one
+    # TRIGGER claim per entity_id at a time); webhook and manual fires have
+    # no claim, but their fire_id is wall-clock (unique per fire), so this
+    # gate only matches a redelivery of a fire that FINISHED - two
+    # processes never run the same fire_id's gate concurrently (the claim
+    # engine owns that case). The
+    # marker (last_fired_id) is
     # recorded AFTER the whole fan-out, at the end of this function, so
     # the gate only dedups the redelivery of a fire that FINISHED. A fire
     # that dies part way through leaves no marker, and its redelivery
@@ -401,27 +485,72 @@ async def fire_trigger(
                 "error_message": str(exc),
             })
             continue
-        try:
-            dispatcher = get_dispatcher(sub.config.kind)
-            res = await dispatcher.dispatch(
-                sub,
-                rendered_payload=rendered,
-                fire_context=fire_context,
-                fire_id=fire_id,
-                # Keep shared caller dependencies untouched across concurrent
-                # fires and isolate a subscriber replacing its metadata field.
-                deps=replace(deps, fire_metadata=fire_metadata),
-            )
-            results.append({"subscription_id": sub.id, **res.model_dump()})
-        except Exception as exc:  # noqa: BLE001 — isolate per-sub failures
-            logger.exception("dispatcher error for sub %s", sub.id)
-            results.append({
-                "subscription_id": sub.id,
-                "ok": False,
-                "skipped": False,
-                "error_code": "dispatch_failed",
-                "error_message": str(exc),
-            })
+        async def _dispatch_one() -> None:
+            try:
+                dispatcher = get_dispatcher(sub.config.kind)
+                res = await dispatcher.dispatch(
+                    sub,
+                    rendered_payload=rendered,
+                    fire_context=fire_context,
+                    fire_id=fire_id,
+                    # Keep shared caller dependencies untouched across concurrent
+                    # fires and isolate a subscriber replacing its metadata field.
+                    deps=replace(deps, fire_metadata=fire_metadata),
+                )
+                results.append({"subscription_id": sub.id, **res.model_dump()})
+            except Exception as exc:  # noqa: BLE001 - isolate per-sub failures
+                logger.exception("dispatcher error for sub %s", sub.id)
+                results.append({
+                    "subscription_id": sub.id,
+                    "ok": False,
+                    "skipped": False,
+                    "error_code": "dispatch_failed",
+                    "error_message": str(exc),
+                })
+
+        if sub.parallelism == "skip":
+            # Cross-process skip gate (review 2026-11-23 6.8 follow-up): the
+            # claim on the subscription id arbitrates across processes; the
+            # lock around the dispatch is the in-process fast path (a queued
+            # fire re-runs the busy check and skips on the row). A queue-policy
+            # sub has no check-then-act, so it runs with neither: a burst of
+            # queue fires on one trigger is not serialized (review M2).
+            # A store error on the claim fails only THIS subscription
+            # (round 2 M2): the siblings still fire and the fire still
+            # records its marker; a leaked claim is bounded by its TTL.
+            try:
+                generation = await acquire_skip_claim(deps.storage_provider, sub.id)
+            except Exception as exc:  # noqa: BLE001 - isolate per-sub claim failures
+                logger.exception("skip claim failed for sub %s", sub.id)
+                results.append({
+                    "subscription_id": sub.id,
+                    "ok": False,
+                    "skipped": False,
+                    "error_code": "skip_claim_failed",
+                    "error_message": str(exc),
+                })
+                continue
+            if generation is None:
+                results.append({
+                    "subscription_id": sub.id,
+                    "ok": True,
+                    "skipped": True,
+                    "error_code": "skipped_subscription_claimed",
+                    "error_message": (
+                        "another process is firing this subscription; "
+                        "this fire was skipped"
+                    ),
+                })
+                continue
+            async with _fire_lock(sub.id):
+                try:
+                    await _dispatch_one()
+                finally:
+                    await release_skip_claim(
+                        deps.storage_provider, sub.id, generation,
+                    )
+        else:
+            await _dispatch_one()
 
     await _record_delivery_outcomes(
         deps=deps, trigger=trigger, fire_id=fire_id, fired_at=fired_at,

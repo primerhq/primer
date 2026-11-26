@@ -526,6 +526,13 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         token: str | None = None,
     ) -> Sandbox:
         assert self._docker is not None, "call initialize() first"
+        if network == "none":
+            # Primer reaches the runtime only over TCP 5959 (the published loopback port, or bridge DNS), so a container
+            # with no network is a workspace nobody can use. Refuse it before anything is created.
+            raise ConfigError(
+                "network 'none' is not supported for Docker workspaces: the primer runtime is reached over the "
+                "network, so the workspace would be unreachable. Use 'full'."
+            )
 
         # The backend passes the template's validated workdir as the volume target. Re-validate at the runtime boundary because
         # direct adapter callers exist in tests and integrations, and the root helper below executes this value as an argv item.
@@ -614,13 +621,11 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             raise ValueError(
                 f"Unknown container reachability kind: {reachability.kind!r}"
             )
-
-        if network == "none":
-            # "none" network mode is incompatible with port publishing.
-            # We need the runtime accessible over loopback, so we do NOT
-            # set NetworkMode=none; skip the restriction instead.
-            # TODO(task10): revisit network isolation for production.
-            pass
+        # Capability isolation (2026-11-14 item): the runtime needs no capabilities - it binds port 5959 (above 1024, so
+        # no CAP_NET_BIND_SERVICE) and does no chown/setuid/mount/ptrace - so everything is dropped and nothing added
+        # back; no-new-privileges keeps setuid binaries in the image from gaining privileges.
+        host_config["CapDrop"] = ["ALL"]
+        host_config["SecurityOpt"] = ["no-new-privileges"]
         if resources.cpu_cores is not None:
             host_config["NanoCpus"] = int(resources.cpu_cores * 1_000_000_000)
         if resources.memory_bytes is not None:
@@ -678,6 +683,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                         ],
                         "NetworkMode": "none",
                         "ReadonlyRootfs": True,
+                        "CapDrop": ["ALL"],
                         "SecurityOpt": ["no-new-privileges:true"],
                     },
                     "Tty": False,
@@ -942,6 +948,24 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         # ``mapped_host_port`` stash in ``_make_ws_sandbox``.
         sandbox.recovered_token = token  # type: ignore[attr-defined]
         return sandbox
+
+    async def container_state(self, name: str) -> str | None:
+        """The daemon's ``State.Status`` for container *name* (``running``, ``exited``, ``created``, ...),
+        ``"absent"`` when the daemon 404s it (X3.3: a 404 is a concrete answer, and the backend evicts on any
+        concrete non-running state), or ``None`` when it cannot be determined (an inspect or transport failure,
+        review 5.6). The backend uses it to evict a cached handle whose container has stopped, so the next
+        ``get`` runs :meth:`get_sandbox`, which starts the container and reconnects; ``None`` means "keep the
+        handle": a transient daemon failure must not evict a live one. (A 404 used to mean "keep" too, relying
+        on the runtime client's ``gone`` flag to catch up, which it does not when the connection dies with the
+        container.)"""
+        assert self._docker is not None
+        try:
+            container = await self._docker.containers.get(name)
+            info = await container.show()
+        except Exception as exc:  # noqa: BLE001 -- only a 404 is a concrete answer
+            return "absent" if _is_not_found(exc) else None
+        state = info.get("State", {}).get("Status")
+        return state if isinstance(state, str) else None
 
     def _reachability_for_reattach(self) -> ContainerReachabilityConfig:
         """Resolve the reachability config the running container was

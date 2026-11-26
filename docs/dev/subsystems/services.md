@@ -113,10 +113,33 @@ not a workspace directory. It uses the normal generated-write approval gate.
 ### Publishing from a workspace session
 
 An administrator in a workspace session can call `system__publish_service`
-with `{"name": "status-app", "path": "apps/status"}`. The handler resolves the
+with `{"name": "status-app", "path": "apps/status", "bundle_digest": "..."}`.
+The handler resolves the
 initiating person, verifies read access to the workspace supplied by the turn,
 and requires service-management authority. Its shipped gate requires admin
-approval on fresh installs and via migration35 on existing installs. Startup refuses
+approval on fresh installs and via migration35 on existing installs.
+
+The approval is bound to the content, not just the name and path
+(review 2026-11-23, 5.8). The approval gate parks the call before the handler
+runs, and the card shows only the call's allowlisted arguments, so the
+content identity must be an argument: the agent first calls
+`system__inspect_service_bundle` on the path (read-only, admin-only), which
+captures and validates the directory and returns the `bundle_digest` and the
+file list. The card shows `name`, `path` and `bundle_digest`. At promotion
+the handler re-captures, validates, and computes the canonical digest of the
+validated file map (path to SHA-256 of the content, sorted by path); a
+capture that no longer matches the approved digest is refused with
+`conflict` before any service or artifact write. The digest is over the file
+map, not the capture bytes: a capture's member order is not canonical, so two
+unchanged captures of the same directory hash alike while any content or
+file-set change hashes different. Publishing runs the bundle's code on the
+API host (the hardened python runner, not the workspace's container) and
+serves its JS first-party on the console origin; the operator approving the
+card is approving that. The REST upload
+(`services__publish_service_version`) is not digest-bound: an operator POSTing
+the bytes directly is itself the approval.
+
+Startup refuses
 to serve or start runtime owners if its early critical publisher-only seed or
 verification fails, including a fresh install already stamped schema35. Storage
 is closed before refusal. Publisher lookup reads semantic policy rows under both `system` and `_system`,

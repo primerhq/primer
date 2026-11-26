@@ -19,7 +19,7 @@ class SessionPriorityRequest(BaseModel):
     priority: WorkPriority = Field(
         default_factory=int,
         description="Omit to inherit the calling session's priority, or use 0 on a direct start. "
-        "Smaller numbers are more urgent. Nonzero starts require coordinated scheduling support.",
+        "Smaller numbers are more urgent.",
     )
 
     @property

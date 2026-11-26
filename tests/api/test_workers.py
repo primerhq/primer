@@ -89,6 +89,27 @@ async def test_delete_dead_worker_removes_it(client, app):
     assert workers == []
 
 
+async def test_delete_a_dead_row_of_a_worker_running_here_re_registers_it_on_the_next_heartbeat(client, app):
+    """H-3 r1 minor 2: the admin DELETE removes the dead tombstone row, but the process keeps its
+    own registration: a worker that is in fact still running here (its row was only marked dead by
+    a peer's boot sweep) must not lose its row because an admin purged the tombstone - the next
+    heartbeat re-registers it. The forget belongs to the worker pool's own deregistration (shutdown),
+    not to the admin path."""
+    await app.state.scheduler.register_worker(
+        worker_id="w1", host="h", pid=1, capacity=4,
+    )
+    app.state.scheduler.mark_worker_dead_for_test("w1")
+    resp = await client.delete("/v1/workers/w1")
+    assert resp.status_code == 204
+    assert await app.state.scheduler.list_workers() == []
+
+    await app.state.scheduler.heartbeat_worker("w1")
+
+    workers = await app.state.scheduler.list_workers()
+    assert len(workers) == 1
+    assert (workers[0].id, workers[0].status) == ("w1", "active")
+
+
 async def test_delete_active_worker_is_rejected(client, app):
     """Deleting a live (active) worker is a 409 — never remove one that
     is still doing work. The row must survive."""

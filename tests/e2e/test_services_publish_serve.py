@@ -170,13 +170,32 @@ async def test_publish_directory_from_an_approved_workspace_turn(authed_client, 
     registry, base = mock_llm
     suffix = f"wpub-{unique_suffix}"
     name = suffix.lower()
+    inspect_tool = "system__inspect_service_bundle"
     tool = "system__publish_service"
     query = Predicate(left=FieldRef(name="name"), op=Op.EQ, right=Value(value=name))
     body = {"predicate": query.model_dump(mode="json"), "page": {"kind": "offset", "offset": 0, "length": 2}}
+    # The published directory holds exactly this file, so the bundle digest
+    # the inspector will report is computed here with the same validation the
+    # server runs: publish re-captures the directory and refuses a capture
+    # whose digest no longer matches the argument (the approval is bound to it).
+    from primer.service.bundle import bundle_digest, validate_bundle
+    digest = bundle_digest(validate_bundle(_tar({"index.html": suffix.encode()}), workspace_capture=True))
     agent = await make_scripted_agent(
-        authed_client, registry, base, suffix=suffix, scenario=f"scripted:{suffix}", tools=[tool],
-        rules=[Rule(when_tool_result=False, when_tool_offered=tool, emit_tool=tool, emit_args={"name": name, "path": "web"}),
-               Rule(when_tool_result=True, emit_text="done")],
+        authed_client, registry, base, suffix=suffix, scenario=f"scripted:{suffix}",
+        tools=[inspect_tool, tool],
+        rules=[
+            # The documented flow: inspect the bundle first (read-only, no
+            # gate; it returns the digest and the file list the approver sees).
+            Rule(when_tool_result=False, when_tool_offered=inspect_tool, emit_tool=inspect_tool,
+                 emit_args={"path": "web"}),
+            # Then publish with that digest. The rule keys off the inspect
+            # result ("bundle_digest") so it fires once that result is in
+            # context, not on the publish result that follows.
+            Rule(when_tool_result=True, when_tool_offered=tool,
+                 when_last_tool_result_contains="bundle_digest", emit_tool=tool,
+                 emit_args={"name": name, "path": "web", "bundle_digest": digest}),
+            Rule(when_tool_result=True, emit_text="done"),
+        ],
     )
     wid = await make_local_workspace(authed_client, suffix=suffix, root=tmp_path)
     sid = None

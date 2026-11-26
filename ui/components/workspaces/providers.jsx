@@ -212,6 +212,7 @@ function _wpFromProvider(row) {
     k_gw_external_port: "",
     k_gw_backend_port: 5959,
     k_image_pull_secrets: [],
+    k_default_deny_egress: false,
   };
   if (!row) return defaults;
   const out = { ...defaults, id: row.id || "", backend: row.provider || "local" };
@@ -271,6 +272,7 @@ function _wpFromProvider(row) {
       out.k_gw_backend_port = reach.backend_port ?? 5959;
     }
     out.k_image_pull_secrets = Array.isArray(cfg.image_pull_secrets) ? cfg.image_pull_secrets : [];
+    out.k_default_deny_egress = !!cfg.default_deny_egress;
   }
   return out;
 }
@@ -503,6 +505,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
         namespace: form.k_namespace,
         reachability,
         image_pull_secrets: form.k_image_pull_secrets || [],
+        default_deny_egress: form.k_default_deny_egress || false,
       };
     }
     const builtConfig = config;
@@ -653,6 +656,13 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
         <WS_Section label="Workspace placement" />
         <WS_FieldRow label="namespace" err={fieldErrors.k_namespace} hint="namespace where workspaces are created">
           <input className="input mono" value={form.k_namespace} onChange={(e) => update("k_namespace", e.target.value)} placeholder="primer" style={{ width: "100%" }} />
+        </WS_FieldRow>
+        <WS_Section label="Egress" />
+        <WS_FieldRow label="default_deny_egress" hint="off by default · applies a default-deny egress NetworkPolicy to the workspace pods: no egress (DNS included) until the operator adds allow rules; the platform's inbound reach to the pods is not affected">
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" data-testid="wp-k8s-default-deny-egress" checked={form.k_default_deny_egress} onChange={(e) => update("k_default_deny_egress", e.target.checked)} />
+            <span>Apply the default-deny egress NetworkPolicy</span>
+          </label>
         </WS_FieldRow>
         <WS_Section label="Reachability" />
         <WS_FieldRow label="reachability" hint="how the platform reaches primer-runtime inside workspace pods">

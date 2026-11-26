@@ -30,6 +30,12 @@ from primer.toolset.python_runner.schema import SchemaError, build_args_schema
 TOOL_DECORATOR = "primer_tool"
 RESUME_DECORATOR = "resumes"
 TIMEOUT_CEILING_SECONDS = 300.0
+# ast.parse memory grows super-linearly in source size (a 4 MB source
+# peaked near 2 GB RSS in the review measurement), so parsing an
+# unbounded source is an out-of-memory kill, not a slow request.
+# Every path that parses a python toolset source funnels through
+# :func:`_parse_and_collect`, which refuses sources over this cap.
+MAX_PYTHON_TOOLSET_SOURCE_BYTES = 256 * 1024
 
 _FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -51,6 +57,15 @@ class RegistrationError(ValueError):
         super().__init__(message)
         self.field = field
         self.lineno = lineno
+
+
+class SourceTooLargeError(RegistrationError):
+    """Source over :data:`MAX_PYTHON_TOOLSET_SOURCE_BYTES`, refused before
+    ``ast.parse`` runs, so the cap is a memory bound, not a parse timeout.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, field="source")
 
 
 @dataclass
@@ -167,6 +182,12 @@ def _parse_and_collect(
     reference, or disallowed yielding -- so both the raise-on-first-error
     and collect-every-verdict callers fail the same way here.
     """
+    encoded = len(source.encode("utf-8"))
+    if encoded > MAX_PYTHON_TOOLSET_SOURCE_BYTES:
+        raise SourceTooLargeError(
+            f"source is {encoded} encoded bytes; a python toolset source "
+            f"is limited to {MAX_PYTHON_TOOLSET_SOURCE_BYTES} encoded bytes"
+        )
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:

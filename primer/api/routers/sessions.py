@@ -298,8 +298,8 @@ class ParkedPriorityBody(BaseModel, extra="forbid"):
 
 
 def _parked_priority_deps(storage_provider):
-    # Same server-owned cutover policy as session creation. This operation
-    # never acquires a lease, enqueues a session or opens a workspace.
+    # This operation never acquires a lease, enqueues a session or opens a
+    # workspace, so the engine and scheduler stay unset.
     from primer.workspace.session_factory import SessionFactoryDeps
 
     return SessionFactoryDeps(storage_provider=storage_provider, scheduler=None, claim_engine=None)
@@ -1148,7 +1148,7 @@ async def get_session_by_id(
     return SessionDetail(
         **s.model_dump(), pending_messages=pending,
         parked_priority_token=parked_priority_token(s),
-        parked_priority_max=WORK_PRIORITY_MAX if _parked_priority_deps(storage_provider).nonzero_priority_available else 0,
+        parked_priority_max=WORK_PRIORITY_MAX,
         usage=usage, context_length=context_length,
     )
 

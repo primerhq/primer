@@ -37,7 +37,8 @@ async def _create_webhook_trigger(sp, slug="wh-test", enabled=True, hmac_secret=
     from pydantic import SecretStr
     cfg = WebhookTriggerConfig()
     if hmac_secret:
-        cfg = WebhookTriggerConfig(hmac_secret=SecretStr(hmac_secret))
+        # These tests sign the body alone (the legacy scheme); the timestamped default is covered by test_webhook_hmac_replay.py.
+        cfg = WebhookTriggerConfig(hmac_secret=SecretStr(hmac_secret), legacy_body_hmac=True)
     deps = ServiceDeps(storage_provider=sp)
     trigger = await create_trigger(
         slug=slug,

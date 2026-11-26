@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import stat
 import time
@@ -28,6 +29,11 @@ from typing import Any
 import aiohttp
 
 from primer.int.sandbox import ExecResult, FileStat
+from primer.workspace.local.tools.exec_ import (
+    _HEAD_BYTES,
+    _TAIL_BYTES,
+    _assemble_stream,
+)
 from primer.workspace.runtime.protocol import PROTOCOL_VERSION, ErrorCode, OpName, Request
 
 logger = logging.getLogger(__name__)
@@ -107,6 +113,47 @@ _STREAM_CLOSED = object()  # signals that the stream has ended normally
 _MAX_WS_MSG_SIZE = 256 * 1024 * 1024  # 256 MiB
 
 
+class _CappedStream:
+    """One exec stream's retention: at most ``_HEAD_BYTES`` head +
+    ``_TAIL_BYTES`` tail, the same per-stream budget the local exec tool
+    keeps (the shared constants and marker come from
+    ``primer.workspace.local.tools.exec_``).
+
+    Every chunk still flows THROUGH (the stream is drained to the end, so a
+    printing command never blocks on a full pipe); only the bytes RETAINED
+    are bounded, which is what used to grow without bound when a ``cat`` of
+    a multi-gigabyte log or a printing loop ran inside a container workspace
+    (review 2026-11-23, 5.3). ``data()`` carries the ``[... N bytes omitted
+    ...]`` marker exactly like the local tool's output when a middle was
+    dropped, which is how the truncation is reported to the agent.
+    """
+
+    def __init__(self) -> None:
+        self._head = bytearray()
+        self._tail = bytearray()
+        self.dropped = 0
+
+    def add(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        room = _HEAD_BYTES - len(self._head)
+        if room > 0:
+            self._head += chunk[:room]
+            chunk = chunk[room:]
+        if chunk:
+            # Count only the bytes actually discarded: the tail keeps its own
+            # last _TAIL_BYTES, and those are NOT dropped (same counting rule
+            # as the local tool's _drain).
+            troom = _TAIL_BYTES - len(self._tail)
+            if troom < len(chunk):
+                self.dropped += len(chunk) - troom
+            self._tail += chunk
+            del self._tail[:-_TAIL_BYTES]
+
+    def data(self) -> bytes:
+        return _assemble_stream(bytes(self._head), bytes(self._tail), self.dropped)
+
+
 # ---------------------------------------------------------------------------
 # RuntimeClient
 # ---------------------------------------------------------------------------
@@ -169,6 +216,12 @@ class RuntimeClient:
         # :attr:`gone` to evict the dead client.
         self._gone = False
         self._connected = asyncio.Event()
+        # Set whenever the WS is down (a drop in ``_on_disconnect`` or an
+        # ``aclose``), cleared when a connection is up (``_do_connect``). The
+        # reconnect loop waits on THIS event instead of polling
+        # ``_connected`` at 10 Hz while idle: zero idle wakeups, and a real
+        # disconnect wakes it at once (review 2026-11-23, 5.13).
+        self._disconnected = asyncio.Event()
         # Set by ``aclose``: wakes the requests waiting for a connection that can no longer come back (``_connected`` stays
         # "connected", so a closed client still reads as not connected).
         self._closed_event = asyncio.Event()
@@ -205,6 +258,7 @@ class RuntimeClient:
         self._closed = True
         self._closed_event.set()
         self._connected.clear()
+        self._disconnected.set()  # wake a reconnect loop parked on the idle wait: it then sees _closed and stops
 
         for task in (self._receive_task, self._heartbeat_task, self._reconnect_task, *self._background_tasks):
             if task and not task.done():
@@ -260,15 +314,31 @@ class RuntimeClient:
         """
         await self._send_request(OpName.HEALTH, {}, timeout=self._HEALTH_TIMEOUT_S)
 
-    async def read_file(self, path: str, *, offset: int | None = None) -> bytes:
-        """The file's bytes, or from byte ``offset`` when given. The offset goes on the wire only to a runtime that reported protocol 1.5; an older
-        runtime would ignore it and return the whole file, so for it the whole file is read and sliced here: the same bytes either way."""
-        if offset and self._runtime_has((1, 5)):
-            result = await self._send_request(OpName.READ_FILE, {"path": path, "offset": offset})
-            return base64.b64decode(result["content_b64"])
-        result = await self._send_request(OpName.READ_FILE, {"path": path})
+    async def read_file(
+        self, path: str, *, offset: int | None = None, limit: int | None = None
+    ) -> bytes:
+        """The file's bytes, or from byte ``offset`` (at most ``limit`` bytes from there).
+
+        The offset goes on the wire only to a runtime that reported protocol 1.5, and ``limit`` only to one
+        that reported 1.8; an older runtime would ignore the key and return the whole file, so for it the
+        whole file (from ``offset``) is read and sliced here: the same bytes either way. With a 1.8 runtime
+        the frame is bounded by ``limit``, so any window of a big file can be read without a multi-gigabyte
+        single frame dropping the connection (review 2026-11-23, 5.12).
+        """
+        send_offset = bool(offset) and self._runtime_has((1, 5))
+        send_limit = limit is not None and self._runtime_has((1, 8))
+        args: dict[str, Any] = {"path": path}
+        if send_offset:
+            args["offset"] = offset
+        if send_limit:
+            args["limit"] = limit
+        result = await self._send_request(OpName.READ_FILE, args)
         data = base64.b64decode(result["content_b64"])
-        return data[offset:] if offset else data
+        if not send_offset:
+            data = data[offset:] if offset else data
+        if not send_limit and limit is not None:
+            data = data[:limit]
+        return data
 
     async def capture_service_bundle(self, path: str, reserved: tuple[str, ...]) -> bytes:
         from primer.model.except_ import BadRequestError, ConflictError, ProviderError
@@ -325,6 +395,122 @@ class RuntimeClient:
 
     async def delete(self, path: str) -> None:
         await self._send_request(OpName.DELETE, {"path": path})
+
+    async def _require_1_8(self, op: str) -> None:
+        """Refuse *op* locally, as an older runtime would (EUNSUPPORTED), when the runtime reported a protocol below 1.8.
+
+        Saves the round trip of an op the runtime would not know; the sandbox tools already fall back to their legacy
+        path on EUNSUPPORTED. Waits for the connection first: the version is only known after the hello.
+        """
+        await self._wait_until_connected()
+        if not self._runtime_has((1, 8)):
+            raise RuntimeError(
+                ErrorCode.EUNSUPPORTED,
+                f"{op} needs runtime protocol 1.8 (runtime reported {self._negotiated_version})",
+            )
+
+    async def walk(
+        self,
+        path: str,
+        *,
+        max_entries: int = 25000,
+        timeout_s: float = 30.0,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """One recursive walk of a directory in the runtime (protocol 1.8).
+
+        Returns ``(entries, truncated)``: each entry is ``{"path" (relative
+        to the walked root), "is_dir", "size", "mtime"}``, and ``truncated``
+        is true when the runtime stopped at its entry cap or its deadline.
+        Replaces the one-``list_dir``-round-trip-per-directory walk the
+        sandbox ``glob`` used to make (review 2026-11-23, 5.11).
+        """
+        await self._require_1_8("walk")
+        result = await self._send_request(
+            OpName.WALK,
+            {"path": path, "max_entries": max_entries, "timeout_s": timeout_s},
+            timeout=timeout_s + 10,  # the runtime enforces its own deadline; this is the backstop
+        )
+        return result["entries"], bool(result.get("truncated", False))
+
+    async def search(
+        self,
+        path: str,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        output_mode: str = "files_with_matches",
+        context: int = 0,
+        multiline: bool = False,
+        case_insensitive: bool = False,
+        skip: tuple[str, ...] = (),
+        max_files: int = 2000,
+        max_file_bytes: int = 1 << 20,
+        max_matches: int = 5000,
+        head_limit: int | None = None,
+        max_output_bytes: int | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        """One recursive regex search in the runtime (protocol 1.8).
+
+        Returns ``{"lines", "match_count", "file_count", "truncated",
+        "stop_reason", "stop_reasons", "skipped_large"}``; *lines* are shaped
+        exactly like the local backend's ``grep_text`` output, with paths
+        relative to the WORKSPACE root, and are bounded in the runtime by
+        *head_limit* and *max_output_bytes* before they are sent. The runtime
+        matches with the ``regex`` library under a per-line timeout (a
+        non-compilable pattern is answered ``EPROTOCOL``).
+        """
+        await self._require_1_8("search")
+        args: dict[str, Any] = {
+            "path": path,
+            "pattern": pattern,
+            "output_mode": output_mode,
+            "context": context,
+            "multiline": multiline,
+            "case_insensitive": case_insensitive,
+            "skip": list(skip),
+            "max_files": max_files,
+            "max_file_bytes": max_file_bytes,
+            "max_matches": max_matches,
+            "timeout_s": timeout_s,
+        }
+        if glob is not None:
+            args["glob"] = glob
+        if head_limit is not None:
+            args["head_limit"] = head_limit
+        if max_output_bytes is not None:
+            args["max_output_bytes"] = max_output_bytes
+        return await self._send_request(
+            OpName.SEARCH, args, timeout=timeout_s + 10,
+        )
+
+    async def write_file_cas(
+        self,
+        path: str,
+        expected: bytes,
+        content: bytes,
+        *,
+        mode: int | None = None,
+    ) -> bool:
+        """Compare-and-swap write in the runtime (protocol 1.8).
+
+        Returns ``True`` when the file's current bytes equaled *expected*
+        (and were replaced by *content*), ``False`` when they did not (the
+        file is left untouched). A missing file is an ENOENT
+        :class:`RuntimeError`. Makes the sandbox ``edit`` tool's
+        read-modify-write atomic (review 2026-11-23, 5.9). Only the SHA-256 of
+        *expected* goes on the wire, not the whole old file.
+        """
+        await self._require_1_8("write_file_cas")
+        args: dict[str, Any] = {
+            "path": path,
+            "expected_sha256": hashlib.sha256(expected).hexdigest(),
+            "content_b64": base64.b64encode(content).decode(),
+        }
+        if mode is not None:
+            args["mode"] = mode
+        result = await self._send_request(OpName.WRITE_FILE_CAS, args)
+        return bool(result.get("applied", False))
 
     async def state_commit(
         self,
@@ -426,7 +612,18 @@ class RuntimeClient:
         access: str = "write",
         writes: list[str] | None = None,
     ) -> ExecResult:
-        """Run *cmd* inside the container and return the aggregated result."""
+        """Run *cmd* inside the container and return the aggregated result.
+
+        stdout and stderr are RETAINED capped, per stream at ``_HEAD_BYTES``
+        head + ``_TAIL_BYTES`` tail (the local exec tool's budget; the marker
+        names the omitted middle), while every chunk is still drained, so a
+        multi-gigabyte log cannot be buffered into the API/worker process
+        (review 2026-11-23, 5.3). A timed-out exec (the runtime kills the
+        process and sends the exit event with ``timed_out: true``) raises
+        :class:`TimeoutError`, as the :class:`~primer.int.sandbox.Sandbox`
+        contract and every caller of :meth:`Sandbox.exec` expect
+        (review 2026-11-23, 5.5).
+        """
         # The runtime spawns the command via ``create_subprocess_exec(*cmd)``,
         # i.e. it expects an argv LIST. A bare string would be iterated into
         # one-character argv entries (``"pwd"`` -> ``['p','w','d']``), so wrap
@@ -453,8 +650,8 @@ class RuntimeClient:
         q: asyncio.Queue[Any] = asyncio.Queue()
         self._streams[req_id] = q
 
-        stdout_chunks: list[bytes] = []
-        stderr_chunks: list[bytes] = []
+        stdout_cap = _CappedStream()
+        stderr_cap = _CappedStream()
         exit_code = -1
         t_start = time.monotonic()
         # The connection the request went out on, and whether the runtime has had its say (the exit event, or a refusal of
@@ -498,12 +695,27 @@ class RuntimeClient:
                 # flatter future shape still works.
                 payload = item.get("data") if isinstance(item.get("data"), dict) else item
                 if event == "stdout":
-                    stdout_chunks.append(base64.b64decode(payload.get("data_b64", "")))
+                    stdout_cap.add(base64.b64decode(payload.get("data_b64", "")))
                 elif event == "stderr":
-                    stderr_chunks.append(base64.b64decode(payload.get("data_b64", "")))
+                    stderr_cap.add(base64.b64decode(payload.get("data_b64", "")))
                 elif event == "exit":
                     finished = True
                     exit_code = int(payload.get("code", -1))
+                    if payload.get("timed_out"):
+                        # The runtime already killed the process group: raise
+                        # the TimeoutError the Sandbox contract promises
+                        # (every caller of Sandbox.exec catches it) instead of
+                        # returning a silent rc=-1 (review 2026-11-23, 5.5).
+                        # ``finished`` is True, so the finally does not send a
+                        # spurious exec_cancel for a process that is dead.
+                        raise TimeoutError(
+                            "exec timed out"
+                            + (
+                                f" after {timeout_s:g}s"
+                                if timeout_s is not None
+                                else " at the runtime's default timeout"
+                            )
+                        )
                     break
         finally:
             self._streams.pop(req_id, None)
@@ -513,8 +725,8 @@ class RuntimeClient:
         duration = time.monotonic() - t_start
         return ExecResult(
             exit_code=exit_code,
-            stdout=b"".join(stdout_chunks).decode(errors="replace"),
-            stderr=b"".join(stderr_chunks).decode(errors="replace"),
+            stdout=stdout_cap.data().decode(errors="replace"),
+            stderr=stderr_cap.data().decode(errors="replace"),
             duration_seconds=duration,
         )
 
@@ -927,6 +1139,7 @@ class RuntimeClient:
     def _on_disconnect(self) -> None:
         """Called when the WS closes unexpectedly."""
         self._connected.clear()
+        self._disconnected.set()  # the reconnect loop is parked on it (review 2026-11-23, 5.13)
         if not self._closed:
             logger.info("WS disconnected; reconnect loop will retry")
         self._fail_all_pending(ErrorCode.EPROTOCOL, "Connection lost")
@@ -970,10 +1183,14 @@ class RuntimeClient:
         attempt = 0
         try:
             while not self._closed:
-                # Wait for a disconnect signal
-                await asyncio.sleep(0)
-                while not self._closed and self._connected.is_set():
-                    await asyncio.sleep(0.1)
+                # Wait for a disconnect signal. Event-driven (review 2026-11-23, 5.13): a
+                # connected client waits on ``_disconnected`` with ZERO idle wakeups (it
+                # used to poll ``_connected`` every 0.1 s), and a real drop wakes the
+                # wait at once, so reconnection is never delayed by the poll. A client
+                # that is ALREADY down (a failed reconnect attempt) skips the wait and
+                # straight to the next backoff, exactly as the old loop did.
+                if self._connected.is_set():
+                    await self._disconnected.wait()
                 if self._closed:
                     return
                 delay = delays[min(attempt, len(delays) - 1)]
@@ -1080,6 +1297,7 @@ class RuntimeClient:
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(), name="runtime-heartbeat"
         )
+        self._disconnected.clear()  # the connection is up: the reconnect loop parks again on the next drop
         self._connected.set()
 
     # ------------------------------------------------------------------

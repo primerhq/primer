@@ -5,10 +5,14 @@ from __future__ import annotations
 from primer.access.person import Person, person_from_ref
 from primer.access.policy import level_of
 
+import asyncio
+import contextvars
+import functools
 import json
 import logging
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -69,9 +73,78 @@ class SessionFactoryDeps:
     claim_engine: Any
     scheduler: Any
     workspace_registry: Any | None = None
-    # No production caller enables this before coordinated writer/worker cutover.
-    nonzero_priority_available: bool = False
 
+
+# X3.8: graph_input arrives over the session-create body, which the body-cap
+# middleware admits up to the app's request-body cap (32 MiB by default). The
+# pre-check uses that cap as its instance bound (the same choice as the /svc
+# gateway's _ARGS_MAX_INSTANCE_BYTES), so a body the middleware admitted is
+# not refused here at the historical 1 MiB default.
+_GRAPH_INPUT_MAX_INSTANCE_BYTES = 32 * 1024 * 1024
+
+# X3.8: the pre-check validates on its own small pool, not the interactive
+# user-regex pool that tap LIKE reads share (validate_bounded_off_loop's
+# run_interactive): a slow tap read must not queue a session-create or
+# invoke_graph pre-check, and vice versa.
+_GRAPH_INPUT_SCHEMA_POOL = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="graph-input-schema"
+)
+
+
+async def validate_graph_input(
+    value: Any, input_schema: dict[str, Any],
+    *, max_instance_bytes: int = _GRAPH_INPUT_MAX_INSTANCE_BYTES,
+) -> None:
+    """Check ``value`` against a graph's ``Begin.input_schema``; raise :class:`ValidationError` (a 422) when it does not match.
+
+    The one pre-check of a graph's input, for session create and for ``invoke_graph`` (lane K2 round 1, ruling
+    K2-4). The schema is the graph author's and the instance the caller's, so its regex keywords run bounded
+    and off the event loop, on this module's own small pool (X3.8: not the interactive user-regex pool that
+    tap LIKE reads share): a backtracking pattern in Begin.input_schema must not hold this replica's loop for
+    minutes (review 2026-11-23, 7.1), and a slow tap read must not queue a session-create or invoke_graph
+    pre-check. A schema that cannot be checked in time is refused with a clear 422, not a hang; a stored
+    schema that is itself invalid (a ``jsonschema.SchemaError`` from the check) is refused the same way
+    (X3.8: it used to escape as a 500). The instance bound is the app's request-body cap (X3.8), so a
+    graph_input the body-cap middleware admitted is not refused here at the historical 1 MiB default.
+    """
+    import jsonschema as _jsonschema  # local import keeps top clean
+
+    from primer.common.bounded_jsonschema import validate_bounded
+    from primer.common.user_regex import UserRegexError, UserRegexTimeout
+
+    # The same context-copy + run_in_executor shape run_interactive uses, on the dedicated pool above.
+    context = contextvars.copy_context()
+    call = functools.partial(
+        context.run, validate_bounded, value, input_schema,
+        label="input_schema", max_instance_bytes=max_instance_bytes,
+    )
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            _GRAPH_INPUT_SCHEMA_POOL, call
+        )
+    except _jsonschema.SchemaError as exc:
+        # The stored schema is not a valid JSON schema (the graph author's
+        # error, not the caller's): a clear 422 naming it (X3.8: it used to
+        # escape the pre-check as a 500).
+        raise ValidationError(
+            f"the graph's input_schema is not a valid JSON schema: {exc.message}"
+        ) from exc
+    except _jsonschema.ValidationError as exc:
+        raise ValidationError(
+            f"graph_input invalid at path "
+            f"{list(exc.absolute_path)!r}: {exc.message}"
+        ) from exc
+    except UserRegexTimeout as exc:
+        raise ValidationError(
+            f"graph_input cannot be validated in time: the input_schema "
+            f"patterns used their {exc.seconds:g} s matching budget "
+            "(a pattern with overlapping or nested repeats, such as "
+            "(a|aa)+, backtracks on long values)"
+        ) from exc
+    except UserRegexError as exc:
+        raise ValidationError(
+            f"graph input_schema has a pattern that cannot be used: {exc}"
+        ) from exc
 
 async def start_workspace_session(
     *,
@@ -166,7 +239,6 @@ async def start_workspace_session(
         # shape mismatch must surface as a 422 at create time rather than
         # blowing up the first turn. When no Begin or no schema is
         # present we accept whatever was sent (back-compat).
-        import jsonschema as _jsonschema  # local import keeps top clean
         from primer.model.graph import _BeginNode
 
         begin = next(
@@ -191,16 +263,7 @@ async def start_workspace_session(
                 raise ValidationError(
                     f"graph {binding.graph_id!r} requires graph_input"
                 )
-            try:
-                _jsonschema.validate(
-                    instance=resolved_input,
-                    schema=begin.input_schema,
-                )
-            except _jsonschema.ValidationError as exc:
-                raise ValidationError(
-                    f"graph_input invalid at path "
-                    f"{list(exc.absolute_path)!r}: {exc.message}"
-                ) from exc
+            await validate_graph_input(resolved_input, begin.input_schema)
             # Normalise so the persistence block below writes the
             # validated value (covers the legacy
             # initial_instructions-as-JSON fallback path).
@@ -259,7 +322,6 @@ async def start_workspace_session(
         sources=sources, caller_id=calling_session_id, caller_turn=calling_turn_no,
         requested_priority=priority, fire=fire_metadata,
         binding_default=bound_source.default_priority,
-        nonzero_priority_available=deps.nonzero_priority_available,
     ) as attempt:
         initial_last_seq, initial_responder_ledger = await _materialize_initial_slot(
             deps=deps, workspace_id=workspace_id, sid=sid, binding=binding, resolved_agent=resolved_agent,
@@ -647,7 +709,17 @@ async def cancel_session(
     """Hard-cancel a session (shared by the REST route + the workspaces tool).
 
     created/waiting/paused -> ended/cancelled inline + drop the claim lease;
-    running -> set cancel_requested + publish session:{id}:cancel + signal_cancel.
+    running -> set cancel_requested + publish session:{id}:cancel +
+    signal_cancel; a parked running row (waiting on an approval / ask_user
+    answer) also gets its park flipped to 'resumable' (a row already
+    'resumable' gets no flip) and its lease re-armed as an idempotent
+    upsert, so the next claim ends it at the pool's resumable-cancel
+    branch, which uses the same full cancelled terminal as a normal
+    turn's claim-time exit -- a parked session holds no worker scope, so
+    the flag alone would sit until someone answered or parked_until
+    passed (review 2026-11-23, 1.4). A row that ended between the read
+    and the flip gets no lease; a failed re-arm is logged, not raised
+    (the cancel still answers, publishes and signals).
     Raises NotFoundError (missing/mismatched) / ConflictError (already ended).
 
     Shared with ``POST .../sessions/{sid}/cancel``
@@ -722,6 +794,72 @@ async def cancel_session(
             break
         else:
             raise ConflictError(f"Session {session_id!r} changed status while it was being cancelled; try again")
+        # A parked RUNNING row (waiting on an approval or an ask_user
+        # answer) holds no worker scope: the park dropped its lease, so
+        # the cancel_requested flag above would sit until a person
+        # answers or parked_until passes. Flip the park to 'resumable'
+        # -- the same guarded patch a wake of it lands, fenced on the
+        # park it was read from -- and re-arm the lease as an
+        # idempotent upsert, so the next claim ends it at the pool's
+        # resumable-cancel branch (primer/worker/pool.py), which takes
+        # the same full cancelled terminal as a normal turn's claim-time
+        # exit (_end_cancelled_at_claim in dispatch.py; review 2026-11-23,
+        # 1.4 + K1 round 1). A row a wake already flipped (resumable)
+        # gets the same re-arm: the upsert is idempotent, and a lease
+        # lost to a failed or crashed re-arm is exactly what a retried
+        # cancel restores.
+        if s.parked_status in {"parked", "resumable"}:
+            if s.parked_status == "parked":
+                parked_at_spellings = [raw_generation(s, "parked_at")]
+                if (
+                    s.parked_at is not None
+                    and s.parked_at.isoformat() not in parked_at_spellings
+                ):
+                    parked_at_spellings.append(s.parked_at.isoformat())
+                flipped = await sessions.patch_if(
+                    session_id,
+                    to_jsonable_python({
+                        "parked_status": "resumable",
+                        "resumable_at": now,
+                    }),
+                    where={
+                        "status": [raw_generation(s, "status")],
+                        "parked_status": [raw_generation(s, "parked_status")],
+                        "parked_at": parked_at_spellings,
+                    },
+                )
+                if flipped is not None:
+                    s = flipped
+            # Re-arm only while the row is still a non-ENDED park, decided
+            # from a fresh read: the flip just proved it for a row we
+            # flipped, and for a row a wake already flipped the fresh row
+            # settles whether it ended in the meantime -- a row that ended
+            # gets no lease.
+            fresh = await sessions.get(session_id)
+            if fresh is not None:
+                s = fresh
+                if (
+                    fresh.status != SessionStatus.ENDED
+                    and fresh.parked_status in {"parked", "resumable"}
+                ):
+                    if deps.claim_engine is not None:
+                        try:
+                            await deps.claim_engine.mark_resumable(
+                                ClaimKind.SESSION, session_id
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            # A failed re-arm must not fail the cancel:
+                            # the flag stands and the publish and signal
+                            # below still fire, so a worker holding a turn
+                            # acts on it; a retried cancel re-arms (the
+                            # upsert is idempotent).
+                            logger.warning(
+                                "cancel_session: could not re-arm the claim "
+                                "lease of parked session %s; the cancel still "
+                                "applies and a retried cancel re-arms",
+                                session_id,
+                                exc_info=True,
+                            )
         # Publish on the bus so the engine-path worker's _cancel_watcher
         # preempts the running turn. The WS interrupt handler publishes the
         # same key.

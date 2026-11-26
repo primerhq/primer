@@ -279,6 +279,12 @@ jobs:
           uv run pytest tests/memory/test_job_target_locking.py
           -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
           --timeout=120 --timeout-method=thread
+      - name: Postgres-gated test, tree mid-walk conflict (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/knowledge/test_tree_midwalk_conflict.py
+          -o addopts= -n 0 -p no:cacheprovider -m postgres -v -rs
+          --timeout=120 --timeout-method=thread
 
   core-install:
     # Boundary rule 1 enforcement (modular-monolith): a core-only install

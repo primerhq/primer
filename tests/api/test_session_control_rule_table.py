@@ -925,9 +925,15 @@ async def _call(
             current_actor.reset(token)
         output, is_error = result.output, result.is_error
     else:
+        cached: list[str] = []
+
+        async def _cache_output(full: str) -> str:  # lane F's 50 KiB result cap spills the full output here
+            cached.append(full)
+            return "/tool-output"
+
         manager = ToolExecutionManager(
             toolset_providers=world.providers,
-            workspace_session=SimpleNamespace(session_id=CALLERS[own], workspace_id=own, agent_id="planner"),  # type: ignore[arg-type]
+            workspace_session=SimpleNamespace(session_id=CALLERS[own], workspace_id=own, agent_id="planner", cache_output=_cache_output),  # type: ignore[arg-type]
             initiated_by=run_as,
         )
         if door == "tool manager":
@@ -938,6 +944,10 @@ async def _call(
             )
         part = await manager.execute(call)
         output, is_error = part.output, part.error
+        if cached:
+            # The result exceeded the tool output cap: the part's output is the capped preview and the full
+            # output is what the tool produced, so the assertions read that.
+            output = cached[-1]
     body = json.loads(output)
     return (body["type"] if is_error else D), body
 
@@ -1299,6 +1309,7 @@ async def test_a_fire_never_starts_or_feeds_a_session_the_owner_holds_no_full_on
     pool = SimpleNamespace(
         _storage=world.sp, _engine=world.engine, _scheduler=world.scheduler, _workspace_registry=world.registry, _event_bus=world.bus,
         _release_lease=_release,
+        _hand_back_outcome=lambda lease: None,  # the real pool's cut-check; these fires are never cut
     )
     await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-fire")), 30)  # type: ignore[arg-type]
 
@@ -1677,6 +1688,7 @@ async def test_update_from_outside_prime_cannot_re_enable_a_trigger_that_starts_
     pool = SimpleNamespace(
         _storage=world.sp, _engine=world.engine, _scheduler=world.scheduler, _workspace_registry=world.registry, _event_bus=world.bus,
         _release_lease=lambda lease, outcome: asyncio.sleep(0),
+        _hand_back_outcome=lambda lease: None,  # the real pool's cut-check; these fires are never cut
     )
     await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-off")), 30)  # type: ignore[arg-type]
     assert world.registry.workspace("ws-prime").started == [] and world.registry.workspace("ws-2").started == []
@@ -1834,6 +1846,7 @@ async def test_the_clock_fires_an_admins_trigger_with_no_caller_to_rank():
     pool = SimpleNamespace(
         _storage=world.sp, _engine=world.engine, _scheduler=world.scheduler, _workspace_registry=world.registry, _event_bus=world.bus,
         _release_lease=lambda lease, outcome: asyncio.sleep(0),
+        _hand_back_outcome=lambda lease: None,  # the real pool's cut-check; these fires are never cut
     )
 
     await asyncio.wait_for(run_engine_trigger(pool, SimpleNamespace(entity_id="tr-fire")), 30)  # type: ignore[arg-type]

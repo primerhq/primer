@@ -89,6 +89,7 @@ async def world(tmp_path) -> AsyncIterator[World]:
         ),
         ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
             task_storage=sp.get_storage(ToolCallTask),
+            session_storage=sp.get_storage(WorkspaceSession),
         ),
     })
     app.state.claim_engine = engine

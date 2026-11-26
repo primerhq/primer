@@ -66,7 +66,9 @@ def engine(sp) -> InMemoryClaimEngine:
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=sp.get_storage(WorkspaceSession)),
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=sp.get_storage(Harness)),
         ClaimKind.TRIGGER: TriggerClaimAdapter(storage=sp.get_storage(Trigger)),
-        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=sp.get_storage(ToolCallTask)),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
+            task_storage=sp.get_storage(ToolCallTask), session_storage=sp.get_storage(WorkspaceSession),
+        ),
         ClaimKind.MEMORY: MemoryClaimAdapter(storage=sp.get_storage(MemoryJob)),
     })
 
@@ -136,20 +138,28 @@ async def test_session_a_resumed_continuation_is_claimed_again_at_once(sp, engin
     assert await _claimable(engine, ClaimKind.SESSION) == ["s1"]
 
 
-async def test_session_boot_recovery_over_a_parked_running_session_claims_no_lease_and_runs_no_turn(sp, engine):
-    """Not a release: ``recover_sessions`` (boot) arms a lease for every RUNNING session, and a park does not change ``status``
-    (``dispatch.py``: "A park doesn't touch session.status"), so a parked session gets one. Before the fix the in-memory engine claimed
-    it and ``_run_engine_session`` ran ``run_one_session_turn`` over the park (a fresh turn, a graph from its begin node). Now the lease
-    waits, as on Postgres, until the resume event flips the row and re-arms it."""
+async def test_session_boot_recovery_over_a_due_parked_session_runs_no_turn_over_the_park(sp, engine):
+    """A parked RUNNING session whose ``parked_until`` is already due is armed
+    by boot recovery (the timer's auto-resume, review 2026-11-23 finding 1.8),
+    and the ORIGINAL guarantee these tests pinned still holds: with the lease
+    ARMED, the claim path still runs no turn over the park, because the
+    eligibility predicate admits no ``parked`` row. (Round 1: the earlier
+    versions seeded no ``parked_until``, so boot armed no lease and "no turn
+    ran" was trivially true; the due seed restores the armed-lease premise.)
+    The resume event flips the row to "resumable" and re-arms the lease
+    (``mark_resumable``), which is when it becomes claimable."""
     from primer.model.scheduler import WorkerConfig
     from primer.worker.pool import WorkerPool
 
     sessions = sp.get_storage(WorkspaceSession)
-    await sessions.create(_session("s1", parked_status="parked", parked_at=_now()))
+    await sessions.create(
+        _session("s1", parked_status="parked", parked_at=_now(),
+                 parked_until=_now() - timedelta(seconds=1)),
+    )
 
     await recover_sessions(engine, SimpleNamespace(enqueue=_noop), sp)
 
-    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the premise: boot recovery armed the parked session"
+    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "a due parked_until is the timer's auto-resume: boot recovery arms it (review 2026-11-23 finding 1.8)"
     pool = WorkerPool(
         config=WorkerConfig(concurrency=1), scheduler=SimpleNamespace(enqueue=_noop),  # type: ignore[arg-type]
         storage=sp, workspace_registry=None, provider_registry=None, engine=engine,  # type: ignore[arg-type]
@@ -164,13 +174,29 @@ async def test_session_boot_recovery_over_a_parked_running_session_claims_no_lea
         with pytest.raises(RuntimeError, match="no runnable lease"):
             await pool.run_one_turn_now("s1")
     assert turns == [], "a fresh turn ran over the park"
-    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the armed lease is kept for the resume"
+    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the armed lease stays unclaimable over the park: the eligibility predicate admits no parked row"
 
     # The resume event flips the row and re-arms the lease (durably_mark_session_resumable): now it is claimed.
     current = await sessions.get("s1")
     await sessions.update(current.model_copy(update={"parked_status": "resumable"}))
     await engine.mark_resumable(ClaimKind.SESSION, "s1")
     assert await _claimable(engine, ClaimKind.SESSION) == ["s1"]
+
+
+async def test_session_boot_recovery_over_a_parked_session_with_an_undue_parked_until_arms_no_lease(sp, engine):
+    """The 1.8 exclusion (round 1, the separate not-yet-due case): a parked
+    row whose ``parked_until`` has not passed has nothing to resume yet (the
+    timer is still waiting), so boot recovery arms no lease - arming it would
+    only spend a claim poll re-reading a row the claim loop cannot claim. When
+    it is due (or its event fires) the row flips and the lease is created via
+    the timer's auto-resume / ``mark_resumable``."""
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(
+        _session("s1", parked_status="parked", parked_at=_now(),
+                 parked_until=_now() + timedelta(hours=1)),
+    )
+    await recover_sessions(engine, SimpleNamespace(enqueue=_noop), sp)
+    assert not await engine.has_lease(ClaimKind.SESSION, "s1"), "a park whose parked_until has not passed has nothing to resume: no lease at boot (review 2026-11-23 finding 1.8)"
 
 
 async def _noop(*_args, **_kwargs) -> None:
@@ -307,6 +333,7 @@ def _task(tid: str) -> ToolCallTask:
 
 async def _claimed_task(sp, engine, tid: str):
     await sp.get_storage(ToolCallTask).create(_task(tid))
+    await sp.get_storage(WorkspaceSession).create(_session("sess-1"))  # the task's parent, arming reads it
     await engine.upsert(ClaimKind.TOOL_CALL, tid)
     return await _claim_one(engine, ClaimKind.TOOL_CALL, tid)
 
@@ -410,21 +437,32 @@ async def test_engine_decides_eligibility_before_max_count():
 
 async def test_engine_never_claims_a_lease_whose_entity_is_missing(engine):
     for kind in ClaimKind:
-        await engine.upsert(kind, f"gone-{kind.value}")
+        if kind in (ClaimKind.SESSION, ClaimKind.MEMORY, ClaimKind.TOOL_CALL):
+            # An entity-owning kind cannot be armed without its row.
+            with pytest.raises(ValueError):
+                await engine.upsert(kind, f"gone-{kind.value}")
+        else:
+            await engine.upsert(kind, f"gone-{kind.value}")
 
     assert await engine.claim_due("w", max_count=10) == []
 
 
-async def test_engine_claims_a_kind_with_no_adapter_or_an_adapter_with_no_storage():
+async def test_arming_requires_a_registered_adapter_and_authoritative_entity_storage():
+    """The old lenient arm (any kind, no adapter, no storage) is gone: an unregistered kind
+    cannot be armed at all, an entity kind needs readable storage, and platform work arms
+    without an entity read and stays claimable (its adapter cannot judge eligibility)."""
     engine = InMemoryClaimEngine(adapters={
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
         ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
-        ClaimKind.TRIGGER: TriggerClaimAdapter(storage=None),
     })
-    for kind in ClaimKind:                      # TOOL_CALL has no adapter here at all
-        await engine.upsert(kind, f"x-{kind.value}")
+    with pytest.raises(KeyError):
+        await engine.upsert(ClaimKind.TOOL_CALL, "x-tool_call")
+    with pytest.raises(ValueError, match="authoritative entity storage"):
+        await engine.upsert(ClaimKind.SESSION, "x-session")
+    await engine.upsert(ClaimKind.HARNESS, "x-harness")
 
-    assert {lease.kind for lease in await engine.claim_due("w", max_count=10)} == set(ClaimKind)
+    [lease] = await engine.claim_due("w", max_count=10)
+    assert lease.kind is ClaimKind.HARNESS and lease.entity_id == "x-harness"
 
 
 async def test_engine_skips_an_entity_it_cannot_read_and_claims_the_rest(caplog):
@@ -542,6 +580,9 @@ async def test_an_adapter_without_is_eligible_is_a_bug_that_propagates_and_is_no
 
         def eligibility_sql(self) -> str:
             return "TRUE"
+
+        async def work_priority(self, entity_id: str) -> int:
+            return 0
 
         async def on_release(self, conn, entity_id, *, outcome):
             return None
@@ -673,21 +714,27 @@ async def test_the_lease_stamps_are_read_from_the_clock_when_they_are_written():
 # ---------------------------------------------------------------------------
 
 
-async def test_session_boot_recovery_over_a_parked_running_session_runs_no_turn_through_the_real_claim_loop(sp, engine):
-    """Probe p6 of the review, next to the ``run_one_turn_now`` pin above: the pool's own claim loop (``start()``, a 0.1 s poll)
-    polls the parked session's armed lease for a second and runs no turn; the lease is kept for the resume. Red before the fix
-    (the loop ran a turn over the park)."""
+async def test_session_boot_recovery_over_a_due_parked_session_runs_no_turn_through_the_real_claim_loop(sp, engine):
+    """Probe p6 of the review, next to the ``run_one_turn_now`` pin above, with
+    the due-``parked_until`` seed (round 1): boot recovery arms the parked
+    lease (the timer's auto-resume), and the pool's own claim loop
+    (``start()``, a 0.1 s poll) polls it for a second and still runs no turn
+    over the park - the armed lease is unclaimable while the row is parked
+    (the eligibility predicate admits no ``parked`` row). The earlier version
+    seeded no ``parked_until``, so no lease was armed and "no turn ran" was
+    trivially true; the due seed restores the armed-lease premise."""
     from primer.model.scheduler import WorkerConfig
     from primer.scheduler.in_memory import InMemoryScheduler
     from primer.worker.pool import WorkerPool
 
     await sp.get_storage(WorkspaceSession).create(
-        _session("s1", parked_status="parked", parked_at=_now(), parked_event_key="evt:1"),
+        _session("s1", parked_status="parked", parked_at=_now(), parked_event_key="evt:1",
+                 parked_until=_now() - timedelta(seconds=1)),
     )
     scheduler = InMemoryScheduler()
     await scheduler.initialize()
     await recover_sessions(engine, scheduler, sp)
-    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the premise: boot recovery armed the parked session"
+    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "a due parked_until is the timer's auto-resume: boot recovery arms it (review 2026-11-23 finding 1.8)"
 
     turns: list[str] = []
 
@@ -715,4 +762,4 @@ async def test_session_boot_recovery_over_a_parked_running_session_runs_no_turn_
 
     assert turns == [], "the real claim loop ran a turn over the park"
     assert empty_polls >= 3, "the loop really polled"
-    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the armed lease is kept for the resume"
+    assert await engine.has_lease(ClaimKind.SESSION, "s1"), "the armed lease sat unclaimed over the park: the eligibility predicate admits no parked row"

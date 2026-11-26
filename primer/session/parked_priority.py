@@ -11,7 +11,7 @@ from primer.access.person import Person, person_from_ref
 from primer.access.policy import require
 from primer.model.access import AccessLevel
 from primer.model.api_token import ApiToken
-from primer.model.except_ import AccessDeniedError, ConfigError, ConflictError, NotFoundError
+from primer.model.except_ import AccessDeniedError, ConflictError, NotFoundError
 from primer.model.user import User
 from primer.model.work_priority import validate_work_priority
 from primer.model.workspace import Workspace
@@ -123,8 +123,6 @@ async def set_parked_priority(
         current_generation = parked_priority_token(target)
         if current_generation is None or current_generation != generation:
             raise ConflictError("park changed; read the session again before editing priority")
-        if priority and deps.nonzero_priority_available is not True:
-            raise ConfigError("nonzero session priority is unavailable before scheduling cutover")
         if priority == target.priority:
             return target
         result = await sessions.patch_if(

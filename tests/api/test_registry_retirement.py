@@ -178,3 +178,150 @@ async def test_an_llm_provider_invalidate_leaves_a_stream_in_flight_alone(tmp_pa
         await registry.aclose()
     finally:
         await sp.aclose()
+
+
+# --- RetryingLLM: the factory shape production hands out (the factory always returns a RetryingLLM) ---
+
+
+class _SlowInner:
+    """A slow async-generator adapter: the reviewer's shape for the 2.1 repro."""
+
+    def __init__(self) -> None:
+        self.closed = 0
+        self.gate = asyncio.Event()
+
+    async def stream(self, **kwargs):
+        yield "a "
+        await self.gate.wait()
+        if self.closed:
+            raise RuntimeError("client closed under the stream")
+        yield "b"
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+async def _retrying_registry(tmp_path, *, retries: int = 0):
+    from pydantic import HttpUrl
+
+    from primer.api.registries.provider_registry import ProviderRegistry
+    from primer.llm.retrying import RetryingLLM
+    from primer.model.model_profile import ModelProfileConfig
+    from primer.model.provider import Limits, LLMProvider, LLMProviderType, OpenChatConfig, OpenChatFlavor
+    from primer.model_profile import ResolvedModel
+    from primer.storage.sqlite import SqliteConfig, SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "p.sqlite")))
+    await sp.initialize()
+    await sp.get_storage(LLMProvider).create(LLMProvider(
+        id="p1", provider=LLMProviderType.OPENCHAT,
+        models=[ResolvedModel(profile_id="x", provider_id="p1", model_name="m", context_length=8192, config=ModelProfileConfig())],
+        config=OpenChatConfig(url=HttpUrl("http://127.0.0.1:9/v1/"), api_key=None, flavor=OpenChatFlavor.OTHER),
+        limits=Limits(max_concurrency=4, max_retries=retries),
+    ))
+    registry = ProviderRegistry(
+        sp, llm_factory=lambda row: RetryingLLM(_SlowInner(), row), retire_idle_seconds=IDLE,
+    )
+    return sp, registry
+
+
+@pytest.mark.parametrize("retries", [0, 2])
+async def test_a_retire_mid_stream_on_a_retrying_llm_does_not_cut_the_stream(tmp_path, retries):
+    sp, registry = await _retrying_registry(tmp_path, retries=retries)
+    try:
+        old = await registry.get_llm("p1")
+        inner = old.inner
+        agen = old.stream(model="m", messages=[])
+        assert await agen.__anext__() == "a "            # a turn is mid-stream
+        await registry.invalidate_llm("p1")
+        new = await registry.get_llm("p1")
+        assert new is not old and new.inner is not inner  # new callers get a fresh adapter at once
+        await _settle()
+        assert inner.closed == 0                          # but the stream's adapter is still open
+        inner.gate.set()
+        assert [x async for x in agen] == ["b"]           # and the stream finishes
+        await _settle()
+        assert inner.closed == 1                           # closed once, after it went idle
+        await registry.aclose()
+    finally:
+        await sp.aclose()
+
+
+async def _wait_until(predicate, timeout: float) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.01)
+    return predicate()
+
+
+async def test_a_stuck_stream_is_closed_after_the_close_bound(caplog):
+    import logging
+
+    from primer.api.registries.retirement import AdapterRetirement
+
+    inner = _SlowInner()  # the stream parks at its gate forever
+    retirement = AdapterRetirement(idle_seconds=0.05, close_bound_seconds=0.2)
+    adapter = retirement.track(inner)
+    agen = adapter.stream()
+    await agen.__anext__()  # mid-stream, and stuck
+    retirement.retire(adapter)
+    assert inner.closed == 0
+    with caplog.at_level(logging.WARNING, logger="primer.api.registries.retirement"):
+        assert await _wait_until(lambda: inner.closed >= 1, 3.0)
+    assert "without activity" in caplog.text
+    await agen.aclose()
+
+
+class _Chatty:
+    """Yields an item every ``period`` seconds, ``count`` times."""
+
+    def __init__(self, period: float, count: int) -> None:
+        self.closed = 0
+        self.period = period
+        self.count = count
+
+    async def stream(self):
+        for i in range(self.count):
+            await asyncio.sleep(self.period)
+            yield i
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+async def test_a_stream_still_producing_output_runs_past_the_close_bound():
+    """The bound counts silence, not total time: a long healthy generation must never be cut mid-stream."""
+    from primer.api.registries.retirement import AdapterRetirement
+
+    inner = _Chatty(period=0.05, count=16)  # 0.8 s of steady output
+    retirement = AdapterRetirement(idle_seconds=0.02, close_bound_seconds=0.2)
+    adapter = retirement.track(inner)
+    agen = adapter.stream()
+    assert await agen.__anext__() == 0
+    retirement.retire(adapter)
+    seen = [x async for x in agen]  # 4x the bound in total, never 0.2 s without an item
+    assert seen == list(range(1, 16))
+    assert inner.closed == 0  # not closed under the running stream
+    assert await _wait_until(lambda: inner.closed == 1, 3.0)
+
+
+async def test_a_stream_silent_longer_than_the_bound_is_closed(caplog):
+    import logging
+
+    from primer.api.registries.retirement import AdapterRetirement
+
+    inner = _Chatty(period=5.0, count=2)  # one item, then 5 s of silence
+    retirement = AdapterRetirement(idle_seconds=0.02, close_bound_seconds=0.2)
+    adapter = retirement.track(inner)
+    agen = adapter.stream()
+    task = asyncio.ensure_future(agen.__anext__())
+    await asyncio.sleep(0.05)
+    retirement.retire(adapter)
+    with caplog.at_level(logging.WARNING, logger="primer.api.registries.retirement"):
+        assert await _wait_until(lambda: inner.closed >= 1, 3.0)
+    assert "without activity" in caplog.text
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)

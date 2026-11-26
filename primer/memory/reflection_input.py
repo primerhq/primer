@@ -162,7 +162,8 @@ def plan_input(messages: list[Message], first_turn: int, *, context: str, system
     # for per-chunk labels and joining; verify the actual final request as well.
     output_bytes = min(4096, (final.input_tokens - fixed - 256) // len(chunks))
     if output_bytes < 256:
-        raise InputRefused("input_policy_too_large")
+        # Depends on how many chunks this range needs, not on the fixed policy alone: a range refusal, so a smaller window may still fit.
+        raise InputRefused("input_compaction_limit")
     return Plan(None, tuple(chunks), output_bytes)
 
 

@@ -8,6 +8,7 @@ headers lie about the sizes cannot get past the cap either.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import struct
 import zipfile
@@ -17,7 +18,7 @@ import pytest_asyncio
 
 from primer.knowledge import importer
 from primer.knowledge.importer import import_zip
-from primer.knowledge.tree import DocumentTreeService
+from primer.knowledge.tree import BODY_CAP_MESSAGE, DocumentTreeService
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.payload_too_large import PayloadTooLargeError
 from primer.model.provider import (
@@ -233,3 +234,64 @@ async def test_a_zip64_record_is_honoured_when_the_classic_record_lies_small(tre
     with pytest.raises(PayloadTooLargeError) as exc:
         await import_zip(tree, collection_id="c1", data=data)
     assert f"{huge} entries" in exc.value.message
+
+
+# ---- review round 3 (3.9): per-entry body cap + off-loop inflation ---------------
+
+
+async def test_an_entry_over_the_body_cap_is_read_bounded_and_soft_rejected(tree, monkeypatch):
+    """An entry that cannot fit a document body is read one chunk past the cap, not inflated in
+    full; the import rejects it with the body-cap reason and carries on with the rest."""
+    monkeypatch.setattr(importer, "MAX_UNCOMPRESSED_BYTES", 2 * 1024 * 1024)
+    monkeypatch.setattr(importer, "DOCUMENT_BODY_CAP", 100_000)
+    big = 150_000
+    data = _zip({"big.md": b"a" * big, "ok.md": b"fine"})
+
+    read_bytes = 0
+    original_open = zipfile.ZipFile.open
+
+    def counting_open(self, info, *args, **kwargs):
+        inner = original_open(self, info, *args, **kwargs)
+
+        class _Counting:
+            def __enter__(self):
+                self._stream = inner.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return inner.__exit__(*exc)
+
+            def read(self, n=-1):
+                nonlocal read_bytes
+                chunk = self._stream.read(n)
+                read_bytes += len(chunk)
+                return chunk
+
+        return _Counting()
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", counting_open)
+
+    report = await import_zip(tree, collection_id="c1", data=data)
+
+    assert report.created == ["ok"]
+    assert report.rejected == [{"file": "big.md", "reason": BODY_CAP_MESSAGE}]
+    # Bounded: stopped just past the cap, never the entry's full inflated size.
+    assert read_bytes <= 100_000 + importer._READ_CHUNK
+    assert read_bytes < big
+
+
+async def test_entry_inflation_runs_off_the_event_loop(tree, monkeypatch):
+    """Inflating a compressed entry is CPU-bound: the bounded read must run in a worker thread,
+    not on the event loop."""
+    calls: list = []
+    original_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy_to_thread)
+
+    report = await import_zip(tree, collection_id="c1", data=_zip({"a.md": b"hello", "b.md": b"world"}))
+    assert sorted(report.created) == ["a", "b"]
+    assert calls.count(importer._read_bounded) == 2, calls

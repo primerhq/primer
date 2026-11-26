@@ -98,8 +98,7 @@ classDiagram
   `system_state.bootstrap_completed_at IS NULL`. It is a primary-key fetch of the
   `singleton` row through `StorageProvider.get_system_state`.
 - `run(*, force=False) -> BootstrapResult` performs the idempotent provisioning.
-  When `force` is `False` and the marker is already set, it short-circuits and fills
-  `result.skipped` with all five reserved ids without touching storage. Otherwise it
+  When `force` is `False` and the marker is already set, it still re-runs the three extra-gated steps (`huggingface`, `lance`, `huggingface-ce`: each a cheap get-then-create that creates its row only when the extra is installed), so installing an extra and restarting creates its default rows (review 7.3); the two rows that depend on no extra (`local`, `local-default`) are reported as skipped without touching storage and never re-created. This does not resurrect a row an operator removed: bootstrap records no deletions, but the API refuses to delete any reserved row (403 `reserved_id_protected`), so a missing extra-gated row on a marked install means the extra was absent at the first boot. Otherwise it
   runs each `_ensure_*` step in order and, only when `result.errors` is empty, calls
   `StorageProvider.set_bootstrap_completed(datetime.now(UTC))`.
 
@@ -296,6 +295,7 @@ when one `_ensure_*` step raises, the marker stays null and the error appears in
 
 - **Reserved ids are protected at the API layer only, not via lookup-time factory dispatch on the registries.** Why: treating bootstrapped rows as ordinary storage rows keeps storage the single source of truth and avoids two places to keep in sync. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
 - **`BootstrapRunner` is wired with per-kind `Storage[T]` handles rather than the per-kind registries the spec drafted.** Why: bootstrap only needs to upsert rows, not run them, and Storage handles avoid a circular construction order with registries that themselves depend on bootstrapped rows. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
+- **The marker does not freeze the extra-gated rows.** Why: a slim first boot skips the rows whose extra is absent and still stamps the marker (a skip is not an error), so a marker-only short-circuit made `pip install 'primer-ai[lance]'` plus a restart, the documented procedure, create nothing, and the reserved ids cannot be created by hand (409). The marked path re-runs only those three steps. Review 7.3.
 - **Marker stamping is all-or-nothing: `bootstrap_completed_at` is set only if every `_ensure_*` step succeeded.** Why: a partial failure leaves the marker null so a subsequent boot or `primer init --force` retries the failed steps without re-attempting the ones that already succeeded. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
 - **LLM providers are not auto-created, and a default workspace and Internal Collections activation are also excluded.** Why: LLMs need real API keys and a cost decision, IC ingest carries embedding/storage cost, and a default workspace would prejudge the operator's first project. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
 - **A fifth reserved row, the `local-default` `WorkspaceTemplate`, was added beyond the spec's four providers.** Why: it lets the operator create a usable workspace via `POST /v1/workspaces {"template_id": "local-default"}` immediately after first boot. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.

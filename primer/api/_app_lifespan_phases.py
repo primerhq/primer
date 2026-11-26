@@ -58,22 +58,26 @@ async def run_first_boot_bootstrap(
             db_config=config.db,
             legacy_vector_store=config.legacy_vector_store,
         )
-        if await _runner.needs_bootstrap():
+        # Every boot: run() handles the marker itself. A first boot does the full pass; a marked boot re-checks only the extra-gated rows (an
+        # operator who installed an extra and restarted gets its default rows) and brings the reserved pgvector row in step with the app's settings.
+        first_boot = await _runner.needs_bootstrap()
+        if first_boot:
             logger.info("first boot detected; running auto-bootstrap")
-            _result = await _runner.run()
-            logger.info(
-                "auto-bootstrap complete",
-                extra={
-                    "bootstrap_created": _result.created,
-                    "bootstrap_skipped": _result.skipped,
-                    "error_count": len(_result.errors),
-                },
+        _result = await _runner.run()
+        logger.log(
+            logging.INFO if first_boot or _result.created else logging.DEBUG,
+            "auto-bootstrap complete" if first_boot else "auto-bootstrap re-checked on a marked boot",
+            extra={
+                "bootstrap_created": _result.created,
+                "bootstrap_skipped": _result.skipped,
+                "error_count": len(_result.errors),
+            },
+        )
+        if _result.errors:
+            logger.warning(
+                "auto-bootstrap partial failure",
+                extra={"bootstrap_errors": _result.errors},
             )
-            if _result.errors:
-                logger.warning(
-                    "auto-bootstrap partial failure",
-                    extra={"bootstrap_errors": _result.errors},
-                )
     else:
         # Warn on first boot only (marker still null).
         _state = await storage_provider.get_system_state()
@@ -189,8 +193,17 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
     purpose — no owner survived the restart) or turn_status="claimable"
     (independent evidence of real pending work — a queued steer/resume
     that hasn't been picked up yet), regardless of status.
+
+    A row parked on a yield (``parked_status="parked"``) is left out of that
+    set unless it has something to resume: a ``parked_until`` that is already
+    due (the park's own timer re-arms it on auto-resume) or the ``"resumable"``
+    flip (its event already fired and the next claim resumes the turn). Arming
+    a parked row that is still waiting would only spend a claim poll re-reading
+    a row the claim loop cannot claim. (Review 2026-11-23 finding 1.8.)
     """
     try:
+        from datetime import datetime, timezone
+
         from primer.int.claim import ClaimKind as _ClaimKind
         from primer.model.storage import OffsetPage as _OffsetPage, Op as _Op
         from primer.model.workspace_session import (
@@ -199,6 +212,7 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
         )
         from primer.storage.q import Q as _Q
 
+        _now = datetime.now(timezone.utc)
         _session_storage = storage_provider.get_storage(_WorkspaceSession)
         # Pushing the filter into the query (instead of list()-ing every
         # row and dropping the rest in Python) keeps recovery from loading
@@ -228,6 +242,16 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
                     # A wake (on another process that did not restart) is writing the message of the turn it decided: it arms the claim
                     # itself when it promotes the turn. A stale arm is healed by the session-messaging sweep (audit G7-03).
                     continue
+                if _sess.parked_status == "parked":
+                    # Review 2026-11-23 finding 1.8: a row still "parked" (not yet flipped to "resumable") has nothing to resume
+                    # until its own deadline passes, so only a due parked_until (the timer's auto-resume) needs the lease; a
+                    # still-waiting park would only spend a claim poll re-reading a row the claim loop cannot claim. The event-fired
+                    # case is a different parked_status ("resumable", not "parked") and is armed below, not skipped here.
+                    _parked_until = _sess.parked_until
+                    if _parked_until is not None and _parked_until.tzinfo is None:
+                        _parked_until = _parked_until.replace(tzinfo=timezone.utc)
+                    if _parked_until is None or _parked_until > _now:
+                        continue
                 try:
                     await claim_engine.upsert(_ClaimKind.SESSION, _sess.id)
                     if _sess.status == _SessionStatus.RUNNING:
@@ -261,6 +285,107 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
             )
     except Exception:  # noqa: BLE001 -- never break startup
         logger.exception("lifespan: session recovery failed")
+
+
+async def recover_trigger_and_harness_leases(
+    claim_engine, storage_provider,
+) -> None:
+    """Re-arm the TRIGGER and HARNESS leases an in-memory engine loses on restart.
+
+    A claim engine (in-memory under the SQLite default, and Postgres without a
+    ``scheduler:`` block) keeps its leases in memory, so unlike the persisted
+    rows they shadow they do not survive a process restart. :func:`recover_sessions`
+    re-arms the SESSION leases, but a TRIGGER lease is armed only by the trigger
+    service on create/update and a HARNESS lease only when an operation is
+    enqueued: after a restart every enabled scheduled/delayed trigger and every
+    harness with a pending operation has no lease and nothing re-arms it, so a
+    cron trigger never fires again and a harness with an operation in flight
+    stays wedged (every later operation answers 409). (Review 2026-11-23
+    finding 1.2.)
+
+    This phase re-arms, exactly once each and idempotently, every enabled
+    scheduled/delayed trigger whose next fire is due or pending and every
+    harness that still carries a pending operation. A lease that already exists
+    (a persistent engine's, or a re-arm that already ran) is left to the
+    upsert's idempotent re-prioritisation, so the phase is safe to run when the
+    engine already holds the lease.
+    """
+    try:
+        from primer.int.claim import (
+            CLAIM_PRIORITY_OPERATOR,
+            ClaimKind as _ClaimKind,
+        )
+        from primer.model.harness import Harness as _Harness
+        from primer.model.storage import OffsetPage as _OffsetPage
+        from primer.model.trigger import Trigger as _Trigger
+        from primer.storage.q import Q as _Q
+        from primer.trigger.sources import get_source as _get_source
+
+        _trigger_storage = storage_provider.get_storage(_Trigger)
+        # ``next_fire_at IS NOT NULL`` is the SQL-side gate (the predicate
+        # translator emits IS NOT NULL). ``enabled`` and the source's
+        # ``eligible_for_claim`` (the time-based kinds only) are applied in
+        # Python: a disabled or event-driven trigger has no claimable lease.
+        _trigger_q = _Q(_Trigger).where_not_null("next_fire_at").build()
+        _armed_triggers = 0
+        _offset = 0
+        while True:
+            _page = await _trigger_storage.find(
+                _trigger_q, _OffsetPage(offset=_offset, length=200),
+            )
+            _items = list(_page.items)
+            for _trigger in _items:
+                if not _trigger.enabled or _trigger.next_fire_at is None:
+                    continue
+                if not getattr(
+                    _get_source(_trigger.config.kind), "eligible_for_claim", False,
+                ):
+                    continue
+                try:
+                    try:
+                        await claim_engine.upsert(
+                            _ClaimKind.TRIGGER, _trigger.id,
+                            priority=CLAIM_PRIORITY_OPERATOR,
+                            next_attempt_at=_trigger.next_fire_at,
+                        )
+                    except TypeError:
+                        # Older engine signatures do not take next_attempt_at:
+                        # fall back to the bare upsert (mirrors the trigger
+                        # service's _upsert_claim_if_eligible).
+                        await claim_engine.upsert(
+                            _ClaimKind.TRIGGER, _trigger.id,
+                            priority=CLAIM_PRIORITY_OPERATOR,
+                        )
+                    _armed_triggers += 1
+                except Exception:
+                    logger.exception(
+                        "trigger lease recovery: upsert failed for %s",
+                        _trigger.id,
+                    )
+            if len(_items) < 200:
+                break
+            _offset += 200
+
+        _harness_storage = storage_provider.get_storage(_Harness)
+        # The SAME re-arm helper the leader-elected harness sweep runs
+        # (sweep_harnesses, the residual window of review 2026-11-23 finding
+        # 1.3): one code path for "every harness with a pending operation
+        # holds a lease". skip_existing=False so the phase also re-prioritises
+        # a lease a persistent engine already holds, as it always did.
+        from primer.harness.dispatch import rearm_harness_leases as _rearm_harness_leases
+
+        _armed_harnesses = await _rearm_harness_leases(
+            claim_engine, _harness_storage, skip_existing=False,
+        )
+
+        if _armed_triggers or _armed_harnesses:
+            logger.info(
+                "lifespan: trigger/harness lease recovery - re-armed %d "
+                "trigger + %d harness lease(s) from persisted state",
+                _armed_triggers, _armed_harnesses,
+            )
+    except Exception:  # noqa: BLE001 -- never break startup
+        logger.exception("lifespan: trigger/harness lease recovery failed")
 
 
 async def sweep_orphaned_tool_call_tasks(claim_engine, storage_provider) -> None:

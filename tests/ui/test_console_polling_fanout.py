@@ -132,9 +132,13 @@ def test_the_agent_sessions_panel_reads_one_page_of_ten() -> None:
 
 
 def test_the_list_pages_cap_their_per_row_reads() -> None:
+    # The cap (four in flight) and the read-only-what-changed rule live in PR_useRowReads, pinned by tests/ui/test_row_reads.py.
+    api = _read(UI / "foundation" / "api.js")
+    hook = api[api.index("function PR_useRowReads("):]
+    assert "PR_mapLimit(todo, 4," in hook
     for name in ("agents.jsx", "graphs.jsx"):
         src = _read(UI / "components" / name)
-        assert "PR_mapLimit(" in src, name
+        assert "PR_useRowReads(" in src, name
         assert re.search(r"Promise\.all\(\s*items\.map", src) is None, name
 
 

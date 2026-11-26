@@ -34,7 +34,7 @@ def test_baseline_pins_the_complete_reviewed_operation_universe(
     assert len(operations) == len(rows) == inventory.EXPECTED_OPERATION_COUNT == 408
     assert len({row["operation_id"] for row in rows}) == 408
     assert len({inventory._identity(row) for row in rows}) == 408
-    assert len(tools) == len({tool.scoped_id for tool in tools}) == 492
+    assert len(tools) == len({tool.scoped_id for tool in tools}) == 493
     assert {row["state"] for row in rows} == {"curated", "generated", "skip"}
     assert manifest["base_commit"] == inventory.BASE_COMMIT
 

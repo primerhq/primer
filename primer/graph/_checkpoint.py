@@ -276,6 +276,11 @@ class _CheckpointMixin:
           so the eventual terminal outcome doesn't silently downgrade to
           "completed" once the park resolves. ``None`` when no failure
           has been discovered yet.
+        * ``run_id`` (X3.8): the executor's run identity at the park, so
+          the park-resume rebuild binds the ORIGINAL child's identity: the
+          resumed run's state saves stay keyed to the run that parked, and
+          a later ``invoke()`` of the same child recognises them as its
+          own run instead of starting fresh.
         """
         self._order_pending()
         ctx_payload: dict[str, Any] | None = None
@@ -284,6 +289,7 @@ class _CheckpointMixin:
         return {
             "context": ctx_payload,
             "ready_set": sorted(self._ready_set),
+            "run_id": self._run_id,
             "pending_ended_reason": self._pending_ended_reason,
             "pending_ended_detail": self._pending_ended_detail,
             # The one-shot on_max_iterations reroute already happened: without it a landing node that parks re-trips the cap on resume (AG-H3).
@@ -292,46 +298,7 @@ class _CheckpointMixin:
                 nid: ns.model_dump(mode="json")
                 for nid, ns in self._node_states.items()
             },
-            "fanout_instances": {
-                sid: {
-                    "synthesized_id": inst.synthesized_id,
-                    "target_node_id": inst.target_node_id,
-                    "fanout_index": inst.fanout_index,
-                    "fanout_item": (
-                        inst.fanout_item.model_dump(mode="json")
-                        if isinstance(inst.fanout_item, NodeOutput)
-                        else inst.fanout_item
-                    ),
-                    "fanout_item_kind": (
-                        "node_output"
-                        if isinstance(inst.fanout_item, NodeOutput)
-                        else "raw"
-                    ),
-                }
-                for sid, inst in self._fanout_instances.items()
-            },
-            "fanout_target_expected_count": dict(
-                self._fanout_target_expected_count
-            ),
-            "instance_to_spec": {
-                sid: {
-                    "fanout_node_id": fanout_id,
-                    "spec": spec.model_dump(mode="json"),
-                }
-                for sid, (fanout_id, spec) in self._instance_to_spec.items()
-            },
-            "fanout_drain_state": {
-                key: {
-                    "on_failure": ds.on_failure,
-                    "fanout_node_id": ds.fanout_node_id,
-                    "target_node_id": ds.target_node_id,
-                    "expected_count": ds.expected_count,
-                    "completed_count": ds.completed_count,
-                    "any_failed": ds.any_failed,
-                    "first_failure": list(ds.first_failure) if ds.first_failure else None,
-                }
-                for key, ds in self._fanout_drain_state.items()
-            },
+            **self._fanout_bookkeeping(),
             "pending_toolcalls": [
                 {
                     "node_id": p.node_id,
@@ -386,6 +353,88 @@ class _CheckpointMixin:
             ],
         }
 
+    def _fanout_bookkeeping(self) -> dict[str, Any]:
+        """The fan-out bookkeeping as JSON: the park checkpoint carries it, and so does every ``state.json`` commit (lane K2 round 1)."""
+        return {
+            "fanout_instances": {
+                sid: {
+                    "synthesized_id": inst.synthesized_id,
+                    "target_node_id": inst.target_node_id,
+                    "fanout_index": inst.fanout_index,
+                    "fanout_item": (
+                        inst.fanout_item.model_dump(mode="json")
+                        if isinstance(inst.fanout_item, NodeOutput)
+                        else inst.fanout_item
+                    ),
+                    "fanout_item_kind": (
+                        "node_output"
+                        if isinstance(inst.fanout_item, NodeOutput)
+                        else "raw"
+                    ),
+                }
+                for sid, inst in self._fanout_instances.items()
+            },
+            "fanout_target_expected_count": dict(
+                self._fanout_target_expected_count
+            ),
+            "instance_to_spec": {
+                sid: {
+                    "fanout_node_id": fanout_id,
+                    "spec": spec.model_dump(mode="json"),
+                }
+                for sid, (fanout_id, spec) in self._instance_to_spec.items()
+            },
+            "fanout_drain_state": {
+                key: {
+                    "on_failure": ds.on_failure,
+                    "fanout_node_id": ds.fanout_node_id,
+                    "target_node_id": ds.target_node_id,
+                    "expected_count": ds.expected_count,
+                    "completed_count": ds.completed_count,
+                    "any_failed": ds.any_failed,
+                    "first_failure": list(ds.first_failure) if ds.first_failure else None,
+                }
+                for key, ds in self._fanout_drain_state.items()
+            },
+        }
+
+    def _restore_fanout_bookkeeping(self, payload: dict[str, Any]) -> None:
+        """Inverse of :meth:`_fanout_bookkeeping`; absent keys restore empty."""
+        self._fanout_instances = {}
+        for sid, raw in (payload.get("fanout_instances") or {}).items():
+            kind = raw.get("fanout_item_kind", "raw")
+            item_raw = raw.get("fanout_item")
+            if kind == "node_output" and item_raw is not None:
+                item: Any = NodeOutput.model_validate(item_raw)
+            else:
+                item = item_raw
+            self._fanout_instances[sid] = _FanoutInstance(
+                synthesized_id=raw["synthesized_id"],
+                target_node_id=raw["target_node_id"],
+                fanout_index=raw.get("fanout_index"),
+                fanout_item=item,
+            )
+        self._fanout_target_expected_count = dict(
+            payload.get("fanout_target_expected_count") or {}
+        )
+        self._instance_to_spec = {}
+        for sid, raw in (payload.get("instance_to_spec") or {}).items():
+            spec = FanOutSpec.model_validate(raw["spec"])
+            self._instance_to_spec[sid] = (raw["fanout_node_id"], spec)
+        self._fanout_drain_state = {}
+        for key, raw in (payload.get("fanout_drain_state") or {}).items():
+            ff = raw.get("first_failure")
+            first_failure = tuple(ff) if ff else None
+            self._fanout_drain_state[key] = _FanoutDrainState(
+                on_failure=raw["on_failure"],
+                fanout_node_id=raw["fanout_node_id"],
+                target_node_id=raw["target_node_id"],
+                expected_count=raw["expected_count"],
+                completed_count=raw.get("completed_count", 0),
+                any_failed=raw.get("any_failed", False),
+                first_failure=first_failure,  # type: ignore[arg-type]
+            )
+
     def _toolcall_dispatch_entry(self, p) -> dict[str, Any]:
         """Build the channel/REST dispatch entry for a pending tool-call node.
 
@@ -435,6 +484,12 @@ class _CheckpointMixin:
         else:
             self._context = GraphContext.model_validate(ctx_raw)
         self._ready_set = set(payload.get("ready_set") or [])
+        # X3.8: the park-resume rebuild binds the original child's run
+        # identity (absent in a checkpoint that predates the field: the
+        # constructor's own key stands, as with every other new field).
+        run_id = payload.get("run_id")
+        if run_id is not None:
+            self.bind_run_id(run_id)
         # 01a0812c: absent -> None (no failure discovered yet), same
         # degrade-gracefully policy as every other new-field-on-old-
         # checkpoint case in this codebase - a checkpoint written before
@@ -458,40 +513,7 @@ class _CheckpointMixin:
             nid: NodeRuntimeState.model_validate(raw)
             for nid, raw in (payload.get("node_states") or {}).items()
         }
-        self._fanout_instances = {}
-        for sid, raw in (payload.get("fanout_instances") or {}).items():
-            kind = raw.get("fanout_item_kind", "raw")
-            item_raw = raw.get("fanout_item")
-            if kind == "node_output" and item_raw is not None:
-                item: Any = NodeOutput.model_validate(item_raw)
-            else:
-                item = item_raw
-            self._fanout_instances[sid] = _FanoutInstance(
-                synthesized_id=raw["synthesized_id"],
-                target_node_id=raw["target_node_id"],
-                fanout_index=raw.get("fanout_index"),
-                fanout_item=item,
-            )
-        self._fanout_target_expected_count = dict(
-            payload.get("fanout_target_expected_count") or {}
-        )
-        self._instance_to_spec = {}
-        for sid, raw in (payload.get("instance_to_spec") or {}).items():
-            spec = FanOutSpec.model_validate(raw["spec"])
-            self._instance_to_spec[sid] = (raw["fanout_node_id"], spec)
-        self._fanout_drain_state = {}
-        for key, raw in (payload.get("fanout_drain_state") or {}).items():
-            ff = raw.get("first_failure")
-            first_failure = tuple(ff) if ff else None
-            self._fanout_drain_state[key] = _FanoutDrainState(
-                on_failure=raw["on_failure"],
-                fanout_node_id=raw["fanout_node_id"],
-                target_node_id=raw["target_node_id"],
-                expected_count=raw["expected_count"],
-                completed_count=raw.get("completed_count", 0),
-                any_failed=raw.get("any_failed", False),
-                first_failure=first_failure,  # type: ignore[arg-type]
-            )
+        self._restore_fanout_bookkeeping(payload)
         self._pending_toolcalls = [
             _PendingToolCall(
                 node_id=raw["node_id"],

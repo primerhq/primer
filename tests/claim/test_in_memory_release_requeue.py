@@ -11,13 +11,14 @@ from pathlib import Path
 
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind, ReleaseOutcome
+from tests.claim._platform import platform_adapters
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 async def _released(outcome: ReleaseOutcome, *, armed: datetime) -> InMemoryClaimEngine:
     now = [START]
-    eng = InMemoryClaimEngine(adapters={}, clock=lambda: now[0])
+    eng = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS), clock=lambda: now[0])
     await eng.upsert(ClaimKind.HARNESS, "h1", next_attempt_at=armed)
     (lease,) = await eng.claim_due("w1", max_count=1)
     now[0] = START + timedelta(hours=1)

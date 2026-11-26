@@ -1,6 +1,7 @@
 """Bulk import: zip directory structure -> document tree."""
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 import struct
@@ -31,6 +32,10 @@ class ImportReport(BaseModel):
     skipped: list[str] = Field(default_factory=list)
     overwritten: list[str] = Field(default_factory=list)
     rejected: list[dict] = Field(default_factory=list)
+    #: The post-import index pass failed: the rows are written but not
+    #: searchable yet (the next index pass catches up). A conflict stops
+    #: before the pass runs, so its report carries False.
+    index_failed: bool = False
 
 
 class ImportConflictError(ConflictError):
@@ -143,11 +148,15 @@ def _check_archive(infos: list[zipfile.ZipInfo]) -> None:
         )
 
 
-def _read_bounded(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> bytes:
+def _read_bounded(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int,
+                 body_cap: int | None = None) -> bytes:
     """Inflate one entry, refusing it the moment it passes ``budget`` bytes.
 
     The budget is what is left of :data:`MAX_UNCOMPRESSED_BYTES`, so this counts the bytes
-    actually decompressed rather than trusting the sizes the headers declare.
+    actually decompressed rather than trusting the sizes the headers declare. With ``body_cap``
+    given, reading stops just past it and hands the partial bytes back for the caller to reject:
+    an entry that will not fit a document body is then read a megabyte before it is rejected,
+    not inflated in full.
     """
     out = bytearray()
     try:
@@ -160,6 +169,8 @@ def _read_bounded(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> by
                         f"(at entry {info.filename!r})",
                         limit_bytes=MAX_UNCOMPRESSED_BYTES,
                     )
+                if body_cap is not None and len(out) > body_cap:
+                    break
     except (zipfile.BadZipFile, EOFError, OSError, NotImplementedError, RuntimeError) as exc:
         # A corrupt entry, a size or CRC that does not match what the headers declared, an
         # unsupported compression method or an encrypted entry (RuntimeError): a bad upload, not a server fault.
@@ -200,7 +211,11 @@ async def import_zip(
     for info in sorted(infos, key=lambda i: i.filename):
         if info.is_dir():
             continue
-        raw = _read_bounded(zf, info, MAX_UNCOMPRESSED_BYTES - inflated)
+        # Off the event loop: inflating a compressed entry is CPU-bound, and the per-entry body
+        # cap bounds the read to a megabyte plus one chunk even for an entry that will be rejected.
+        raw = await asyncio.to_thread(
+            _read_bounded, zf, info, MAX_UNCOMPRESSED_BYTES - inflated, DOCUMENT_BODY_CAP,
+        )
         inflated += len(raw)
         if len(raw) > DOCUMENT_BODY_CAP:
             report.rejected.append({"file": info.filename, "reason": BODY_CAP_MESSAGE})

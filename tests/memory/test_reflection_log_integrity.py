@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from primer.claim.adapters.memory import MemoryClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
 from primer.memory.jobs import run_memory_job
@@ -27,7 +28,7 @@ async def test_torn_log_after_enough_user_starts_preserves_progress(sp, tail, th
     deps = _deps(sp, llm)
     deps.load_messages = session_message_loader(sp, read_log)
     if through_job:
-        engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW)
+        engine = InMemoryClaimEngine(adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=sp.get_storage(MemoryJob))}, clock=lambda: NOW)
         await engine.upsert(ClaimKind.MEMORY, job.id)
         lease, = await engine.claim_due("offline", max_count=1)
         deps.engine = engine
@@ -82,7 +83,7 @@ async def test_writer_unicode_separators_are_not_record_boundaries(sp, newline, 
     deps.load_messages = session_message_loader(sp, read_log)
     assert (await deps.load_messages(job))[0].parts[0].text == text
     if through_job:
-        engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW)
+        engine = InMemoryClaimEngine(adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=sp.get_storage(MemoryJob))}, clock=lambda: NOW)
         await engine.upsert(ClaimKind.MEMORY, job.id)
         lease, = await engine.claim_due("offline", max_count=1)
         deps.engine = engine
@@ -107,7 +108,7 @@ async def test_impossible_rewind_after_two_turns_never_reaches_model(sp, target)
     llm = FakeLLM()
     deps = _deps(sp, llm)
     deps.load_messages = session_message_loader(sp, read_log)
-    engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW)
+    engine = InMemoryClaimEngine(adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=sp.get_storage(MemoryJob))}, clock=lambda: NOW)
     await engine.upsert(ClaimKind.MEMORY, job.id)
     lease, = await engine.claim_due("offline", max_count=1)
     deps.engine = engine

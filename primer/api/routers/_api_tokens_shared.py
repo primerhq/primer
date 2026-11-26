@@ -52,15 +52,28 @@ def to_summary(row: ApiToken) -> ApiTokenSummary:
     )
 
 
+def is_bearer_origin(request: Request) -> bool:
+    """True when the caller's credential is a bearer token.
+
+    Either directly -- the bearer path sets ``request.state.api_token``
+    (the cookie path leaves it ``None``) -- or through a generated route
+    tool the token initiated: that trusted request carries no token of its
+    own, it carries the initiating credential's kind in
+    ``request.state.originating_credential`` instead (review 4.3). Cookie
+    surfaces are operator-only, so both shapes are bearer callers.
+    """
+    api_token = getattr(request.state, "api_token", None)
+    origin = getattr(request.state, "originating_credential", None)
+    return api_token is not None or origin == "api_token"
+
+
 def require_cookie_session(request: Request) -> None:
     """Reject when the caller authenticated via a bearer token.
 
-    The cookie path leaves ``request.state.api_token`` as ``None``; the
-    bearer path sets it. Token management is operator-only — bearer
-    credentials cannot manage tokens.
+    Token management is operator-only: bearer credentials -- directly or
+    through a tool call they initiated -- cannot manage tokens.
     """
-    api_token = getattr(request.state, "api_token", None)
-    if api_token is not None:
+    if is_bearer_origin(request):
         raise HTTPException(
             status_code=403,
             detail={

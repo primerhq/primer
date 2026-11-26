@@ -320,11 +320,29 @@ Profile settings are passed without an automatic setting-refusal retry in this p
 aggregate adapters retain their own member failover. Bounds describe adapter
 invocations and collected output, not arbitrary provider network frames or costs.
 
-An uncovered source range, oversized fixed policy, invalid summary, output limit,
-context rejection or changed job/settings yields a fixed skip reason without
-advancing `reflected_turn` or applying deltas. Current occurrence settlement retires
-that attempt; a later completed turn can enqueue again. Preserved input is not a
-promise that an ended, permanently oversized session will eventually be learned.
+A range that needs more than four chunks (or leaves a chunk count too little
+summary output room) is reflected on the newest turns that fit:
+`plan_newest_window` ends the window at the newest turn that fits on its own
+(a turn too large for the input is left out wherever it sits) and reaches back
+as far as still fits. A turn that does not fit on its own is a wall the window
+cannot cross: the turns older than it are left out as well, even ones that
+would fit alone (the window is contiguous and ends at the newest turn). The
+watermark advances to the target, `source` records the
+turns actually covered, and the completed event reports `skipped_turns` (the
+others are logged and never read). When no turn fits on its own, the range is
+given up for good: `reflected_turn` advances and a `memory.reflection.skipped`
+event with its own reason, `input_too_large_skipped`, and a "skipped" detail says
+so, so the range cannot be retried (and cannot spend another daily reflection)
+on every later idle gap; the re-arm after it is a one-turn range and skips as
+`too_small` without spending the budget. A final request that still exceeds the
+limit after planning (the prepared evidence, or the judge call's own pre-check)
+advances the same way and is reported as `input_too_large_skipped`: it is
+deterministic for the range, so retrying it could never succeed, and
+`input_compaction_limit` is no longer a skip reason. An oversized fixed policy,
+invalid summary, output limit, context rejection or changed job/settings
+still yields a fixed skip reason without advancing `reflected_turn` or applying
+deltas. Current occurrence settlement retires that attempt; a later completed
+turn can enqueue again.
 Transport errors keep the existing bounded durable retries. Invalid *final*
 reflection verdicts retain the existing terminal watermark behavior. Summaries
 are ephemeral, so a retry recomputes them; existing per-delta replay limits remain.
@@ -346,11 +364,31 @@ sequence later than that target when present. Legacy marker rows without their
 own sequence are checked against earlier file-order evidence. Reflection does
 not retroactively apply the current API's compaction-barrier restriction to
 historical rewinds whose earlier source evidence remains available.
-The session identity is captured before loading and rechecked across the read
-and subsequent model work. This is execution-time provenance; memory jobs do not
+The session identity is captured before loading (`run_memory_job` captures it
+before the triviality gate's read and hands it to the reflection as
+`MemoryDeps.session`) and rechecked across the read and subsequent model work. This is execution-time provenance; memory jobs do not
 persist an enqueue-time binding epoch, and historical reads across prior session
 switches remain supported. Entry writes retain the non-atomic interval after
 their final authority check.
+
+The session log is read and parsed once per job (the triviality gate and the
+reflection share the messages), and the decode, record validation and history
+rebuild run in a worker thread, off the event loop. The `memory.lookup` scan is
+bounded by the session's own events: the event store filters on `session_id`
+(the `(session_id, id)` index), so the agent's lookups of other sessions are
+never read, whatever their age.
+
+Finished reflect jobs do not accumulate beyond one per session. A reflect job
+is the session's `reflected_turn` watermark, so a retired row is kept for every
+session that still exists, ended ones included: a new message reopens an ended
+session (turn numbers continue), and without the watermark its next turns would
+reflect from turn 1 again. The row is deleted when it retires for a session whose
+row is gone, and the daily curator sweeps the retired rows of deleted sessions
+(up to 500 deletions per pass; live rows do not count toward the limit; legacy
+rows without an occurrence are swept once their session is gone and keep staying
+while the session exists, as the pre-intent claim path may hold them
+pending). Session retention deletes old ended sessions, which is what lets
+their rows go.
 
 The daily reflection count still counts attempts, not preprocessing requests. A
 long attempt can issue four summary calls and one final call; retries consume

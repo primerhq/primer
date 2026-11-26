@@ -1107,7 +1107,9 @@ function SSPOverview({ p }) {
       <dt>host</dt><dd className="mono">{p.config?.hostname}:{p.config?.port}</dd>
       <dt>database</dt><dd className="mono">{p.config?.database}</dd>
       <dt>schema</dt><dd className="mono">{p.config?.db_schema || "public"}</dd>
-      <dt>distance_metric</dt><dd className="mono">{p.config?.distance_metric || "cosine"}</dd>
+      {/* The metric this provider creates NEW collections with (its distance_metric, default cosine). An existing collection keeps the metric stored at
+          creation time (the store refuses a different metric on recreate). The field still round-trips on an edit (the form sends the row's config back as it is). */}
+      <dt>distance</dt><dd className="mono" data-testid="ssp-distance">{p.config?.distance_metric ?? "cosine"}</dd>
       <dt>vector_type</dt><dd className="mono">{p.config?.use_halfvec ? "halfvec" : "vector"}</dd>
       <dt>hnsw_m</dt><dd className="mono">{p.config?.hnsw_m ?? 16}</dd>
       <dt>hnsw_ef_construction</dt><dd className="mono">{p.config?.hnsw_ef_construction ?? 64}</dd>

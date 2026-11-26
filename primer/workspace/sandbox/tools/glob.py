@@ -1,8 +1,10 @@
 """``glob`` for the sandbox backend.
 
-Walks via :class:`Sandbox.list_dir` and matches with :mod:`fnmatch`.
-Slower than ``find`` shelled into the container, but portable across
-any Sandbox impl.
+Walks the sandbox in ONE recursive, capped ``walk`` op (protocol 1.8) and
+matches with :mod:`fnmatch`, instead of one ``list_dir`` round-trip per
+directory (review 2026-11-23, 5.11). A sandbox without ``walk`` (an older
+impl) falls back to the legacy per-directory walk. Slower than ``find``
+shelled into the container, but portable across any Sandbox impl.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.glob import GlobArgs
+from primer.workspace.runtime.protocol import ErrorCode
+from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 from primer.workspace.sandbox.tools._common import (
     resolve_sandbox_path,
     workspace_relative,
@@ -62,8 +66,31 @@ class SandboxGlob(WorkspaceTool):
         if info.kind != "dir":
             raise BadRequestError(f"{args.path!r} is not a directory")
 
+        walk = getattr(self._sandbox, "walk", None)
+        entries: list[dict] | None = None
+        walk_truncated = False
+        if walk is not None:
+            # One recursive walk in the sandbox (protocol 1.8) with an entry
+            # and time cap, instead of one list_dir round-trip per directory
+            # (review 2026-11-23, 5.11). A runtime that answers EUNSUPPORTED
+            # (an older image) falls back to the legacy walk below.
+            try:
+                entries, walk_truncated = await walk(root_abs)
+            except RuntimeOpError as exc:
+                if exc.code != ErrorCode.EUNSUPPORTED:
+                    raise
+                entries = None
+
         matches: list[tuple[float, str]] = []
-        await self._collect(root_abs, args.pattern, matches, "")
+        if entries is not None:
+            for e in entries:
+                if e.get("is_dir"):
+                    continue
+                rel = e.get("path", "")
+                if _matches(rel, args.pattern):
+                    matches.append((float(e.get("mtime", 0.0)), f"{root_abs}/{rel}"))
+        else:
+            await self._collect(root_abs, args.pattern, matches, "")
         # Newest first; ties broken alphabetically for determinism.
         matches.sort(key=lambda t: (-t[0], t[1]))
 
@@ -77,7 +104,7 @@ class SandboxGlob(WorkspaceTool):
             workspace_relative(self._root, abs_path)
             for _, abs_path in page
         ]
-        truncated = args.offset > 0 or end < len(matches)
+        truncated = args.offset > 0 or end < len(matches) or walk_truncated
         return ToolResult(output="\n".join(rels), truncated=truncated)
 
     async def _collect(

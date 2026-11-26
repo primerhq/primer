@@ -28,7 +28,7 @@ from tests.storage.test_storage_contract import provider  # noqa: F401 (SQLite a
 from tests.workspace.test_session_factory import _seed_workspace
 
 
-async def world(sp, *, priority_enabled=True):
+async def world(sp):
     await _seed_workspace(sp)
     rows = sp.get_storage(WorkspaceSession)
     now = datetime.now(UTC)
@@ -40,10 +40,10 @@ async def world(sp, *, priority_enabled=True):
     ))
     adapters = {ClaimKind.SESSION: SessionClaimAdapter(session_storage=rows)}
     if isinstance(sp, PostgresStorageProvider):
-        engine = PostgresClaimEngine(storage_provider=sp, adapters=adapters, work_priority_enabled=priority_enabled)
+        engine = PostgresClaimEngine(storage_provider=sp, adapters=adapters)
     else:
-        engine = InMemoryClaimEngine(adapters=adapters, work_priority_enabled=priority_enabled)
-    return SessionFactoryDeps(sp, engine, None, nonzero_priority_available=priority_enabled), rows, row
+        engine = InMemoryClaimEngine(adapters=adapters)
+    return SessionFactoryDeps(sp, engine, None), rows, row
 
 
 async def edit(deps, row, priority, *, caller=None, person=Person(None, "system"), **kwargs):
@@ -92,15 +92,6 @@ async def test_wake_recovery_uses_the_edited_priority(provider, repair, boot_arm
         assert await sweeper._repair_resumable_parks() == 0
     await priority_claim(deps.claim_engine, 15)
     assert (await rows.get(before.id)).turn_no == before.turn_no
-
-
-async def test_lease_matching_before_cutover_only_checks_existence(provider):
-    deps, _, parked = await world(provider, priority_enabled=False)
-    engine = deps.claim_engine
-    assert not await engine.has_lease(ClaimKind.SESSION, parked.id, work_priority=17)
-    await engine.mark_resumable(ClaimKind.SESSION, parked.id)
-    assert await engine.has_lease(ClaimKind.SESSION, parked.id, work_priority=0)
-    assert await engine.has_lease(ClaimKind.SESSION, parked.id, work_priority=17)
 
 
 async def test_parked_edit_preserves_queued_child_session_priority(provider):

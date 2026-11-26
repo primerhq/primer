@@ -44,8 +44,13 @@ class TestZeroConfigDefaults:
         cfg = AppConfig()
         assert cfg.db is None
         assert cfg.scheduler is None
-        assert cfg.host == "0.0.0.0"
+        # Review 7.2: loopback by default; a reachable bind is a deliberate
+        # operator choice (PRIMER_HOST or config), not the default.
+        assert cfg.host == "127.0.0.1"
         assert cfg.port == 8000
+        # Review 7.7: the pip default agrees with the container entrypoint
+        # and config.example.yaml (info).
+        assert cfg.log_level == "info"
         assert cfg.runtime_mode == RuntimeMode.API_PLUS_WORKER
 
 
@@ -104,6 +109,19 @@ class TestDocsUrl:
         monkeypatch.setenv("PRIMER_DOCS_URL", "https://docs.example.com/")
         cfg = AppConfig()
         assert cfg.docs_url == "https://docs.example.com/"
+
+
+class TestBindHost:
+    """Review 7.2: the bind host defaults to loopback and PRIMER_HOST overrides it."""
+
+    def test_default_is_loopback(self) -> None:
+        cfg = AppConfig()
+        assert cfg.host == "127.0.0.1"
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRIMER_HOST", "0.0.0.0")
+        cfg = AppConfig()
+        assert cfg.host == "0.0.0.0"
 
 
 class TestRuntimeModeAndScheduler:

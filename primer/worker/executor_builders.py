@@ -881,6 +881,14 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         # agent of this run; read on every build, so resume carries it too.
         session_base_prompt=session.base_prompt,
     )
+    # Lane K2 round 1b: the run's identity, from the session row. A reclaim of
+    # the same turn keeps it (turn_no only bumps on a successful release); a
+    # new turn, a reopen or a restart changes it - reset_session bumps the
+    # invocation, not turn_no, so turn_no alone would resume a reopened
+    # session's stale state.
+    executor.bind_run_id(
+        f"{int((session.metadata or {}).get('invocation', 1))}.{session.turn_no}"
+    )
     return _GraphTurnDriver(executor)
 
 

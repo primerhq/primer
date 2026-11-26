@@ -12,14 +12,14 @@ A trigger is a source of fires: a time, a schedule, a webhook call or a channel 
 - **The four kinds.** `config.kind` picks one. The kind never changes after create.
   - `delayed` fires once at `fire_at`, an ISO 8601 instant (write it in UTC, ending in `Z`; a time without a zone is read as UTC). After that fire the trigger is disabled.
   - `scheduled` fires on a five-field `cron`, read in `timezone` (an IANA name, default `UTC`). `catchup` (`one`, `all` or `none`, default `one`) decides what happens after downtime (see Gotchas).
-  - `webhook` fires when a caller sends `POST /v1/webhooks/{token}`. The server mints `token` (32 hex characters) on create, whatever you send. Optional: `hmac_secret` (the caller must sign the body), `interactive` (hold the POST until the fired runs end, default `false`) and `wait_timeout_seconds` (1 to 600, default 60: how long an interactive POST waits). See [fire a trigger now](triggers/fire-now).
+  - `webhook` fires when a caller sends `POST /v1/webhooks/{token}`. The server mints `token` (32 hex characters) on create, whatever you send. Optional: `hmac_secret` (the caller must sign the body), `legacy_body_hmac` (accept the replayable body-only signature; new ones default `false`), `interactive` (hold the POST until the fired runs end, default `false`) and `wait_timeout_seconds` (1 to 600, default 60: how long an interactive POST waits). See [fire a trigger now](triggers/fire-now).
   - `channel` fires when the inbound channel router receives an event from `provider_id`; set `channel_id` to listen to one channel only. `interactive` (default `true`) posts each run's result back into the thread. It fires from the router, never on a clock. Its subscriptions are channel bindings ([bindings](channels/bindings)).
 - **Fields you set.** `slug` (required, unique, pattern `^[a-z][a-z0-9-]{1,63}$`, no `__`), `name` (required, at most 200 characters), `description` and `enabled` (default `true`).
 - **Fields the server sets.** `id` (`tr-` and 12 hex digits), `next_fire_at` (the next fire of a `delayed` or `scheduled` trigger; null when disabled, after a `delayed` fire, and always for `webhook` and `channel`), `last_fired_at`, `last_fire_error` (the first failed delivery of the latest fire, as JSON; a clean fire clears it) and `owner`.
 - **Ids, not slugs.** Every tool that asks for a trigger takes its `id`, such as `tr-3f9a1c0b7d42`. A slug answers `trigger_not_found`.
 - **No payload here.** A trigger has no `payload_template`. Each subscription renders its own message from the fire.
 - **Owner and rank.** Whoever last saved a trigger (created or updated it) is its `owner`: your run's principal when you call these tools, or you yourself when you call them straight over MCP. A fresh session a fire starts runs as the subscription's owner, at no more than the lower of the two owners' current roles. A trigger saved before owners were recorded fires as an ordinary user.
-- **Fresh-session priority.** A scheduled or delayed fire uses the bound agent or graph's `default_priority`. Webhook and channel fires use that default when noninteractive and use 0 when interactive. Leave the default at 0 until nonzero starts are supported. A refused start appears in the delivery result.
+- **Fresh-session priority.** A scheduled or delayed fire uses the bound agent or graph's `default_priority`. Webhook and channel fires use that default when noninteractive and use 0 when interactive. A nonzero default starts its fresh session at that urgency.
 - **Who may change or delete.** A trigger is owned and shared like an agent ([sharing and access](start-here/sharing-and-access)). Changing it needs `full` access; deleting it, rotating a webhook token and changing its sharing need `owner`. A trigger you cannot read answers `trigger_not_found`, and too low a level is refused (403 `access_denied` over REST, `type=forbidden` from a tool) with nothing changed. Firing it by hand needs `full` too ([fire a trigger now](triggers/fire-now)), and so does adding or removing a subscription.
 - **Subscriptions from before owners were recorded.** The upgrade gives each one its trigger's owner and disables it, since nobody knows who saved it. As the trigger's owner, review each one and re-enable it with `trigger__update_subscription` and `enabled: true`: you become its owner. One that still has no owner never fires.
 - **Webhook secrets.** Only the owner or an admin reads a webhook trigger's `token`; everyone else reads a masked value. `hmac_secret` always reads `**********`. Only the owner or an admin may update a webhook trigger (`forbidden` otherwise).
@@ -133,8 +133,9 @@ Reference: [`crud__update_trigger`](reference/tools/crud/update_trigger)
 optional `signature` and optional string-valued `query` object. For example,
 `body: "eyJldmVudCI6InBpbmcifQ=="` sends the bytes `{"event":"ping"}`; a query
 such as `{"source":"mcp"}` is delivered to templates as `webhook_query`.
-For an HMAC-protected trigger, compute `sha256=<hex>` over the exact original
-body bytes, then base64-encode those same bytes for `body`. The tool preserves
+For an HMAC-protected trigger, compute `sha256=<hex>` over `"<timestamp>\n"`
+followed by the exact original body bytes and pass that unix-seconds
+`timestamp` argument, then base64-encode the body bytes for `body`. The tool preserves
 whitespace and byte encoding; changing either invalidates the signature.
 Omitting the body sends empty bytes. The decoded-body limit is 1 MiB.
 

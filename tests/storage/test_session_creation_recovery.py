@@ -124,7 +124,6 @@ async def test_cancelled_owner_leaves_only_an_abandoned_receipt(provider):
 async def test_lost_commit_reply_leaves_complete_retryable_first_turn(provider, monkeypatch, priority):
     slot, deps = await _world(provider)
     slot.release.set()
-    deps.nonzero_priority_available = priority != 0
     original = provider.locking_transaction
 
     @asynccontextmanager
@@ -211,7 +210,6 @@ async def test_trigger_default_edit_during_slot_preparation_abandons_selected_pr
     from primer.trigger.subscribers import TriggerFireMetadata
 
     slot, deps = await _world(provider)
-    deps.nonzero_priority_available = True
     agents = provider.get_storage(Agent)
     receipts = provider.get_storage(SessionCreationIntent)
     assert await agents.patch_if("ag-1", {"default_priority": 17}, where={"description": ["x"]})
@@ -240,7 +238,6 @@ async def test_trigger_default_edit_during_slot_preparation_abandons_selected_pr
 async def test_caller_priority_changed_after_publication_precheck_rolls_back(provider, monkeypatch, caller_id):
     """A separate PG writer changes the floor after the unlocked precheck, in either session key order."""
     slot, deps = await _world(provider)
-    deps.nonzero_priority_available = True
     slot.release.set()
     receipts = provider.get_storage(SessionCreationIntent)
     sessions = provider.get_storage(WorkspaceSession)

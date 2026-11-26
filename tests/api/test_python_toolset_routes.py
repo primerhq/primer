@@ -22,10 +22,17 @@ def fake_provider_registry(fake_storage_provider):
             from primer.toolset.python_runner.provider import PythonToolsetProvider
             from primer.toolset.python_runner.runners import LocalHardenedRunner
 
+            async def _no_sandbox(workspace_id: str) -> None:
+                # Test workspaces are local: no sandbox, so the provider
+                # uses its local runner. The resolver IS wired, like the
+                # production lifespan wires the workspace registry.
+                return None
+
             return PythonToolsetProvider(
                 toolset_id=toolset.id,
                 config=toolset.config,
                 runner=LocalHardenedRunner(),
+                sandbox_runner_for=_no_sandbox,
             )
         return object()
 
@@ -145,6 +152,39 @@ async def test_the_runtime_route_reports_isolation_and_tools(client) -> None:
     }
     assert [t["id"] for t in body["tools"]] == ["greet"]
     assert body["registration_error"] is None
+    assert body["image"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_route_reports_what_the_call_gets(client) -> None:
+    """The per-call sandbox resolver is wired (as the production lifespan
+    wires it) and the named runner image is reported."""
+    await _create(client, "toolset-rt3", image="python:3.12-slim")
+    r = await client.get("/v1/toolsets/toolset-rt3/runtime")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["container_isolation"] is True
+    assert body["image"] == "python:3.12-slim"
+    assert body["isolation_level"] in {
+        "container", "landlock", "seccomp", "sandbox-exec", "rlimit-only",
+    }
+
+
+def test_the_default_factory_wires_the_sandbox_runner_only_with_a_registry() -> None:
+    from primer.api.registries.provider_registry import _build_default_toolset_factory
+    from primer.model.providers.toolset import Toolset
+
+    row = Toolset.model_validate({
+        "id": "ts-f",
+        "provider": "python",
+        "config": {"source": GOOD, "source_version": 1},
+    })
+    assert _build_default_toolset_factory()(row).container_isolation is False
+    assert (
+        _build_default_toolset_factory(workspace_registry=object())(row)
+        .container_isolation
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -216,3 +256,27 @@ async def test_runtime_reports_which_tools_yield(client) -> None:
     assert by_id["plain"]["requires_workspace"] is False
     assert by_id["plain"]["tool_class"] == "standard"
     assert by_id["plain"]["required_role"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_source_over_the_registrar_cap_is_a_422_naming_the_limit(
+    client,
+) -> None:
+    """Review round 1 (4.2): the admin save path refuses a source one byte
+    over MAX_PYTHON_TOOLSET_SOURCE_BYTES with the registrar's 422 (the
+    create path accepts no source the validate route would not), the
+    message names the limit, and the toolset row is not created."""
+    from primer.toolset.python_runner.registration import (
+        MAX_PYTHON_TOOLSET_SOURCE_BYTES,
+    )
+
+    r = await _create(
+        client, "toolset-over-cap",
+        source="x" * (MAX_PYTHON_TOOLSET_SOURCE_BYTES + 1),
+    )
+    assert r.status_code == 422, r.text
+    assert str(MAX_PYTHON_TOOLSET_SOURCE_BYTES) in r.text, (
+        "the 422 must name the source-size limit it was refused for"
+    )
+    gone = await client.get("/v1/toolsets/toolset-over-cap")
+    assert gone.status_code == 404, "an over-cap source must not persist a toolset"

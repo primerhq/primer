@@ -10,7 +10,11 @@ match in id order, and advances the cursor.
 Delivery is at-least-once. A sink failure holds the cursor (the next
 tick retries); after ``max_failures`` consecutive failures on the same
 event the dispatcher skips it with an error log - ``converge`` is
-idempotent, so a skip self-heals on the entity's next event.
+idempotent, so a skip self-heals on the entity's next event. A
+``session_wake`` whose park is not durable yet (the wake beat the park
+write) is a RETRY, not a failure: it holds the cursor without touching
+the counter, so the one-shot subscription survives until the park lands
+(then it is delivered) or says the wait is over (then it is collected).
 
 A subscription seen without any stored cursor starts at the CURRENT
 max id: subscriptions consume from creation onward, they do not replay
@@ -44,6 +48,16 @@ from primer.model.storage import OffsetPage
 from primer.model.yield_ import with_wake_entry, with_wake_park
 
 logger = logging.getLogger(__name__)
+
+#: ``_deliver``'s answer for "the park is not durable yet": a RETRY, not a
+#: failure. The one-shot GC the failure counter drives must not collect a
+#: wake just because the park row lagged the subscription write (the tools
+#: create the subscription BEFORE the park is durable). Held only while the
+#: session's turn is running (or has a park stashed): a session that is idle
+#: and unparked never lands one, so it counts failures like any sink failure.
+#: GC stays with the states that mean the wait is over: the session ended or
+#: vanished, the park names another entry, the row is parked under other keys.
+PARK_PENDING = object()
 
 #: How long a gap in the event ids must have been seen before it can be treated as permanent (a rolled-back insert), on top of the transactions that
 #: were running when it was first seen having finished.
@@ -259,6 +273,16 @@ class EventDispatcher(_BackgroundTask):
                     return delivered
                 if await matches_async(event, sub.filter):
                     ok = await self._deliver(sub, event)
+                    if ok is PARK_PENDING:
+                        # The park is not durable yet: hold the cursor and
+                        # retry WITHOUT counting a failure (see PARK_PENDING).
+                        # Only a running turn, a stashed park, or a RUNNING
+                        # row awaiting its resumed turn is held; when the
+                        # park lands the next tick delivers, and the
+                        # GC states (gone/orphan/abandoned) fire from the park
+                        # state itself the moment it says the wait is over.
+                        self._pending_cursors[sub.id] = cursor
+                        return delivered
                     if ok:
                         delivered += 1
                     else:
@@ -410,13 +434,45 @@ class EventDispatcher(_BackgroundTask):
             # its filter never asked for. Consume the event, deliver nothing, collect the subscription (ticket 01a1223f, #702 review N6).
             await self._complete_one_shot(sub)
             return True
+        if park == "abandoned":
+            # The session is truly parked (not resumable: a resumed turn
+            # keeps its old park until release, and a wait made in that turn
+            # is live), but under keys this subscription never waited on
+            # (its wait timed out and the session re-parked elsewhere, or
+            # resumed and parked again on a different wait): this
+            # subscription can never be answered. Consume the event and
+            # collect the subscription on the FIRST pass.
+            logger.info(
+                "event-dispatcher: not delivering event %d to session %s "
+                "(subscription %s): the session parks under other keys; "
+                "this wait is over",
+                event.id, sink.session_id, sub.id,
+            )
+            await self._complete_one_shot(sub)
+            return True
         if park == "pending":
-            # The event beat the worker's park write (the tool creates
-            # the subscription before the park row is durable). Hold
-            # the cursor; the next tick re-checks. The failure counter
-            # doubles as the orphan GC: a park that resumed by timeout
-            # never becomes visible again, and the skip path deletes
-            # the one-shot.
+            # No park matching the key is durable yet. If the session's turn
+            # is still in flight (or has a park stashed for its release) the
+            # event beat the worker's park write (the tool creates the
+            # subscription before the park row is durable, and a resumed turn
+            # keeps its old park until its release): a retry, NOT a failure.
+            # A 'resumable' row on a RUNNING session is the same hold: its
+            # resolved park awaits the resumed turn, which has not been
+            # claimed yet and may still stash a park under this key before
+            # its release (review 2026-11-23, I1). Hold the cursor without
+            # touching the failure counter. Any other shape (paused, idle
+            # and unparked: a Stop during a machine wait, a reset that
+            # cleared the park; or a row read that keeps failing) will
+            # never land a park, so it counts failures like any sink failure
+            # and the one-shot is collected after max_failures.
+            from primer.model.workspace_session import SessionStatus
+
+            if row is not None and (
+                row.turn_status == "running"
+                or row.pending_park
+                or (row.parked_status == "resumable" and row.status == SessionStatus.RUNNING)
+            ):
+                return PARK_PENDING
             return False
         if row is not None and await self._read_blocked(row, event):
             # A revoked grant stops delivery (access-control Phase 2, Task 7):
@@ -469,12 +525,17 @@ class EventDispatcher(_BackgroundTask):
         return True
 
     async def _park_state(self, sink: SessionWakeSink, subscription_id: str | None = None) -> tuple[str, datetime | None, "WorkspaceSession | None"]:
-        """``(state, parked_at, row)``: state is 'parked' (deliver), 'pending' (retry later), 'gone' (GC) or 'orphan' (GC: the wait under this key was created by
-        another subscription); ``parked_at`` is the park the row had when it was read (``None`` unless 'parked'); ``row`` is the session row read (``None`` when
-        the read failed).
+        """``(state, parked_at, row)``: state is 'parked' (deliver), 'pending' (retry later, NOT a failure), 'gone' (GC), 'orphan' (GC: the wait under this key was created by
+        another subscription) or 'abandoned' (GC: the row is truly 'parked' under other keys - this subscription's wait moved on; a 'resumable' row is 'pending', its running turn may have made this wait); ``parked_at`` is the park the row had when it was
+        read (``None`` unless 'parked'); ``row`` is the session row read (``None`` when the read failed).
 
         'orphan' needs both ends to carry an identity: the park's entry for the key names the subscription the tool created (``resume_metadata.subscription_id``)
         and ``subscription_id`` is the one delivering. A park that names none (a wait from an older build) is delivered into by the key alone, as before.
+
+        'pending' is the wake-before-park race (and a transient read failure): the session is alive but no park matching the key is durable yet. The caller holds it
+        WITHOUT counting a failure only while the session's turn is running (or has a park stashed, or its resolved park awaits a resumed turn on a RUNNING
+        session); otherwise no park will land and it counts failures like any
+        sink failure.
         """
         from primer.model.workspace_session import (
             SessionStatus,
@@ -496,9 +557,13 @@ class EventDispatcher(_BackgroundTask):
         keys = set(row.parked_event_keys or [])
         if row.parked_event_key:
             keys.add(row.parked_event_key)
-        if row.parked_status in ("parked", "resumable") and (
-            sink.event_key in keys
-        ):
+        if row.parked_status in ("parked", "resumable"):
+            if sink.event_key not in keys:
+                # Only a row truly 'parked' says the wait moved on. A
+                # 'resumable' row is a park being resumed: the turn that runs
+                # meanwhile may have made THIS subscription's wait, which is
+                # not durable until its release (pending, not abandoned).
+                return ("abandoned" if row.parked_status == "parked" else "pending"), None, row
             if subscription_id:
                 from primer.model.yield_ import entry_id_of
                 from primer.session.pending_gates import enumerate_pending_gates
@@ -512,7 +577,7 @@ class EventDispatcher(_BackgroundTask):
                 if owners and subscription_id not in owners:
                     return "orphan", None, None
             return "parked", row.parked_at, row
-        return "pending", None, None
+        return "pending", None, row
 
     async def _read_blocked(self, row: "WorkspaceSession", event: Event) -> bool:
         """Whether ``event`` must not wake this non-admin park (access-control Phase 2, Task 7).

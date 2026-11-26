@@ -11,20 +11,24 @@ repaired on the next boot.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import logging
 
 from primer.common.toolset_ids import toolset_id_spellings
 from primer.model.common import Identifiable
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
+from primer.storage import raw_generation
 from primer.storage.q import Q
 from primer.toolset.crud import CRUD_TOOLSET_ID, DEFAULT_GATED_TOOLS, shipped_approvers, shipped_gate
 
 if TYPE_CHECKING:
+    from primer.int.storage import Storage
     from primer.int.toolset import ToolsetProvider
 
 
@@ -143,6 +147,18 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
 async def ensure_default_workspace(
     storage_provider, *, workspace_registry, template_id: str | None = None,
 ) -> str | None:
+    """Ensure the default workspace (prime) exists; the id when THIS call created it, else ``None`` (:func:`_ensure_default_workspace` has the rules).
+
+    A boot that finds another boot holding the claim to create it logs a WARNING and returns ``None``; :func:`run_ensure_pass` then schedules the
+    bounded retry (:func:`start_default_workspace_retry`).
+    """
+    created, _deferred = await _ensure_default_workspace(storage_provider, workspace_registry=workspace_registry, template_id=template_id)
+    return created
+
+
+async def _ensure_default_workspace(
+    storage_provider, *, workspace_registry, template_id: str | None = None,
+) -> tuple[str | None, bool]:
     """Ensure the default workspace (prime) exists and is recorded in system state.
 
     Which id it has, in order (the module docstring of :mod:`primer.bootstrap.prime` has the full rule):
@@ -168,8 +184,9 @@ async def ensure_default_workspace(
     A pass that cannot create anything (no registry, template absent) records nothing: it never names a default it could not
     make.
 
-    Returns the id only when THIS call created the row (a concurrent creator's ``ConflictError`` is not an error and returns
-    ``None``). The workspace's main operator session is not seeded here: it is per user, made on request by
+    Returns ``(id, deferred)``: the id only when THIS call created the row (a concurrent creator's ``ConflictError`` is not an error and
+    returns ``None``), and ``deferred`` True when another boot holds the claim to create it and this one stepped aside (the row may not exist
+    yet: the holder may have died, so the caller retries until the row exists or the claim goes stale). The workspace's main operator session is not seeded here: it is per user, made on request by
     ``POST /v1/workspaces/{id}/main_session`` (see :func:`ensure_main_operator_session`).
     """
     from primer.api.registries.workspace_registry import new_workspace_row
@@ -190,10 +207,10 @@ async def ensure_default_workspace(
     )
     if await workspaces.get(workspace_id) is not None:
         await record_default_workspace_id(storage_provider, workspace_id)
-        return None
+        return None, False
     if workspace_registry is None:
         logger.info("seed: no workspace registry; default workspace deferred")
-        return None
+        return None, False
     # The deployment declares which template the default workspace comes
     # from (config: default_workspace_template). The reserved local
     # template stays the fallback for bare installs, but a k8s deployment
@@ -206,32 +223,108 @@ async def ensure_default_workspace(
             "seed: workspace template %r absent; default workspace deferred",
             wanted,
         )
-        return None
+        return None, False
     await record_default_workspace_id(storage_provider, workspace_id)
-    live = await workspace_registry.materialise(
-        template=template, workspace_id=workspace_id,
-    )
-    try:
-        # The row every create door writes (the same first phase too); runtime_meta comes straight off the live handle.
-        await workspaces.create(
-            new_workspace_row(
-                workspace_id=workspace_id, template=template, overrides=None, live=live, name=PRIME_WORKSPACE_NAME,
-            )
+    # Claim before materialising: two boots on one fresh database (api and worker on one host) both miss the row, and a local backend ADOPTS an
+    # existing directory, so both would run the init commands in it and the loser's failure cleanup could remove the winner's directory. The claim
+    # row's create is the claim; only the winner materialises.
+    claims = storage_provider.get_storage(SeedMarker)
+    claim_id = f"default-workspace-{workspace_id}"
+    generation, held_for = await _claim_default_workspace(claims, claim_id)
+    if generation is None:
+        logger.warning(
+            "seed: the default workspace %r is not created yet: another boot has held the claim to create it for %s (a claim older than %s is "
+            "taken over); this boot retries in the background",
+            workspace_id, "an unknown time" if held_for is None else f"{held_for.total_seconds():.0f}s", DEFAULT_WORKSPACE_CLAIM_TTL,
         )
-    except ConflictError:
-        logger.debug("seed: default workspace row created concurrently")
-        return None
+        return None, True
+    try:
+        # The winner of an earlier claim may have finished between our row read and our claim.
+        if await workspaces.get(workspace_id) is not None:
+            return None, False
+        live = await workspace_registry.materialise(
+            template=template, workspace_id=workspace_id,
+        )
+        try:
+            # The row every create door writes (the same first phase too); runtime_meta comes straight off the live handle.
+            await workspaces.create(
+                new_workspace_row(
+                    workspace_id=workspace_id, template=template, overrides=None, live=live, name=PRIME_WORKSPACE_NAME,
+                )
+            )
+        except ConflictError:
+            logger.debug("seed: default workspace row created concurrently")
+            await _close_live(live)
+            return None, False
+        except BaseException:
+            await _close_live(live)
+            raise
+    finally:
+        await _release_claim(claims, claim_id, generation)
     logger.info("seed: created default workspace %r", workspace_id)
-    return workspace_id
+    return workspace_id, False
 
 
 ROSTER_MARKER_ID = "agent-roster"
 
 
 class SeedMarker(Identifiable):
-    """A one-row record that an install's seeded agent roster was written once (GI-2): only an install that never was seeded publishes a profile."""
+    """A one-row record: that an install's seeded agent roster was written once (GI-2; only an install that never was seeded publishes a profile),
+    or (``claimed_at`` set) that one boot holds the claim to materialise the default workspace."""
 
     _id_prefix: ClassVar[str] = "seed-marker"
+    claimed_at: datetime | None = None
+
+
+#: A claim older than this is a boot that died mid-materialise; the next boot takes it over. Longer than any init command's timeout chain is
+#: likely to run, and a live claim is never stolen by a boot that merely started later.
+DEFAULT_WORKSPACE_CLAIM_TTL = timedelta(minutes=10)
+
+
+async def _claim_default_workspace(claims: "Storage[SeedMarker]", claim_id: str) -> tuple[Any, timedelta | None]:
+    """``(generation, None)`` when this boot now holds the claim, else ``(None, age of the claim that is held)``.
+
+    The create is the claim, and a claim older than the TTL (its holder died) is taken over with one guarded write. ``generation`` is the stored
+    spelling of this holder's own ``claimed_at``: :func:`_release_claim` deletes the claim only while it still carries it.
+    """
+    try:
+        created = await claims.create(SeedMarker(id=claim_id, claimed_at=datetime.now(timezone.utc)))
+        return raw_generation(created, "claimed_at"), None
+    except ConflictError:
+        pass
+    held = await claims.get(claim_id)
+    if held is None:
+        return await _claim_default_workspace(claims, claim_id)      # released between the two reads
+    age = None if held.claimed_at is None else datetime.now(timezone.utc) - held.claimed_at
+    if age is not None and age < DEFAULT_WORKSPACE_CLAIM_TTL:
+        return None, age
+    # Stale (or malformed): one guarded write on the exact stale value, so two takers cannot both win.
+    try:
+        taken = await claims.patch_if(
+            claim_id, {"claimed_at": datetime.now(timezone.utc).isoformat()}, where={"claimed_at": [raw_generation(held, "claimed_at")]},
+        )
+    except NotFoundError:
+        return None, age
+    return (None, age) if taken is None else (raw_generation(taken, "claimed_at"), None)
+
+
+async def _release_claim(claims: "Storage[SeedMarker]", claim_id: str, generation: Any) -> None:
+    """Delete the claim only while it still carries THIS holder's stamp: a holder that outlived the TTL must not delete the claim a taker now holds."""
+    try:
+        await claims.delete_if(claim_id, where={"claimed_at": [generation]})
+    except Exception:  # noqa: BLE001 - a stuck claim expires on its own
+        logger.warning("seed: could not release the default workspace claim %r", claim_id, exc_info=True)
+
+
+async def _close_live(live: Any) -> None:
+    """Release the loser's live handle (the files it adopted are the winner's and stay)."""
+    closer = getattr(live, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:  # noqa: BLE001 - best effort
+        logger.warning("seed: could not close a live workspace handle", exc_info=True)
 
 
 async def default_profile_id(storage_provider) -> str | None:
@@ -350,6 +443,56 @@ class EnsureResult:
     created: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     errors: list[tuple[str, str]] = field(default_factory=list)
+
+
+#: How often a boot that stepped aside from the default workspace's claim looks again.
+DEFAULT_WORKSPACE_RETRY_INTERVAL = timedelta(seconds=30)
+
+_retry_tasks: set["asyncio.Task[None]"] = set()
+
+
+async def _retry_default_workspace(storage_provider, *, workspace_registry, template_id: str | None, interval: timedelta) -> None:
+    """Re-run the default-workspace ensure until the row exists or the claim has had time to go stale and be taken over (then give up, loudly).
+
+    Covers a boot that died holding the claim, and a holder whose materialise failed (it released the claim, but this boot had already stepped
+    aside). Bounded: the claim TTL plus two intervals.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (DEFAULT_WORKSPACE_CLAIM_TTL + 2 * interval).total_seconds()
+    while loop.time() < deadline:
+        await asyncio.sleep(interval.total_seconds())
+        try:
+            created, deferred = await _ensure_default_workspace(
+                storage_provider, workspace_registry=workspace_registry, template_id=template_id,
+            )
+        except Exception:  # noqa: BLE001 - the next attempt may succeed (the backend may be coming up)
+            logger.warning("seed: the default workspace retry failed", exc_info=True)
+            continue
+        if not deferred:
+            logger.info("seed: the default workspace retry finished (%s)", "created it" if created else "it exists")
+            return
+    logger.warning("seed: gave up waiting for the default workspace: a claim is still held; a restart or POST /v1/setup/seed will take it over once stale")
+
+
+def start_default_workspace_retry(
+    storage_provider, *, workspace_registry, template_id: str | None = None, interval: timedelta = DEFAULT_WORKSPACE_RETRY_INTERVAL,
+) -> "asyncio.Task[None]":
+    """Start the bounded background retry of a deferred default workspace; the caller cancels it at shutdown with :func:`cancel_default_workspace_retries`."""
+    task = asyncio.create_task(
+        _retry_default_workspace(storage_provider, workspace_registry=workspace_registry, template_id=template_id, interval=interval),
+        name="default-workspace-retry",
+    )
+    _retry_tasks.add(task)
+    task.add_done_callback(_retry_tasks.discard)
+    return task
+
+
+async def cancel_default_workspace_retries() -> None:
+    """Cancel and await every retry still running (lifespan shutdown)."""
+    tasks = list(_retry_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 SYSTEM_CDC_SUBSCRIPTION = "system-cdc"
@@ -514,15 +657,20 @@ async def run_ensure_pass(
     )
     result.created.extend(created_subs or [])
 
-    created_workspace = await _step(
-        "default_workspace",
-        lambda: ensure_default_workspace(
-            storage_provider, workspace_registry=workspace_registry,
-            template_id=default_workspace_template,
-        ),
-    )
+    workspace_deferred = False
+
+    async def _default_workspace():
+        nonlocal workspace_deferred
+        created, workspace_deferred = await _ensure_default_workspace(
+            storage_provider, workspace_registry=workspace_registry, template_id=default_workspace_template,
+        )
+        return created
+
+    created_workspace = await _step("default_workspace", _default_workspace)
     if created_workspace:
         result.created.append(created_workspace)
+    if workspace_deferred:
+        start_default_workspace_retry(storage_provider, workspace_registry=workspace_registry, template_id=default_workspace_template)
 
     # Prime's shipped instructions, written only when the default workspace has neither agents.md nor AGENTS.md (pivot P2):
     # after the workspace step, which may have just created the workspace, so a fresh install gets the file on its first boot.
@@ -592,7 +740,9 @@ __all__ = [
     "default_policy_id",
     "policy_rows_for",
     "ensure_crud_approval_policies",
+    "cancel_default_workspace_retries",
     "ensure_default_workspace",
+    "start_default_workspace_retry",
     "ensure_seeded_agents",
     "ensure_system_event_subscriptions",
     "default_profile_id",

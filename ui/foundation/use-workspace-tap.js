@@ -38,6 +38,26 @@
 // Rolling buffer cap — matches WorkspaceTap's prior WTP_MAX_EVENTS.
 var WTAP_MAX_EVENTS = 500;
 
+// (session_id, seq) keys the hub already handled (lane I2 carry): a reconnect replays
+// frames past the resume cursor and a replayed frame must not push a unique event out of
+// the rolling buffer, and the per-frame listeners must not fire twice for it. Keys are
+// remembered past the buffer's own window (a replay window longer than the buffer would
+// otherwise re-deliver), bounded here.
+var WTAP_DEDUPE_LIMIT = 2000;
+
+function WTAP_isDuplicateFrame(hub, ev) {
+  // Only frames keyed by (session_id, seq) dedupe; a frame without both fields
+  // passes through exactly as before.
+  if (ev.session_id == null || typeof ev.seq !== "number") return false;
+  if (!hub.seen) { hub.seen = {}; hub.seenOrder = []; }
+  var key = ev.session_id + ":" + ev.seq;
+  if (hub.seen[key]) return true;
+  hub.seen[key] = true;
+  hub.seenOrder.push(key);
+  if (hub.seenOrder.length > WTAP_DEDUPE_LIMIT) delete hub.seen[hub.seenOrder.shift()];
+  return false;
+}
+
 // wid -> hub. A hub = { es, refs, events, connState, renderSubs, eventSubs }.
 var WTAP_HUBS = {};
 
@@ -92,6 +112,9 @@ function WTAP_open(hub) {
     var ev;
     try { ev = JSON.parse(e.data); } catch (_) { return; }
     if (!ev || typeof ev !== "object") return;
+    // A replayed frame (same session_id + seq the hub already handled) changes
+    // nothing: no buffer append, no listeners, no store route, no render.
+    if (WTAP_isDuplicateFrame(hub, ev)) return;
     var next = hub.events.concat(ev);
     if (next.length > WTAP_MAX_EVENTS) next = next.slice(next.length - WTAP_MAX_EVENTS);
     hub.events = next;
@@ -167,20 +190,40 @@ function WTAP_notifyStoresConnState(hub) {
   }
 }
 
-// Trigger a REST catch-up for every store for this wid (spec section 4.1). Only a store an open session
-// document reads (a transcript subscriber) needs its gap in full; a store a pulse dot reads gets its status
-// from one tail read (UI-H1: every listed session used to be read from seq 0 and kept).
-function WTAP_catchUpStores(hub) {
-  if (!window.SS_STORES || !window.SS_catchUp || !window.SS_catchUpStatus) return;
+// The stores of this workspace that a consumer holds (SS_isLive): the only ones a reconnect catches up and the resume cursor names. A store nobody
+// holds is waiting to be evicted (session-store.js, SS_EVICT_AFTER_MS); it is shown from a fresh REST seed if the session is opened again (review 8.5).
+function WTAP_liveStores(hub) {
+  var out = [];
+  if (!window.SS_STORES) return out;
   var prefix = WTAP_obsPrefix(hub.wid);
   for (var key in window.SS_STORES) {
-    if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
-        && key.indexOf(prefix) === 0) {
-      var store = window.SS_STORES[key];
-      var shown = store._sub && store._sub.transcript && store._sub.transcript.length > 0;
-      try { (shown ? window.SS_catchUp : window.SS_catchUpStatus)(store); } catch (_e) { /* no-op */ }
-    }
+    if (!Object.prototype.hasOwnProperty.call(window.SS_STORES, key) || key.indexOf(prefix) !== 0) continue;
+    var store = window.SS_STORES[key];
+    if (typeof window.SS_isLive === "function" && !window.SS_isLive(store)) continue;
+    out.push(store);
   }
+  return out;
+}
+
+// At most this many catch-up reads in flight after a reconnect, however many stores are live (a rail with many open workspaces holds a pulse-dot store
+// per listed session).
+var WTAP_CATCHUP_CONCURRENCY = 4;
+// The resume cursor names at most this many sessions: it rides the request line, which a proxy caps (about 8 KB). The ones an open session document
+// reads come first; a session left out resumes from the catch-up read instead.
+var WTAP_MAX_CURSOR_STORES = 50;
+
+// Trigger a REST catch-up for every live store for this wid (spec section 4.1). Only a store an open session
+// document reads (a transcript subscriber) needs its gap in full; a store a pulse dot reads gets its status
+// from one tail read (UI-H1: every listed session used to be read from seq 0 and kept). The reads run a few at a time.
+function WTAP_catchUpStores(hub) {
+  if (!window.SS_STORES || !window.SS_catchUp || !window.SS_catchUpStatus) return;
+  var live = WTAP_liveStores(hub);
+  function one(store) {
+    var shown = store._sub && store._sub.transcript && store._sub.transcript.length > 0;
+    try { return (shown ? window.SS_catchUp : window.SS_catchUpStatus)(store); } catch (_e) { return undefined; }
+  }
+  if (typeof window.PR_mapLimit === "function") window.PR_mapLimit(live, WTAP_CATCHUP_CONCURRENCY, one);
+  else live.forEach(one);
 }
 
 // Open the EventSource with a cursor built from the observed stores' high-
@@ -191,15 +234,14 @@ function WTAP_cursorUrl(hub) {
   var url = "/v1/workspaces/" + encodeURIComponent(hub.wid) + "/tap";
   if (!window.SS_STORES || !window.SS_highWater) return url;
   var seqs = {};
-  var prefix = WTAP_obsPrefix(hub.wid);
-  for (var key in window.SS_STORES) {
-    if (Object.prototype.hasOwnProperty.call(window.SS_STORES, key)
-        && key.indexOf(prefix) === 0) {
-      var store = window.SS_STORES[key];
-      var hw = window.SS_highWater(store);
-      if (hw > 0) seqs[store.sid] = hw;
-    }
-  }
+  var live = WTAP_liveStores(hub).filter(function (st) { return window.SS_highWater(st) > 0; });
+  // Stores a transcript reads first, then the rest; the newest high-water first within each.
+  live.sort(function (a, b) {
+    var ra = a.recordRefs > 0 ? 1 : 0;
+    var rb = b.recordRefs > 0 ? 1 : 0;
+    return rb - ra || window.SS_highWater(b) - window.SS_highWater(a);
+  });
+  live.slice(0, WTAP_MAX_CURSOR_STORES).forEach(function (st) { seqs[st.sid] = window.SS_highWater(st); });
   if (Object.keys(seqs).length === 0) return url;
   var payload = { known_as_of: "1970-01-01T00:00:00+00:00", seqs: seqs };
   var b64;

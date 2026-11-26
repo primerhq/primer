@@ -369,6 +369,7 @@ def _wake_ctx():
         document.addEventListener = function (name, fn) {
           if (name === "visibilitychange") __visibility = fn;
         };
+        var __now = 1000000000000; Date.now = function () { return __now; };
         function __hide() { document.hidden = true; __visibility(); }
         function __show() { document.hidden = false; __visibility(); }
         """
@@ -404,9 +405,88 @@ def test_a_resource_that_does_not_opt_out_is_still_read_again_on_a_reshow_and_a_
     ctx = _wake_ctx()
     ctx.eval("window.primerApi.useResource('list', __fetcher, {});")
     _resolve_request(ctx, 0, {"items": []})
-    ctx.eval("__hide();")
+    ctx.eval("__hide(); __now += 60000;")  # the tab was away a minute: the answer is old
     ctx.eval("__show();")
     assert ctx.eval("__requests.length") == 2
     _resolve_request(ctx, 1, {"items": []})
+    ctx.eval("__now += 60000;")
     ctx.eval("window.primerApi._refetchAll();")
     assert ctx.eval("__requests.length") == 3
+
+
+# Review 8.6: a wake refetched every live entry at once. Now an entry with a young answer keeps it (and resumes its poll), and the rest are spread.
+
+
+def _clock_ctx():
+    ctx = _wake_ctx()
+    _install_timer_spy(ctx)
+    return ctx
+
+
+def test_a_wake_leaves_a_young_answer_alone_and_resumes_its_poll() -> None:
+    ctx = _clock_ctx()
+    ctx.eval("window.primerApi.useResource('young', __fetcher, { pollMs: 15000 });")
+    _resolve_request(ctx, 0, {"items": []})
+    ctx.eval("__hide();")
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == [], "hiding stops the poll"
+    ctx.eval("__now += 4000; __show();")
+    assert ctx.eval("__requests.length") == 1, "an answer 4 s old (poll interval 15 s) is not read again"
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == [15000], "its poll resumes"
+    ctx.eval("__now += 20000; __hide(); __show();")
+    assert ctx.eval("__requests.length") == 2, "an answer older than its poll interval is read"
+
+
+def test_a_wake_spreads_the_stale_entries_instead_of_firing_them_together() -> None:
+    ctx = _clock_ctx()
+    for n in range(30):
+        ctx.eval(f"window.primerApi.useResource('list-{n}', __fetcher, {{}});")
+        _resolve_request(ctx, n, {"items": []})
+    ctx.eval("__hide(); __now += 600000; __show();")
+    assert ctx.eval("__requests.length") == 31, "the first one is read at once, the other 29 wait"
+    delays = json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())"))
+    # review 2026-11-23, P minor: the stagger is uncapped - the entries
+    # beyond the 20th keep staggering 100 ms apart instead of piling at
+    # the old 2 s cap (2100 .. 2900 here).
+    assert sorted(delays) == delays and delays[0] == 100 and max(delays) == 2900 and len(delays) == 29
+    # Hiding the tab again drops the waiting reads (they are the entries' own timers).
+    ctx.eval("__hide();")
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == []
+
+
+def test_a_session_that_ended_stops_every_poll_and_refetch() -> None:
+    ctx = _clock_ctx()
+    ctx.eval("window.primerApi.useResource('poll', __fetcher, { pollMs: 5000 });")
+    _resolve_request(ctx, 0, {"items": []})
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == [5000]
+    ctx.eval("window.primerApi.sessionExpired = true;")
+    ctx.eval("__runTimer(0);")  # the poll timer fires: nothing is requested and no new poll is armed
+    assert ctx.eval("__requests.length") == 1
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == []
+    ctx.eval("__now += 600000; __hide(); __show(); window.primerApi._refetchAll();")
+    assert ctx.eval("__requests.length") == 1
+
+
+# Review 8.7: the change check compared two whole JSON.stringify copies per poll. It is now one allocation-free walk with an early exit.
+
+
+def _eq(ctx, a: str, b: str) -> bool:
+    return ctx.eval(f"window.primerApi._resource.eq({a}, {b})")
+
+
+def test_the_change_check_is_structural_and_finds_a_change_anywhere() -> None:
+    ctx = _hook_ctx()
+    rows = "[" + ",".join(f'{{id:"s{i}",status:"running",binding:{{agent_id:"a"}}}}' for i in range(2000)) + "]"
+    assert _eq(ctx, "{items:" + rows + ",total:2000}", "{items:" + rows + ",total:2000}") is True, "a new but identical payload is not a change"
+    changed = rows.replace('id:"s1999",status:"running"', 'id:"s1999",status:"ended"')
+    assert _eq(ctx, "{items:" + rows + "}", "{items:" + changed + "}") is False, "a field change in the last row is a change"
+    assert _eq(ctx, "{a:1,b:undefined}", "{a:1}") is True, "undefined is absent, as in JSON"
+    assert _eq(ctx, "{a:1}", "{a:1,b:2}") is False and _eq(ctx, "{a:1,b:2}", "{a:1}") is False
+    assert _eq(ctx, "[1,2]", "[1,2,3]") is False and _eq(ctx, "[1]", "{0:1}") is False and _eq(ctx, "null", "{}") is False
+    assert _eq(ctx, "{a:1,b:2}", "{b:2,a:1}") is True, "key order is not a change"
+
+
+def test_the_change_check_ignores_the_failure_a_cut_short_list_carries() -> None:
+    ctx = _hook_ctx()
+    ctx.eval("var x = { items: [1], truncated: true }; Object.defineProperty(x, 'failure', { value: new Error('a'), enumerable: false });"
+             "var y = { items: [1], truncated: true }; Object.defineProperty(y, 'failure', { value: new Error('b'), enumerable: false });")
+    assert ctx.eval("window.primerApi._resource.eq(x, y)") is True

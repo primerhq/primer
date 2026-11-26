@@ -2922,6 +2922,9 @@ def _visible_entries(ws: Any, entries: list, user: Any) -> list:
     return [e for e in entries if reserved_tree(e.path, trees) is None]
 
 
+_MAX_TREE_ITEMS = 5_000
+
+
 @files_router.get(
     "/workspaces/{workspace_id}/files/tree",
     summary="Return a one-level directory tree",
@@ -2969,7 +2972,10 @@ async def file_tree(
             }
         )
     items.sort(key=lambda x: (0 if x["is_dir"] else 1, x["name"]))
-    return {"path": path, "items": items}
+    # A directory with tens of thousands of entries (node_modules, a data dir) is capped: directories first, then files by name, and the
+    # response says so (``truncated``, ``total``) instead of dropping the rest silently; ``GET .../files`` pages the whole listing.
+    total = len(items)
+    return {"path": path, "items": items[:_MAX_TREE_ITEMS], "truncated": total > _MAX_TREE_ITEMS, "total": total}
 
 
 _MAX_RECURSIVE_WALK_ENTRIES = 10_000
@@ -4403,7 +4409,7 @@ async def list_workspace_events(
     Each item is a wire-shape :class:`~primer.tap.event.TapEvent`
     (``class`` / ``ts`` / ``seq`` / ``session_id`` / ``payload`` …) so it merges
     1:1 with live tap frames - the same reader (:func:`read_session_since`) that
-    backs the SSE tick loop produces these, just drained from byte 0.
+    backs the SSE tick loop produces these, read from the end of each log (at most ``limit`` records and 4 MiB per session).
 
     Response shape::
 
@@ -4442,6 +4448,7 @@ async def list_workspace_events(
                 after_seq=0,
                 selector=selector,
                 from_offset=0,
+                tail_limit=limit,
             )
             # Keep only each session's most-recent `limit` events: the global
             # recent-N is a subset of the union of per-session tails, so this

@@ -1963,6 +1963,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "pydantic" },
+    { name = "regex" },
     { name = "watchfiles" },
 ]
 
@@ -1977,6 +1978,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.11" },
     { name = "pydantic", specifier = ">=2.13" },
+    { name = "regex", specifier = ">=2026.9.3" },
     { name = "watchfiles", specifier = ">=1.0" },
 ]
 

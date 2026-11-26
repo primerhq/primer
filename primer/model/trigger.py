@@ -75,9 +75,11 @@ class WebhookTriggerConfig(BaseModel):
     replaces whatever is stored.
 
     ``hmac_secret`` is optional. When set the caller must include a
-    ``X-Primer-Signature`` header carrying ``HMAC-SHA256(secret, raw_body)``
-    as a lowercase hex digest; requests that fail HMAC verification are
-    rejected 401.
+    ``X-Primer-Signature`` header: the timestamped signature (with
+    ``X-Primer-Timestamp`` inside the MAC) is always accepted, and the
+    legacy body-only ``HMAC-SHA256(secret, raw_body)`` is accepted only
+    while ``legacy_body_hmac`` is True. Requests that fail verification
+    are rejected 401.
     """
 
     kind: Literal["webhook"] = "webhook"
@@ -102,6 +104,20 @@ class WebhookTriggerConfig(BaseModel):
             "How long an interactive POST holds its response before falling "
             "back to 202 + the delivery poll endpoint. Ignored when "
             "interactive is False."
+        ),
+    )
+    legacy_body_hmac: bool = Field(
+        default=True,
+        description=(
+            "When True the webhook also accepts the legacy signature, "
+            "HMAC-SHA256 over the raw body alone, which carries no timestamp "
+            "and so can be replayed indefinitely. When False only the "
+            "timestamped signature (X-Primer-Timestamp, HMAC over "
+            "'<timestamp>\\n<body>', 300 s window, replay-protected) is "
+            "accepted. Only meaningful when hmac_secret is set. A stored "
+            "trigger without this field loads True so deployed senders keep "
+            "working; triggers created from now on default to False unless "
+            "the creator sets it."
         ),
     )
 

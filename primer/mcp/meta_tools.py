@@ -10,10 +10,17 @@ from typing import Any
 
 import jsonschema
 
+from primer.common.bounded_jsonschema import ValidationTimeout, validate_bounded_off_loop
 from primer.common.log import redact_credentials
+from primer.common.user_regex import UserRegexError, UserRegexTimeout
 from primer.knowledge.wiki.reference import reference_path
 from primer.mcp.dispatch import NotExposed, invoke_exposed
-from primer.mcp.exposure import AuthorizedTool, ExposureDeps, authorized_catalogue
+from primer.mcp.exposure import (
+    AuthorizedTool,
+    ExposureDeps,
+    authorized_catalogue,
+    hidden_rejection_reason,
+)
 
 
 LIST_TOOLS_SCHEMA: dict[str, Any] = {
@@ -296,10 +303,38 @@ async def call_tool(deps: ExposureDeps, arguments: dict[str, Any]) -> dict[str, 
     scoped_id = str(arguments["scoped_id"])
     target = next((item for item in await _catalogue(deps) if item.scoped_id == scoped_id), None)
     if target is None:
+        # The catalogue hides required-gated tools (they refuse every
+        # call); the client keeps the fixed tool_unavailable envelope, but
+        # the audit trail records the reason when the gate is the check
+        # that withheld the tool.
+        actor, principal, scopes = _request_context()
+        reason = await hidden_rejection_reason(
+            deps, actor=actor, principal=principal,
+            api_token_scopes=scopes, scoped_id=scoped_id,
+        )
+        if reason is not None:
+            call_tool_rejection.set(reason)
         return _err("tool_unavailable", "Tool is unavailable.")
     inner_arguments = arguments.get("arguments") or {}
+    # The schema is the target tool's (a remote MCP server's, for an
+    # external toolset), so it validates bounded and off the loop
+    # (review 7.1b): a backtracking pattern must not hold this
+    # process's event loop while it runs. The size bound is the app's
+    # request-body cap (fix round 1): the body-cap middleware admits MCP
+    # posts up to that cap, so a body it let through must not be refused
+    # here at the historical 1 MiB default.
     try:
-        jsonschema.validate(instance=inner_arguments, schema=target.tool.args_schema)
+        await validate_bounded_off_loop(
+            inner_arguments, target.tool.args_schema,
+            max_instance_bytes=deps.max_body_bytes,
+        )
+    except ValidationTimeout:
+        # The validation deadline expired on this remote schema (a
+        # uniqueItems over many objects, or heavy branching): the schema
+        # is too slow to run safely, which is the tool's problem, not
+        # the caller's - the same fixed refusal as a broken pattern, not
+        # an invalid_arguments that blames the caller (fix round 1).
+        return _err("tool_unavailable", "Tool is unavailable.")
     except jsonschema.exceptions.ValidationError as exc:
         return {
             "ok": False,
@@ -308,7 +343,14 @@ async def call_tool(deps: ExposureDeps, arguments: dict[str, Any]) -> dict[str, 
                 "message": f"Arguments do not match the tool schema: {exc.message}"[:1000],
             },
         }
-    except jsonschema.exceptions.SchemaError:
+    except (
+        UserRegexTimeout,  # the schema's patterns used their matching budget
+        UserRegexError,    # a stored pattern the engine cannot price
+        jsonschema.exceptions.SchemaError,
+    ):
+        # A schema that is broken, or too slow to run safely, is the
+        # tool's problem, not the caller's: the same fixed refusal as a
+        # malformed schema (the caller cannot fix the schema).
         return _err("tool_unavailable", "Tool is unavailable.")
 
     actor, principal, scopes = _request_context()
@@ -351,7 +393,15 @@ async def invoke_meta_tool(
     schema = META_TOOL_SCHEMAS.get(name)
     if schema is None:
         raise KeyError(name)
-    jsonschema.validate(instance=arguments, schema=schema)
+    # The schema is fixed here, but the instance is the caller's: run it
+    # bounded and off the loop too (a deeply nested or oversized payload
+    # refuses as a validation error instead of stalling the loop or
+    # raising RecursionError). The fixed schemas carry no pattern
+    # keyword, so only the jsonschema.ValidationError paths can fire.
+    # The size bound is the app's request-body cap, as in call_tool.
+    await validate_bounded_off_loop(
+        arguments, schema, max_instance_bytes=deps.max_body_bytes,
+    )
     if name == "list_tools":
         return await list_tools(deps, arguments)
     if name == "find_tools":

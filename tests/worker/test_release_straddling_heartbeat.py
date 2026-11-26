@@ -34,6 +34,7 @@ from primer.model.workspace_session import (
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
 
+from tests.claim._platform import platform_adapters
 from tests.conftest import _FakeStorageProvider
 
 WORKER = "wrk-straddle"
@@ -224,7 +225,9 @@ async def test_the_harness_handler_marks_its_scope_before_it_releases():
     from primer.model.harness import Harness
 
     storage = _FakeStorageProvider()
-    engine = InMemoryClaimEngine(adapters={})
+    # The leases are handler tokens (the handler reads the harness row itself,
+    # and h-other has no row), so the kind stands in with the platform contract.
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS))
     scheduler = InMemoryScheduler()
     await scheduler.initialize()
     pool = WorkerPool(
@@ -425,7 +428,7 @@ async def test_the_drain_timeout_still_aborts_a_release_that_hangs():
     """The mark only silences the lost-lease verdict. ``scope.cancel`` stays unconditional, so a drain
     that times out still delivers ``worker_drain_timeout`` to an execution stuck inside its release
     (a second execution, stuck in its turn, gets the same)."""
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.TRIGGER))
     scheduler = InMemoryScheduler()
     await scheduler.initialize()
     pool = WorkerPool(

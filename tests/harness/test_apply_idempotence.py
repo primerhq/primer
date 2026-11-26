@@ -19,6 +19,9 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from primer.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.claim import ClaimKind
 from primer.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation
 from primer.harness.service import apply_install, apply_sync, apply_uninstall
 from primer.knowledge.tree import DocumentTreeService
@@ -27,6 +30,7 @@ from primer.model.collection import Collection, Document
 from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus, RenderedEntry
 from primer.model.provider import SqliteConfig, StorageProviderConfig, StorageProviderType
 from primer.storage.factory import StorageProviderFactory
+from primer.worker.engine_handlers import run_engine_harness
 
 
 @pytest_asyncio.fixture
@@ -308,12 +312,39 @@ async def _enqueue_uninstall(sp, h, cascade=True):
     }))
 
 
+async def _run_via_engine(sp, bus, harness_id, *, worker_id="w"):
+    """Drive one harness operation through the engine handler (the real claim
+    path): arm the lease, claim it, and run it under a minimal fake pool whose
+    ``_release_lease`` releases the lease through the engine. The ``harness:{id}:done``
+    event is now published by the handler after the release, not by dispatch."""
+    engine = InMemoryClaimEngine(adapters={
+        ClaimKind.HARNESS: HarnessClaimAdapter(
+            harness_storage=sp.get_storage(Harness),
+        ),
+    })
+    await engine.upsert(ClaimKind.HARNESS, harness_id)
+    [lease] = await engine.claim_due(worker_id, max_count=1, kinds=[ClaimKind.HARNESS])
+
+    class _Pool:
+        _storage = sp
+        _event_bus = bus
+        _provider_registry = None
+        _semantic_search_registry = None
+        _worker_id = worker_id
+
+        async def _release_lease(self, lease, outcome):
+            await engine.release(lease, outcome=outcome)
+
+    await run_engine_harness(_Pool(), lease)
+    return engine
+
+
 async def test_the_uninstall_operation_removes_the_harness_and_publishes_done(sp):
     h = _h()
     await _install(sp, h, [_agent("a")])
     await _enqueue_uninstall(sp, h)
     bus = _Bus()
-    await run_one_harness_operation(HarnessDispatchDeps(storage_provider=sp, event_bus=bus), harness_id=h.id, worker_id="w")
+    await _run_via_engine(sp, bus, h.id)
     assert await sp.get_storage(Harness).get(h.id) is None
     assert bus.events == [f"harness:{h.id}:done"]
 
@@ -329,7 +360,7 @@ async def test_an_uninstall_operation_that_fails_is_released_as_error(sp):
 
     st.delete = boom
     bus = _Bus()
-    await run_one_harness_operation(HarnessDispatchDeps(storage_provider=sp, event_bus=bus), harness_id=h.id, worker_id="w")
+    await _run_via_engine(sp, bus, h.id)
     row = await sp.get_storage(Harness).get(h.id)
     assert row is not None and row.status == HarnessStatus.ERROR and row.pending_operation is None
     assert "database is locked" in row.last_operation_error

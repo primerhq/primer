@@ -22,6 +22,20 @@ The hundreds of target schemas are not advertised in `tools/list`. A client
 requests schemas from `list_tools` or `find_tools` only when it needs them. This
 keeps model context bounded while preserving the full authorized catalogue.
 
+## Sessions
+
+The endpoint is a stateful Streamable HTTP server: `initialize` returns an
+`Mcp-Session-Id` header, and follow-up requests send it back. Two limits:
+
+- The session lives in the API process that opened it. With more than one
+  API replica the load balancer must keep one client's MCP requests on the
+  same replica (session affinity); a follow-up request that reaches another
+  replica answers 404 "Session not found".
+- A session is bound to the credential that opened it (the cookie's user
+  for a cookie session, the token row for a bearer token). A request that
+  carries another credential's `Mcp-Session-Id` is answered exactly as if
+  the session did not exist; the owner's own requests keep working.
+
 ## Concepts
 
 Discovery and dispatch are separate contracts, and neither trusts the
@@ -76,6 +90,12 @@ Discovery and dispatch apply the same floors:
    signed-in user's authority.
 5. The caller's role must meet the tool's declared role floor.
 6. `toolset_use` must allow the caller to use that reserved toolset and tool.
+7. A tool whose effective approval policy is the static `required` type is
+   withheld, not advertised: it refuses every call, so a listed id could
+   only ever answer `tool_unavailable`. Policies decided by an LLM judge or
+   a Rego policy are NOT evaluated at discovery -- a listing must never
+   trigger a model call -- so their tools stay listed and `call_tool`
+   decides per call exactly as before.
 
 An MCP client acts as the token owner or signed-in user, never as the token
 record itself. Built-in target handlers apply their normal entity access checks
@@ -147,7 +167,17 @@ answer:
 ```
 
 This non-oracular error is intentional. It does not tell a caller whether the
-id exists behind another role, allowlist, scope, or toolset grant.
+id exists behind another role, allowlist, scope, or toolset grant. A target
+schema that is itself malformed, whose patterns use their matching budget
+(a pattern with overlapping or nested repeats, such as `(a|aa)+`, backtracks
+on a long value), or whose validation runs past its time budget (a
+`uniqueItems` over many objects, or a schema that branches at every level,
+is slow) answers this same error: the schema belongs to the tool, not the
+caller, and the validation runs bounded and off the event loop, so no call
+can stall the API process while it validates. The arguments are validated up
+to the app's request-body cap (the same bound the body-cap middleware admits
+MCP posts to), not a smaller fixed size, so a body the server accepted is
+never refused here.
 
 `call_tool` does not trust a previous discovery response. It enters the
 existing `invoke_exposed` path, which rechecks live exposure mode, allowlist,

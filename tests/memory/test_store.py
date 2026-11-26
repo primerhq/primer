@@ -88,6 +88,17 @@ async def test_add_unsluggable_name_is_dropped(store) -> None:
     assert await store.list_entries(AGENT) == []
 
 
+async def test_a_folder_with_more_entries_than_one_page_is_fully_listed(store, monkeypatch) -> None:
+    """Review 2026-11-23 C1: the documents listing is paged (a ListResult with a page ceiling); list_entries must walk every page, so a folder with more entries than one page returns all of them, in path order, with no duplicates."""
+    monkeypatch.setattr("primer.knowledge.document_service.MAX_LIST_LIMIT", 3)
+    names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"]
+    for name in names:
+        assert await store.add_candidate(AGENT, _add(name), source=SRC, taught_by="owner", needs_approval=False) is not None
+    entries = await store.list_entries(AGENT, "candidates")
+    assert [e.name for e in entries] == names
+    assert len({e.name for e in entries}) == len(names)
+
+
 async def test_add_over_the_body_cap_is_dropped(store) -> None:
     assert await store.add_candidate(AGENT, _add(steps=["x" * 4000]), source=SRC, taught_by="owner", needs_approval=False) is None
 

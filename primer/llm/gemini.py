@@ -943,9 +943,12 @@ class GeminiLLM(LLM):
 
     async def aclose(self) -> None:
         """Close the genai SDK client (releases the underlying transport).
-        google.genai.Client.close is sync but idempotent; safe to call
-        twice."""
+
+        The stream uses ``client.aio`` (the async client), so its pool is the
+        one that must be released with an await (finding 2.11); the sync
+        ``close`` is idempotent, safe to call twice."""
         if self._client is not None:
+            await self._client.aio.aclose()
             self._client.close()
             self._client = None
 

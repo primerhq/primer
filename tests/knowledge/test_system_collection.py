@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
+from primer.int.vector_store import VectorStore
 from primer.knowledge.system_collection import (
     SYSTEM_COLLECTION_ID, regenerate_system_collection,
 )
@@ -66,12 +67,28 @@ async def test_regeneration_is_idempotent_and_prunes_stale(sp):
         )
 
 
-class _RecordingStore:
+class _RecordingStore(VectorStore):
     """Vector store that only remembers what was written to it."""
 
     def __init__(self) -> None:
         self.records: dict = {}
         self.collections: dict = {}
+
+    async def get(self, cid, did):
+        return [r for k, r in sorted(self.records.items()) if k[0] == cid and k[1] == did]
+
+    async def search(self, cid, vector, k):
+        raise NotImplementedError
+
+    async def search_by_meta(self, cid, meta=None):
+        return [r for r in self.records.values() if r.collection_id == cid]
+
+    async def count_documents(self, cid):
+        return len({key[1] for key in self.records if key[0] == cid})
+
+    async def drop_collection(self, cid):
+        for key in [k for k in self.records if k[0] == cid]:
+            del self.records[key]
 
     async def create_collection(self, cid, *, dimensions, distance="cosine"):
         self.collections[cid] = dimensions

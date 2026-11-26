@@ -114,17 +114,66 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         config: ContainerWorkspaceConfig,
         *,
         adapter: ContainerRuntimeAdapter | None = None,
+        subprocess_timeout_seconds: float | None = None,
     ) -> None:
         super().__init__()
         self._config = config
+        # The deployment's subprocess deadline (AppConfig.subprocess_timeout_seconds):
+        # injected into every container's env so the runtime's default exec
+        # deadline matches the local backend's bound (the runtime reads
+        # PRIMER_SUBPROCESS_TIMEOUT_SECONDS, defaulting to 120 s when unset).
+        self._subprocess_timeout_seconds = subprocess_timeout_seconds
         self._adapter = adapter if adapter is not None else _adapter_for(
             config,
         )
         self._workspaces: dict[str, SandboxWorkspace] = {}
+        # The ids a destroy of this process is tearing down, from the cache pop to the teardown end (a count, so a
+        # duplicate destroy of the same id keeps the fence until both are done). A re-attach must not start the
+        # container or cache a handle under a running destroy (X3.3, the race the 5.6 fix widened): it would hand
+        # the caller a handle whose container is about to be removed and leak the handle in the cache (the destroy
+        # already popped it). The registry's row delete is what makes the id 404 to everyone else.
+        self._destroying: dict[str, int] = {}
 
     async def initialize(self) -> None:
         await self._adapter.initialize()
         self._initialised = True
+
+    async def _cached_live(self, workspace_id: str) -> Workspace | None:
+        """The base ``gone`` eviction, plus eviction on the container's state (review 5.6).
+
+        A container that stops but still exists (``exited``, or ``created`` after a dockerd restart) never makes its
+        runtime client ``gone``: the reconnect loop is refused forever and only a 404 handshake sets that, so the cache
+        would keep handing out the dead handle until primer restarts. A concrete non-running state evicts the handle
+        (``absent`` too: a 404 from the daemon names the container gone, X3.3); the :meth:`_reattach` the following
+        :meth:`get` runs then starts the container and reconnects (the Docker
+        adapter's ``get_sandbox``). ``None`` (an inspect or transport failure) keeps the handle: a transient daemon
+        failure must not evict a live one. Adapters without a
+        ``container_state`` method (Podman, containerd) skip the check.
+        """
+        handle = await super()._cached_live(workspace_id)
+        if handle is None:
+            return None
+        inspect = getattr(self._adapter, "container_state", None)
+        if inspect is None:
+            return handle
+        name = f"{_NAME_PREFIX}{workspace_id}"
+        state = await inspect(name)
+        if state is None or state == "running":
+            return handle
+        async with self._lock:
+            if self._workspaces.get(workspace_id) is not handle:
+                # A new handle was registered between the check and now; hand it out instead of evicting it.
+                return self._workspaces.get(workspace_id)
+            self._workspaces.pop(workspace_id, None)
+        logger.info(
+            "ContainerWorkspaceBackend: container %s is %s; evicting the cached handle so the next get restarts it",
+            name, state,
+        )
+        await close_shielded(handle, what=f"evicted workspace {workspace_id} (container state {state!r})")
+        # The handle's close only releases it; the runtime connection is its sandbox's (review W20), and a client not
+        # marked gone would retry its dead port forever.
+        await close_shielded(handle.sandbox, what=f"evicted workspace {workspace_id} runtime client")
+        return None
 
     async def aclose(self) -> None:
         async with self._lock:
@@ -160,6 +209,11 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         env_str = merged.env_unwrapped()
         if template.strict_write_locking:
             env_str = {**env_str, "PRIMER_STRICT_WRITE_LOCKING": "1"}
+        if self._subprocess_timeout_seconds is not None and self._subprocess_timeout_seconds > 0:
+            env_str = {
+                **env_str,
+                "PRIMER_SUBPROCESS_TIMEOUT_SECONDS": f"{self._subprocess_timeout_seconds:g}",
+            }
 
         # Pin the live instance to the caller-supplied id when given so the
         # durable row id and the container name/id agree -- otherwise
@@ -322,8 +376,14 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         """Re-attach to a live container after a cache miss.
 
         Called by :meth:`BaseWorkspaceBackend.get` only once the cache
-        lookup (with gone-eviction) misses.
+        lookup (with gone-eviction) misses. Refuses the container start (and
+        answers ``None``) when a destroy of this id is running: it owns the
+        teardown from its cache pop on, and a handle started under it would
+        die with the container (X3.3).
         """
+        async with self._lock:
+            if self._destroying.get(workspace_id, 0) > 0:
+                return None
         name = f"{_NAME_PREFIX}{workspace_id}"
         sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:
@@ -389,6 +449,11 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
                     # Theirs wins. Our sandbox is a separate object with its own connection to the same container: it
                     # is closed below (the container itself is not torn down).
                     return existing
+                if self._destroying.get(workspace_id, 0) > 0:
+                    # A destroy started while the handle was being built: it owns the teardown (its pop already left
+                    # the cache), so a handle for its container would die with it and leak in the cache. The sandbox
+                    # closes in the finally (X3.3).
+                    return None
                 self._workspaces[workspace_id] = ws
                 cached = True
             return ws
@@ -406,28 +471,37 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
     async def destroy(self, workspace_id: str) -> None:
         async with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
-        name = f"{_NAME_PREFIX}{workspace_id}"
-        volume = f"{name}-data"
-        if ws is not None:
-            sandbox = ws.sandbox
-        else:
-            sandbox = await self._adapter.get_sandbox(name)
-        if sandbox is None:
-            # Not handed out (not running, no token, no answer), which does not mean gone: remove the container and its volume
-            # by name, or a same-id create reuses the volume and the old data comes back (review W19).
-            if not await self._adapter.remove_by_name(name, volume):
-                raise NotFoundError(f"workspace {workspace_id!r} not found")
-            return
-        # Either way the connection is this destroy's to close, whatever the teardown does: the cached workspace has just
-        # left the cache, and ``get_sandbox`` hands out a new sandbox with a connection of its own on every call. ``stop()``
-        # and ``remove()`` only reach the container daemon; left open, the client keeps reconnecting to a container that no
-        # longer exists (only a 404 handshake makes it give up).
+            self._destroying[workspace_id] = self._destroying.get(workspace_id, 0) + 1
         try:
-            await sandbox.stop()
-            await sandbox.remove()
-            await self._adapter.remove_volume(volume)
+            name = f"{_NAME_PREFIX}{workspace_id}"
+            volume = f"{name}-data"
+            if ws is not None:
+                sandbox = ws.sandbox
+            else:
+                sandbox = await self._adapter.get_sandbox(name)
+            if sandbox is None:
+                # Not handed out (not running, no token, no answer), which does not mean gone: remove the container and its volume
+                # by name, or a same-id create reuses the volume and the old data comes back (review W19).
+                if not await self._adapter.remove_by_name(name, volume):
+                    raise NotFoundError(f"workspace {workspace_id!r} not found")
+                return
+            # Either way the connection is this destroy's to close, whatever the teardown does: the cached workspace has just
+            # left the cache, and ``get_sandbox`` hands out a new sandbox with a connection of its own on every call. ``stop()``
+            # and ``remove()`` only reach the container daemon; left open, the client keeps reconnecting to a container that no
+            # longer exists (only a 404 handshake makes it give up).
+            try:
+                await sandbox.stop()
+                await sandbox.remove()
+                await self._adapter.remove_volume(volume)
+            finally:
+                await close_shielded(sandbox, what="destroyed sandbox")
         finally:
-            await close_shielded(sandbox, what="destroyed sandbox")
+            async with self._lock:
+                left = self._destroying[workspace_id] - 1
+                if left > 0:
+                    self._destroying[workspace_id] = left
+                else:
+                    del self._destroying[workspace_id]
 
 
 __all__ = ["ContainerWorkspaceBackend"]

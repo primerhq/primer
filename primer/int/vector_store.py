@@ -35,7 +35,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
-from primer.model.except_ import BadRequestError
+from primer.model.except_ import BadRequestError, PrimerError
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
 
 
@@ -57,7 +57,7 @@ class VectorStore(ABC):
         collection_id: str,
         *,
         dimensions: int,
-        distance: Literal["cosine", "l2", "ip"] = "cosine",
+        distance: Literal["cosine", "l2", "ip"] | None = None,
     ) -> None:
         """Register a new collection and prepare its storage / index.
 
@@ -78,10 +78,14 @@ class VectorStore(ABC):
             collection. Must match the embedding model's output
             dimensionality.
         distance
-            Distance metric used for similarity search. Defaults to
-            ``"cosine"`` (the conventional choice for normalised
-            embeddings). Backends MAY override the default at the
-            provider config level.
+            Distance metric for a NEW collection. ``None`` (the default)
+            resolves to the provider's configured distance metric. A
+            collection that already exists keeps the metric stored at
+            creation time: a different requested metric is a
+            :class:`primer.model.except_.ConflictError` (the message
+            names the stored and the requested metric), and callers
+            that keep indexing (the knowledge layer) treat that drift
+            as "continue under the stored metric", not as an error.
         """
 
     @abstractmethod
@@ -106,6 +110,61 @@ class VectorStore(ABC):
         transaction and one statement; Lance: one table version rather than one per chunk, KN-15)."""
         for record in records:
             await self.put(record)
+
+    #: How many times the default :meth:`replace_document` put is attempted after a store failure:
+    #: the vectors are in hand, so a retry costs storage work only.
+    _REPLACE_PUT_ATTEMPTS = 3
+
+    async def replace_document(
+        self,
+        collection_id: str,
+        document_id: str,
+        records: list[EmbeddingRecord],
+        *,
+        stored_count: int | None = None,
+    ) -> None:
+        """Replace the chunks stored for ``document_id`` with ``records``.
+
+        Chunk ids are ``str(idx)`` from 0, so a new set at least as long as the stored one
+        overwrites every stored chunk id: the upsert alone replaces the document and no
+        destructive step runs, so a failed put leaves the old chunks searchable. When the
+        document shrank, the higher-indexed chunks must go and the store only deletes whole
+        documents, so the delete runs first and the put (its vectors are already in hand) is
+        retried while the store blips.
+
+        The default is NOT atomic: the delete and the put are separate writes. Backends with
+        transactional writes override it (pgvector: delete and upsert in one transaction, so a
+        failed replace rolls back to the old chunks); backends without one (LanceDB) keep this
+        ordering, which is the narrowest window the backend allows.
+
+        ``stored_count`` is the number of stored chunks per a read the CALLER already made
+        (the indexing paths read the stored texts once per collection / document and pass
+        the count through, so a backfill of N documents does not re-read the stored chunks N
+        times); when given, the default uses it instead of re-reading, and the caller owns
+        its freshness. When omitted the store reads them itself. Overrides that decide from
+        the store itself (pgvector's unconditional one-transaction delete + upsert, Lance's
+        own row count) accept it and ignore it.
+        """
+        records = list(records or [])
+        stored = stored_count if stored_count is not None else len(await self.list_chunk_texts(collection_id, document_id))
+        if stored and len(records) < stored:
+            try:
+                await self.delete(collection_id, document_id)
+            except PrimerError:
+                # Tolerate stores that raise on delete when the collection holds no rows (some
+                # backends signal an unregistered collection this way). The caller's
+                # create_collection already registered it.
+                pass
+        if not records:
+            return
+        last: Exception | None = None
+        for _ in range(self._REPLACE_PUT_ATTEMPTS):
+            try:
+                await self.put_many(records)
+                return
+            except Exception as exc:  # noqa: BLE001 - a blip must not strand the document unindexed; the vectors are in hand
+                last = exc
+        raise last
 
     async def list_chunk_texts(
         self, collection_id: str, document_id: str | None = None,

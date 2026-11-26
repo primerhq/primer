@@ -131,14 +131,25 @@ class MemoryStore:
     ) -> list[MemoryEntry]:
         out: list[MemoryEntry] = []
         for folder in (status,) if status else MEMORY_FOLDERS:
-            for item in await self._documents.list(
-                collection_id=memory_collection_id(agent_id), prefix=f"{folder}/"
-            ):
-                entry = await self._read(
-                    agent_id, folder, item.path.removeprefix(f"{folder}/")
+            prefix = f"{folder}/"
+            after_path: str | None = None
+            # The documents listing is paged (a ListResult with a page ceiling); memory needs the
+            # complete folder (reflection index, auto-inject, curate), so walk every page.
+            while True:
+                page = await self._documents.list(
+                    collection_id=memory_collection_id(agent_id),
+                    prefix=prefix,
+                    after_path=after_path,
                 )
-                if entry is not None:
-                    out.append(entry)
+                for item in page.entries:
+                    entry = await self._read(
+                        agent_id, folder, item.path.removeprefix(prefix)
+                    )
+                    if entry is not None:
+                        out.append(entry)
+                if not page.truncated:
+                    break
+                after_path = page.entries[-1].path
         return out
 
     # ---- field-scoped meta writes --------------------------------------------------------------------------------------------------------

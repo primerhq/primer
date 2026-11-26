@@ -12,6 +12,7 @@ this single-process impl is self-contained).
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ from primer.model.workspace_session import SessionStatus
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class _SessionState:
@@ -34,16 +37,6 @@ class _SessionState:
     last_worker_id: str | None = None
     attempt_count: int = 0
     last_error: str | None = None
-
-
-@dataclass
-class _LeaseState:
-    worker_id: str | None = None
-    expires_at: datetime | None = None
-    next_attempt_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    runnable: bool = False
 
 
 @dataclass
@@ -63,8 +56,12 @@ class InMemoryScheduler(Scheduler):
     ) -> None:
         self._lock = asyncio.Lock()
         self._sessions: dict[str, _SessionState] = {}
-        self._leases: dict[str, _LeaseState] = {}
         self._workers: dict[str, _WorkerState] = {}
+        # What each worker registered with, so a heartbeat can register a row a peer purged (see heartbeat_worker).
+        self._registrations: dict[str, dict[str, Any]] = {}
+        # Workers this process has put into its drain (drain_worker): their rows come back
+        # DRAINING from a dead mark, not active (H-3 r1 minor 3).
+        self._draining_here: set[str] = set()
         self.lease_ttl_seconds: int = 30  # mutable; WorkerPool sets at start
         self._storage = storage_provider
         # ---- metrics (spec §14) ----
@@ -119,6 +116,7 @@ class InMemoryScheduler(Scheduler):
     ) -> None:
         async with self._lock:
             now = datetime.now(timezone.utc)
+            self._registrations[worker_id] = {"host": host, "pid": pid, "capacity": capacity, "label": label}
             self._workers[worker_id] = _WorkerState(
                 info=WorkerInfo(
                     id=worker_id, host=host, pid=pid, capacity=capacity, label=label,
@@ -131,14 +129,37 @@ class InMemoryScheduler(Scheduler):
             w = self._workers.get(worker_id)
             if w is not None:
                 w.info = w.info.model_copy(update={"label": label})
+            if worker_id in self._registrations:
+                self._registrations[worker_id]["label"] = label
 
     async def heartbeat_worker(self, worker_id: str) -> None:
+        """Stamp the liveness time. A row a peer marked ``dead`` becomes ``active`` again (a ``draining`` row stays
+        draining) and a row a peer purged is registered again from what this worker registered with: a live worker
+        must not disappear from the registry because its writes were slow once. A deregistered worker is not brought
+        back (``deregister_worker`` forgets its registration)."""
         async with self._lock:
+            now = datetime.now(timezone.utc)
             w = self._workers.get(worker_id)
-            if w is not None:
-                w.info = w.info.model_copy(
-                    update={"last_heartbeat": datetime.now(timezone.utc)},
+            if w is None:
+                reg = self._registrations.get(worker_id)
+                if reg is not None:
+                    logger.warning("heartbeat_worker: the row of worker %s was purged; registering it again", worker_id)
+                    self._workers[worker_id] = _WorkerState(
+                        info=WorkerInfo(
+                            id=worker_id, started_at=now, last_heartbeat=now,
+                            status="draining" if worker_id in self._draining_here else "active", **reg,
+                        ),
+                    )
+                return
+            update: dict[str, Any] = {"last_heartbeat": now}
+            if w.info.status == "dead":
+                update["status"] = "draining" if worker_id in self._draining_here else "active"
+                # The dead -> restored transition itself, so the log fires once per dead episode.
+                logger.warning(
+                    "heartbeat_worker: worker %s was marked dead; restored to %s",
+                    worker_id, update["status"],
                 )
+            w.info = w.info.model_copy(update=update)
 
     async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
         async with self._lock:
@@ -148,13 +169,16 @@ class InMemoryScheduler(Scheduler):
 
     async def drain_worker(self, worker_id: str) -> None:
         async with self._lock:
+            self._draining_here.add(worker_id)
             w = self._workers.get(worker_id)
             if w is not None:
                 w.info = w.info.model_copy(update={"status": "draining"})
 
-    async def deregister_worker(self, worker_id: str) -> None:
+    async def deregister_worker(self, worker_id: str, *, keep_registration: bool = False) -> None:
         async with self._lock:
             self._workers.pop(worker_id, None)
+            if not keep_registration:
+                self._registrations.pop(worker_id, None)
 
     async def purge_dead_workers(self) -> int:
         async with self._lock:
@@ -175,14 +199,13 @@ class InMemoryScheduler(Scheduler):
     async def enqueue(
         self, session_id: str, *, ready_at: datetime | None = None,
     ) -> None:
+        # The claim engine owns runnable state (its leases carry next_attempt_at),
+        # and nothing reads the ready queue (no consumer drives watch_ready). A
+        # wake used to put the session id onto every worker's ready queue, which
+        # grew unboundedly. It now only records the notify for the metric.
+        # (Review 2026-11-23 finding 1.10.)
         async with self._lock:
-            lease = self._leases.setdefault(session_id, _LeaseState())
-            lease.runnable = True
-            if ready_at is not None:
-                lease.next_attempt_at = ready_at
-            for w in self._workers.values():
-                w.ready_queue.put_nowait(session_id)
-                self._notify_received_total += 1
+            self._notify_received_total += len(self._workers)
 
     # ---- Hints + cancel -------------------------------------------------
 
@@ -212,10 +235,10 @@ class InMemoryScheduler(Scheduler):
         for s in self._sessions.values():
             key = s.status.value
             sessions_by_status[key] = sessions_by_status.get(key, 0) + 1
-        runnable = sum(
-            1 for lease in self._leases.values()
-            if lease.runnable and lease.worker_id is None
-        )
+        # The claim engine owns the runnable state (its leases), so the
+        # scheduler's runnable depth is always 0: a wake no longer enqueues
+        # onto the unread ready queue. (Review 2026-11-23 finding 1.10.)
+        runnable = 0
         return {
             "primer_sessions_active": sessions_by_status,
             "primer_sessions_runnable_queue_depth": runnable,

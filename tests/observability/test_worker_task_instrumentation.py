@@ -124,6 +124,7 @@ async def test_a_release_timeout_in_the_handlers_finally_does_not_turn_a_cancel_
 
     import primer.observability.metrics as m
     from primer.model.harness import Harness, HarnessOperation
+    from tests.claim._platform import platform_adapters
     from tests.conftest import _FakeStorageProvider
 
     storage = _FakeStorageProvider()
@@ -131,7 +132,9 @@ async def test_a_release_timeout_in_the_handlers_finally_does_not_turn_a_cancel_
         id="e-1", slug="e-1", name="h", created_at=datetime.now(timezone.utc),
         pending_operation=HarnessOperation.SYNC,
     ))
-    engine = InMemoryClaimEngine(adapters={})
+    # The leases are counter tokens here (the trigger row is not the subject),
+    # so the armed kind stands in with the base platform contract.
+    engine = InMemoryClaimEngine(adapters=platform_adapters(kind))
     scheduler = InMemoryScheduler()
     await scheduler.initialize()
     pool = WorkerPool(

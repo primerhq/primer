@@ -28,6 +28,7 @@ from primer.api._app_lifespan_phases import (
     recover_ic_bootstrap,
     recover_interrupted_indexing,
     recover_sessions,
+    recover_trigger_and_harness_leases,
     recover_webhook_deliveries,
     run_first_boot_bootstrap,
     sample_claim_gauges,
@@ -277,6 +278,11 @@ def _make_lifespan(config: AppConfig):
                 allowed_stdio_commands=allowlist,
                 oauth=mcp_oauth,
                 storage_provider=storage_provider,
+                # Python toolsets resolve the CALLING workspace's runner:
+                # a call from a container/k8s workspace runs in that
+                # workspace's sandbox (isolation "container"); every other
+                # call runs on the local hardened runner.
+                workspace_registry=workspace_registry,
             ),
             trace_llm_io=config.observability.trace_llm_io,
         )
@@ -558,6 +564,8 @@ def _make_lifespan(config: AppConfig):
             # The approval gate caches its policy lookups per process: an edit in any process must reach every gate (GS-28).
             await approval_resolver.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
+            stt_registry.bind_rate_limiter(coordinator.rate_limiter)
+            tts_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
             # ChannelInbox was constructed earlier (lines 102-104) with
             # event_bus=None because the bus is built later in the
@@ -665,6 +673,7 @@ def _make_lifespan(config: AppConfig):
                 scheduler=scheduler,
                 event_bus=event_bus,
                 provider_registry=provider_registry,
+                claim_engine=claim_engine,
             )
             harness_sweeper.start(coordinator.leader_elector)
 
@@ -862,6 +871,14 @@ def _make_lifespan(config: AppConfig):
         await recover_interrupted_indexing(storage_provider)
         if claim_engine is not None:
             await recover_sessions(claim_engine, scheduler, storage_provider)
+            # The in-memory engine loses its TRIGGER and HARNESS leases on a
+            # restart (the SESSION leases were just re-armed above): re-arm
+            # them idempotently from the persisted rows so a cron trigger
+            # keeps firing and a harness with a pending operation is claimed
+            # again. (Review 2026-11-23 finding 1.2.)
+            await recover_trigger_and_harness_leases(
+                claim_engine, storage_provider,
+            )
             # The executor's boot sweep (BPF wave 1, its step 9): void the
             # orphaned ToolCallTask rows and delete their leases BEFORE the
             # pool starts, so a reclaimed task is never an orphan and the
@@ -1241,6 +1258,17 @@ def _make_lifespan(config: AppConfig):
                     logger.exception(
                         "webhook_recheck_task teardown failed"
                     )
+            # The bounded default-workspace retry (primer.bootstrap.seed): a boot
+            # that deferred the default workspace's create because another boot
+            # held the claim to it. Anything it had not ensured yet falls to the
+            # next boot's ensure pass, or to POST /v1/setup/seed, once the claim
+            # is stale.
+            try:
+                from primer.bootstrap.seed import cancel_default_workspace_retries
+
+                await cancel_default_workspace_retries()
+            except Exception:
+                logger.exception("default_workspace_retries teardown failed")
             if event_bus is not None:
                 try:
                     await event_bus.aclose()

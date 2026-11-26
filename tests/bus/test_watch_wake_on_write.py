@@ -26,7 +26,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler
 
 
 # ===========================================================================

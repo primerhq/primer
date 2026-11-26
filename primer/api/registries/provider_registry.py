@@ -355,6 +355,7 @@ def _build_default_toolset_factory(
     allowed_stdio_commands: frozenset[str] | None = None,
     oauth: "ToolsetOAuthService | None" = None,
     storage_provider: Any = None,
+    workspace_registry: Any = None,
 ) -> Callable[[Toolset], ToolsetProvider]:
     """Build the default ``toolset_factory`` closure.
 
@@ -362,6 +363,12 @@ def _build_default_toolset_factory(
     :class:`McpToolsetProvider` so stdio launches are restricted to the
     operator-supplied safelist. ``None`` disables the check (acceptable
     only when Toolset creation is operator-restricted upstream).
+
+    ``workspace_registry`` (the app's :class:`WorkspaceRegistry`) gives a
+    constructed python provider its per-call sandbox runner: a call from a
+    container/k8s workspace resolves that workspace's sandbox and runs in
+    it (isolation ``container``); without it every python toolset runs on
+    the local hardened runner only.
 
     With a ``storage_provider``, an http / sse MCP provider connects through the egress guard unless an admin authored the toolset
     (:func:`primer.toolset.mcp_egress.author_is_trusted`, read per dispatch): a user-authored toolset cannot reach internal addresses. Without one
@@ -390,14 +397,18 @@ def _build_default_toolset_factory(
             from primer.toolset.python_runner.provider import PythonToolsetProvider
             from primer.toolset.python_runner.runners import LocalHardenedRunner
 
+            env = {
+                k: v.get_secret_value()
+                for k, v in (toolset.config.env or {}).items()
+            }
             return PythonToolsetProvider(
                 toolset_id=toolset.id,
                 config=toolset.config,
-                runner=LocalHardenedRunner(
-                    env={
-                        k: v.get_secret_value()
-                        for k, v in (toolset.config.env or {}).items()
-                    }
+                runner=LocalHardenedRunner(env=env),
+                sandbox_runner_for=(
+                    _sandbox_runner_for(workspace_registry, env)
+                    if workspace_registry is not None
+                    else None
                 ),
             )
         if toolset.provider == ToolsetProviderType.INTERNAL:
@@ -412,6 +423,30 @@ def _build_default_toolset_factory(
         )
 
     return _factory
+
+
+def _sandbox_runner_for(workspace_registry: Any, env: dict[str, str]):
+    """The per-call sandbox-runner resolver for a python toolset.
+
+    Resolves the CALLING workspace's runner: a workspace on a container
+    or k8s backend carries a live sandbox (``Workspace.sandbox``) and gets
+    a :class:`SandboxRunner` over it; a local workspace has no sandbox
+    and answers ``None`` (the provider then uses its local runner). A
+    workspace whose sandbox cannot be resolved RAISES (through
+    ``WorkspaceRegistry.get_workspace``) and the provider fails the call
+    rather than downgrading it to the host.
+    """
+
+    from primer.toolset.python_runner.runners import SandboxRunner
+
+    async def resolve(workspace_id: str) -> Any:
+        workspace = await workspace_registry.get_workspace(workspace_id)
+        sandbox = getattr(workspace, "sandbox", None)
+        if sandbox is None:
+            return None
+        return SandboxRunner(sandbox, env=env)
+
+    return resolve
 
 
 def _default_toolset_factory(toolset: Toolset) -> ToolsetProvider:  # pragma: no cover

@@ -265,11 +265,14 @@ async def test_any_other_way_out_of_the_wait_also_kills_the_group(tmp_path: Path
     tool, locks = _tool(tmp_path)
     child = None
 
-    async def explode(self, input=None):   # noqa: A002
+    async def explode(self, n=-1):
         await _pid(tmp_path / "child.pid")
         raise RuntimeError("the wait failed")
 
-    monkeypatch.setattr(asyncio.subprocess.Process, "communicate", explode)
+    # The wait drains the pipes itself (capped reads, not proc.communicate), so the
+    # fault is planted in the drain's stream.read: any failure inside the wait must
+    # still kill the group and release the lock.
+    monkeypatch.setattr(asyncio.StreamReader, "read", explode)
     try:
         with pytest.raises(RuntimeError, match="the wait failed"):
             await tool.execute(_args("sleep 60 & echo $! > child.pid; wait"), None)
