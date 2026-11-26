@@ -26,6 +26,8 @@ class SandboxExec(WorkspaceTool):
     through to the underlying :meth:`Sandbox.exec`.
     """
 
+    self_bounded: ClassVar[bool] = True  # the runtime client keeps only a head and tail of each stream
+
     id: ClassVar[str] = "exec"
     description: ClassVar[str] = (
         "Run a shell command in the workspace. Returns "

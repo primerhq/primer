@@ -176,12 +176,16 @@ SECCOMP_ONLY = pytest.mark.skipif(
 
 @SECCOMP_ONLY
 def test_outbound_connections_are_blocked_by_default() -> None:
-    # connect() is what reaches the network. socket() only makes an fd, and is
-    # deliberately allowed so asyncio can build its event loop.
+    # socket() with a network family is refused at creation, so the tool
+    # cannot even hold an fd to connect with.
     mod = (
         "import socket\n"
         "def probe(x: str) -> str:\n"
-        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    try:\n"
+        "        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    except PermissionError:\n"
+        "        return 'blocked'\n"
+        "    s.close()\n"
         "    try:\n"
         "        s.settimeout(2)\n"
         "        s.connect(('192.0.2.1', 80))\n"
@@ -196,15 +200,60 @@ def test_outbound_connections_are_blocked_by_default() -> None:
 
 
 @SECCOMP_ONLY
-def test_creating_a_socket_is_allowed_so_async_tools_work() -> None:
+def test_creating_a_unix_socket_is_allowed_so_async_tools_work() -> None:
+    # AF_UNIX stays allowed: asyncio builds its event loop self-pipe from a
+    # socketpair, and local pairs carry no network bytes.
     mod = (
         "import socket\n"
         "def probe(x: str) -> str:\n"
-        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
         "    s.close()\n"
         "    return 'created'\n"
     )
     assert _run(_req("probe", {"x": "1"}) | {"module": mod})["value"] == "created"
+
+
+@SECCOMP_ONLY
+def test_named_bypass_syscalls_are_refused() -> None:
+    # The 2026-11-23 named bypasses (5.10): sendmmsg/recvmmsg move bytes
+    # without the denied sendto/sendmsg family, and io_uring does too. All
+    # must answer EPERM (errno 1) from the filter, not run.
+    mod = (
+        "import ctypes, socket\n"
+        "def probe(x: str) -> str:\n"
+        "    out = []\n"
+        "    libc = ctypes.CDLL(None, use_errno=True)\n"
+        "    s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+        "    fd = s.fileno()\n"
+        "    null = ctypes.c_void_p(0)\n"
+        "    # The filter judges the syscall before the kernel touches its\n"
+        "    # arguments, so the (uninitialised) pointer values are irrelevant.\n"
+        "    # A ctypes call never raises: a refused syscall returns -1 with errno set.\n"
+        "    for name in ('sendmmsg', 'recvmmsg'):\n"
+        "        rc = getattr(libc, name)(fd, null, 0, 0)\n"
+        "        out.append(name + ':' + (str(ctypes.get_errno()) if rc == -1 else 'allowed'))\n"
+        "    return '/'.join(out)\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod})
+    assert out["value"] == "sendmmsg:1/recvmmsg:1", out
+
+
+@SECCOMP_ONLY
+def test_a_network_socket_cannot_be_created_or_written() -> None:
+    # The deeper half of 5.10: read/write on a socket fd works on whatever fd
+    # the tool holds, so a network fd must not exist at all. AF_INET creation
+    # is refused, and the tool cannot fall back to writing a bound socket.
+    mod = (
+        "import socket\n"
+        "def probe(x: str) -> str:\n"
+        "    try:\n"
+        "        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+        "        return 'created'\n"
+        "    except PermissionError:\n"
+        "        return 'blocked'\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod})
+    assert out["value"] == "blocked"
 
 
 @SECCOMP_ONLY
@@ -236,6 +285,30 @@ def test_allow_network_permits_connect() -> None:
     # 192.0.2.0/24 is TEST-NET-1 and never routes, so the call times out or is
     # refused. Either proves the syscall was permitted; only EPERM would not.
     assert out["value"] == "reached-network"
+
+
+@SECCOMP_ONLY
+def test_a_process_clone_is_refused_and_a_thread_still_starts() -> None:
+    # The clone rule refuses a clone without CLONE_THREAD (a new process) and lets a thread through. execve is
+    # refused separately, so a subprocess test passes even with a clone rule that refuses nothing: os.fork() is
+    # the probe that only the clone rule can stop.
+    mod = (
+        "import os, threading\n"
+        "def probe(x: str) -> str:\n"
+        "    t = threading.Thread(target=lambda: None)\n"
+        "    t.start()\n"
+        "    t.join()\n"
+        "    try:\n"
+        "        pid = os.fork()\n"
+        "    except OSError:\n"
+        "        return 'thread-ok-fork-refused'\n"
+        "    if pid == 0:\n"
+        "        os._exit(0)\n"
+        "    os.waitpid(pid, 0)\n"
+        "    return 'forked'\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod})
+    assert out["value"] == "thread-ok-fork-refused", out
 
 
 @SECCOMP_ONLY

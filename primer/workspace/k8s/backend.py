@@ -41,6 +41,9 @@ from primer.workspace.env_names import RUNTIME_TOKEN_ENV_NAMES, WORKSPACE_ROOT_E
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name, legacy_k8s_object_name
+from primer.workspace.k8s.network_policy import (
+    build_default_deny_egress_policy_manifest,
+)
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.url import build_runtime_url
 from primer.workspace.runtime.ws_sandbox import WSSandbox
@@ -182,8 +185,8 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
 # What a template's Kubernetes overlays may set (security review 2026-10-08, INJ-02). An ALLOWLIST: the denylist it
 # replaced let Secret, PVC and projected volume sources, a service account, node pinning and extra containers through.
 # Each spec maps a key to ``None`` (a plain scalar value), a nested spec (a mapping checked the same way) or a one-item
-# list holding the spec every list element must match. It holds for every caller, admins included; there is no
-# per-template way around it.
+# list holding the spec every list element must match, or a ``frozenset`` of the only values allowed. It holds for
+# every caller, admins included; there is no per-template way around it.
 _SCALAR = None
 _VOLUME_ALLOWED: dict[str, Any] = {
     "name": _SCALAR,
@@ -196,17 +199,71 @@ _VOLUME_ALLOWED: dict[str, Any] = {
 _VOLUME_MOUNT_ALLOWED: dict[str, Any] = {
     "name": _SCALAR, "mountPath": _SCALAR, "readOnly": _SCALAR, "subPath": _SCALAR,
 }
-# Pod-level scalars only. ``shareProcessNamespace`` is here because the manifest sets it and a template may turn it off;
+# Pod-level keys. ``shareProcessNamespace`` is here because the manifest sets it and a template may turn it off;
 # ``dnsPolicy`` / ``restartPolicy`` / ``terminationGracePeriodSeconds`` are pod behaviour with no host or cluster reach.
+# ``automountServiceAccountToken`` and the pod ``securityContext`` (security review 2026-11-23, 5.2): the manifest now
+# writes its own safe defaults (no service-account token, the container securityContext below), and an admin may
+# adjust them through these keys. The host-namespace keys (hostNetwork, hostPID, hostIPC) and the service account stay
+# off the list, so no overlay reaches the host or the cluster.
+# A ``frozenset`` spec is a closed choice: the value must be one of its members (matching type, so ``0`` is not
+# ``False``). Security review 2026-11-23 (5.2, fix round 1): the allowlist binds admins too, so a security key admits
+# only values that keep the pod at or above the Pod Security Standard "baseline": never ``privileged``, never
+# privilege escalation, never an unmasked /proc, never an Unconfined seccomp or AppArmor profile, and only the baseline
+# capability adds. ``seLinuxOptions``, ``windowsOptions`` and ``sysctls`` are not on the list at all.
+_ONLY_FALSE = frozenset({False})
+_CONFINED_PROFILE_TYPES = frozenset({"RuntimeDefault", "Localhost"})
+_BASELINE_CAPABILITIES = frozenset({
+    "AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD", "NET_BIND_SERVICE", "SETFCAP",
+    "SETGID", "SETPCAP", "SETUID", "SYS_CHROOT",
+})
+_SECCOMP_PROFILE_ALLOWED: dict[str, Any] = {"type": _CONFINED_PROFILE_TYPES, "localhostProfile": _SCALAR}
+# ``drop`` only narrows, so any name is fine there; ``add`` is held to the baseline set.
+_CAPABILITIES_ALLOWED: dict[str, Any] = {"add": [_BASELINE_CAPABILITIES], "drop": [_SCALAR]}
+_APPARMOR_PROFILE_ALLOWED: dict[str, Any] = {
+    "type": _CONFINED_PROFILE_TYPES, "localhostProfile": _SCALAR, "localhost": _SCALAR,
+}
+# The v1 SecurityContext / PodSecurityContext surface that stays admin-adjustable. The pod form adds ``fsGroup`` /
+# ``supplementalGroups`` (a container cannot set them).
+_POD_SECURITY_CONTEXT_ALLOWED: dict[str, Any] = {
+    "runAsUser": _SCALAR,
+    "runAsGroup": _SCALAR,
+    "runAsNonRoot": _SCALAR,
+    "fsGroup": _SCALAR,
+    "supplementalGroups": [_SCALAR],
+    "seccompProfile": _SECCOMP_PROFILE_ALLOWED,
+}
+_CONTAINER_SECURITY_CONTEXT_ALLOWED: dict[str, Any] = {
+    "allowPrivilegeEscalation": _ONLY_FALSE,
+    "apparmorProfile": _APPARMOR_PROFILE_ALLOWED,
+    "appArmorProfile": _APPARMOR_PROFILE_ALLOWED,
+    "capabilities": _CAPABILITIES_ALLOWED,
+    "privileged": _ONLY_FALSE,
+    "procMount": frozenset({"Default"}),
+    "readOnlyRootFilesystem": _SCALAR,
+    "runAsGroup": _SCALAR,
+    "runAsNonRoot": _SCALAR,
+    "runAsUser": _SCALAR,
+    "seccompProfile": _SECCOMP_PROFILE_ALLOWED,
+}
 _POD_OVERRIDES_ALLOWED: dict[str, Any] = {
     "shareProcessNamespace": _SCALAR,
     "dnsPolicy": _SCALAR,
     "restartPolicy": _SCALAR,
     "terminationGracePeriodSeconds": _SCALAR,
+    "automountServiceAccountToken": _SCALAR,
+    "securityContext": _POD_SECURITY_CONTEXT_ALLOWED,
 }
-# The manifest never applied ``container_security_context_overrides``; nothing in it is allowed, so a non-empty value
-# is refused rather than silently ignored.
-_CONTAINER_SECURITY_CONTEXT_ALLOWED: dict[str, Any] = {}
+# The container securityContext every workspace pod ships with (security review 2026-11-23, 5.2, ruling R8): no
+# privilege escalation, no capabilities (the runtime needs none: it binds port 5959, above 1024, and does no
+# chown/setuid/mount) and the kernel's default seccomp filter. The runtime image runs as root (its Dockerfile sets no
+# USER), so ``runAsNonRoot`` is deliberately NOT set: it would make the pod unrunnable. An admin's
+# ``container_security_context_overrides`` (the v1 surface, allowlisted above) is deep-merged OVER this, so it may add
+# a capability back or loosen a field, but it is validated before it reaches the manifest.
+_BASE_CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
+    "allowPrivilegeEscalation": False,
+    "capabilities": {"drop": ["ALL"]},
+    "seccompProfile": {"type": "RuntimeDefault"},
+}
 
 
 def _assert_allowlisted(value: Any, spec: Any, *, source: str, path: str = "") -> None:
@@ -215,6 +272,25 @@ def _assert_allowlisted(value: Any, spec: Any, *, source: str, path: str = "") -
     Raises :class:`ConfigError` naming the offending key and its dotted path.
     """
     where = path or "<root>"
+    if isinstance(spec, frozenset):
+        # Capability names may arrive lower-case or CAP_-prefixed; compare the canonical form.
+        checked = value
+        if spec is _BASELINE_CAPABILITIES and isinstance(value, str):
+            if not value.isascii():
+                # str.upper is Unicode-aware (U+212A folds to "K", the fi ligature to "FI"): a non-ASCII name could
+                # pass the baseline comparison while the manifest carries the raw name (X3.3).
+                raise ConfigError(
+                    f"{source} sets {where} to {value!r}, a capability name with non-ASCII characters; "
+                    "capability names are ASCII. Refused for safety."
+                )
+            checked = value.upper().removeprefix("CAP_")
+        if not any(checked == a and type(checked) is type(a) for a in spec):
+            allowed = ", ".join(sorted(map(str, spec)))
+            raise ConfigError(
+                f"{source} sets {where} to {value!r}, which is not permitted (allowed: {allowed}). "
+                "Refused for safety."
+            )
+        return
     if spec is _SCALAR:
         if isinstance(value, (dict, list)):
             raise ConfigError(
@@ -296,6 +372,7 @@ def _build_statefulset_manifest(
     provider_cfg: KubernetesWorkspaceConfig,
     obj_name: str | None = None,
     overrides: WorkspaceTemplateOverrides | None = None,
+    subprocess_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Compose the StatefulSet body for a workspace Pod.
 
@@ -311,6 +388,16 @@ def _build_statefulset_manifest(
     the GPU, when the template has one, is added) and the PVC request. The template's placement fields land on the pod:
     ``nodeSelector``, ``tolerations``, ``serviceAccountName`` and, on the container, ``imagePullPolicy``. They are set
     BEFORE ``pod_overrides`` is merged, which cannot set any of them (see :data:`_POD_OVERRIDES_ALLOWED`).
+
+    The pod ships ``automountServiceAccountToken: false`` (a named service account opts back in) and the container
+    ships :data:`_BASE_CONTAINER_SECURITY_CONTEXT`; both are written BEFORE the allowlisted overlays are merged, so an
+    admin may adjust them through ``pod_overrides`` / ``container_security_context_overrides`` (security review
+    2026-11-23, 5.2).
+
+    ``subprocess_timeout_seconds`` (the deployment's ``AppConfig`` deadline) is
+    injected as ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS`` so the runtime's default
+    exec deadline matches the local backend's bound (review 2026-11-23, 5.5:
+    the runtime reads the env var, defaulting to 120 s when unset).
     """
     assert isinstance(template.backend, KubernetesTemplateConfig)
     _validate_template_overrides(template)
@@ -333,6 +420,8 @@ def _build_statefulset_manifest(
         if key not in _RUNTIME_TOKEN_ENV_NAMES
     }
     runtime_env[WORKSPACE_ROOT_ENV_NAME] = tcfg.workdir
+    if subprocess_timeout_seconds is not None and subprocess_timeout_seconds > 0:
+        runtime_env["PRIMER_SUBPROCESS_TIMEOUT_SECONDS"] = f"{subprocess_timeout_seconds:g}"
 
     base_container: dict[str, Any] = {
         "name": "workspace",
@@ -379,6 +468,14 @@ def _build_statefulset_manifest(
     if limits:
         base_container["resources"] = {"limits": limits, "requests": dict(limits)}
 
+    # The built-in safe container securityContext (see :data:`_BASE_CONTAINER_SECURITY_CONTEXT`); an admin's
+    # allowlisted overrides are deep-merged over it (validated by ``_validate_template_overrides`` above).
+    base_container["securityContext"] = copy.deepcopy(_BASE_CONTAINER_SECURITY_CONTEXT)
+    if tcfg.container_security_context_overrides:
+        base_container["securityContext"] = _deep_merge(
+            base_container["securityContext"], tcfg.container_security_context_overrides,
+        )
+
     container = base_container
 
     base_pod: dict[str, Any] = {
@@ -399,7 +496,12 @@ def _build_statefulset_manifest(
     if tcfg.tolerations:
         base_pod["tolerations"] = [t.model_dump(exclude_none=True) for t in tcfg.tolerations]
     if tcfg.service_account_name is not None:
+        # A named service account mounts its token: the operator chose that SA (security review 2026-11-23, 5.2).
         base_pod["serviceAccountName"] = tcfg.service_account_name
+    else:
+        # No service account: the pod needs no token (the platform dials it; it dials nothing in-cluster), so keep
+        # the namespace default's token out of it. An admin may set the flag either way through pod_overrides.
+        base_pod["automountServiceAccountToken"] = False
 
     pod = _deep_merge(base_pod, tcfg.pod_overrides or {})
 
@@ -466,9 +568,19 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         apps_v1=None,
         custom_objects=None,
         ws_api=None,
+        subprocess_timeout_seconds: float | None = None,
     ) -> None:
         super().__init__()
         self._config = config
+        # The deployment's subprocess deadline (AppConfig.subprocess_timeout_seconds):
+        # injected into every pod's env so the runtime's default exec deadline
+        # matches the local backend's bound (the runtime reads
+        # PRIMER_SUBPROCESS_TIMEOUT_SECONDS, defaulting to 120 s when unset).
+        self._subprocess_timeout_seconds = subprocess_timeout_seconds
+        # Apply the namespace's default-deny egress NetworkPolicy at backend
+        # start (this provider config's default_deny_egress): no egress for
+        # the workspace pods unless the operator adds allow rules.
+        self._k8s_default_deny_egress = config.default_deny_egress
         self._core_v1 = core_v1
         self._apps_v1 = apps_v1
         self._custom_objects = custom_objects
@@ -518,7 +630,46 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
                 self._apps_v1 = client.AppsV1Api(api_client)
             if self._custom_objects is None:
                 self._custom_objects = client.CustomObjectsApi(api_client)
+        if self._k8s_default_deny_egress:
+            await self._ensure_default_deny_egress_policy()
         self._initialised = True
+
+    async def _ensure_default_deny_egress_policy(self) -> None:
+        """Apply the namespace's default-deny egress NetworkPolicy (opt-in).
+
+        Idempotent: a 409 (the policy already exists - a second replica, a
+        previous run, or the operator created it) is the success case. The
+        success check is the exception's STATUS, not a text match: a
+        different failure whose message happens to carry "409" must
+        propagate, or the backend would start with the egress hole open. The
+        backend never deletes the policy: removing it while a workspace pod
+        still runs would open the egress the flag closes, so the operator
+        owns its lifecycle (see primer.workspace.k8s.network_policy). A
+        failure that is NOT a 409 (e.g. the service account lacks the
+        networkpolicies grant) propagates: the opt-in was asked for, and
+        starting up with the egress hole open silently would be worse.
+        """
+        assert self._custom_objects is not None
+        try:
+            await self._custom_objects.create_namespaced_custom_object(
+                group="networking.k8s.io",
+                version="v1",
+                namespace=self._config.namespace,
+                plural="networkpolicies",
+                body=build_default_deny_egress_policy_manifest(self._config.namespace),
+            )
+            logger.info(
+                "workspace namespace %r: applied the default-deny egress NetworkPolicy",
+                self._config.namespace,
+            )
+        except Exception as exc:
+            # The status code, not the text (the house idiom of _tracked): a different failure whose
+            # message happens to carry "409" must not read as "already exists" and leave the egress
+            # hole open (X3 round 1, M2).
+            status = getattr(exc, "status", None)
+            if isinstance(status, int) and status == 409:
+                return  # already applied
+            raise
 
     async def aclose(self) -> None:
         async with self._lock:
@@ -649,6 +800,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             provider_cfg=self._config,
             obj_name=obj_name,
             overrides=overrides,
+            subprocess_timeout_seconds=self._subprocess_timeout_seconds,
         )
         await self._tracked(created, "statefulset", self._apps_v1.create_namespaced_stateful_set(
             namespace=self._config.namespace,

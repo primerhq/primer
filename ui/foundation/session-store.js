@@ -96,6 +96,8 @@ function SS_getStore(wid, sid) {
     _forceCommit: false,
   };
   SS_STORES[key] = store;
+  // A store nobody retains (yet) is evicted like one every consumer left; the first retain cancels this.
+  SS_scheduleEvict(store);
   return store;
 }
 
@@ -119,8 +121,20 @@ function SS_insertRecord(store, rec) {
     stored = Object.assign({}, rec, { kind: rec["class"] });
   }
   store.records[seq] = stored;
-  store.recordsBySeq.push(stored);
-  store.recordsBySeq.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+  // Keep the array sorted by seq without sorting it again per record (review 8.8: a catch-up of thousands of records was a full sort each): live
+  // frames and catch-up pages arrive in order and append; one out of order is placed by binary search.
+  var arr = store.recordsBySeq;
+  var lo = 0;
+  var hi = arr.length;
+  if (hi > 0 && (arr[hi - 1].seq || 0) > seq) {
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if ((arr[mid].seq || 0) < seq) lo = mid + 1; else hi = mid;
+    }
+  } else {
+    lo = hi;
+  }
+  arr.splice(lo, 0, stored);
   return true;
 }
 
@@ -693,8 +707,49 @@ function SS_wantsRecords(opts) {
   return !(opts && opts.records === false);
 }
 
+// A store that no consumer holds (refs 0) and nobody subscribes to for this long is dropped from SS_STORES (review 8.5): the registry, the tap's
+// reconnect catch-up and its cursor all walk it, so it grew with every session the console ever showed. It is far longer than the record free
+// (SS_FREE_AFTER_MS), so scrolling a pulse dot away and back keeps its status. A session shown again starts a fresh store and seeds from the REST
+// tail, as on first open; nothing is kept per evicted session.
+var SS_EVICT_AFTER_MS = 600000;
+
+function SS_hasSubscribers(store) {
+  for (var ch in store._sub) {
+    if (Object.prototype.hasOwnProperty.call(store._sub, ch) && store._sub[ch].length > 0) return true;
+  }
+  return false;
+}
+
+// True when a consumer holds the store: the tap catches such a store up on a reconnect and puts it in the resume cursor, and no other.
+function SS_isLive(store) {
+  return store.refs > 0 || SS_hasSubscribers(store);
+}
+
+function SS_evictIfIdle(store) {
+  if (SS_isLive(store)) return false;
+  if (store._freeTimer != null) {
+    clearTimeout(store._freeTimer);
+    store._freeTimer = null;
+  }
+  var key = SS_key(store.wid, store.sid);
+  if (SS_STORES[key] === store) delete SS_STORES[key];
+  return true;
+}
+
+function SS_scheduleEvict(store) {
+  if (store._evictTimer != null || typeof setTimeout !== "function") return;
+  store._evictTimer = setTimeout(function () {
+    store._evictTimer = null;
+    SS_evictIfIdle(store);
+  }, SS_EVICT_AFTER_MS);
+}
+
 function SS_retain(store, opts) {
   store.refs += 1;
+  if (store._evictTimer != null) {
+    clearTimeout(store._evictTimer);
+    store._evictTimer = null;
+  }
   if (!SS_wantsRecords(opts)) {
     // Nothing reads its records and no grace is running: it keeps none from now on.
     if (!store.recordRefs && store._freeTimer == null && !store._freed) SS_freeRecords(store);
@@ -718,6 +773,7 @@ function SS_dispose(store, opts) {
   if (store.refs <= 0) {
     store.refs = 0;
     store._flushScheduled = false;
+    SS_scheduleEvict(store);
   }
   if (!SS_wantsRecords(opts)) return store;
   store.recordRefs = Math.max(0, store.recordRefs - 1);
@@ -768,9 +824,9 @@ function SS_highWater(store) {
 }
 
 function SS_catchUp(store) {
-  if (store._catchUpInFlight) return;
+  if (store._catchUpInFlight) return Promise.resolve();
   var apiFetch = (window.primerApi && window.primerApi.apiFetch) || null;
-  if (typeof apiFetch !== "function") return;
+  if (typeof apiFetch !== "function") return Promise.resolve();
   store._catchUpInFlight = true;
   var LIMIT = 1000;
   // A tap gap over one page used to be silently truncated until a full reload: loop the read while a
@@ -781,7 +837,7 @@ function SS_catchUp(store) {
   var all = [];
   var pages = 0;
   var afterSeq = SS_highWater(store);
-  (function readNext() {
+  return (function readNext() {
     pages += 1;
     return apiFetch(
       "GET",
@@ -826,11 +882,11 @@ function SS_catchUp(store) {
 var SS_STATUS_TAIL = 50;
 
 function SS_catchUpStatus(store) {
-  if (store._catchUpInFlight) return;
+  if (store._catchUpInFlight) return Promise.resolve();
   var apiFetch = (window.primerApi && window.primerApi.apiFetch) || null;
-  if (typeof apiFetch !== "function") return;
+  if (typeof apiFetch !== "function") return Promise.resolve();
   store._catchUpInFlight = true;
-  apiFetch(
+  return apiFetch(
     "GET",
     "/sessions/" + encodeURIComponent(store.sid) + "/messages?tail=1&limit=" + SS_STATUS_TAIL
   ).then(function (res) {
@@ -896,5 +952,8 @@ window.SS_encodeCursor = SS_encodeCursor;
 // Exposed for the test harness (and for a future eviction policy): the
 // module-level registry, and a force-flush for the transcript channel.
 window.SS_STORES = SS_STORES;
+window.SS_isLive = SS_isLive;
+window.SS_evictIfIdle = SS_evictIfIdle;
+window.SS_EVICT_AFTER_MS = SS_EVICT_AFTER_MS;
 window.SS_key = SS_key;
 window.SS_flushTranscript = SS_flushTranscript;

@@ -37,7 +37,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     SessionStatus,
 )
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler
 from tests.conftest import _FakeStorageProvider
 
 
@@ -368,12 +368,6 @@ class TestWatcherManager:
             paths=["f.txt"],
         )
         await sp.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
-        scheduler._leases["sess-A"] = _LeaseState(
-            worker_id=None,
-            expires_at=None,
-            runnable=False,
-            next_attempt_at=datetime.now(timezone.utc),
-        )
 
         probe = HostInotifyProbe(root=str(tmp_path))
         resolver = _StaticProbeResolver({"ws-A": probe})
@@ -423,12 +417,6 @@ class TestWatcherManager:
             paths=["x"],
         )
         await sp.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
-        scheduler._leases["sess-B"] = _LeaseState(
-            worker_id=None,
-            expires_at=None,
-            runnable=False,
-            next_attempt_at=datetime.now(timezone.utc),
-        )
         probe = HostInotifyProbe(root=str(tmp_path))
         resolver = _StaticProbeResolver({"ws-B": probe})
         mgr = WatcherManager(
@@ -492,12 +480,6 @@ class TestWatcherManager:
             "resume_event_payload": None,
         }
         await sp.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
-        scheduler._leases["sess-C"] = _LeaseState(
-            worker_id=None,
-            expires_at=None,
-            runnable=False,
-            next_attempt_at=datetime.now(timezone.utc),
-        )
         probe = HostInotifyProbe(root=str(tmp_path))
         resolver = _StaticProbeResolver({"ws-C": probe})
         mgr = WatcherManager(

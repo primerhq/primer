@@ -8,6 +8,7 @@ fake backend. That keeps the tests cheap and isolated.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import asyncio
 import base64
 from datetime import datetime, timezone
@@ -163,8 +164,15 @@ class _SP:
         self._default_workspace_id = workspace_id
 
     def __init__(self) -> None:
+        self._migration_lock = asyncio.Lock()
         self._stores: dict[type, _Storage] = {}
         self._default_workspace_id: str | None = None
+
+    @asynccontextmanager
+    async def migration_lock(self):
+        # Serialize like the shared fake: /v1/auth/register takes this lock.
+        async with self._migration_lock:
+            yield
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())

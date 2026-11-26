@@ -64,8 +64,17 @@ async def _local(tmp_path: Path, body: str) -> Grep:
     return Grep(tmp_path)
 
 
+class _LegacySandbox(FakeSandbox):
+    """A sandbox WITHOUT a search op: the legacy per-file walk the pre-1.8
+    runtimes take, and the path the budget tests in this file measure
+    (the 1.8 search path has its own caps and notes; it is covered in
+    tests/workspace/sandbox/test_sandbox_1_8_tools.py)."""
+
+    search = None  # type: ignore[assignment]
+
+
 async def _sandbox(tmp_path: Path, body: str) -> SandboxGrep:
-    sb = FakeSandbox(root=tmp_path)
+    sb = _LegacySandbox(root=tmp_path)
     await sb.write_file("/workspace/f.txt", body.encode())
     return SandboxGrep(sb, workspace_root="/workspace")
 

@@ -28,7 +28,7 @@ from primer.model.collection import (
     CollectionSearchConfig,
 )
 from primer.model.common import dump_for_storage
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
 from primer.model.provider import (
     AnthropicConfig,
     EmbeddingModel,
@@ -192,7 +192,20 @@ class _ContentStore:
             raise ConflictError(f"path {new_path!r} already taken")
         self._rows[document_id] = row.model_copy(update={"path": new_path})
 
-    async def list(self, collection_id: str, *, prefix: str | None = None):
+    async def list(
+        self,
+        collection_id: str,
+        *,
+        prefix: str | None = None,
+        limit: int | None = None,
+        after_path: str | None = None,
+    ):
+        # Contract mirrors the real backends and the conftest fake: strict
+        # ``path > after_path`` keyset in path order, ``limit < 1`` refused,
+        # ``size`` the UTF-8 byte length (DocumentService.list always pages
+        # with ``limit + 1``).
+        if limit is not None and limit < 1:
+            raise BadRequestError("limit must be at least 1")
         from primer.int.document_content import ContentListEntry
 
         out = []
@@ -201,13 +214,18 @@ class _ContentStore:
                 continue
             if prefix is not None and not row.path.startswith(prefix):
                 continue
+            if after_path is not None and not row.path > after_path:
+                continue
             out.append(
                 ContentListEntry(
                     document_id=row.document_id,
                     path=row.path,
-                    size=len(row.content),
+                    size=len(row.content.encode("utf-8")),
                 )
             )
+        out.sort(key=lambda e: e.path)
+        if limit is not None:
+            out = out[:limit]
         return out
 
 
@@ -1191,6 +1209,53 @@ class TestDocumentExtras:
             arguments={"collection_id": "kb-1", "slug": "x.txt", "path": "x.txt"},
         )
         assert json.loads(result.output)["content"] == "second"
+
+    @pytest.mark.asyncio
+    async def test_list_documents_pages_through_the_stub_content_store(
+        self, system_toolset
+    ) -> None:
+        """list_documents must page through this world's stub: it raised TypeError when the
+        service learned to page, so the stub's keyset/byte-size contract is pinned here."""
+        await system_toolset.call(
+            tool_name="create_collection",
+            arguments={"entity": _collection().model_dump(mode="json")},
+        )
+        for path in ("a.md", "b.md", "c.md"):
+            await system_toolset.call(
+                tool_name="put_document",
+                arguments={
+                    "collection_id": "kb-1",
+                    "slug": path,
+                    "path": path,
+                    # 5 characters, 6 UTF-8 bytes: a char-count size would read 5.
+                    "content": "héllo",
+                },
+            )
+
+        result = await system_toolset.call(
+            tool_name="list_documents",
+            arguments={"collection_id": "kb-1", "limit": 2},
+        )
+        assert not result.is_error, result.output
+        page1 = json.loads(result.output)
+        assert [d["path"] for d in page1["documents"]] == ["a.md", "b.md"]
+        assert all(d["size"] == 6 for d in page1["documents"])
+        assert page1["next_after_path"] == "b.md"
+
+        result = await system_toolset.call(
+            tool_name="list_documents",
+            arguments={"collection_id": "kb-1", "limit": 2, "after_path": "b.md"},
+        )
+        assert not result.is_error, result.output
+        page2 = json.loads(result.output)
+        assert [d["path"] for d in page2["documents"]] == ["c.md"]
+        assert page2["next_after_path"] is None
+
+        result = await system_toolset.call(
+            tool_name="list_documents",
+            arguments={"collection_id": "kb-1", "limit": 0},
+        )
+        assert result.is_error, "limit=0 must be refused"
 
 
 # ===========================================================================

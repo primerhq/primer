@@ -150,7 +150,11 @@ def _make_harness(id: str = "harness-1") -> Harness:
 
 
 @pytest.mark.asyncio
-async def test_harness_on_release_success_sets_ready_and_clears_operation(sqlite_provider):
+async def test_harness_on_release_success_leaves_a_pending_operation_alone(sqlite_provider):
+    """A successful release that still sees a pending operation is an operation
+    enqueued in the gap between the row release and the lease release: the
+    adapter leaves the row (and its lease) alone, so the new operation is not
+    erased and the status is not demoted to READY (review 2026-11-23 finding 1.3)."""
     storage = sqlite_provider.get_storage(Harness)
     harness = _make_harness()
     await storage.create(harness)
@@ -161,10 +165,10 @@ async def test_harness_on_release_success_sets_ready_and_clears_operation(sqlite
 
     updated = await storage.get("harness-1")
     assert updated is not None
-    assert updated.pending_operation is None
-    assert updated.status == HarnessStatus.READY
-    assert updated.last_operation_error is None
-    assert updated.last_operation_at is not None
+    # The pending operation is preserved (the next claim's to run) and the
+    # status is not clobbered back to READY.
+    assert updated.pending_operation == HarnessOperation.SYNC
+    assert updated.status == HarnessStatus.DRAFT
 
 
 @pytest.mark.asyncio

@@ -12,11 +12,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from primer.bus.in_memory import InMemoryEventBus
+from primer.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.claim.in_memory import InMemoryClaimEngine
 from primer.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation, sweep_harnesses
+from primer.int.claim import CLAIM_PRIORITY_OPERATOR, ClaimKind
 from primer.model.agent import Agent
 from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
+from primer.model.provider import SqliteConfig, StorageProviderConfig, StorageProviderType
+from primer.storage.factory import StorageProviderFactory
 from tests._support.harness_ops import enqueued
 
 # ---------------------------------------------------------------------------
@@ -402,17 +408,121 @@ async def test_uninstall_no_cascade_keeps_entities(fake_storage_provider, bare_r
 
 
 # ---------------------------------------------------------------------------
-# 7. sweep_harnesses is a no-op (lease expiry handled by ClaimEngine)
+# 7. sweep_harnesses: a no-op without a claim engine (legacy shim); with one,
+#    it re-arms the lease the release window can drop (round 1)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_sweep_is_noop(fake_storage_provider):
-    """sweep_harnesses is a legacy shim that always returns 0.
+async def test_sweep_without_a_claim_engine_is_a_noop(fake_storage_provider):
+    """The legacy caller shape (no claim engine) stays a no-op returning 0.
 
-    Claim expiry and worker-death reclaim are now handled by the
-    ClaimEngine heartbeat loop in the worker pool.
+    Claim expiry and worker-death reclaim are owned by the ClaimEngine
+    heartbeat loop in the worker pool; the sweep only repairs the harness
+    lease the release window can drop, and it cannot do that without an
+    engine.
     """
     deps = _make_deps(fake_storage_provider)
     count = await sweep_harnesses(deps, heartbeat_stale_after=timedelta(seconds=90))
     assert count == 0
+
+
+@pytest_asyncio.fixture
+async def sp(tmp_path):
+    p = StorageProviderFactory.create(StorageProviderConfig(
+        provider=StorageProviderType.SQLITE,
+        config=SqliteConfig(path=tmp_path / "sweep.sqlite"),
+    ))
+    await p.initialize()
+    await p.get_content_store().ensure_schema()
+    yield p
+    await p.aclose()
+
+
+def _sweep_engine(sp) -> InMemoryClaimEngine:
+    return InMemoryClaimEngine(adapters={
+        ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=sp.get_storage(Harness)),
+    })
+
+
+class _RecordingEngine:
+    """Delegates to the real engine and records every upsert the sweep attempts."""
+
+    def __init__(self, engine: InMemoryClaimEngine) -> None:
+        self._engine = engine
+        self.upserts: list[tuple] = []
+
+    async def upsert(self, kind, entity_id, **kwargs):
+        self.upserts.append((kind, entity_id, kwargs))
+        return await self._engine.upsert(kind, entity_id, **kwargs)
+
+    async def has_lease(self, kind, entity_id):
+        return await self._engine.has_lease(kind, entity_id)
+
+
+def _sweep_deps(sp) -> HarnessDispatchDeps:
+    return HarnessDispatchDeps(storage_provider=sp, event_bus=InMemoryEventBus())
+
+
+@pytest.mark.asyncio
+async def test_sweep_rearms_a_pending_harness_with_no_lease(sp):
+    """Round 1 (review 2026-11-23, finding 1.3 residual window): a harness row
+    with a pending operation and NO lease - the exact shape a
+    ``drop_lease=True`` release leaves when an enqueue armed the lease in the
+    window after the handler's fresh re-read - gets its lease from one sweep,
+    and a second sweep leaves it alone (the same re-arm helper the boot
+    recovery phase uses, idempotent)."""
+    harness_storage = sp.get_storage(Harness)
+    await harness_storage.create(Harness(
+        id="sw-1", slug="sw", name="sw",
+        status=HarnessStatus.READY, pending_operation=HarnessOperation.SYNC,
+        created_at=datetime.now(timezone.utc),
+    ))
+    engine = _sweep_engine(sp)
+    assert not await engine.has_lease(ClaimKind.HARNESS, "sw-1")
+
+    deps = _sweep_deps(sp)
+    assert await sweep_harnesses(deps, claim_engine=engine) == 1
+    assert await engine.has_lease(ClaimKind.HARNESS, "sw-1")
+    # Idempotent: the lease now exists, so the next sweep interval re-arms
+    # nothing.
+    assert await sweep_harnesses(deps, claim_engine=engine) == 0
+    assert await engine.has_lease(ClaimKind.HARNESS, "sw-1")
+
+
+@pytest.mark.asyncio
+async def test_sweep_does_not_touch_a_harness_that_already_has_a_lease(sp):
+    """Round 1: a harness that already holds a lease is not rewritten by the
+    sweep (skip_existing): no upsert is even attempted for it."""
+    harness_storage = sp.get_storage(Harness)
+    await harness_storage.create(Harness(
+        id="sw-2", slug="sw", name="sw",
+        status=HarnessStatus.READY, pending_operation=HarnessOperation.FETCH,
+        created_at=datetime.now(timezone.utc),
+    ))
+    engine = _sweep_engine(sp)
+    await engine.upsert(
+        ClaimKind.HARNESS, "sw-2", priority=CLAIM_PRIORITY_OPERATOR,
+    )
+    assert await engine.has_lease(ClaimKind.HARNESS, "sw-2")
+
+    rec = _RecordingEngine(engine)
+    assert await sweep_harnesses(_sweep_deps(sp), claim_engine=rec) == 0
+    assert rec.upserts == [], "the sweep must not touch a harness that already holds a lease"
+    assert await engine.has_lease(ClaimKind.HARNESS, "sw-2")
+
+
+@pytest.mark.asyncio
+async def test_sweep_ignores_a_harness_without_a_pending_operation(sp):
+    """Round 1: a harness with no pending operation gets no lease from the
+    sweep (eligibility is ``pending_operation IS NOT NULL``, as for every
+    other harness claim surface)."""
+    harness_storage = sp.get_storage(Harness)
+    await harness_storage.create(Harness(
+        id="sw-3", slug="sw", name="sw",
+        status=HarnessStatus.READY,
+        created_at=datetime.now(timezone.utc),
+    ))
+    engine = _sweep_engine(sp)
+    assert await sweep_harnesses(_sweep_deps(sp), claim_engine=engine) == 0
+    assert not await engine.has_lease(ClaimKind.HARNESS, "sw-3")

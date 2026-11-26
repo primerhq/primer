@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
 import primer.observability.metrics as _metrics
@@ -59,6 +60,7 @@ from primer.model.chat import (
     Message,
     StreamEvent,
     Tool,
+    ToolCallDelta,
     ToolCallPart,
     ToolResultPart,
     TurnStreamFailure,
@@ -90,6 +92,42 @@ _TOOL_CAP_REFUSAL = "not executed: tool-turn cap reached"
 # cancelled (or abandoned) by the Stop (slice B1). It started and never reported a result, so it cannot say "not
 # run". One wording for all three. (The calls that finished before it keep their real results.)
 _PARK_STOPPED_REFUSAL = "interrupted: stopped by user (the call may have run, and its result was not recorded)"
+# ... and when the call's streamed argument JSON was truncated or malformed: the adapter's ``{}``
+# fallback is the model's cut-off arguments, not empty arguments, so the tool is answered instead
+# of run on them (finding 2.5). The model is told what happened so it resends a complete call.
+_INVALID_ARGS_REFUSAL = (
+    "not run: your tool call's arguments were truncated or malformed and could "
+    "not be parsed as a JSON object. Send the complete arguments and retry the call."
+)
+
+
+def _arguments_invalid(call: ToolCallPart, buffered: Sequence[StreamEvent]) -> bool:
+    """Whether the raw argument fragments of ``call`` fail to parse as the JSON object the
+    adapter settled on (``{}``).
+
+    A call with no fragments at all is trusted: empty arguments legitimately stream no
+    fragments, and the adapter parses ``{}`` for them. A BLANK joined stream is valid in
+    the same way (review 2026-11-23, 2.5 round 1): Anthropic's documented stream shape
+    for a no-argument tool call is a single ``partial_json: ""`` fragment, and the
+    adapters settle it on ``{}`` the same way (``raw or "{}"``, see
+    :func:`primer.llm._openai_common.parse_tool_arguments`). The double-decode mirrors
+    that helper so the loop agrees with what the adapter accepted (a string holding a
+    JSON object decodes once more).
+    """
+    fragments = [
+        ev.arguments_delta
+        for ev in buffered
+        if isinstance(ev, ToolCallDelta) and ev.id == call.id
+    ]
+    if not fragments:
+        return False
+    try:
+        parsed = json.loads("".join(fragments) or "{}")
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+    except (TypeError, ValueError):
+        return True
+    return not isinstance(parsed, dict)
 
 
 def _answer_undispatched(
@@ -610,7 +648,10 @@ async def run_agent_turn(
             max_output_tokens=agent.max_output_tokens,
             response_format=response_format,
             tools=tools,
-            tool_choice="auto",
+            # A tool_choice is meaningless with no tools, and on Anthropic the
+            # response_format emulation rejects an explicit one (finding 2.2):
+            # the turn with a schema and no tools used to die with ConfigError.
+            tool_choice="auto" if tools else None,
         )
         stream_it = stream.__aiter__()
         try:
@@ -845,6 +886,26 @@ async def run_agent_turn(
                 yield capped_done
             return
 
+        # A call whose streamed argument JSON was truncated or malformed must NOT run on the
+        # adapter's ``{}`` fallback (finding 2.5): the model gets an error result naming the
+        # parse failure and resends a complete call, instead of a tool acting on arguments
+        # it never sent. The Stop and cap branches above already answered the whole round,
+        # so only the round that is about to dispatch reaches this filter.
+        round_calls = list(tool_calls)  # the round's call order, for the merged tool message below
+        invalid_calls = [call for call in tool_calls if _arguments_invalid(call, buffered)]
+        invalid_by_id = {
+            call.id: ToolResultPart(id=call.id, output=_INVALID_ARGS_REFUSAL, error=True)
+            for call in invalid_calls
+        }
+        if invalid_calls:
+            for answer_event in _answer_undispatched(invalid_calls, _INVALID_ARGS_REFUSAL, messages_out):
+                yield answer_event
+            tool_calls = [call for call in tool_calls if call.id not in invalid_by_id]
+            # A round whose calls are ALL malformed does not end the turn (review 2026-11-23,
+            # 2.5 round 1): the refusal tells the model to resend a complete call, and the
+            # round already counts toward max_tool_turns. The loop continues with an empty
+            # batch; the merged refusal message below is what the next prompt carries.
+
         client_actions: list[_ClientAction] = []
         try:
             tool_result_msgs = await _dispatch_tool_calls(
@@ -886,13 +947,51 @@ async def run_agent_turn(
         # Delivery frames go out BEFORE the results so the session log
         # reads tool_call -> client_action -> tool_result, matching the
         # notifying contract (deliver, then answer).
+        if invalid_by_id:
+            # The refusals ride in the SAME tool message the dispatched results
+            # form (one message, call order), in the persisted history and the
+            # next prompt alike: the assistant message's calls are answered in
+            # the order they were made, and no id is answered twice (review
+            # 2026-11-23, 2.5 round 1: the refusal used to reach only
+            # messages_out, so the next model call saw an assistant message
+            # with every call and a tool result for the valid ones only, which
+            # Anthropic answers with 400 and OpenAI chat rejects).
+            if messages_out is not None:
+                # _answer_undispatched appended the refusals as their own tool
+                # message above. On a completed batch that would answer them
+                # twice once the merged message lands, so it is replaced; on a
+                # round that PARKS the merge never runs and the separate
+                # message is what the persisted history keeps (the park carries
+                # no answer of its own for the refused calls, and the resume's
+                # tool message holds only the round's dispatched answers).
+                messages_out.pop()
+            dispatch_by_id = {
+                part.id: part
+                for msg in tool_result_msgs
+                for part in msg.parts
+                if isinstance(part, ToolResultPart)
+            }
+            tool_result_msgs = [
+                Message(
+                    role="tool",
+                    parts=[
+                        invalid_by_id[call.id]
+                        if call.id in invalid_by_id
+                        else dispatch_by_id[call.id]
+                        for call in round_calls
+                    ],
+                )
+            ]
         for action in client_actions:
             yield ExtendedEvent(extended=action)
         for trm in tool_result_msgs:
             if messages_out is not None:
                 messages_out.append(trm)
             for part in trm.parts:
-                if isinstance(part, ToolResultPart):
+                # The refused calls' result events went out with the answers
+                # above (before the dispatch, as before); only the dispatched
+                # results are yielded here.
+                if isinstance(part, ToolResultPart) and part.id not in invalid_by_id:
                     synth = ExtendedEvent(
                         extended=_ExecutorToolResult(
                             call_id=part.id,

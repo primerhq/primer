@@ -48,7 +48,7 @@ class _RecordingDocker(_FakeDocker):
 async def _create(docker: _RecordingDocker, *, image: str, pull_policy: str = "if_missing"):
     return await _adapter(docker).create_sandbox(
         name=NAME, image=image, command=["run"], env={}, workdir="/workspace", volume_name=VOLUME, volume_target="/workspace",
-        extra_mounts=[], user=None, resources=ResourceLimits(), network="none", pull_policy=pull_policy,  # type: ignore[arg-type]
+        extra_mounts=[], user=None, resources=ResourceLimits(), network="full", pull_policy=pull_policy,  # type: ignore[arg-type]
         reachability=ContainerReachabilityHostPort(), token="tok",
     )
 

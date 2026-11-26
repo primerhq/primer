@@ -40,9 +40,11 @@ class _PgVectorBaseConfig(_PostgresBaseConfig):
     distance_metric: _DistanceMetric = Field(
         default="cosine",
         description=(
-            "Distance metric for the vector index. 'cosine' for normalised "
-            "embeddings (most common), 'l2' for Euclidean, 'ip' for inner "
-            "product."
+            "Distance metric used when this provider creates a NEW collection "
+            "(``cosine``, ``l2`` or ``ip``); a collection that already exists "
+            "keeps the metric stored at creation time (the store refuses a "
+            "different metric on recreate, and the indexing path keeps going "
+            "under the stored metric)."
         ),
     )
     hnsw_m: PositiveInt = Field(
@@ -194,6 +196,17 @@ class LanceConfig(BaseModel):
             "Filesystem directory holding the LanceDB datasets. Created "
             "on initialise if missing. Must be writable by the primer "
             "process. Use an absolute path."
+        ),
+    )
+    distance_metric: _DistanceMetric = Field(
+        default="cosine",
+        description=(
+            "Distance metric used when this provider creates a NEW collection "
+            "(``cosine``, ``l2`` or ``ip``; the store maps ``ip`` to "
+            "LanceDB's ``dot``); a collection that already exists keeps the "
+            "metric stored at creation time (the store refuses a different "
+            "metric on recreate, and the indexing path keeps going under the "
+            "stored metric). Mirrors the pgvector family's distance_metric."
         ),
     )
     hnsw_m: PositiveInt = Field(

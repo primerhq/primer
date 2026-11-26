@@ -257,23 +257,27 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
                 )
                 await inbox.handle_response(resp_env)
 
-                async def _drain_one():
+                # Reply delivery is DUAL (the durable-wake fix): the
+                # durable session.wake append publishes an
+                # events_appended hint (the appended event's max_id)
+                # onto the bus before the legacy key publish. Drain
+                # until the reply key arrives and assert the extra
+                # publish is the hint, not exact single-event equality.
+                expected_key = "tool_approval:sess-t857:tc-t857"
+                seen = []
+
+                async def _drain_until_key():
                     async for ev in subscription:
-                        return ev
+                        seen.append(ev)
+                        if ev.event_key == expected_key:
+                            return ev
                     return None
 
-                event = await asyncio.wait_for(_drain_one(), timeout=2.0)
+                event = await asyncio.wait_for(_drain_until_key(), timeout=2.0)
                 assert event is not None, (
                     "ChannelInbox.handle_response should have "
                     "published a tool_approval event onto the bus, "
-                    "but the subscription received nothing within 2s"
-                )
-                expected_key = "tool_approval:sess-t857:tc-t857"
-                assert event.event_key == expected_key, (
-                    f"event_key mismatch: expected {expected_key!r}, "
-                    f"got {event.event_key!r} — the tool_approval "
-                    f"branch may be incorrectly routing through the "
-                    f"ask_user key namespace"
+                    f"but the subscription received {seen!r} within 2s"
                 )
                 # Payload shape is the approval shape — decision +
                 # reason, NOT response (which would be the ask_user
@@ -290,6 +294,16 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
                     f"tool_approval payload must NOT carry the "
                     f"ask_user-shaped `response` field: "
                     f"{event.payload!r}"
+                )
+                hints = [e for e in seen if e.event_key == "events_appended"]
+                assert len(hints) == 1, (
+                    "dual delivery publishes exactly one events_appended "
+                    f"hint before the reply key; got "
+                    f"{[(e.event_key, e.payload) for e in seen]!r}"
+                )
+                assert isinstance(hints[0].payload.get("max_id"), int), (
+                    f"the hint carries the appended event's max_id; got "
+                    f"{hints[0].payload!r}"
                 )
             finally:
                 await subscription.aclose()

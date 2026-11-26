@@ -34,6 +34,8 @@ async def test_create_namespaced_secret_called_with_runtime_token():
     # it via __new__ + manual attribute assignment and inject a mock core_v1.
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._core_v1.create_namespaced_secret = AsyncMock()
 
@@ -82,6 +84,8 @@ async def test_create_secret_targets_configured_namespace():
 
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._core_v1.create_namespaced_secret = AsyncMock()
 
@@ -107,6 +111,8 @@ async def test_create_secret_generates_unique_tokens():
 
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._core_v1.create_namespaced_secret = AsyncMock()
 
@@ -130,6 +136,8 @@ async def test_create_namespaced_service_creates_headless_service():
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._core_v1.create_namespaced_service = AsyncMock()
 
@@ -294,6 +302,8 @@ async def test_create_returns_sandbox_workspace_with_wssandbox():
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._apps_v1 = AsyncMock()
     backend._workspaces = {}
@@ -362,6 +372,8 @@ async def test_get_returns_sandbox_workspace_after_reattach():
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._apps_v1 = AsyncMock()
     backend._workspaces = {}
@@ -479,6 +491,8 @@ async def test_create_httproute_posts_custom_object():
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._custom_objects = AsyncMock()
     backend._custom_objects.create_namespaced_custom_object = AsyncMock()
 
@@ -513,6 +527,8 @@ async def test_destroy_httproute_best_effort_tolerates_404():
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._custom_objects = AsyncMock()
     backend._custom_objects.delete_namespaced_custom_object = AsyncMock(
         side_effect=Exception("(404) not found"),
@@ -546,6 +562,8 @@ async def test_create_rolls_back_on_httproute_failure(monkeypatch):
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._initialised = True
     import asyncio as _asyncio
     backend._lock = _asyncio.Lock()

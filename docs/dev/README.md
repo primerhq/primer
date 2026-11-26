@@ -16,116 +16,111 @@ original rationale behind a decision this set summarises.
 
 ## Subsystem dependency graph
 
-Each subsystem consumes one or more of the cross-cutting architecture patterns.
-The architecture docs are the foundation; the arrows point from a subsystem to the
-patterns it builds on.
+There are two graphs a reader can want, and this page now shows the one the
+code actually has: the **import graph** between the top-level `primer/`
+subpackages. It was computed read-only from the module-scope `import` /
+`from ... import` statements in the tree (the 2026-11-23 review, finding 7.6,
+did the same scan and measured its cost). The other graph - which
+architecture *pattern* each subsystem builds on - is the point of the
+individual `architecture/` docs, and it is not an import order: the
+import graph below shows the layers the pattern docs imply do not exist.
+
+Arrows point from the importing package to the imported one.
 
 ```mermaid
 flowchart TD
-    subgraph Architecture["Architecture patterns (foundation)"]
-        storage[Storage]
-        rest[REST API]
-        claim[Claim Machine]
-        worker[Worker System]
-        provider[Provider Pattern]
-        obs[Observability]
-        boot[Auto-Bootstrap]
-        acl[Access Control]
+    base["base component - common, int, model, llm, observability<br/>one cycle, not a layer (common -&gt; llm -&gt; common)"]
+
+    media[media]
+    search[search]
+    secret[secret]
+    speech[speech]
+    embedder[embedder]
+    xenc[cross_encoder]
+    wfetch[web_fetch]
+    wsearch[web_search]
+
+    runtime["runtime component - 23 subpackages, one strongly connected<br/>import cycle: access, agent, artifact, bootstrap, bus, canvas,<br/>channel, claim, coordinator, events, graph, harness, knowledge,<br/>memory, model_profile, service, session, storage, tap, toolset,<br/>trigger, worker, workspace"]
+
+    sched[scheduler]
+    vec[vector]
+
+    subgraph entry["entry surface"]
+        api[api]
+        authpkg[auth]
+        mcp[mcp]
     end
 
-    subgraph Runtime["Runtime subsystems"]
-        sessions[Sessions]
-        agents[Agents]
-        graphs[Graphs]
-        harness[Harness]
-        triggers[Triggers]
-        exttools[External Tools]
-        canvas[Canvas]
-    end
+    media --> base
+    search --> base
+    secret --> base
+    speech --> base
+    embedder --> base
+    xenc --> base
+    wfetch --> base
+    wsearch --> wfetch
+    wsearch --> base
 
-    subgraph Integration["Integration subsystems"]
-        channels[Channels]
-        modelprov[Model Providers]
-        websearch[Web Search]
-        semantic[Semantic Search]
-        knowledge[Knowledge]
-        workspaces[Workspaces]
-        mcpoauth[MCP OAuth]
-        artifacts[Artifact Storage]
-    end
+    runtime --> base
+    runtime --> media
+    runtime --> wfetch
+    runtime --> wsearch
 
-    subgraph UI["UI subsystems"]
-        uifound[UI Foundation]
-        uipages[UI Pages]
-    end
+    sched --> base
+    sched --> runtime
+    vec --> base
+    vec --> runtime
 
-    acl --> storage
-    acl --> rest
-    worker --> claim
-    worker --> storage
-    claim --> storage
-
-    sessions --> worker
-    sessions --> claim
-    sessions --> workspaces
-    sessions --> rest
-    sessions --> obs
-
-    agents --> provider
-    agents --> worker
-    agents --> obs
-
-    graphs --> worker
-    graphs --> claim
-    graphs --> obs
-    graphs --> rest
-
-    harness --> claim
-    harness --> worker
-    harness --> storage
-
-    triggers --> claim
-    triggers --> worker
-    triggers --> rest
-
-    exttools --> worker
-    exttools --> storage
-    exttools --> rest
-
-    canvas --> storage
-    canvas --> rest
-    canvas --> worker
-
-    channels --> provider
-    channels --> worker
-
-    modelprov --> provider
-    modelprov --> obs
-
-    websearch --> provider
-    websearch --> boot
-
-    semantic --> provider
-    semantic --> storage
-
-    knowledge --> provider
-    knowledge --> storage
-    knowledge --> boot
-
-    workspaces --> provider
-    workspaces --> storage
-
-    mcpoauth --> provider
-    mcpoauth --> storage
-    mcpoauth --> rest
-
-    artifacts --> provider
-    artifacts --> storage
-
-    uifound --> rest
-    uipages --> rest
-    uipages --> uifound
+    api --> runtime
+    api --> base
+    api --> search
+    api --> speech
+    api --> wfetch
+    api --> wsearch
+    api -.-> sched
+    api -.-> vec
+    authpkg --> api
+    mcp --> api
 ```
+
+Three components, plus leaves:
+
+- **Entry surface: `api`, `auth`, `mcp`.** `api` imports almost every other
+  subpackage at module scope (the lifespan wiring is eager); `auth` and `mcp`
+  import `api` directly. `api` also carries function-scope (lazy) imports of
+  `scheduler`, `vector`, `secret`, `coordinator`, `embedder`, `cross_encoder`
+  and `graph` - the dotted arrows - so a config change only touches them at
+  startup, not at import.
+- **Runtime component: 23 subpackages in one strongly connected import
+  cycle**, including `storage` and `claim` (the "foundation" rows the old
+  version of this page drew below `worker` and `sessions`) and `bootstrap`.
+  There is no layering inside it: because the cycle closes, importing *any*
+  member pulls in the whole component (finding 7.6 measured importing
+  `primer.storage.migrations` loading 275 `primer` modules in 2.8 s; the
+  paths include `storage -&gt; bootstrap -&gt; toolset` and
+  `claim -&gt; session` / `claim -&gt; worker`).
+- **Base component: `common`, `int`, `model`, `llm`, `observability`.** Even
+  this is a cycle, not a layer: `common/transport_text.py` imports
+  `primer.llm._failure` at module scope, and `llm` imports `common` back, so
+  importing any web adapter executes `primer/llm/__init__.py` (and its SDK
+  imports).
+- **Leaves.** `media`, `search`, `secret`, `speech`, `embedder`,
+  `cross_encoder` and `web_fetch` rest on the base component only; `web_search`
+  rests on `web_fetch`; `scheduler` and `vector` rest on the base component
+  plus the runtime component (via `storage` and `bus`).
+
+Two structural facts to keep in mind when moving code (description, not a
+refactor plan - breaking the cycle is real work and is not recorded here):
+
+- **Tool doors are lazy on purpose.** `toolset` modules import `api`
+  registry and router internals inside functions (e.g.
+  `toolset/workspaces.py` pulls a private helper from
+  `api.routers.sessions`), so a router refactor breaks the tools only when
+  they are called, with no import-time failure.
+- **The pattern docs are not an import order.** If a future change wants the
+  layered picture the pattern docs suggest, it has to break the runtime
+  cycle and the `common` / `llm` cycle first; until then, treat any
+  `primer.*` import as "pulls in the runtime component".
 
 ## Table of contents
 

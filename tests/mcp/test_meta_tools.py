@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 from datetime import datetime, timezone
+from typing import Any
 
+import jsonschema
 import pytest
 
 from primer.mcp.exposure import ExposureDeps, update_exposure
 from primer.mcp.meta_tools import (
     call_tool,
     find_tools,
+    invoke_meta_tool,
     list_tools,
 )
 from primer.mcp.server import current_actor, current_api_token_scopes, current_principal
@@ -337,3 +343,328 @@ async def test_filter_and_cursor_combo(fake_storage_provider) -> None:
     assert [item["scoped_id"] for item in page_one["items"]] == ["misc__alpha"]
     assert [item["scoped_id"] for item in page_two["items"]] == ["misc__beta"]
     assert page_two["next_cursor"] is None
+
+
+# ---- Bounded argument validation (review 7.1b) ----------------------------
+#
+# ``call_tool`` validates the target's arguments against the target's own
+# ``args_schema`` (a remote MCP server's, for an external toolset), so the
+# validation runs bounded and off the event loop: a backtracking ``pattern``
+# must not hold the API loop for every request on the replica.
+
+
+_TOOL_UNAVAILABLE = {
+    "ok": False,
+    "error": {"code": "tool_unavailable", "message": "Tool is unavailable."},
+}
+
+
+async def _expose_rbac(fake_storage_provider) -> None:
+    await fake_storage_provider.get_storage(McpExposure).create(
+        McpExposure(
+            enabled=True,
+            mode="rbac",
+            allowed_tools=[],
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+
+
+def _deps_with_schema(
+    storage, schema: dict,
+) -> tuple[ExposureDeps, FakeToolsetProvider]:
+    tool = _make_tool("misc", "alpha", "Alpha reader.", args_schema=schema).model_copy(
+        update={"read_only": True},
+    )
+    provider = FakeToolsetProvider("misc", [tool], roles={"alpha": "user"})
+    return (
+        ExposureDeps(
+            storage_provider=storage,
+            provider_registry=FakeProviderRegistry({"misc": provider}),
+        ),
+        provider,
+    )
+
+
+async def _call(deps: ExposureDeps, arguments: dict) -> dict:
+    actor_token = current_actor.set(_actor())
+    scope_token = current_api_token_scopes.set(["mcp"])
+    principal_token = current_principal.set("user@example.com")
+    try:
+        return await call_tool(deps, {"scoped_id": "misc__alpha", "arguments": arguments})
+    finally:
+        current_principal.reset(principal_token)
+        current_api_token_scopes.reset(scope_token)
+        current_actor.reset(actor_token)
+
+
+@pytest.mark.asyncio
+async def test_backtracking_schema_refuses_promptly_without_stalling_the_loop(
+    fake_storage_provider,
+) -> None:
+    """A remote schema whose pattern backtracks must not hold the event
+    loop: the call answers within seconds and a 10 ms heartbeat never
+    misses by more than 1 s (the old inline ``jsonschema.validate``
+    stalled the loop for tens of seconds on this payload)."""
+    schema = {"type": "object", "properties": {"q": {"type": "string", "pattern": "^(a|aa)+$"}}}
+    deps, _provider = _deps_with_schema(fake_storage_provider, schema)
+    await _expose_rbac(fake_storage_provider)
+
+    gaps: list[float] = []
+    started = time.perf_counter()
+
+    async def heartbeat() -> None:
+        while True:
+            last = time.perf_counter()
+            await asyncio.sleep(0.01)
+            gaps.append(time.perf_counter() - last)
+
+    hb = asyncio.create_task(heartbeat())
+    try:
+        result = await _call(deps, {"q": "a" * 40 + "b"})
+    finally:
+        hb.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb
+    elapsed = time.perf_counter() - started
+
+    assert result == _TOOL_UNAVAILABLE, result
+    assert gaps, "the heartbeat never ran"
+    assert max(gaps) < 1.0, f"the event loop stalled for {max(gaps):.3f} s"
+    assert elapsed < 5.0, f"the call took {elapsed:.1f} s"
+
+
+@pytest.mark.asyncio
+async def test_overlong_pattern_answers_tool_unavailable(fake_storage_provider) -> None:
+    """A stored pattern the engine cannot price (over the size cap) is a
+    broken schema: the same non-oracular refusal, and no match ever runs."""
+    schema = {"type": "object", "properties": {"q": {"type": "string", "pattern": "a" * 1500}}}
+    deps, _provider = _deps_with_schema(fake_storage_provider, schema)
+    await _expose_rbac(fake_storage_provider)
+
+    result = await _call(deps, {"q": "x"})
+
+    assert result == _TOOL_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_valid_arguments_still_dispatch(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    """The bounded validator must not refuse a legitimate call."""
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    deps, provider = _deps_with_schema(fake_storage_provider, schema)
+    await _expose_rbac(fake_storage_provider)
+
+    seen = {}
+
+    async def fake_invoke(**kwargs):
+        seen.update(kwargs)
+        from primer.model.chat import ToolCallResult
+
+        return ToolCallResult(output="ok", is_error=False)
+
+    monkeypatch.setattr("primer.mcp.meta_tools.invoke_exposed", fake_invoke)
+
+    result = await _call(deps, {"n": 1})
+
+    assert result == {"ok": True, "output": "ok"}
+    assert seen["arguments"] == {"n": 1}
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_arguments_keep_the_existing_message(
+    fake_storage_provider,
+) -> None:
+    """Ordinary invalid input keeps the existing invalid_arguments
+    envelope (message template unchanged); the tool never runs."""
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
+    deps, provider = _deps_with_schema(fake_storage_provider, schema)
+    await _expose_rbac(fake_storage_provider)
+
+    result = await _call(deps, {"n": "not-an-int"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_arguments"
+    assert result["error"]["message"].startswith(
+        "Arguments do not match the tool schema:",
+    )
+    assert "not-an-int" in result["error"]["message"]
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_target_schema_answers_tool_unavailable(
+    fake_storage_provider,
+) -> None:
+    """A target schema that is not a valid JSON Schema is the tool's
+    problem: the existing tool_unavailable answer, not a 500."""
+    schema = {"type": "not-a-real-type"}
+    deps, _provider = _deps_with_schema(fake_storage_provider, schema)
+    await _expose_rbac(fake_storage_provider)
+
+    result = await _call(deps, {"n": 1})
+
+    assert result == _TOOL_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_invoke_meta_tool_refuses_an_overdeep_instance(
+    fake_storage_provider,
+) -> None:
+    """The meta schemas are fixed, but the instance is the caller's: a
+    payload too deep to validate refuses as a validation error (bounded,
+    off the loop) instead of stalling the loop or raising RecursionError.
+
+    The deep value sits under call_tool's ``arguments`` field (an object
+    the schema does not constrain further): it is structurally valid, so
+    the refusal is the depth bound, not a type mismatch - the unbounded
+    ``jsonschema.validate`` the original code ran would have validated it
+    fine and moved on to dispatch."""
+    nested: Any = None
+    for _ in range(500):
+        nested = {"q": nested}
+    deps = ExposureDeps(
+        storage_provider=fake_storage_provider,
+        provider_registry=FakeProviderRegistry({}),
+    )
+
+    with pytest.raises(jsonschema.exceptions.ValidationError):
+        await invoke_meta_tool(
+            "call_tool", {"scoped_id": "misc__alpha", "arguments": {"args": nested}}, deps,
+        )
+
+
+# --- Fix round 1: the size bound is the app's request-body cap --------------
+#
+# The body-cap middleware admits MCP posts up to the app's
+# ``limits.max_body_bytes`` (32 MiB by default), so ``call_tool`` must not
+# refuse a body it let through at the historical 1 MiB default. The deps
+# here carry that cap exactly as the MCP mount wires it (``_app_mcp.py``
+# reads ``app.state.config.limits.max_body_bytes``); ``AppConfig()`` is
+# the same default config the test app installs.
+
+
+def _app_cap() -> int:
+    from primer.api.config import AppConfig
+
+    return AppConfig().limits.max_body_bytes
+
+
+def _write_like_deps(
+    fake_storage_provider,
+) -> tuple[ExposureDeps, FakeToolsetProvider]:
+    """A write-like target (a single string property) with the app's cap."""
+    schema = {"type": "object", "properties": {"content": {"type": "string"}}}
+    tool = _make_tool("misc", "alpha", "Alpha writer.", args_schema=schema)
+    provider = FakeToolsetProvider("misc", [tool], roles={"alpha": "user"})
+    return (
+        ExposureDeps(
+            storage_provider=fake_storage_provider,
+            provider_registry=FakeProviderRegistry({"misc": provider}),
+            max_body_bytes=_app_cap(),
+        ),
+        provider,
+    )
+
+
+async def _dispatch_stub(monkeypatch) -> dict:
+    seen: dict = {}
+
+    async def fake_invoke(**kwargs):
+        seen.update(kwargs)
+        from primer.model.chat import ToolCallResult
+
+        return ToolCallResult(output="ok", is_error=False)
+
+    monkeypatch.setattr("primer.mcp.meta_tools.invoke_exposed", fake_invoke)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_two_mib_tool_argument_validates_and_dispatches(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    """2 MiB of content on a write-like target: over the 1 MiB default,
+    under the app's 32 MiB cap - it validates, dispatches, and the tool
+    receives the full arguments."""
+    deps, provider = _write_like_deps(fake_storage_provider)
+    await _expose_rbac(fake_storage_provider)
+    seen = await _dispatch_stub(monkeypatch)
+
+    content = "a" * (2 * 1024 * 1024)
+    result = await _call(deps, {"content": content})
+
+    assert result == {"ok": True, "output": "ok"}, result
+    assert seen["arguments"] == {"content": content}
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_400_000_cjk_character_argument_validates_and_dispatches(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    """400,000 CJK characters: 1.2 MiB of real UTF-8, but 2.4 MiB under
+    the old ASCII-escaped measurement (``ensure_ascii=True`` inflated
+    every character to six bytes) - the size is the instance's real
+    UTF-8 JSON, so it validates and dispatches."""
+    deps, _provider = _write_like_deps(fake_storage_provider)
+    await _expose_rbac(fake_storage_provider)
+    await _dispatch_stub(monkeypatch)
+
+    content = "字" * 400_000
+    assert len(content.encode()) == 1_200_000
+
+    result = await _call(deps, {"content": content})
+
+    assert result == {"ok": True, "output": "ok"}, result
+
+
+@pytest.mark.asyncio
+async def test_an_instance_over_the_body_cap_is_still_refused(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    """The cap is real: over the app's request-body cap the arguments are
+    still refused as invalid_arguments and the tool never runs."""
+    deps, provider = _write_like_deps(fake_storage_provider)
+    await _expose_rbac(fake_storage_provider)
+    await _dispatch_stub(monkeypatch)
+
+    content = "a" * (33 * 1024 * 1024)  # over the 32 MiB app cap
+    result = await _call(deps, {"content": content})
+
+    assert result["ok"] is False, result
+    assert result["error"]["code"] == "invalid_arguments"
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_stopped_schema_answers_tool_unavailable(
+    fake_storage_provider, monkeypatch,
+) -> None:
+    """A remote schema the validation deadline stops (a uniqueItems over
+    many objects, or heavy branching) answers the tool-side refusal, not
+    invalid_arguments: the schema's slowness is the tool's problem, and
+    the caller's arguments are not to blame. The deadline is the module
+    default (read at call time), so a zero budget expires on the first
+    subschema step of any validation."""
+    import primer.common.bounded_jsonschema as bounded
+
+    monkeypatch.setattr(bounded, "OUTPUT_SCHEMA_MATCH_SECONDS", 0)
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    deps, provider = _deps_with_schema(fake_storage_provider, schema)
+    await _expose_rbac(fake_storage_provider)
+
+    result = await _call(deps, {"q": "x"})
+
+    assert result == _TOOL_UNAVAILABLE, result
+    assert provider.calls == []

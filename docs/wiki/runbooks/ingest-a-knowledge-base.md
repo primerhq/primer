@@ -63,7 +63,7 @@ For an import, the worker turn parks until approval; do not retry while parked. 
 {"toolset_id": "system", "tool_name": "put_document", "arguments": {"collection_id": "team-knowledge", "path": "overview", "title": "Cedar overview", "content": "# Cedar\nCedar on-call escalation uses the blue pager."}}
 ```
 
-3. Reread the body with [`system__get_document_content`](reference/tools/system/get_document_content) and list paths with [`system__list_documents`](reference/tools/system/list_documents). Require the exact stored text, not just a metadata id. A listing contains paths and sizes, not bodies.
+3. Reread the body with [`system__get_document_content`](reference/tools/system/get_document_content) and list paths with [`system__list_documents`](reference/tools/system/list_documents). Require the exact stored text, not just a metadata id. A listing contains paths and sizes, not bodies, and pages at 1000 entries: `next_after_path` in the answer is the cursor to pass back as `after_path` for the next page (null on the last one), so a large collection is read in pages rather than lost.
 
 ```json
 {"toolset_id": "system", "tool_name": "get_document_content", "arguments": {"collection_id": "team-knowledge", "path": "overview"}}

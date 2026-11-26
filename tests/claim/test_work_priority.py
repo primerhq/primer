@@ -1,4 +1,4 @@
-"""Dormant priority mechanics: real adapters, explicit internal engine capability."""
+"""Work priority mechanics: real adapters, always on."""
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -27,9 +27,8 @@ class Sessions(SessionClaimAdapter):
         pass  # This suite isolates queue semantics from the unrelated worker-id stamp.
 
 
-def queue(rows, *, enabled=True):
-    return InMemoryClaimEngine(adapters={ClaimKind.SESSION: Sessions(session_storage=rows)},
-                               work_priority_enabled=enabled)
+def queue(rows):
+    return InMemoryClaimEngine(adapters={ClaimKind.SESSION: Sessions(session_storage=rows)})
 
 
 def row(priority=0):
@@ -111,7 +110,7 @@ async def test_task_arm_reads_parent_not_task_or_producer_priority():
     tasks = Rows(t=SimpleNamespace(session_id="s", priority=0))
     sessions = Rows(s=row(77))
     adapter = ToolCallClaimAdapter(task_storage=tasks, session_storage=sessions)
-    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: adapter}, work_priority_enabled=True)
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: adapter})
     await engine.upsert(ClaimKind.TOOL_CALL, "t", priority=10)
     assert engine._leases[ClaimKind.TOOL_CALL, "t"].work_priority == 77
     sessions.rows.clear()
@@ -125,8 +124,7 @@ async def test_replacement_memory_occurrence_keeps_its_priority_through_stale_re
     job = SimpleNamespace(id="m", occurrence_id="first", requested_due_at=due,
                           priority=90, retry_count=0, retry_error=None)
     rows = Rows(m=job)
-    engine = InMemoryClaimEngine(adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=rows)},
-                                work_priority_enabled=True)
+    engine = InMemoryClaimEngine(adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=rows)})
     await engine.arm_memory_job(job, conn=None)
     old, = await engine.claim_due("same-worker", max_count=1)
     job = SimpleNamespace(**{**vars(job), "occurrence_id": "second", "priority": 50})
@@ -139,16 +137,6 @@ async def test_replacement_memory_occurrence_keeps_its_priority_through_stale_re
     await engine.release(old, outcome=ReleaseOutcome(success=True, drop_lease=True))
     assert await engine.has_live_lease(ClaimKind.MEMORY, "m")
 
-
-async def test_default_runtime_remains_legacy_order_and_refuses_priority_ceiling():
-    rows = Rows(background=row(100), urgent=row(0))
-    engine = queue(rows, enabled=False)
-    await engine.upsert(ClaimKind.SESSION, "background", priority=10)
-    await engine.upsert(ClaimKind.SESSION, "urgent", priority=100)
-    with pytest.raises(ValueError, match="not enabled"):
-        await engine.claim_due("worker", max_count=1, max_work_priority=0)
-    lease, = await engine.claim_due("worker", max_count=1)
-    assert lease.entity_id == "background" and lease.work_priority == 0
 
 
 def test_model_fields_validate_old_rows_and_refuse_noninteger_priorities():
@@ -169,7 +157,7 @@ def test_model_fields_validate_old_rows_and_refuse_noninteger_priorities():
 async def test_absent_lease_aba_forces_a_fresh_source_read(removal):
     rows = Rows(s=row(0))
     kind = ClaimKind.MEMORY if removal == "prune" else ClaimKind.SESSION
-    engine = (InMemoryClaimEngine(adapters={kind: MemoryClaimAdapter(storage=rows)}, work_priority_enabled=True)
+    engine = (InMemoryClaimEngine(adapters={kind: MemoryClaimAdapter(storage=rows)})
               if removal == "prune" else queue(rows))
     entered, finish = asyncio.Event(), asyncio.Event()
     get = rows.get

@@ -153,3 +153,33 @@ def test_out_of_order_answers_keep_the_latest_request_rows(ctx) -> None:
     assert _js(ctx, "__rowIds()") == [901, 902], (
         "an older request's answer replaced the latest request's rows"
     )
+
+
+def test_the_window_is_read_backwards_and_load_older_steps_back_by_the_servers_cursor(ctx) -> None:
+    # Review 8.2: a filter used to see only the newest 100 ids and had no way to reach older matches. The window query is now a backward read
+    # from the head, and Load older pages below the cursor the server answered (the answer may be short or empty and still have more behind it).
+    ctx.eval("EVENTS[0].resolve({ max_id: 500 });")
+    ctx.eval("MR.rerender();")
+    assert _js(ctx, "EVENTS[1].opts.beforeId") == 501 and _js(ctx, "EVENTS[1].opts.afterId === undefined") is True
+    ctx.eval("EVENTS[1].resolve({ items: [], max_id: 500, next_before_id: 321 });")
+    ctx.eval("MR.rerender();")
+    assert "Load older" in " ".join(_js(ctx, "MR.texts()")), "an empty window with an older cursor says there is more behind it"
+    ctx.eval('MR.click("activity-load-older");')
+    assert _js(ctx, "EVENTS[2].opts.beforeId") == 321
+    ctx.eval("EVENTS[2].resolve({ items: __rows([210, 211]), max_id: 500, next_before_id: 210 });")
+    ctx.eval("MR.rerender();")
+    ctx.eval('MR.click("activity-load-older");')
+    ctx.eval("EVENTS[3].resolve({ items: __rows([100, 101]), max_id: 500, next_before_id: null });")
+    ctx.eval("MR.rerender();")
+    assert _js(ctx, "__rowIds()") == [100, 101, 210, 211], "older pages are prepended in id order"
+    assert _js(ctx, 'MR.find("activity-load-older").props.disabled') is True, "no cursor, nothing older to load"
+
+
+def test_a_filtered_refresh_sends_the_filter_with_the_backward_read(ctx) -> None:
+    _first_window(ctx, [401])
+    ctx.eval('MR.find("activity-filter:workspaceId").props.onChange({ target: { value: "ws-1" } });')
+    ctx.eval("MR.rerender();")
+    ctx.eval('MR.click("activity-refresh");')
+    ctx.eval("EVENTS[2].resolve({ max_id: 500 });")
+    ctx.eval("MR.rerender();")
+    assert _js(ctx, "EVENTS[3].opts.workspaceId") == "ws-1" and _js(ctx, "EVENTS[3].opts.beforeId") == 501

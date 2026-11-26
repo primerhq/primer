@@ -50,9 +50,18 @@ class _TextDeltaExec:
 
 
 async def _resolve_graph(gid):
-    # The resolved object is opaque to run_invoke_graph; it only passes it
-    # through to build_child_executor (a stub here). A sentinel suffices.
-    return {"id": gid}
+    # The resolved graph is read by run_invoke_graph for the Begin
+    # input_schema pre-check (review 2026-11-23, 7.1b) and passed through
+    # to build_child_executor (a stub here): a real Graph without an
+    # input_schema keeps the pre-check inert.
+    from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
+
+    return Graph(
+        id=gid,
+        description="stub child graph",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="exit")],
+        edges=[_StaticEdge(from_node="begin", to_node="exit")],
+    )
 
 
 @pytest.mark.asyncio

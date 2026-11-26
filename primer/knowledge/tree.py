@@ -130,8 +130,9 @@ class DocumentTreeService:
 
     async def _children_of(
         self, collection_id: str, parent_ids: list[str],
+        conn: Any | None = None,
     ) -> list[Document]:
-        """The children of every parent in ``parent_ids`` in one query per page (``parent_id = ANY(...)``), not one query per parent."""
+        """The children of every parent in ``parent_ids`` in one query per page (``parent_id = ANY(...)``), not one query per parent. ``conn`` runs the reads on the caller's open connection (and transaction), so an in-transaction re-read sees the caller's own uncommitted writes."""
         out: list[Document] = []
         for i in range(0, len(parent_ids), _PARENTS_PER_QUERY):
             predicate = (
@@ -141,7 +142,8 @@ class DocumentTreeService:
             offset, page = 0, 200
             while True:
                 resp = await self._docs.find(
-                    predicate, OffsetPage(offset=offset, length=page, want_total=False)
+                    predicate, OffsetPage(offset=offset, length=page, want_total=False),
+                    conn=conn,
                 )
                 out.extend(resp.items)
                 if len(resp.items) < page:
@@ -255,21 +257,51 @@ class DocumentTreeService:
             await self._content.resolve_id(collection_id, new_path) is not None
         ):
             raise ConflictError(f"path {new_path!r} already exists")
-        descendants = await self._descendants(collection_id, doc)
         old_prefix = doc.path
         moved = doc.model_copy(update={
             "parent_id": parent_id, "slug": slug,
             "path": new_path, "updated_at": _utcnow(),
         })
+        patch = moved.model_dump(mode="json", include={"parent_id", "slug", "path", "updated_at"})
         async with self._sp.transaction() as conn:
+            # Field-level, guarded on the place the row was read (KN-19f): a whole-row write from the pre-read snapshot
+            # would write a concurrent update() of title/meta back; the guard makes that impossible, and a row that
+            # moved in the window is a conflict, not a silent clobber.
+            if await self._docs.patch_if(doc.id, patch, where={"path": [doc.path]}, conn=conn) is None:
+                raise ConflictError(f"{doc.path!r} moved while it was being moved; retry the move")
+            # The subtree is read INSIDE the transaction (on the transaction's
+            # own connection, so the re-reads see this transaction's own
+            # uncommitted writes): a child created between the read of the row
+            # above and this write belongs to the moved subtree (a pre-read set
+            # would have left it addressed by a path whose parent no longer
+            # exists), and a child a peer relocated meanwhile is no longer a
+            # descendant and is left where the peer put it.
+            descendants = await self._descendants(collection_id, doc, conn=conn)
             await self._content.move(doc.id, new_path, conn=conn)
-            await self._docs.update(moved, conn=conn)
             for d in descendants:
                 d_path = new_path + d.path[len(old_prefix):]
                 await self._content.move(d.id, d_path, conn=conn)
-                await self._docs.update(
-                    d.model_copy(update={"path": d_path, "updated_at": _utcnow()}),
-                    conn=conn,
+                d_patch = d.model_copy(
+                    update={"path": d_path, "updated_at": _utcnow()}
+                ).model_dump(mode="json", include={"path", "updated_at"})
+                if await self._docs.patch_if(d.id, d_patch, where={"path": [d.path]}, conn=conn) is None:
+                    raise ConflictError(
+                        f"{doc.path!r}'s subtree changed while it was being moved; retry the move"
+                    )
+            # read-write-read diff against the READ COMMITTED sub-statement window (M1): a peer can commit a child of
+            # the walked set between the walk's last statement and this check (no read before it sees that child);
+            # a changed child set is a conflict (rollback, retry the move), not a row left addressed by a path whose
+            # prefix moved. The re-read runs on the transaction's own connection: on a fresh pooled connection a
+            # Postgres re-read would see the pre-write committed state instead of the write's own effects.
+            settled = {d.id for d in await self._children_of(
+                collection_id, [doc.id, *[d.id for d in descendants]], conn=conn,
+            )}
+            base = {d.id for d in descendants}
+            if settled != base:
+                appeared = sorted(settled - base)
+                raise ConflictError(
+                    f"{doc.path!r}'s subtree changed while it was being moved "
+                    f"(descendant(s) {', '.join(appeared) or 'no longer present'}); retry the move"
                 )
         # Chunk metadata carries the path, so a move rewrites it. Metadata
         # only: the vectors are unchanged, so nothing re-embeds.
@@ -288,32 +320,57 @@ class DocumentTreeService:
     async def delete(self, *, collection_id: str, path: str,
                      recursive: bool = False) -> list[str]:
         doc = await self.resolve(collection_id=collection_id, path=path)
-        descendants = await self._descendants(collection_id, doc)
-        if descendants and not recursive:
+        targets_check = await self._descendants(collection_id, doc)
+        if targets_check and not recursive:
             raise ConflictError(
-                f"{path!r} has {len(descendants)} descendant(s); pass "
+                f"{path!r} has {len(targets_check)} descendant(s); pass "
                 "recursive=true to delete the subtree"
             )
-        targets = [doc, *descendants]
         async with self._sp.transaction() as conn:
+            # Re-read the subtree INSIDE the transaction (on the transaction's own
+            # connection, so it sees this transaction's own uncommitted writes):
+            # a child created between the check above and this write belongs to
+            # the subtree (the pre-read set would have deleted the node under it
+            # and orphaned the child).
+            descendants = await self._descendants(collection_id, doc, conn=conn)
+            if descendants and not recursive:
+                raise ConflictError(
+                    f"{path!r} has {len(descendants)} descendant(s); pass "
+                    "recursive=true to delete the subtree"
+                )
+            targets = [doc, *descendants]
             for t in targets:
                 await self._docs.delete(t.id, conn=conn)
                 await self._content.delete(t.id, conn=conn)
+            # The same diff for delete: a child committed between the re-read and this point would survive the
+            # delete orphaned (its parent gone); the re-read after the delete must find none. It runs on the
+            # transaction's OWN connection: a fresh pooled one cannot see this transaction's uncommitted
+            # deletes, so it would find the just-deleted children still present and conflict on every
+            # non-leaf delete (a retry would never converge).
+            leftovers = await self._children_of(
+                collection_id, [t.id for t in targets], conn=conn,
+            )
+            if leftovers:
+                raise ConflictError(
+                    f"{len(leftovers)} descendant(s) of {path!r} appeared while it was being "
+                    f"deleted ({', '.join(sorted(l.path for l in leftovers))}); retry the delete"
+                )
         if self._unindexer is not None:
             for t in targets:
                 await self._unindexer(document_id=t.id, collection_id=collection_id)
         return [t.id for t in targets]
 
     async def _descendants(
-        self, collection_id: str, root: Document
+        self, collection_id: str, root: Document,
+        conn: Any | None = None,
     ) -> list[Document]:
+        """Every descendant of ``root`` in a level-batched walk: one ``parent_id IN (...)`` query per level (each batched by :data:`_PARENTS_PER_QUERY`), not one query per node - a per-node walk paid a collection scan per descendant (3.5). ``conn`` (the caller's open transaction connection) makes the walk see the caller's own uncommitted writes."""
         out: list[Document] = []
-        frontier = [root]
-        while frontier:
-            cur = frontier.pop(0)
-            kids = await self._children(collection_id, cur.id)
+        level = [root.id]
+        while level:
+            kids = await self._children_of(collection_id, level, conn=conn)
             out.extend(kids)
-            frontier.extend(kids)
+            level = [k.id for k in kids]
         return out
 
     # ---- reads -----------------------------------------------------------

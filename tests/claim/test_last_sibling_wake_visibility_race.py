@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +37,13 @@ def _task(task_id: str, batch: list[str]) -> ToolCallTask:
 
 def _token(task_id: str) -> str:
     return f"tok-{task_id}"
+
+
+class _Sessions:
+    """The tasks' parent session at its default priority; this test does not model the session row."""
+
+    async def get(self, session_id: str, *, conn=None):
+        return SimpleNamespace(priority=0)
 
 
 def _release(task_id: str) -> ReleaseOutcome:
@@ -205,7 +213,7 @@ async def test_in_memory_engine_post_commit_check_wakes_exactly_once() -> None:
             return updated
 
     storage = _Storage()
-    adapter = ToolCallClaimAdapter(task_storage=storage)
+    adapter = ToolCallClaimAdapter(task_storage=storage, session_storage=_Sessions())
     engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: adapter})
     for tid in batch:
         await engine.upsert(ClaimKind.TOOL_CALL, tid)

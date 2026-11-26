@@ -198,7 +198,7 @@ async def test_full_lifespan_catalogue_covers_the_reviewed_tool_inventory(tmp_pa
     ))
     manifest = json.loads(Path("scripts/data/tools_universal_m0_manifest.json").read_text())
     reviewed = {tool["scoped_id"] for tool in manifest["tool_catalogue"]}
-    assert len(reviewed) == 492
+    assert len(reviewed) == 493
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             body = await _catalogue(client)

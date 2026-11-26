@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from primer.api.registries import ProviderRegistry
+from primer.int.vector_store import VectorStore
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig, Document
 from primer.model.common import dump_for_storage
 from primer.model.provider import SqliteConfig
@@ -33,7 +34,7 @@ from tests._support.caller import AsCaller
 from tests.toolset.test_system import _emb, _FakeEmbedder
 
 
-class _RecordingStore:
+class _RecordingStore(VectorStore):
     def __init__(self) -> None:
         self.records: dict[tuple[str, str, str], object] = {}
 
@@ -49,6 +50,15 @@ class _RecordingStore:
     async def delete(self, collection_id, document_id):
         for key in [k for k in self.records if k[0] == collection_id and k[1] == document_id]:
             del self.records[key]
+
+    async def get(self, collection_id, document_id):
+        return [r for (cid, did, _), r in self.records.items() if cid == collection_id and did == document_id]
+
+    async def search_by_meta(self, collection_id, meta):
+        return []
+
+    async def count_documents(self, collection_id):
+        return len({did for (cid, did, _) in self.records if cid == collection_id})
 
     async def search(self, collection_id, vector, k):
         return []
@@ -419,3 +429,32 @@ class TestDeleteDocumentRemovesTheWholeDocument:
 
         assert not is_error, body
         assert await sp.get_storage(Document).get("doc-ghost") is None
+
+
+class TestListDocumentsPages:
+    @pytest.mark.asyncio
+    async def test_the_listing_pages_back_by_the_next_cursor(self, world) -> None:
+        _, toolset, _ = world
+        for path in ("m1", "m2", "m3"):
+            await _put(toolset, path)
+
+        is_error, page1 = await _call(toolset, "list_documents", collection_id="kb-1", limit=2)
+
+        assert not is_error, page1
+        assert [d["path"] for d in page1["documents"]] == ["m1", "m2"]
+        assert page1["next_after_path"] == "m2"
+
+        is_error, page2 = await _call(toolset, "list_documents", collection_id="kb-1", limit=2, after_path="m2")
+
+        assert not is_error, page2
+        assert [d["path"] for d in page2["documents"]] == ["m3"]
+        assert page2["next_after_path"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_limit_outside_the_page_range_is_refused(self, world) -> None:
+        _, toolset, _ = world
+
+        is_error, _ = await _call(toolset, "list_documents", collection_id="kb-1", limit=0)
+        assert is_error, "limit=0 must be refused"
+        is_error, _ = await _call(toolset, "list_documents", collection_id="kb-1", limit=1001)
+        assert is_error, "a limit past the 1000 ceiling must be refused"

@@ -35,7 +35,7 @@ from primer.model.yield_ import (
     YieldToWorker,
     Yielded,
 )
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler
 from tests.conftest import _FakeStorageProvider
 from primer.toolset.mcp import (
     McpToolsetProvider,
@@ -419,10 +419,6 @@ class TestMcpTaskBridge:
             task_id="t-abc",
         )
         await scheduler._storage.get_storage(WorkspaceSession).create(sess)  # parks live in session storage
-        scheduler._leases["sess-1"] = _LeaseState(
-            worker_id=None, expires_at=None, runnable=False,
-            next_attempt_at=datetime.now(timezone.utc),
-        )
 
         # The session reports completed immediately; the bridge then
         # fetches the result and publishes.
@@ -493,10 +489,6 @@ class TestMcpTaskBridge:
             "resume_event_payload": None,
         }
         await scheduler._storage.get_storage(WorkspaceSession).create(sess)
-        scheduler._leases["sess-A"] = _LeaseState(
-            worker_id=None, expires_at=None, runnable=False,
-            next_attempt_at=datetime.now(timezone.utc),
-        )
         registry = _MockProviderRegistry({})
         sub = bus.subscribe()
         bridge = McpTaskBridge(

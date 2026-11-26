@@ -3,6 +3,12 @@
 // handlers accept. Every read takes an AbortSignal so useResource can
 // cancel it.
 
+// Most wiki documents collectionDocuments() will accumulate (review 3.8's
+// UI half): the server pages the listing at 1000, so this is the stop cap
+// on the follow, and the answer's more: true says when it stopped short (at
+// the cap, or on a cursor that stops advancing).
+var SH_COLLECTION_DOCS_MAX = 5000;
+
 var SH_api = {
   // ---- reads --------------------------------------------------------------
   // Every workspace, every page of 200 (PR_fetchAllPages, ui/foundation/api.js): a workspace past the 200th is reachable only from the
@@ -131,6 +137,7 @@ var SH_api = {
     var o = opts || {};
     var q = ["limit=" + encodeURIComponent(o.limit || 100)];
     if (o.afterId != null) q.push("after_id=" + encodeURIComponent(o.afterId));
+    if (o.beforeId != null) q.push("before_id=" + encodeURIComponent(o.beforeId));
     if (o.eventType) q.push("event_type=" + encodeURIComponent(o.eventType));
     if (o.entityKind) q.push("entity_kind=" + encodeURIComponent(o.entityKind));
     if (o.workspaceId) q.push("workspace_id=" + encodeURIComponent(o.workspaceId));
@@ -239,13 +246,34 @@ var SH_api = {
   },
   // F9: the palette's wiki source - same /documents route as
   // collectionDocument above, just without ?path= (list mode: "{
-  // documents: [{path, document_id, size}, ...] }", per
-  // get_or_list_collection_documents). No title field there, so
-  // NV_WikiDoc's own path-as-fallback-label convention applies here too.
+  // documents: [{path, document_id, size}, ...], next_after_path }", per
+  // get_or_list_collection_documents). The server answers at most 1000
+  // entries per page (lane M1 part 2, review 3.8), so the seam follows
+  // next_after_path up to SH_COLLECTION_DOCS_MAX entries and answers more:
+  // true when it stopped short - a large collection never silently loses rows.
   collectionDocuments: function (cid, signal) {
-    return window.primerApi.apiFetch(
-      "GET", "/collections/" + encodeURIComponent(cid) + "/documents",
-      null, { signal: signal });
+    var base = "/collections/" + encodeURIComponent(cid) + "/documents";
+    var docs = [];
+    function page(after) {
+      var url = base + (after ? "?after_path=" + encodeURIComponent(after) : "");
+      return window.primerApi.apiFetch("GET", url, null, { signal: signal })
+        .then(function (data) {
+          docs = docs.concat((data && data.documents) || []);
+          if (!data || !data.next_after_path) {
+            return { documents: docs, more: false };
+          }
+          if (docs.length >= SH_COLLECTION_DOCS_MAX) {
+            return { documents: docs, more: true };
+          }
+          // A cursor that did not advance past the one just sent (a server re-answering the
+          // same page) would loop the follow forever: stop and say there is more.
+          if (data.next_after_path === after) {
+            return { documents: docs, more: true };
+          }
+          return page(data.next_after_path);
+        });
+    }
+    return page(null);
   },
 
   commitLog: function (wid, limit, signal) {

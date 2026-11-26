@@ -42,10 +42,15 @@ class WorkspaceBackendFactory:
     ) -> WorkspaceBackend:
         """Dispatch on ``config.provider`` and build the matching backend.
 
-        ``subprocess_timeout_seconds`` is forwarded to
-        :class:`~primer.workspace.local.backend.LocalWorkspaceBackend` so
-        every git / init_command subprocess in the local backend is bounded
-        by the configured deadline.
+        ``subprocess_timeout_seconds`` is forwarded to the local, container and
+        Kubernetes backends: the local backend bounds every git / init_command
+        subprocess with it, and the container / Kubernetes backends inject it
+        into the workspace env as ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS`` so the
+        runtime's default exec deadline matches (review 2026-11-23, 5.5).
+
+        The Kubernetes backend's default-deny egress NetworkPolicy is read from
+        the provider's own config (``KubernetesWorkspaceConfig.default_deny_egress``),
+        not passed here: it is a property of the provider, not of the deployment.
 
         Raises :class:`ConfigError` when the provider enum is recognised
         but no backend has been wired yet for it (Container/Kubernetes
@@ -75,7 +80,10 @@ class WorkspaceBackendFactory:
                 raise ConfigError(
                     "provider='container' requires a ContainerWorkspaceConfig"
                 )
-            return ContainerWorkspaceBackend(config.config)
+            return ContainerWorkspaceBackend(
+                config.config,
+                subprocess_timeout_seconds=subprocess_timeout_seconds,
+            )
         if config.provider == WorkspaceProviderType.KUBERNETES:
             from primer.common.optional import require_extra
 
@@ -88,7 +96,10 @@ class WorkspaceBackendFactory:
                 raise ConfigError(
                     "provider='kubernetes' requires a KubernetesWorkspaceConfig"
                 )
-            return KubernetesWorkspaceBackend(config.config)
+            return KubernetesWorkspaceBackend(
+                config.config,
+                subprocess_timeout_seconds=subprocess_timeout_seconds,
+            )
         raise ConfigError(
             f"no backend wired for WorkspaceProviderType {config.provider!r}"
         )

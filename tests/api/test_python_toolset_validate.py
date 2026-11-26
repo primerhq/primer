@@ -223,6 +223,95 @@ async def test_empty_source_is_valid_with_no_tools(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_over_cap_source_is_413_before_parsing(client, monkeypatch) -> None:
+    """Review round 1 (4.2): a source one byte over the registrar's cap
+    (MAX_PYTHON_TOOLSET_SOURCE_BYTES, 256 KiB of encoded bytes) is refused
+    with a 4xx problem response and ast.parse never runs. The cap is a
+    memory bound, not a parse timeout: ast.parse of a 4 MB source peaked
+    near 2 GB RSS, so the app's 32 MiB request-body cap was no bound at
+    all."""
+    import ast
+
+    import primer.toolset.python_runner.registration as reg
+
+    parsed: list[str] = []
+    real_parse = ast.parse
+
+    # Record and delegate: pytest's own traceback rendering also calls
+    # ast.parse, so a raising spy would mask a real test failure with an
+    # INTERNALERROR. A recording spy keeps the assertion honest.
+    def _spy_parse(source, *args, **kwargs):
+        parsed.append(source)
+        return real_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", _spy_parse)
+    over_cap = "x" * (reg.MAX_PYTHON_TOOLSET_SOURCE_BYTES + 1)
+
+    r = await client.post(
+        "/v1/toolsets/val-over-cap/validate",
+        json={"source": over_cap},
+    )
+    assert r.status_code == 413, r.text
+    body = r.json()
+    assert body["type"] == "/errors/payload-too-large"
+    assert body["status"] == 413
+    assert body["extensions"]["code"] == "payload_too_large"
+    assert body["extensions"]["limit_bytes"] == reg.MAX_PYTHON_TOOLSET_SOURCE_BYTES
+    assert str(reg.MAX_PYTHON_TOOLSET_SOURCE_BYTES) in body["detail"], body
+    assert over_cap not in parsed, "the registrar must not parse a source over the cap"
+
+
+@pytest.mark.asyncio
+async def test_a_source_at_exactly_the_cap_still_validates(client) -> None:
+    """The cap is inclusive: exactly MAX_PYTHON_TOOLSET_SOURCE_BYTES
+    encoded bytes still validates, so a toolset at the limit is not
+    refused (the over-cap case above is the one byte past it)."""
+    import primer.toolset.python_runner.registration as reg
+
+    pad = reg.MAX_PYTHON_TOOLSET_SOURCE_BYTES - len(GOOD.encode("utf-8"))
+    source = GOOD + " " * pad
+    assert len(source.encode("utf-8")) == reg.MAX_PYTHON_TOOLSET_SOURCE_BYTES
+
+    r = await client.post(
+        "/v1/toolsets/val-at-cap/validate", json={"source": source},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert [t["id"] for t in r.json()["tools"]] == ["greet"]
+
+
+@pytest.mark.asyncio
+async def test_the_parse_runs_off_the_event_loop(client, app, monkeypatch) -> None:
+    """Review 4.2: the registrar's ast.parse must not hold the event loop;
+    a parse of a large source answers from a worker thread while the loop
+    stays free."""
+    import threading
+
+    import primer.toolset.python_runner.registration as reg
+
+    threads = []
+    real = reg.register_module_report
+
+    def spy(source, toolset_id, default_timeout):
+        threads.append(threading.current_thread())
+        return real(source, toolset_id, default_timeout)
+
+    monkeypatch.setattr(reg, "register_module_report", spy)
+    loop_thread = threading.current_thread()
+
+    r = await client.post(
+        "/v1/toolsets/val-offloop/validate", json={"source": GOOD},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert len(threads) == 1, "the registrar must run exactly once"
+    assert threads[0] is not loop_thread, (
+        "the parse ran on the event loop's own thread; a large source would "
+        "stall every request on this process"
+    )
+
+
+@pytest.mark.asyncio
 async def test_validate_does_not_execute_the_module(client) -> None:
     """Source is untrusted; the registrar reads the AST and never runs it."""
     await _seed(client, "val-noexec")

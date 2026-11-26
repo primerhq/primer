@@ -77,6 +77,8 @@ def _backend() -> KubernetesWorkspaceBackend:
     )
     backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
     backend._config = cfg
+    backend._subprocess_timeout_seconds = None
+    backend._k8s_default_deny_egress = False
     backend._core_v1 = AsyncMock()
     backend._apps_v1 = AsyncMock()
     backend._workspaces = {}

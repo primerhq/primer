@@ -143,40 +143,24 @@ def _install_security_headers(app: FastAPI) -> None:
 
 # CSP header for the /console/* static mount.
 #
-# Why 'unsafe-eval' AND 'unsafe-inline' are both required:
-# @babel/standalone has two paths for running <script type="text/babel">
-# tags. (1) ``new Function`` over the transpiled body — covered by
-# 'unsafe-eval'. (2) When the source comes from a `src=` attribute it
-# fetches the file, transpiles it, and injects a fresh <script> element
-# whose body is the transpiled code INLINE — that's an inline script
-# and CSP blocks it without 'unsafe-inline'. The .jsx files are all
-# `src`-loaded, so path (2) is what we hit; the console page renders
-# blank without 'unsafe-inline'.
+# Why 'unsafe-inline' is on script-src: the only inline <script> in
+# ui/index.html is the theme bootstrap (it resolves data-theme before first
+# paint), and script-src carries no sha-* hashes or nonces: per the CSP spec
+# any hash/nonce in the directive would silently disable 'unsafe-inline', so
+# the bootstrap must be vendored or hashed before the keyword can go.
 #
-# Why there are NO `sha384-...` entries in script-src:
-# CSP hash source-list entries (`'sha-*'`) allow inline script BLOCKS
-# whose content hashes to a listed value — they are NOT a way to pin
-# external script integrity. External-script integrity is enforced by
-# the `integrity="sha384-..."` attribute on the `<script src=...>` tag
-# (Subresource Integrity, a separate browser layer). More importantly,
-# per CSP spec the presence of ANY hash/nonce in script-src causes
-# 'unsafe-inline' to be silently ignored — defeating the inline-script
-# allowance we need for Babel path (2). The CDN script integrity is
-# preserved unchanged by the `integrity=` attributes already on the
-# script tags in `ui/index.html`.
+# Why 'unsafe-eval' is still on script-src: the page itself needs no eval
+# (the JSX is pre-transpiled at server startup inside the embedded V8
+# isolate, primer/api/_jsx_bundle.py, and no console code calls eval or
+# new Function), but the vendored ui/vendor/html2canvas.min.js evaluates
+# CSS colour literals through new Function("return ...") at render time
+# (the embed-preview snapshot path).
 #
-# Trust chain after this CSP:
-#   1. CDN scripts (React, ReactDOM, Babel-standalone) load only from
-#      `https://unpkg.com` and are verified by SRI on the script tag.
-#   2. .jsx files load only from `'self'`.
-#   3. `connect-src 'self'` blocks all exfiltration to other origins.
-#   4. The XSS path 'unsafe-inline' normally opens — injected inline
-#      <script> in served HTML — has no entry point here: nothing
-#      user-controlled lands in /console/* content. An attacker would
-#      need write access to ui/ directly, at which point CSP is moot.
-#   5. The alternative — pre-compile the JSX at build time — requires
-#      an npm-installed Babel CLI, which the project forbids on the
-#      host (Shai-Hulud mitigation).
+# While both keywords are present the CSP provides no XSS containment for
+# the console origin (connect-src 'self' and escaping at every current sink
+# bound the accepted risk); the full trade-off and the recorded removal path
+# are in docs/dev/subsystems/ui-foundation.md (the "unsafe-eval /
+# unsafe-inline trade-off, stated" note).
 # Documented in docs/superpowers/specs/2026-05-15-web-console-implementation-design.md §2.2.
 _CONSOLE_CSP = (
     "default-src 'none'; "

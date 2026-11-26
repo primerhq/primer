@@ -130,6 +130,18 @@ class RequestLimitsConfig(BaseModel):
             "multipart uploads (audio transcription, collection zip import) and MCP posts."
         ),
     )
+    anonymous_max_body_bytes: int = Field(
+        default=1024 * 1024,
+        gt=0,
+        description=(
+            "Largest body an ANONYMOUS (unauthenticated) request may send (default 1 MiB, review 4.4): "
+            "register and login are a few KB of JSON and webhook deliveries are small events, so an "
+            "unauthenticated client can no longer buffer a 128 MiB route body pre-auth. Authenticated "
+            "callers keep ``max_body_bytes`` and the per-route overrides; the effective cap is the "
+            "smaller of the two. Raise via PRIMER_LIMITS__ANONYMOUS_MAX_BODY_BYTES if an anonymous "
+            "payload legitimately needs more."
+        ),
+    )
     workspace_file_max_body_bytes: int = Field(
         default=128 * 1024 * 1024,
         gt=0,
@@ -252,7 +264,16 @@ class AppConfig(BaseSettings):
     )
 
     # --- HTTP server -----------------------------------------------------
-    host: str = Field(default="0.0.0.0", description="Bind host for uvicorn.")
+    host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Bind host for uvicorn. Loopback by default (review 7.2): first "
+            "registration mints an admin, so a reachable bind must be a "
+            "deliberate choice. Set 0.0.0.0 (PRIMER_HOST) for a deployment "
+            "that must accept connections from other hosts; the Docker "
+            "entrypoint and compose set it explicitly."
+        ),
+    )
     port: int = Field(default=8000, description="Bind port for uvicorn.")
     public_url: str | None = Field(
         default=None,
@@ -393,6 +414,7 @@ class AppConfig(BaseSettings):
         ),
     )
 
+
     # --- Session message log ----------------------------------------------
     session_message_write_timeout_seconds: float = Field(
         default=30.0,
@@ -507,8 +529,12 @@ class AppConfig(BaseSettings):
 
     # --- Misc ------------------------------------------------------------
     log_level: Literal["debug", "info", "warning", "error"] = Field(
-        default="debug",
-        description="Log level for application + uvicorn access logs.",
+        default="info",
+        description=(
+            "Log level for application + uvicorn access logs. ``info`` by "
+            "default (review 7.7): the same default the container entrypoint "
+            "and config.example.yaml use, so pip and image installs agree."
+        ),
     )
     log_file: Path | None = Field(
         default=None,
@@ -558,14 +584,18 @@ class AppConfig(BaseSettings):
         """Reject a Postgres worker lane whose pool can't cover its concurrency.
 
         When this process runs the worker pool on the Postgres scheduler/bus
-        lane, the PostgresClaimEngine + PostgresEventBus pin a dedicated
-        LISTEN connection per in-flight turn from the SAME storage pool that
-        serves per-turn storage + rate-limiter acquires, plus a handful of
-        persistent listeners. If ``db.config.pool.max_size`` is below
-        ``worker.concurrency + _WORKER_POOL_HEADROOM`` a busy process exhausts
-        the pool: acquires block for ``acquire_timeout`` (30s) then raise
-        PoolTimeout, stalling turns (arch review A-I2). Fail fast at startup
-        with a clear message instead of degrading silently under load.
+        lane, a few connections are held for the life of the process from the
+        SAME storage pool the turns draw from (the event bus's shared LISTEN,
+        the claim-wake and the session-cancel watchers; no turn pins one), and
+        every running turn draws short-lived connections from that pool for
+        its storage, lease and rate-limiter calls. A worker can run up to
+        2 x ``worker.concurrency`` turns while some wait on a provider limit
+        (``_OVERCOMMIT_FACTOR`` in worker/pool.py). If ``db.config.pool.max_size``
+        is below ``worker.concurrency + _WORKER_POOL_HEADROOM`` a busy process
+        exhausts the pool: acquires block for ``acquire_timeout`` (30s) then
+        fail with a saturated-pool ``ProviderError``, stalling turns (arch
+        review A-I2). Fail fast at startup with a clear message instead of
+        degrading silently under load.
 
         The guard only fires on the Postgres lane with a Postgres storage
         pool; the in-memory scheduler/bus (single-process / SQLite) has no
@@ -592,11 +622,16 @@ class AppConfig(BaseSettings):
             raise ConfigError(
                 f"db.config.pool.max_size ({pool.max_size}) is too small for "
                 f"worker.concurrency ({self.worker.concurrency}) on the "
-                f"Postgres worker lane: each in-flight turn pins one LISTEN "
-                f"connection from the same pool plus ~{_WORKER_POOL_HEADROOM} "
-                f"persistent listeners, so db.config.pool.max_size must be "
-                f">= worker.concurrency + {_WORKER_POOL_HEADROOM} "
-                f"(= {required}). Raise db.config.pool.max_size or lower "
+                f"Postgres worker lane: a few connections are held for the "
+                f"life of the process (the event bus's shared LISTEN, the "
+                f"claim-wake and session-cancel watchers), and every running "
+                f"turn draws short-lived connections from the same pool for "
+                f"its storage, lease and rate-limiter calls (a worker can run "
+                f"up to 2 x worker.concurrency turns while some wait on a "
+                f"provider limit), so db.config.pool.max_size must be >= "
+                f"worker.concurrency + {_WORKER_POOL_HEADROOM} (= {required}); "
+                f"size it toward 2 x worker.concurrency + {_WORKER_POOL_HEADROOM} "
+                f"for a busy worker. Raise db.config.pool.max_size or lower "
                 f"worker.concurrency."
             )
         return self

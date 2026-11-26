@@ -63,6 +63,7 @@ class InMemoryEventStore(EventStore):
         entity_kind: str | None = None,
         entity_id: str | None = None,
         workspace_id: str | None = None,
+        session_id: str | None = None,
         since: datetime | None = None,
     ) -> list[Event]:
         out: list[Event] = []
@@ -80,6 +81,8 @@ class InMemoryEventStore(EventStore):
             if entity_id is not None and e.entity_id != entity_id:
                 continue
             if workspace_id is not None and e.workspace_id != workspace_id:
+                continue
+            if session_id is not None and e.session_id != session_id:
                 continue
             if since is not None and e.occurred_at < since:
                 continue

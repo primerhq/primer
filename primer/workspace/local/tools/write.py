@@ -14,7 +14,10 @@ from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, ConflictError
 from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
-from primer.workspace.local.tools._common import resolve_workspace_path
+from primer.workspace.local.tools._common import (
+    inside_git_dir,
+    resolve_workspace_path,
+)
 
 
 class WriteArgs(BaseModel):
@@ -73,6 +76,7 @@ class Write(WorkspaceTool):
         *,
         locks: WorkspaceLockTable | None = None,
         strict: bool = False,
+        git_dir: str = ".state/.git",
     ) -> None:
         """Construct.
 
@@ -81,10 +85,15 @@ class Write(WorkspaceTool):
         the atomic write so concurrent writers / same-dir execs serialize.
         ``strict`` collapses the scope key to the workspace root instead of
         the file's parent dir (whole-root serialization).
+        ``git_dir`` -- the workspace's git-internals directory
+        (root-relative) whose files this tool refuses to write; defaults
+        to ``.state/.git``, the platform default. :meth:`LocalWorkspace
+        .materialise` passes the materialised template's own state path.
         """
         self._root = Path(workspace_root)
         self._locks = locks
         self._strict = strict
+        self._git_dir = git_dir
 
     def parameters(self) -> type[BaseModel]:
         return WriteArgs
@@ -104,6 +113,18 @@ class Write(WorkspaceTool):
     async def execute(self, args: BaseModel, ctx: ToolCallContext) -> ToolResult:
         assert isinstance(args, WriteArgs)
         target = resolve_workspace_path(self._root, args.path)
+
+        # The git-internals directory holds primer's own git repo: a file
+        # planted there (a git hook, a clobbered config) is executed or
+        # parsed by the API process on a later commit. Only THIS directory
+        # is refused -- the rest of the .state tree (.state/shared/ notes,
+        # .state/sessions/<sid>/ state) and .tmp are agent-writable by
+        # design.
+        if inside_git_dir(self._root, self._git_dir, target):
+            raise BadRequestError(
+                f"refusing to write inside the git directory "
+                f"{self._git_dir!r}: {args.path!r}"
+            )
 
         # Read-before-write rule: only enforced when overwriting an
         # existing file. New files are always allowed.

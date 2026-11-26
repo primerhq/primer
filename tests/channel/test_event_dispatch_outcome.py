@@ -101,7 +101,8 @@ async def test_dm_gate_reply_resumes_on_the_dm_anchor():
     )
     assert outcome.kind == "gate"
     assert outcome.session_id == "s-dm"
-    assert bus.published == [("ask_user:s-dm:tc-dm", {"response": "yes"})]
+    # The durable emit also publishes the event-log hint; assert the wake.
+    assert [p for p in bus.published if p[0] != "events_appended"] == [("ask_user:s-dm:tc-dm", {"response": "yes"})]
 
 
 async def test_gate_reply_resumes_then_clears_the_gate():
@@ -117,7 +118,8 @@ async def test_gate_reply_resumes_then_clears_the_gate():
     )
     assert outcome.kind == "gate"
     assert outcome.session_id == "s1"
-    assert bus.published == [("ask_user:s1:tc-1", {"response": "yes"})]
+    # The durable emit also publishes the event-log hint; assert the wake.
+    assert [p for p in bus.published if p[0] != "events_appended"] == [("ask_user:s1:tc-1", {"response": "yes"})]
     record = await store.lookup("ch-1", "thr-1")
     assert record.tool_call_id is None, "an answered gate must not shadow the mapping"
 
@@ -221,4 +223,4 @@ async def test_non_ended_gate_target_keeps_the_direct_publish_path(monkeypatch):
     )
 
     assert outcome.kind == "gate"
-    assert bus.published == [("ask_user:s1:tc-1", {"response": "yes"})]
+    assert [p for p in bus.published if p[0] != "events_appended"] == [("ask_user:s1:tc-1", {"response": "yes"})]

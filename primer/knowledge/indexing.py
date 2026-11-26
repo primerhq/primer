@@ -82,16 +82,6 @@ async def _document_lock(collection_id: str, document_id: str) -> AsyncIterator[
             _doc_locks.pop((collection_id, document_id), None)
 
 
-async def _put_all(store, records) -> None:
-    """One write when the store offers it (``put_many``), else one ``put`` per record."""
-    put_many = getattr(store, "put_many", None)
-    if put_many is not None:
-        await put_many(records)
-        return
-    for record in records:
-        await store.put(record)
-
-
 def embedder_fingerprint(collection: Collection) -> str:
     """Who embedded a chunk: the embedding provider and model of the collection. The documents are embedded as plain passages with no
     per-collection prompt setting, so those two are all there is to tell one embedding from another. Stored in each chunk's meta."""
@@ -130,14 +120,49 @@ def _is_current(stored: dict[str, tuple[str, str | None]] | None, chunks: list[s
 def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     """Extract the stored vector dimension from a ConflictError message.
 
-    All backends embed the stored dimension as ``dimensions=<N>`` in their
-    ConflictError text. Returns ``fallback`` when the pattern is absent.
+    A dimension-drift message embeds the stored dimension as
+    ``dimensions=<N>``. Returns ``fallback`` when the pattern is absent -
+    which is itself informative: Lance's distance-only conflict message
+    omits the dimension, because its dimension check runs first (that
+    message can only fire when the dimensions already match).
     """
     # Match the FIRST "dimensions=<N>" occurrence -- that is the stored dim.
     m = _re.search(r"dimensions=(\d+)", conflict_message)
     if m:
         return int(m.group(1))
     return fallback
+
+
+async def _ensure_collection(store, collection_id: str, dimensions: int) -> None:
+    """Register/validate the collection in the store (deferred X2.4).
+
+    A collection that already exists keeps the metric stored at creation
+    time, so a pure distance-metric drift - the stored dimension MATCHES
+    the requested one - is not an error: the store re-resolves the stored
+    shape on its next operation, and indexing keeps going under it. Only
+    a dimension mismatch is a DimensionMismatchError. (A ConflictError
+    whose message names no dimension falls back to the requested one and
+    is therefore tolerated: the compliant backends' distance-only
+    messages are exactly that shape.)
+    """
+    try:
+        await store.create_collection(collection_id, dimensions=dimensions)
+    except ConflictError as exc:
+        if _parse_stored_dim(str(exc), fallback=dimensions) == dimensions:
+            return
+        stored_dim = _parse_stored_dim(str(exc), fallback=0)
+        raise DimensionMismatchError(
+            f"Embedder output dimension ({dimensions}) does not match the "
+            f"vector store dimension ({stored_dim}) recorded for collection "
+            f"{collection_id!r}. The collection was indexed with a different "
+            f"embedding model. To fix: delete all documents from this "
+            f"collection, then re-create it with the correct embedder, and "
+            f"re-ingest the documents.",
+            embedder_dim=dimensions,
+            collection_dim=stored_dim,
+            collection_id=collection_id,
+            cause=exc,
+        ) from exc
 
 
 async def probe_dimensions(*, collection: Collection, provider_registry) -> int:
@@ -293,30 +318,17 @@ async def _index_document_once(
             )
         probe_dim = len(probe_response.embeddings[0].vector)
         _dimensions[_dimensions_key(collection)] = (time.monotonic() + _DIMENSIONS_TTL_SECONDS, probe_dim)
-    try:
-        await store.create_collection(collection.id, dimensions=probe_dim)
-    except ConflictError as exc:
-        # The collection is already registered in the store with a different
-        # dimension. Parse the stored dim from the ConflictError message
-        # produced by all store backends ("dimensions=<N>" in the message).
-        stored_dim = _parse_stored_dim(str(exc), fallback=0)
-        raise DimensionMismatchError(
-            f"Embedder output dimension ({probe_dim}) does not match the "
-            f"vector store dimension ({stored_dim}) recorded for collection "
-            f"{collection.id!r}. The collection was indexed with a different "
-            f"embedding model. To fix: delete all documents from this "
-            f"collection, then re-create it with the correct embedder, and "
-            f"re-ingest the documents.",
-            embedder_dim=probe_dim,
-            collection_dim=stored_dim,
-            collection_id=collection.id,
-            cause=exc,
-        ) from exc
+    # A dimension mismatch surfaces HERE (before any embedding): the store
+    # adopts the collection or raises, and _ensure_collection turns a real
+    # dimension drift into a DimensionMismatchError (a pure metric drift is
+    # tolerated: the collection keeps its stored metric, deferred X2.4).
+    await _ensure_collection(store, collection.id, probe_dim)
 
     # A document whose chunks are exactly what is stored has nothing to do (the rule ``index_documents`` applies): no embedding, no write.
     # It must have been embedded by this collection's embedder too: after a model change the same text is stale (an explicit reindex never skips).
     fingerprint = embedder_fingerprint(collection)
-    if chunks and not force and _is_current((await _stored_chunk_texts(store, collection.id, document.id)).get(document.id), chunks, fingerprint):
+    stored = (await _stored_chunk_texts(store, collection.id, document.id)).get(document.id)
+    if chunks and not force and _is_current(stored, chunks, fingerprint):
         return len(chunks), False
 
     # Embed FIRST, before touching the existing chunks. If the embedder
@@ -372,32 +384,25 @@ async def _index_document_once(
             return 0, False
         return 0, True
 
-    # Now that embedding succeeded, atomically-ish replace the document's
-    # chunks: drop the prior set, then upsert the new one. The vector store
-    # exposes no native "replace by document id", so this is delete + put;
-    # because it runs only after a successful embed there is no failure
-    # window that leaves the document with zero chunks. Chunk ids are the
-    # stable str(idx), so a shorter re-index could leave higher-index stale
-    # rows behind without the delete -- hence the delete is still required.
-    try:
-        await store.delete(collection.id, document.id)
-    except PrimerError:
-        # Tolerate stores that raise on delete when the collection has no
-        # prior rows (some backends signal an unregistered collection this
-        # way). The probe's create_collection above already registered it.
-        pass
-
     if not chunks:
-        # An empty body produces no records: the delete above already
-        # cleared any prior chunks, which is the intended replace-with-empty.
+        # An empty body replaces the stored chunks with nothing: the old set goes, and there is
+        # nothing to write back.
+        if stored:
+            try:
+                await store.delete(collection.id, document.id)
+            except PrimerError:
+                pass
         return 0, False
 
-    # Idempotent: the probe already registered the collection above.
-    # Calling again is a no-op for all compliant backends.
-    await store.create_collection(
-        collection.id, dimensions=len(records[0].vector)
+    # Idempotent: the probe already registered the collection above. Calling again is a no-op for all compliant backends (a metric drift the probe settled stays settled).
+    await _ensure_collection(store, collection.id, len(records[0].vector))
+    # The store owns the replacement ordering (VectorStore.replace_document: the destructive step only when the new
+    # set is shorter than the stored one; pgvector runs delete + upsert in one transaction, so a failed replace
+    # never leaves the document unsearchable). The stored count comes from the read above, so the store does not
+    # re-read it.
+    await store.replace_document(
+        collection.id, document.id, records, stored_count=len(stored or {}),
     )
-    await _put_all(store, records)
 
     logger.info(
         "indexed document %s into collection %s (%d chunks)",
@@ -495,22 +500,8 @@ async def index_documents(
     dimensions = await probe_dimensions(
         collection=collection, provider_registry=provider_registry,
     )
-    try:
-        await store.create_collection(collection.id, dimensions=dimensions)
-    except ConflictError as exc:
-        stored_dim = _parse_stored_dim(str(exc), fallback=0)
-        raise DimensionMismatchError(
-            f"Embedder output dimension ({dimensions}) does not match the "
-            f"vector store dimension ({stored_dim}) recorded for collection "
-            f"{collection.id!r}. The collection was indexed with a different "
-            f"embedding model. To fix: delete all documents from this "
-            f"collection, then re-create it with the correct embedder, and "
-            f"re-ingest the documents.",
-            embedder_dim=dimensions,
-            collection_dim=stored_dim,
-            collection_id=collection.id,
-            cause=exc,
-        ) from exc
+    # A dimension mismatch surfaces HERE, before embedding the batch (the helper tolerates only a pure metric drift: the collection keeps its stored metric, deferred X2.4).
+    await _ensure_collection(store, collection.id, dimensions)
 
     # Paths for the record meta, keyed by id so the loop below need not
     # carry the Document objects around.
@@ -522,6 +513,8 @@ async def index_documents(
     async def flush(doc_id: str) -> None:
         """Replace one document's chunks now that all its vectors are in hand, unless its body moved on (its own write path indexes it)."""
         nonlocal flushed
+        # Popped the moment the document is flushed, not read: a backfill must not hold the already-written vectors of every document in memory until the pass ends (3.1).
+        records = pending.pop(doc_id, None)
         async with _document_lock(collection.id, doc_id):
             now = await content_store.get(doc_id)
             if now != bodies[doc_id]:
@@ -531,12 +524,10 @@ async def index_documents(
                     except PrimerError:
                         pass
                 return
-            try:
-                await store.delete(collection.id, doc_id)
-            except PrimerError:
-                pass
-            if pending.get(doc_id):
-                await _put_all(store, pending[doc_id])
+            await store.replace_document(
+                collection.id, doc_id, records,
+                stored_count=len(existing.get(doc_id) or {}),
+            )
             flushed += 1
 
     for doc_id in [d for d in stale if expected[d] == 0]:       # an empty body replaces the old chunks with nothing

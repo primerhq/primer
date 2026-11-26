@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator
 import httpx
 from openai import AsyncOpenAI
 
+from primer.int.coordinator import RateLimiter
 from primer.int.tts import TTS
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
@@ -44,7 +45,11 @@ _CHUNK_BYTES = 4096
 class OpenAITTS(TTS):
     """Streaming synthesis adapter for OpenAI-compatible audio endpoints."""
 
-    def __init__(self, provider: TextToSpeechProvider) -> None:
+    def __init__(
+        self,
+        provider: TextToSpeechProvider,
+        rate_limiter: "RateLimiter | None" = None,
+    ) -> None:
         if provider.provider != TextToSpeechProviderType.OPENAI:
             raise ConfigError(
                 f"OpenAITTS requires provider type openai; got {provider.provider}"
@@ -52,6 +57,12 @@ class OpenAITTS(TTS):
         self._provider = provider
         self._config = provider.config
         self._client: AsyncOpenAI | None = None
+        if rate_limiter is None:
+            from primer.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"tts:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
     def _get_client(self) -> AsyncOpenAI:
         if self._client is None:
@@ -88,53 +99,56 @@ class OpenAITTS(TTS):
     ) -> AsyncIterator[bytes | SpeechError]:
         limits = self._provider.limits
         attempts = limits.max_retries + 1
-        for attempt in range(attempts):
-            yielded = 0
-            try:
-                async with self._get_client().audio.speech.with_streaming_response.create(
-                    model=model,
-                    voice=voice,
-                    input=text,
-                    response_format=response_format,
-                    timeout=self._timeout(),
-                ) as response:
-                    async for chunk in response.iter_bytes(_CHUNK_BYTES):
-                        if chunk:
-                            yielded += len(chunk)
-                            yield chunk
-                return
-            except Exception as exc:  # noqa: BLE001 -- error is a value here
-                # A transport failure (connect, timeout, 429, 5xx) is safe to
-                # replay. A half-consumed audio stream is not: replaying it
-                # would concatenate two partial syntheses into one
-                # incoherent clip.
-                replayable = (
-                    yielded == 0
-                    and attempt < attempts - 1
-                    and is_replayable(exc)
-                )
-                logger.warning(
-                    "TTS synthesis failed",
-                    extra={
-                        "provider_id": self._provider.id,
-                        "model": model,
-                        "exception": type(exc).__name__,
-                        "bytes_yielded": yielded,
-                        "will_retry": replayable,
-                    },
-                )
-                if not replayable:
-                    yield speech_error_from_exception(exc, self._provider)
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
+            for attempt in range(attempts):
+                yielded = 0
+                try:
+                    async with self._get_client().audio.speech.with_streaming_response.create(
+                        model=model,
+                        voice=voice,
+                        input=text,
+                        response_format=response_format,
+                        timeout=self._timeout(),
+                    ) as response:
+                        async for chunk in response.iter_bytes(_CHUNK_BYTES):
+                            if chunk:
+                                yielded += len(chunk)
+                                yield chunk
                     return
-                await asyncio.sleep(
-                    random.uniform(
-                        0.0,
-                        min(
-                            limits.retry_backoff_seconds * (2 ** attempt),
-                            limits.retry_backoff_max_seconds,
-                        ),
+                except Exception as exc:  # noqa: BLE001 -- error is a value here
+                    # A transport failure (connect, timeout, 429, 5xx) is safe to
+                    # replay. A half-consumed audio stream is not: replaying it
+                    # would concatenate two partial syntheses into one
+                    # incoherent clip.
+                    replayable = (
+                        yielded == 0
+                        and attempt < attempts - 1
+                        and is_replayable(exc)
                     )
-                )
+                    logger.warning(
+                        "TTS synthesis failed",
+                        extra={
+                            "provider_id": self._provider.id,
+                            "model": model,
+                            "exception": type(exc).__name__,
+                            "bytes_yielded": yielded,
+                            "will_retry": replayable,
+                        },
+                    )
+                    if not replayable:
+                        yield speech_error_from_exception(exc, self._provider)
+                        return
+                    await asyncio.sleep(
+                        random.uniform(
+                            0.0,
+                            min(
+                                limits.retry_backoff_seconds * (2 ** attempt),
+                                limits.retry_backoff_max_seconds,
+                            ),
+                        )
+                    )
 
     async def aclose(self) -> None:
         if self._client is not None:

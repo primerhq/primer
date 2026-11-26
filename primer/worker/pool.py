@@ -23,12 +23,15 @@ import time
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
 from pydantic_core import to_jsonable_python
 
 from primer.authz import ProfileUnusable
+from primer.claim.statement_stamp import claim_statement_at
+from primer.coordinator.wait_signal import rate_limit_wait_hook
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.int.claim import Lease as ClaimLease
 from primer.int.scheduler import (
@@ -48,6 +51,8 @@ from primer.worker._toolset_ids import _toolset_ids_from_scoped  # noqa: F401  r
 import primer.observability.metrics as _metrics
 from primer.session.dispatch import (
     SessionDispatchDeps,
+    _end_cancelled_at_claim,
+    _publish_terminal,
     clear_interrupt_for_resume,
     pause_session_for_refused_workspace,
     run_one_session_turn,
@@ -64,12 +69,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The cancel reason drain_and_stop delivers to every scope that outlives the
+# drain timeout (see drain_and_stop). A turn cut this way is a DRAIN cut, not
+# a loss: this worker still holds the lease, so the session must stay
+# re-runnable by the next worker instead of ending (see the drain-cut arm of
+# _run_engine_session and the unlanded-cancel rule in run_one_session_turn).
+DRAIN_TIMEOUT_CANCEL_REASON = "worker_drain_timeout"
+
 # Restart wait for _engine_bus_loop: starts at the initial value, doubles while
 # the watcher keeps failing, and is capped. A watcher that stayed up at least as
 # long as the cap is healthy again, so its failure is a fresh incident and the
 # wait starts over from the initial value.
 _ENGINE_BUS_BACKOFF_INITIAL_S = 1.0
 _ENGINE_BUS_BACKOFF_MAX_S = 30.0
+
+# Total in-flight turns a worker may carry while some of them wait for a provider's concurrency slot: this many times
+# its ``concurrency``. A waiting turn frees its claim budget so other work can run (review 2026-11-23, 1.5), and this
+# bounds how far that goes. The ceiling is real work, not just waiting: the freed budget is spent on other turns, and
+# when the provider admits the waiters all of them run at once, so up to this many turns (their tool calls and
+# sandboxes included) can be actively running on one worker. ``WorkerConfig.concurrency`` is the claim budget in steady
+# state, not the most the worker ever runs. No turn pins a database connection while it waits or runs (the claim
+# wake, the cancel watch and the event bus each hold one connection per PROCESS, and a limiter wait is a shared
+# subscription plus short statements), so the factor does not widen the pool's pinned connections; each running turn
+# still draws short-lived pool connections for its storage calls, so size ``db.config.pool.max_size`` for the ceiling.
+_OVERCOMMIT_FACTOR = 2
 
 # What connecting or re-subscribing raises while Postgres is down, restarting or
 # shutting down. Each is expected during an outage, so it is a one-line WARNING,
@@ -200,6 +223,58 @@ class WorkerPool:
         # lookup that has not answered in a heartbeat interval counts as no answer, and the bound plus the probe stay
         # within one lease TTL.
         self._release_probe_timeout_seconds: float = float(config.heartbeat_interval_seconds)
+        # Monotonic time each in-flight lease was last CONFIRMED held: stamped at
+        # its claim and refreshed by every successful engine heartbeat. A heartbeat
+        # that FAILS (a database outage) says nothing about the leases: their TTL
+        # keeps running with nothing refreshing it, and at expiry a peer reclaims
+        # one and runs its turn while this worker still runs it - a duplicate
+        # execution the worker never learns of (review 2026-11-23, 1.6). A key
+        # whose last confirmation (the START of the call that confirmed it) is older
+        # than _self_cancel_after (below) can no longer be ours: its scope is
+        # cancelled like a loss, and the release's fence on claimed_by keeps this
+        # worker from writing over the new owner.
+        self._lease_last_confirmed: dict[tuple[ClaimKind, str], float] = {}
+        # Keys whose execution this worker itself cut while it may still hold the lease: the drain timeout and the
+        # 1.6 staleness self-cancel. A session cut this way is handed back claimable with the row untouched (an
+        # entity_noop release), decided from this set and NOT from the message of whichever cancel reaches the
+        # handler: the drain follows its cut with a plain cancel() a few seconds later, and a turn whose unwind
+        # outlives that releases from the plain one (review 2026-11-23 round 1, 1.1). Dropped by _run_engine's
+        # finally, with the scope.
+        self._hand_back_keys: set[tuple[ClaimKind, str]] = set()
+        # In-flight keys with a turn currently WAITING for a provider's concurrency slot (a rate limiter acquire that
+        # has not been granted), with how many acquires wait. Such a turn holds a worker slot and runs nothing: a
+        # slow provider (a local model with ``max_concurrency`` 1) would otherwise fill the whole worker with queued
+        # turns and starve every other kind of work (review 2026-11-23, 1.5). The claim budget counts a waiting turn
+        # as free up to ``_OVERCOMMIT_FACTOR`` x the capacity in flight (see ``_free_slots``); the full fix, a per-provider
+        # holdback at claim time, belongs to the parked work-priority feature.
+        self._rate_waiting: dict[tuple[ClaimKind, str], int] = {}
+        # The 1.6 self-cancel arithmetic (round 1). H = heartbeat interval, TTL = lease TTL. A heartbeat's UPDATE stamps
+        # ``expires_at`` from the START of its statement, so the last successful call that began at S keeps the lease
+        # until S + TTL and no peer can claim before that. This worker therefore stops its own turn at
+        # S + TTL - H/8 (``_self_cancel_after`` from S), a margin of H/8 for scheduling and clock skew; the margin is
+        # no wider because a heartbeat stalled behind a row lock may legitimately land until the release bound
+        # (see tests/worker/test_release_is_bounded.py: it lands 0.4 s before the lease lapses at H=2, TTL=5).
+        # Two things deliver it. A watchdog checks the stamps every H/16 (``_lease_watchdog``): it is purely
+        # local, so a worker cut off from the database (a heartbeat that hangs until the 30 s command timeout, as
+        # long as the TTL; a worker-row write that hangs) still stops on time. The heartbeat call is also capped
+        # at TTL - H - H/8 from its own start (it begins H after the previous confirmation, so the cap ends at the
+        # same instant) so a hang counts as a failure in time instead of sitting there.
+        margin = config.heartbeat_interval_seconds / 8
+        self._self_cancel_after: float = config.lease_ttl_seconds - margin
+        self._heartbeat_call_timeout_seconds: float = (
+            config.lease_ttl_seconds - config.heartbeat_interval_seconds - margin
+        )
+        # Each worker-row write of the heartbeat tick (the liveness stamp, then the load) has its own bound, so a
+        # database that answers slower than a quarter interval (pool contention) still gets its liveness stamped
+        # instead of being skipped every tick, which a peer's sweep would read as a dead worker (H3-4). The bound is
+        # max(H/2, 2 s), cut down so the two writes plus the interval still leave the next lease heartbeat a quarter
+        # interval to answer before the watchdog's self-cancel: the next lease call begins at most H + 2 x bound after
+        # the previous one began, and must land by ``TTL - H/8`` (``TTL - 1.375 H`` is the room for the two writes;
+        # the config guarantees ``TTL >= 2H``, so it is at least ``0.625 H``).
+        self._worker_row_timeout_seconds: float = min(
+            max(config.heartbeat_interval_seconds / 2, 2.0),
+            (config.lease_ttl_seconds - 1.375 * config.heartbeat_interval_seconds) / 2,
+        )
         # Timed-out releases whose probe found the lease row gone (they evidently committed); a subset of the above. It
         # UNDERCOUNTS: a committed release that keeps its row (``drop_lease=False``) reads as present (see _release_lease).
         self._release_timeouts_committed_total: int = 0
@@ -218,6 +293,10 @@ class WorkerPool:
         # ---- engine-driven loop tasks ----
         self._engine_claim_task: asyncio.Task | None = None
         self._engine_bus_task: asyncio.Task | None = None
+        # The worker-row writes run on their own task off the lease-heartbeat path (H-3 r1 minor 4):
+        # the lease heartbeat is the tick's margin-load-bearing call, so a slow registry must not
+        # sit on it. At most one pass runs; a tick that finds the previous one still running skips it.
+        self._worker_row_write_task: asyncio.Task | None = None
 
         # Dispatch table: routes engine claims by kind to the appropriate
         # per-turn coroutine.  Populated in start() after _worker_id is set.
@@ -258,6 +337,8 @@ class WorkerPool:
             self._engine.lease_ttl_seconds = self.config.lease_ttl_seconds  # type: ignore[attr-defined]
         except AttributeError:
             pass
+        # ``capacity`` is the claim budget (``concurrency``); with turns waiting on a provider the worker can carry up to
+        # ``_OVERCOMMIT_FACTOR`` x that in flight (see there), so a load above the capacity is normal, not a fault.
         await self._scheduler.register_worker(
             worker_id=self._worker_id,
             host=socket.gethostname(),
@@ -290,6 +371,10 @@ class WorkerPool:
             asyncio.create_task(
                 self._heartbeat_loop(),
                 name=f"scheduler-heartbeat-{self._worker_id}",
+            ),
+            asyncio.create_task(
+                self._lease_watchdog(),
+                name=f"lease-watchdog-{self._worker_id}",
             ),
             asyncio.create_task(
                 self._cancel_loop(),
@@ -364,8 +449,11 @@ class WorkerPool:
         while self._active_scopes and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
         if self._active_scopes:
+            # Recorded BEFORE the first cut: a session handler decides "this was a drain cut" from this set, so the
+            # follow-up plain cancel below cannot turn a slow unwind back into a delete-the-lease release.
+            self._hand_back_keys.update(self._active_scopes)
             for scope in list(self._active_scopes.values()):
-                scope.cancel("worker_drain_timeout")
+                scope.cancel(DRAIN_TIMEOUT_CANCEL_REASON)
             self._active_scopes.clear()
 
         # Wait for all in-flight turn tasks to complete.
@@ -391,6 +479,15 @@ class WorkerPool:
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
+        row_writes = self._worker_row_write_task
+        if row_writes is not None and not row_writes.done():
+            # A still-running write pass must not race the deregistration below (or outlive the
+            # scheduler the drain is about to close): cancel it like the loops.
+            row_writes.cancel()
+            try:
+                await row_writes
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
             await self._scheduler.deregister_worker(self._worker_id)
         except Exception:
@@ -525,12 +622,17 @@ class WorkerPool:
                             kind_id: self._active_scopes.get(kind_id)
                             for kind_id in self._in_flight
                         }
-                        if self._memory_claims:
-                            confirmed = await self._engine.heartbeat(
-                                self._worker_id, list(sent), memory_claims=self._memory_claims.copy(),
-                            )
-                        else:
-                            confirmed = await self._engine.heartbeat(self._worker_id, list(sent))
+                        # Bounded (review 2026-11-23 round 1, 1.6; the arithmetic is in __init__): a worker cut
+                        # off from the database hangs here until the 30 s command timeout, as long as the lease
+                        # TTL, so without a cap this loop would not see the failure before a peer claims.
+                        sent_at = asyncio.get_event_loop().time()
+                        async with asyncio.timeout(self._heartbeat_call_timeout_seconds):
+                            if self._memory_claims:
+                                confirmed = await self._engine.heartbeat(
+                                    self._worker_id, list(sent), memory_claims=self._memory_claims.copy(),
+                                )
+                            else:
+                                confirmed = await self._engine.heartbeat(self._worker_id, list(sent))
                         confirmed_set = set(confirmed)
                         for kind_id, scope in sent.items():
                             if kind_id in confirmed_set or scope is None:
@@ -544,21 +646,159 @@ class WorkerPool:
                             # Unconditional on purpose (see _CancelScope): a lease lost
                             # mid-turn must be able to push a turn that is stuck unwinding.
                             scope.cancel(CANCEL_REASON_PREEMPTED)
+                        # A round trip that answered is a CONFIRMATION for every lease it
+                        # still holds: refresh their staleness stamps (see
+                        # _lease_last_confirmed). The keys it did not confirm were just
+                        # cancelled above (or already returned their lease), so they are
+                        # no longer this worker's to keep alive.
+                        # Stamped with when the call STARTED, not when it returned: the statement stamps
+                        # the lease expiry from its start, so a call that stalled behind a lock confirmed
+                        # the lease only as far as its start.
+                        for kind_id in confirmed_set:
+                            if kind_id in self._lease_last_confirmed:
+                                self._lease_last_confirmed[kind_id] = sent_at
                 except Exception:
                     logger.exception("heartbeat_loop iteration failed")
-                try:
-                    await self._scheduler.heartbeat_worker(self._worker_id)
-                except Exception:
-                    logger.exception("heartbeat_loop: scheduler heartbeat failed")
-                # The load rides the same tick (Lead sweep M2): the registry is the one place every API sees, and an item count held
-                # only in this process was why an API-only /v1/health could not say how busy the fleet was. Advisory and its own
-                # try block: a registry that will not take it must not break the rest of the tick.
-                try:
-                    await self._scheduler.report_worker_load(self._worker_id, in_flight=len(self._in_flight))
-                except Exception:
-                    logger.exception("heartbeat_loop: reporting this worker's load failed")
+                    # The round trip failed, so the round trip said nothing: the leases'
+                    # TTL is running with no confirmation. Past the bound a peer may
+                    # already hold one, so the local turns must stop like a loss (review
+                    # 2026-11-23, 1.6) instead of running duplicates.
+                    self._cancel_stale_scopes()
+                # The worker-row writes run on their own task (H-3 r1 minor 4): the lease heartbeat above is
+                # the tick's margin-load-bearing call, so even a bounded row write must not sit on its path -
+                # a registry that answers slowly used to hold every next lease refresh back. A pass still
+                # running when the next tick fires is skipped, not queued (see _start_worker_row_writes).
+                self._start_worker_row_writes()
         except asyncio.CancelledError:
             return
+
+    def _start_worker_row_writes(self) -> None:
+        """Fire the tick's worker-row writes on their own task, skipping a pass that is still running.
+
+        The load rides the same pass (Lead sweep M2): the registry is the one place every API sees,
+        and an item count held only in this process was why an API-only /v1/health could not say how
+        busy the fleet was. The skip (not queue) is the point: a registry that answers slower than
+        the interval is slow on purpose-bound, and a second queued pass would only add latency
+        without stamping the row any sooner; the next pass retries.
+        """
+        task = self._worker_row_write_task
+        if task is not None and not task.done():
+            return
+        self._worker_row_write_task = asyncio.create_task(self._worker_row_writes())
+
+    async def _worker_row_writes(self) -> None:
+        """The pass itself, off the lease-heartbeat path. Per-write bounds and logging are unchanged."""
+        try:
+            await self._bounded_worker_row_write(
+                "scheduler heartbeat", self._scheduler.heartbeat_worker(self._worker_id),
+            )
+            if self._keepalive_over():
+                return  # the drain is over: the next (nonexistent) tick would not have written either
+            await self._bounded_worker_row_write(
+                "reporting this worker's load",
+                self._scheduler.report_worker_load(self._worker_id, in_flight=len(self._in_flight)),
+            )
+        except asyncio.CancelledError:
+            raise
+
+    async def _bounded_worker_row_write(self, what: str, write: Coroutine) -> None:
+        """Run one worker-row write under its own bound; a failure or a timeout is logged and the tick moves on."""
+        try:
+            async with asyncio.timeout(self._worker_row_timeout_seconds):
+                await write
+        except TimeoutError:
+            logger.error(
+                "heartbeat_loop: %s did not finish in %.1fs; skipped so the lease heartbeat is not held back "
+                "(the next tick retries)", what, self._worker_row_timeout_seconds,
+            )
+        except Exception:
+            logger.exception("heartbeat_loop: %s failed", what)
+
+    async def _lease_watchdog(self) -> None:
+        """Purely local: stop the turns whose leases stopped being confirmed, whatever the database is doing.
+
+        Its own task, NOT a step of ``_heartbeat_loop``: that loop is exactly what hangs when the worker is cut off
+        from the database, and a check that waits behind it would run after the lease had lapsed (review 2026-11-23
+        round 1, 1.6). Runs through a drain, like the heartbeat (see ``_keepalive_done``)."""
+        interval = self.config.heartbeat_interval_seconds / 16
+        try:
+            while not self._keepalive_over():
+                await asyncio.sleep(interval)
+                try:
+                    self._cancel_stale_scopes()
+                except Exception:
+                    # One check must not kill the watchdog: a check that raises (a state it
+                    # cannot parse) leaves its leases for the NEXT check to cut
+                    # (review 2026-11-23, H-2 deferred).
+                    logger.exception("lease watchdog check failed; the next check still runs")
+        except asyncio.CancelledError:
+            return
+
+    def _cancel_stale_scopes(self) -> None:
+        """Cancel the in-flight scopes whose leases stopped being confirmed past their TTL bound.
+
+        Called by the lease watchdog every H/16 and from the heartbeat loop's failure path
+        (``_self_cancel_after`` in __init__ has the arithmetic). The cancel takes the
+        lost-lease form on purpose: it is the same unconditional preempt a genuine loss
+        delivers (a stalled-unwinding turn must still be pushed out), and whatever the
+        database does afterwards, the release's fence on claimed_by refuses a write over
+        a lease the new owner holds, so this worker writes nothing over the peer
+        (review 2026-11-23, 1.6).
+        """
+        now = asyncio.get_event_loop().time()
+        bound = self._self_cancel_after
+        for kind_id, last_confirmed in list(self._lease_last_confirmed.items()):
+            if now - last_confirmed < bound:
+                continue
+            scope = self._active_scopes.get(kind_id)
+            if scope is None or scope.lease_returned or scope.cancelled:
+                continue
+            logger.error(
+                "heartbeat failures left the lease of %s/%s unconfirmed for %.1fs (past its "
+                "lease TTL bound of %.1fs): a peer may already hold it, so its execution is "
+                "cancelled locally and the lease is handed back claimable (the release's fence "
+                "refuses a write over a new owner)",
+                kind_id[0].value, kind_id[1], now - last_confirmed, bound,
+            )
+            # Not a known loss: the lease may still be ours (a database that flaps back inside the
+            # window). Hand it back claimable with the row untouched instead of releasing with the
+            # default delete-the-lease outcome, which would clear the park and the person's answer
+            # (review 2026-11-23 round 1, 1.6). If a peer did take it, the release's fence refuses.
+            self._hand_back_keys.add(kind_id)
+            scope.cancel(CANCEL_REASON_PREEMPTED)
+
+    def _note_rate_wait(self, key: tuple[ClaimKind, str], scope: _CancelScope, waiting: bool) -> None:
+        """The limiter's signal for a turn of ``key``: a slot wait began (True) or ended (False).
+
+        Only the key's CURRENT turn is credited. Two guards: a task a turn spawned and did not await
+        (an abandoned stoppable call, a deferred window close) can wait on a limiter after the turn has
+        returned (the key is then not in flight at all), and a stray task can also outlive the turn while
+        the SAME key is claimed again: the signal it fires still names the key, but carries the previous
+        turn's scope, which is no longer the key's active scope. Both are ignored."""
+        if key not in self._in_flight:
+            return
+        if self._active_scopes.get(key) is not scope:
+            return
+        count = self._rate_waiting.get(key, 0) + (1 if waiting else -1)
+        if count > 0:
+            self._rate_waiting[key] = count
+        else:
+            self._rate_waiting.pop(key, None)
+        if waiting:
+            # A claim loop sitting on a full budget re-reads it now instead of at its next poll.
+            self._wake.set()
+
+    @staticmethod
+    def _free_slots(capacity: int, in_flight: int, waiting: int) -> int:
+        """Claim budget: turns waiting for a provider slot do not count, but in-flight never exceeds the cap.
+
+        A waiting turn that is granted its slot counts again at once; the budget then shrinks (below zero, nothing
+        is claimed) until the overcommit drains."""
+        waiting = min(waiting, in_flight)
+        return min(
+            capacity - (in_flight - waiting),
+            _OVERCOMMIT_FACTOR * capacity - in_flight,
+        )
 
     # ---- engine-driven loops (Task 13: one loop, one bus loop) -----------
 
@@ -600,7 +840,9 @@ class WorkerPool:
         assert self._engine is not None
         try:
             while not self._stopping.is_set():
-                free = self.config.concurrency - len(self._in_flight)
+                free = self._free_slots(
+                    self.config.concurrency, len(self._in_flight), len(self._rate_waiting),
+                )
                 if free <= 0:
                     self._wake.clear()
                     if self._stopping.is_set():
@@ -614,7 +856,7 @@ class WorkerPool:
                         pass
                     continue
                 try:
-                    leases = await self._engine.claim_due(
+                    leases, claimed_at = await self._claim_stamped(
                         self._worker_id,
                         max_count=min(self.config.claim_batch_size, free),
                         # Only kinds this pool can run. Without it the unified loop would claim leases of
@@ -642,11 +884,24 @@ class WorkerPool:
                         pass
                     continue
                 self._claims_total += len(leases)
-                self._reserve_and_dispatch(leases)
+                self._reserve_and_dispatch(leases, claimed_at=claimed_at)
         except asyncio.CancelledError:
             return
 
-    def _reserve_and_dispatch(self, leases: list[ClaimLease]) -> None:
+    async def _claim_stamped(self, worker_id: str, **kw: Any) -> tuple[list[ClaimLease], float]:
+        """``claim_due`` plus the monotonic time to start the leases' staleness clock from.
+
+        The statement stamps the lease expiry from its own start, so the clock starts when the statement ran: the
+        engine records that moment (``claim_statement_at``) right after the statement returns, which leaves out the
+        wait for a pool connection before it and the per-lease on_claim hooks after it (H3-5; the hooks were H-2's
+        carry-over). Return latency of the statement itself is absorbed by the watchdog's H/8 margin. An engine that
+        records nothing (a test double) gets the time before the call, the earlier and so the safe side."""
+        before = asyncio.get_event_loop().time()
+        claim_statement_at.set(None)
+        leases = await self._engine.claim_due(worker_id, **kw)
+        return leases, claim_statement_at.get() or before
+
+    def _reserve_and_dispatch(self, leases: list[ClaimLease], *, claimed_at: float | None = None) -> None:
         """Reserve in_flight slots for ``leases`` and dispatch each.
 
         Extracted from the unified claim loop so the Phase 3 stage 7a
@@ -703,7 +958,12 @@ class WorkerPool:
         needs a stalled heartbeat, a peer's claim and a full claim cycle inside the
         unwind window, so it is rare, and before this change the same sequence ran a
         second executor instead.
+
+        ``claimed_at`` is the monotonic time the claim statement ran (see ``_claim_stamped``): it stamps the lease
+        expiry from its own start, so the staleness clock starts there, not when the call (and its per-lease
+        on_claim hooks) returned. Defaults to now for a caller that has no earlier stamp.
         """
+        stamp = claimed_at if claimed_at is not None else asyncio.get_event_loop().time()
         # Reserve in_flight slots immediately before dispatching so
         # back-to-back claim iterations see the correct free count.
         fresh: list[ClaimLease] = []
@@ -729,6 +989,10 @@ class WorkerPool:
                 self._give_back_unstarted(lease)
                 continue
             self._in_flight.add(key)
+            # Its lease is confirmed held the moment the claim returns: the
+            # staleness clock (see _lease_last_confirmed) starts here, and the
+            # next successful heartbeat refreshes it (review 2026-11-23, 1.6).
+            self._lease_last_confirmed[key] = stamp
             fresh.append(lease)
         for lease in fresh:
             handler = self._dispatch.get(lease.kind)
@@ -807,7 +1071,8 @@ class WorkerPool:
                     1 for kind, _ in self._in_flight if kind == ClaimKind.TOOL_CALL
                 )
                 general_in_flight = len(self._in_flight) - tool_call_in_flight
-                general_free = general_capacity - general_in_flight
+                general_waiting = sum(1 for kind, _ in self._rate_waiting if kind != ClaimKind.TOOL_CALL)
+                general_free = self._free_slots(general_capacity, general_in_flight, general_waiting)
                 tool_call_free = reserve - tool_call_in_flight
 
                 claimed_any = False
@@ -866,7 +1131,7 @@ class WorkerPool:
         an empty poll nor wait again.
         """
         try:
-            leases = await self._engine.claim_due(
+            leases, claimed_at = await self._claim_stamped(
                 self._worker_id, max_count=max_count, kinds=kinds,
             )
         except Exception:
@@ -878,7 +1143,7 @@ class WorkerPool:
         if not leases:
             return False
         self._claims_total += len(leases)
-        self._reserve_and_dispatch(leases)
+        self._reserve_and_dispatch(leases, claimed_at=claimed_at)
         return True
 
     async def _run_engine(
@@ -897,6 +1162,11 @@ class WorkerPool:
         key = (lease.kind, lease.entity_id)
         scope = _CancelScope()
         self._active_scopes[key] = scope
+        # Rate limiters tell this turn's task when it waits for a provider slot (see _rate_waiting). Set in this
+        # task's context, so child tasks of the turn inherit it and other turns do not see it. The signal carries
+        # this turn's scope: a stray task that outlives the turn fires it with a scope the pool no longer credits
+        # (see _note_rate_wait), so a wait from a finished turn can never be credited to the next turn on the key.
+        wait_hook_token = rate_limit_wait_hook.set(lambda waiting: self._note_rate_wait(key, scope, waiting))
         # Lease acquire -> release IS the task boundary (12-s7-design.md
         # section 4): this wrapper brackets every lane's handler.
         task_t0 = time.monotonic()
@@ -923,8 +1193,12 @@ class WorkerPool:
             _metrics.worker_task_duration_seconds.labels(
                 self._worker_label, lease.kind.value, task_status,
             ).observe(time.monotonic() - task_t0)
+            rate_limit_wait_hook.reset(wait_hook_token)
+            self._rate_waiting.pop(key, None)
             self._active_scopes.pop(key, None)
             self._in_flight.discard(key)
+            self._lease_last_confirmed.pop(key, None)
+            self._hand_back_keys.discard(key)
             if lease.kind == ClaimKind.MEMORY:
                 self._memory_claims.pop(lease.entity_id, None)
             if lease.kind == ClaimKind.SESSION:
@@ -1117,7 +1391,38 @@ class WorkerPool:
                 if session_row.status == SessionStatus.ENDED:
                     outcome = ReleaseOutcome(success=True, drop_lease=True)
                 elif session_row.cancel_requested:
-                    outcome = await self._end_session(session_row, reason="cancelled")
+                    # Cancel that landed while the park was out: end it with
+                    # the SAME full cancelled terminal a normal turn's
+                    # claim-time exit uses (CANCELLED transcript record,
+                    # tick, the session.ended event, the session:{id}:terminal
+                    # publish a webhook hold waits on, drain checkpoint), not
+                    # _end_session's bare status write -- which ended the row
+                    # silently, so webhook holds (trigger/hold.py) waited on
+                    # the terminal event until their cap and session.ended
+                    # subscribers never fired (review 2026-11-23, K1 round 1).
+                    # Register the session so the shim's CANCELLED-record
+                    # write resolves the workspace (the executor never builds
+                    # on this path, so nothing else would).
+                    io_shim.register_session(sid, session_row.workspace_id)
+                    try:
+                        outcome = await _end_cancelled_at_claim(
+                            deps, session_storage, sid
+                        )
+                    except WorkspaceRefusedError:
+                        # This deployment refuses the workspace, so the
+                        # full cancelled terminal's transcript record
+                        # cannot be written into it and the exit cannot
+                        # complete. End the row with the pool's own status
+                        # write, which still publishes the terminal and
+                        # the session.ended event (only the transcript
+                        # record write is skipped; review 2026-11-23,
+                        # K1 round 2): the Cancel still lands and the
+                        # lease drops, instead of the refused-workspace
+                        # pause swallowing it (review 2026-11-23, K1
+                        # round 1).
+                        outcome = await self._end_session(
+                            session_row, reason="cancelled"
+                        )
                 elif session_row.status == SessionStatus.PAUSED:
                     # The carried-reply bridge reads before it re-arms. A pause can land between that read and
                     # ``mark_resumable``, so the resulting claim must take the same park-preserving exit as a
@@ -1179,10 +1484,10 @@ class WorkerPool:
                         outcome = await self._end_resume_failed(session_row)
             else:
                 outcome = await run_one_session_turn(engine_lease, deps)
-        except asyncio.CancelledError:
-            # Preempt: the heartbeat loop hard-cancelled this turn because
-            # the lease was lost (see _heartbeat_loop -> scope.cancel). Two
-            # causes are indistinguishable from the CancelledError alone:
+        except asyncio.CancelledError as cancel:
+            # Three causes reach this arm. The row read below decides the first
+            # two; the third (a cut this worker made itself) is recognised from
+            # the recorded key, not from the cancel's message:
             #   (a) a REST cancel set cancel_requested=True and dropped the
             #       lease -> the session must converge to ENDED/cancelled,
             #       otherwise the normal-turn path leaves it stuck RUNNING
@@ -1192,8 +1497,26 @@ class WorkerPool:
             #       took over (cancel_requested is False). We MUST NOT end the
             #       session in that case or we corrupt the multi-worker
             #       handoff -- the owning worker drives it to terminal.
-            # Disambiguate on the FRESH row's cancel_requested, end only on
-            # (a), and ALWAYS re-raise so _run_engine still logs/cleans up.
+            #   (c) this worker cut the turn itself (the drain timeout, or the
+            #       1.6 staleness self-cancel; the key is in _hand_back_keys):
+            #       it may STILL hold the lease and the row carries no user
+            #       Cancel (a flagged row took (a) above). The session must
+            #       stay re-runnable by the next worker exactly as a crash
+            #       leaves it (review 2026-11-23, 1.1/1.6) -- the hand-back
+            #       outcome is set first thing below.
+            # Disambiguate on the FRESH row's cancel_requested, converge only
+            # on (a), and ALWAYS re-raise so _run_engine still logs/cleans up.
+            if (ClaimKind.SESSION, sid) in self._hand_back_keys:
+                # 1.1 / 1.6: this worker cut the turn itself (the drain timeout, or the staleness
+                # self-cancel) while it may still hold the lease: hand the lease back CLAIMABLE with
+                # the row untouched. Set BEFORE the first await, from the recorded key and not from
+                # this cancel's message: the drain follows its cut with a plain cancel a few seconds
+                # later, and a turn whose unwind outlives that (an aclose, a slow row read) used to
+                # release with the default delete-the-lease outcome. entity_noop runs no on_release,
+                # so a cut RESUME keeps the person's answer on its park and no terminal error record
+                # or turn_no bump lands on a turn that merely stopped; the next claim re-runs the
+                # turn, as a crash leaves it. A user Cancel on the row still wins below.
+                outcome = ReleaseOutcome(success=False, entity_noop=True)
             try:
                 if self._storage is not None:
                     session_storage = self._storage.get_storage(WorkspaceSession)
@@ -1203,7 +1526,33 @@ class WorkerPool:
                         and fresh.cancel_requested
                         and fresh.status != SessionStatus.ENDED
                     ):
-                        outcome = await self._end_session(fresh, reason="cancelled")
+                        # End it with the SAME full cancelled terminal a normal
+                        # turn's claim-time exit uses (CANCELLED transcript
+                        # record, the session.ended event, the session:{id}:terminal
+                        # publish a webhook hold waits on, drain checkpoint), not
+                        # _end_session's bare status write -- which ended the row
+                        # silently, so webhook holds (trigger/hold.py) waited on
+                        # the terminal event until their cap and session.ended
+                        # subscribers never fired (review 2026-11-23, K1 round 2).
+                        # Register the session so the shim's CANCELLED-record
+                        # write resolves the workspace (the executor never builds
+                        # on this path, so nothing else would).
+                        io_shim.register_session(sid, fresh.workspace_id)
+                        try:
+                            outcome = await _end_cancelled_at_claim(
+                                deps, session_storage, sid
+                            )
+                        except WorkspaceRefusedError:
+                            # This deployment refuses the workspace, so the
+                            # full cancelled terminal's transcript record
+                            # cannot be written into it and the exit cannot
+                            # complete. End the row with the pool's own status
+                            # write, which still publishes the terminal and the
+                            # session.ended event (only the transcript record
+                            # write is skipped; review 2026-11-23, K1 round 2).
+                            outcome = await self._end_session(
+                                fresh, reason="cancelled"
+                            )
             except Exception:
                 # A storage error here must not mask task cancellation;
                 # mirror dispatch.py's failure-isolation pattern: log and
@@ -1321,6 +1670,18 @@ class WorkerPool:
         if parked_state.get("kind") == "tool_wait":
             return self._resume_engine_tool_wait
         return self._resume_engine_session
+
+    def _hand_back_outcome(self, lease: ClaimLease) -> ReleaseOutcome | None:
+        """The release outcome for a turn THIS worker cut itself (the drain timeout, or the staleness
+        self-cancel: the key is recorded in ``_hand_back_keys``): the lease is handed back CLAIMABLE with
+        the entity untouched, so the work item (a harness operation, a trigger fire, a memory job) is
+        re-run by the next claim, exactly as a crash leaves it. None when this worker did not cut the
+        turn (the handler releases with its own outcome). The session path keeps its own ordering
+        (a user Cancel on the row still wins); every other kind takes this on a failed release
+        (review 2026-11-23, 1.1/1.6; the H-2 hand-back kinds)."""
+        if (lease.kind, lease.entity_id) in self._hand_back_keys:
+            return ReleaseOutcome(success=False, entity_noop=True)
+        return None
 
     async def _release_lease(self, lease: ClaimLease, outcome: ReleaseOutcome) -> None:
         """Hand a running execution's lease back through the engine.
@@ -1581,9 +1942,14 @@ class WorkerPool:
         return ReleaseOutcome(success=False, drop_lease=True, preserve_park=True)
 
     async def _end_session(self, session, *, reason: str):
-        """Write a terminal ENDED status to the session row and return a
+        """Write a terminal ENDED status to the session row, announce it
+        (the session.ended event + the session:{id}:terminal publish, the
+        same announcement dispatch.py's terminal exits make) and return a
         drop-lease outcome. Mirrors dispatch.py's cancel/end pattern so the
-        engine path ends sessions without the scheduler."""
+        engine path ends sessions without the scheduler. Only the transcript
+        record a full terminal would add is skipped here: a webhook hold or
+        a session.ended subscriber must not wait on an end this method makes
+        (review 2026-11-23, K1 round 2)."""
         from primer.int.claim import ReleaseOutcome
 
         storage = self._storage.get_storage(WorkspaceSession)
@@ -1591,8 +1957,9 @@ class WorkerPool:
         if fresh is not None:
             # ONE field-scoped write of the end, fenced on the row not being ENDED already (the first terminal reason wins), never the whole
             # row read above: a wake on another process may have reserved a seq or armed a turn since (audit G7-03, review M5).
+            ended_row = None
             try:
-                await storage.patch_if(
+                ended_row = await storage.patch_if(
                     session.id,
                     to_jsonable_python({
                         "status": SessionStatus.ENDED,
@@ -1603,6 +1970,34 @@ class WorkerPool:
                 )
             except NotFoundError:
                 pass
+            if ended_row is not None:
+                # K1 carry (review 2026-11-23): this write is a TERMINAL end, so it
+                # announces itself the way dispatch.py's terminal exits do - the
+                # durable session.ended, the memory hook and the session:{id}:terminal
+                # publish a webhook hold waits on. Before the fix a row ended here
+                # (the preempt-cancel and failed-resume exits) announced nothing, so
+                # webhook holds waited on the terminal event until their cap and
+                # session.ended subscribers never fired. Advisory on purpose, like
+                # _publish_terminal itself: a failed publish never fails the end it
+                # reports. Only the transcript record write this path skips is the
+                # one _end_cancelled_at_claim's full terminal would have added.
+                try:
+                    # The pool holds every ref _publish_terminal reads (the recorder's
+                    # storage + bus, the memory hook's claim engine); the turn-only
+                    # fields it never touches are absent by design.
+                    await _publish_terminal(  # type: ignore[arg-type]
+                        SimpleNamespace(
+                            storage_provider=self._storage,
+                            event_bus=self._event_bus,
+                            claim_engine=self._engine,
+                        ),
+                        ended_row, SessionStatus.ENDED, ended_row.ended_reason,
+                    )
+                except Exception:
+                    logger.exception(
+                        "_end_session: the terminal publish for session %s failed",
+                        session.id,
+                    )
             # Every terminal exit of the turn applies a switch queued on the session (dispatch.py's drain
             # checkpoint); this one has no turn behind it, so it applies the switch itself. Without it a
             # switch queued on a parked session survives a failed resume on the ENDED row, and after a reopen

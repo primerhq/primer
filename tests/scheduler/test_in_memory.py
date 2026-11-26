@@ -25,7 +25,10 @@ async def test_register_and_list_workers(sched):
     assert workers[0].id == "w1"
 
 
-async def test_watch_ready_yields_on_enqueue(sched):
+async def test_enqueue_does_not_deliver_a_ready_hint(sched):
+    """Review 2026-11-23 finding 1.10: nothing reads the ready queue (no
+    consumer drives watch_ready), so a wake no longer delivers onto it: a
+    consumer of watch_ready sees nothing, however many enqueues land."""
     await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
     iterator = sched.watch_ready("w1")
 
@@ -36,9 +39,10 @@ async def test_watch_ready_yields_on_enqueue(sched):
     task = asyncio.create_task(consume())
     await asyncio.sleep(0)
     sched.register_session_for_test("s1")
-    await sched.enqueue("s1")
-    sid = await asyncio.wait_for(task, timeout=1.0)
-    assert sid == "s1"
+    for i in range(100):
+        await sched.enqueue(f"s{i}")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(task, timeout=0.05)
 
 
 async def test_metrics_snapshot_returns_expected_keys(sched):
@@ -56,12 +60,29 @@ async def test_metrics_snapshot_returns_expected_keys(sched):
     # Sessions-by-status reflects what was registered.
     assert snap["primer_sessions_active"]["running"] == 1
     assert snap["primer_sessions_active"]["waiting"] == 1
-    # One enqueue with one registered worker => one notify.
+    # One enqueue with one registered worker => one notify (the wake is
+    # recorded; it is no longer delivered onto the ready queue).
     assert snap["primer_scheduler_notify_received_total"] == 1
-    # s1 is runnable + unclaimed.
-    assert snap["primer_sessions_runnable_queue_depth"] == 1
+    # The claim engine owns the runnable state, so the scheduler's runnable
+    # depth is 0 (review 2026-11-23 finding 1.10).
+    assert snap["primer_sessions_runnable_queue_depth"] == 0
     # No expirations yet.
     assert snap["primer_lease_expirations_total"] == 0
+
+
+async def test_many_wakes_do_not_grow_the_ready_queue(sched):
+    """Review 2026-11-23 finding 1.10: a wake used to put the session id onto
+    every worker's ready queue, which grew unboundedly. It no longer does: a
+    burst of enqueues leaves the ready queue empty and the depth at 0."""
+    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
+    for i in range(1000):
+        await sched.enqueue(f"s{i}")
+    w1 = sched._workers["w1"]  # noqa: SLF001
+    assert w1.ready_queue.qsize() == 0
+    snap = sched.metrics_snapshot()
+    assert snap["primer_sessions_runnable_queue_depth"] == 0
+    # The notify metric still counts the wakes (one per worker per wake).
+    assert snap["primer_scheduler_notify_received_total"] == 1000
 
 
 async def test_signal_cancel_routes_to_subscribers(sched):

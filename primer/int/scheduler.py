@@ -124,7 +124,17 @@ class Scheduler(ABC):
     async def drain_worker(self, worker_id: str) -> None: ...
 
     @abstractmethod
-    async def deregister_worker(self, worker_id: str) -> None: ...
+    async def deregister_worker(self, worker_id: str, *, keep_registration: bool = False) -> None:
+        """Delete the worker row; optionally keep this process's registration of it.
+
+        With ``keep_registration`` (the admin DELETE path) the row is removed but the
+        ``register_worker`` arguments this process recorded are kept: a worker that is in
+        fact still running here (its row was only marked dead by a peer's boot sweep) is
+        re-registered by its next heartbeat. A tombstone of a truly gone worker is still
+        cleaned: its registration is not in this process's map, so nothing revives it.
+        Without it (the worker pool's own deregistration on shutdown) the registration is
+        forgotten too, so a stopped pool's row stays gone.
+        """
 
     @abstractmethod
     async def purge_dead_workers(self) -> int:

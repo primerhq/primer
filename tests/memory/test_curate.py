@@ -8,6 +8,7 @@ from datetime import timedelta
 import pytest
 
 import primer.memory.curate as curate_mod
+from primer.claim.adapters.memory import MemoryClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
 from primer.knowledge.collection_query import QueryHit
@@ -201,7 +202,10 @@ async def test_the_job_requeues_a_day_later_and_remembers_the_run(sp, llm) -> No
     await sp.get_storage(MemoryJob).create(MemoryJob(
         id=f"curate:{AGENT}", kind="curate", agent_id=AGENT, created_at=NOW, expires_at=NOW + timedelta(hours=1),
     ))
-    deps.engine = InMemoryClaimEngine(adapters={}, clock=lambda: NOW + timedelta(days=1))
+    deps.engine = InMemoryClaimEngine(
+        adapters={ClaimKind.MEMORY: MemoryClaimAdapter(storage=sp.get_storage(MemoryJob))},
+        clock=lambda: NOW + timedelta(days=1),
+    )
     await deps.engine.upsert(ClaimKind.MEMORY, f"curate:{AGENT}")
     lease, = await deps.engine.claim_due("w1", max_count=1)
     out = await run_memory_job(deps, lease)

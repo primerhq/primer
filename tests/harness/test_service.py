@@ -18,6 +18,7 @@ from primer.harness.service import (
     resolved_id,
 )
 from primer.harness.template import RenderedFile
+from primer.int.vector_store import VectorStore
 from primer.model.harness import Harness, HarnessRendering, HarnessStatus, RenderedEntry
 
 
@@ -584,7 +585,7 @@ class _RecordingEmbedder:
         return _R()
 
 
-class _RecordingStore:
+class _RecordingStore(VectorStore):
     def __init__(self):
         self.puts: list[Any] = []
         self.created_collections: list[str] = []
@@ -599,6 +600,21 @@ class _RecordingStore:
 
     async def put(self, record):
         self.puts.append(record)
+
+    async def get(self, cid, document_id):
+        return [r for r in self.puts if r.collection_id == cid and r.document_id == document_id]
+
+    async def search_by_meta(self, cid, meta):
+        return []
+
+    async def search(self, cid, vector, k):
+        return []
+
+    async def count_documents(self, cid):
+        return len({r.document_id for r in self.puts if r.collection_id == cid})
+
+    async def drop_collection(self, cid):
+        pass
 
 
 @pytest.mark.asyncio

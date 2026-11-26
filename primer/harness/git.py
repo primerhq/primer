@@ -20,7 +20,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Final
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 import yaml
 
@@ -61,25 +61,59 @@ def _git(*args: str) -> list[str]:
     return ["git", *protocols, *args]
 
 
-def _git_env() -> dict[str, str]:
-    """The environment for every git call: ``GIT_PROTOCOL_FROM_USER=0`` so a ``user``-policy transport is never allowed."""
-    return {**os.environ, "GIT_PROTOCOL_FROM_USER": "0"}
+def _git_env(auth: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for every git call: ``GIT_PROTOCOL_FROM_USER=0`` so a ``user``-policy transport is never allowed.
 
-
-def _inject_token(url: str, token: str | None) -> str:
-    """Embed an OAuth2 token in an HTTPS URL.
-
-    Non-HTTPS URLs (e.g. file://) are returned unchanged — used in tests.
+    ``auth`` is :func:`_prepare_remote`'s credential, merged in last.
     """
-    if token is None:
-        return url
+    return {**os.environ, "GIT_PROTOCOL_FROM_USER": "0", **(auth or {})}
+
+
+_USERNAME_VAR = "PRIMER_GIT_CREDENTIAL_USERNAME"
+_PASSWORD_VAR = "PRIMER_GIT_CREDENTIAL_PASSWORD"
+# A credential helper that answers only ``get`` and reads both values from the child's environment: the secret is in no argv and no file.
+_CREDENTIAL_HELPER = f'!f() {{ test "$1" = get || exit 0; echo "username=${_USERNAME_VAR}"; echo "password=${_PASSWORD_VAR}"; }}; f'
+
+
+def _credential_env(origin: str, username: str, password: str) -> dict[str, str]:
+    """``GIT_CONFIG_*`` and credential variables that make git answer a challenge FROM ``origin`` (and only it) with ``username``/``password``.
+
+    ``credential.helper`` is reset to empty first, so no helper of the host's own (a keychain) is asked or told about the secret; then a helper
+    scoped to ``credential.<origin>.helper``. git asks it only after the server challenges, and only for a url under ``origin``: a redirect to
+    another host is never answered with the secret, and a public repository is still read anonymously when it does not challenge (an
+    ``http.extraHeader`` would have gone to every request, to the redirect target included).
+    """
+    n = int(os.environ.get("GIT_CONFIG_COUNT", "0") or 0)       # keep any config entries the operator's environment already carries
+    return {
+        "GIT_CONFIG_COUNT": str(n + 2),
+        f"GIT_CONFIG_KEY_{n}": "credential.helper",
+        f"GIT_CONFIG_VALUE_{n}": "",
+        f"GIT_CONFIG_KEY_{n + 1}": f"credential.{origin}.helper",
+        f"GIT_CONFIG_VALUE_{n + 1}": _CREDENTIAL_HELPER,
+        _USERNAME_VAR: username,
+        _PASSWORD_VAR: password,
+    }
+
+
+def _prepare_remote(url: str, token: str | None) -> tuple[str, dict[str, str]]:
+    """The url git is given and the environment it runs in, so no credential is ever in argv (review 2.10, O-2 and O-4).
+
+    The credential used to be embedded in the url (``https://oauth2:<token>@host/...``): any other user on the worker host could read it from
+    ``ps`` for as long as a clone ran, and ``remote add`` wrote it into the clone's ``.git/config``. Now the returned url has no userinfo, and the
+    credential travels in the child's environment (:func:`_credential_env`): the stored ``token`` (user ``oauth2``) when there is one, else the
+    userinfo the stored ``git_url`` carried (a personal access token kept in the url). The token wins when both are set. Non-https urls
+    (``file://``, used in tests) are returned as they are with no credential.
+    """
     parsed = urlparse(url)
-    if parsed.scheme != "https":
-        return url
-    netloc = f"oauth2:{token}@{parsed.hostname or ''}"
-    if parsed.port:
-        netloc += f":{parsed.port}"
-    return urlunparse(parsed._replace(netloc=netloc))
+    if parsed.scheme != "https" or not parsed.hostname:
+        return url, {}
+    host = parsed.netloc.rpartition("@")[2]
+    clean = urlunparse(parsed._replace(netloc=host))
+    if token is not None:
+        return clean, _credential_env(f"https://{host}", "oauth2", token)
+    if "@" in parsed.netloc:
+        return clean, _credential_env(f"https://{host}", unquote(parsed.username or ""), unquote(parsed.password or ""))
+    return clean, {}
 
 
 _TOKEN_PATTERN = re.compile(r"oauth2:[^@\s]+@")
@@ -107,7 +141,7 @@ def _redact(text: str, token: str | None = None) -> str:
     return out
 
 
-async def _run(args: list[str], **kwargs) -> tuple[int, str, str]:
+async def _run(args: list[str], *, auth: dict[str, str] | None = None, **kwargs) -> tuple[int, str, str]:
     """Run a git command asynchronously.
 
     Returns (returncode, stdout, stderr).  Raises HarnessGitError on
@@ -120,7 +154,7 @@ async def _run(args: list[str], **kwargs) -> tuple[int, str, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            env=_git_env(),
+            env=_git_env(auth),
             **kwargs,
         )
         try:
@@ -151,8 +185,8 @@ async def ls_remote(url: str, *, token: str | None, ref: str) -> str:
     if len(ref) == 40 and all(c in "0123456789abcdef" for c in ref):
         # full SHA — no need to ls-remote
         return ref
-    effective = _inject_token(url, token)
-    returncode, stdout, stderr = await _run(_git("ls-remote", "--", effective, ref))
+    clean_url, auth = _prepare_remote(url, token)
+    returncode, stdout, stderr = await _run(_git("ls-remote", "--", clean_url, ref), auth=auth)
     if returncode != 0:
         raise HarnessGitError(
             "git_clone_failed" if "Authentication" in (stderr or "") else "ref_not_found",
@@ -182,7 +216,7 @@ async def clone_at_ref(
     SHA refs via ``init + fetch + checkout``.
     """
     _check_target(url, ref)
-    effective = _inject_token(url, token)
+    clean_url, auth = _prepare_remote(url, token)
     is_sha = len(ref) == 40 and all(c in "0123456789abcdef" for c in ref)
     if is_sha:
         # SHA path: init empty, fetch the specific SHA, checkout.
@@ -193,8 +227,9 @@ async def clone_at_ref(
                 _redact((stderr or "git init failed").strip(), token),
             )
         returncode, _, stderr = await _run(
-            _git("fetch", "--depth=1", "--", effective, ref),
+            _git("fetch", "--depth=1", "--", clean_url, ref),
             cwd=dest,
+            auth=auth,
         )
         if returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
@@ -212,7 +247,8 @@ async def clone_at_ref(
         return
     # Symbolic ref path.
     returncode, _, stderr = await _run(
-        _git("clone", "-q", "--depth=1", f"--branch={ref}", "--", effective, dest),
+        _git("clone", "-q", "--depth=1", f"--branch={ref}", "--", clean_url, dest),
+        auth=auth,
     )
     if returncode != 0:
         shutil.rmtree(dest, ignore_errors=True)
@@ -359,13 +395,13 @@ async def _get_head_sha(clone_dir: str) -> str:
 
 
 async def _run_checked(args: list[str], *, token: str | None = None, cwd: str | None = None,
-                       error_code: str = "git_push_failed") -> tuple[str, str]:
+                       error_code: str = "git_push_failed", auth: dict[str, str] | None = None) -> tuple[str, str]:
     """Run a git command and raise HarnessGitError on non-zero exit.
 
     Returns (stdout, stderr) as strings on success. Token is redacted from
     any raised error message.
     """
-    returncode, stdout, stderr = await _run(args, cwd=cwd)
+    returncode, stdout, stderr = await _run(args, cwd=cwd, auth=auth)
     if returncode != 0:
         msg = (stderr or stdout or "git command failed").strip()
         raise HarnessGitError(error_code, _redact(msg, token))
@@ -391,15 +427,15 @@ async def push_bundle(
     the working tree is unchanged (no-op).
     """
     _check_target(url, ref)
-    auth_url = _inject_token(url, token)
+    clean_url, auth = _prepare_remote(url, token)
     with tempfile.TemporaryDirectory() as td:
         clone_dir = os.path.join(td, "repo")
         # Try a shallow clone first; fall back to init+remote when the
         # remote is empty or the ref doesn't exist yet.
         try:
             await _run_checked(
-                _git("clone", "--depth=1", f"--branch={ref}", "--", auth_url, clone_dir),
-                token=token, error_code="git_clone_failed",
+                _git("clone", "--depth=1", f"--branch={ref}", "--", clean_url, clone_dir),
+                token=token, error_code="git_clone_failed", auth=auth,
             )
         except HarnessGitError:
             shutil.rmtree(clone_dir, ignore_errors=True)
@@ -408,7 +444,7 @@ async def push_bundle(
                 token=token, error_code="git_clone_failed",
             )
             await _run_checked(
-                _git("-C", clone_dir, "remote", "add", "--", "origin", auth_url),
+                _git("-C", clone_dir, "remote", "add", "--", "origin", clean_url),
                 token=token, error_code="git_clone_failed",
             )
 
@@ -480,7 +516,7 @@ async def push_bundle(
         try:
             await _run_checked(
                 _git("-C", clone_dir, "push", "--", "origin", ref),
-                token=token,
+                token=token, auth=auth,
             )
         except HarnessGitError as exc:
             if "non-fast-forward" in exc.message or "non-fast-forward" in str(exc):

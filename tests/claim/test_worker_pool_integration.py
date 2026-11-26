@@ -13,6 +13,7 @@ from primer.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
 from primer.int.scheduler import Scheduler
 from primer.model.scheduler import WorkerConfig
 from primer.worker.pool import WorkerPool
+from tests.claim._platform import platform_adapters
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ async def test_engine_claim_loop_dispatches_all_three_kinds():
     dispatched: list[tuple[ClaimKind, str]] = []
 
     # InMemoryClaimEngine with empty adapters (no on_release side-effects).
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
 
     pool = WorkerPool(
         config=WorkerConfig(
@@ -158,7 +159,7 @@ async def test_engine_claim_loop_respects_concurrency():
     max_concurrent = 0
     current_concurrent = 0
 
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     engine_ref = engine  # capture for assertions
 
     pool = WorkerPool(
@@ -220,7 +221,7 @@ async def test_engine_bus_loop_wakes_claim_loop_on_upsert():
 
     dispatched_at: list[float] = []
 
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
 
     pool = WorkerPool(
         config=WorkerConfig(
@@ -276,7 +277,7 @@ async def test_pool_pushes_lease_ttl_to_engine():
     """The worker pool threads WorkerConfig.lease_ttl_seconds onto the claim
     engine at start() so the lease_ttl >= 2*heartbeat validator actually
     governs the engine, not a hardcoded 60s (A-I1)."""
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     assert engine.lease_ttl_seconds == 60  # standalone default
 
     pool = WorkerPool(
@@ -304,7 +305,7 @@ async def test_a_claim_ready_wake_claims_at_once_whatever_the_poll_interval():
     """Perf plan Task 3 (H4), characterization: the poll interval is only the fallback. The ``claim_ready`` hint sets the pool's wake event
     (``_engine_bus_loop``), and an idle claim loop claims on it immediately, so a longer poll interval costs no latency."""
     dispatched: list[str] = []
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION, ClaimKind.HARNESS))
     pool = WorkerPool(
         config=WorkerConfig(concurrency=2, claim_batch_size=2, heartbeat_interval_seconds=1, poll_interval_seconds=30.0),
         scheduler=_NullScheduler(),

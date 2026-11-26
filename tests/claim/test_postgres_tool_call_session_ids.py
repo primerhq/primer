@@ -97,17 +97,24 @@ async def test_unqualified_ids_collide_on_the_primary_key_and_qualified_ones_do_
 @_needs_pg
 @pytest.mark.asyncio
 async def test_each_sessions_task_gets_its_own_lease_and_is_claimed_separately(pg_storage, created_ids):
-    store = pg_storage.get_storage(ToolCallTask)
-    engine = PostgresClaimEngine(
-        storage_provider=pg_storage,
-        adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=store)},
-    )
-    ids = [tool_call_task_id(sid, "x:tool:0:1") for sid in ("sess-pg-A", "sess-pg-B")]
-    for task_id, sid in zip(ids, ("sess-pg-A", "sess-pg-B")):
-        await _create(store, _task(task_id, sid), created_ids)
-        await engine.upsert(ClaimKind.TOOL_CALL, task_id)
+    from tests.claim._entity_seed import EntitySeeder
 
-    for task_id in ids:
-        assert await engine.has_lease(ClaimKind.TOOL_CALL, task_id)
-    leases = await engine.claim_due("worker-A", max_count=10, kinds=[ClaimKind.TOOL_CALL])
-    assert sorted(lse.entity_id for lse in leases) == sorted(ids)
+    seeder = EntitySeeder(pg_storage)
+    await seeder.seed("sessions", ["sess-pg-A", "sess-pg-B"])  # the arm snapshots the parent session
+    try:
+        store = pg_storage.get_storage(ToolCallTask)
+        engine = PostgresClaimEngine(
+            storage_provider=pg_storage,
+            adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=store)},
+        )
+        ids = [tool_call_task_id(sid, "x:tool:0:1") for sid in ("sess-pg-A", "sess-pg-B")]
+        for task_id, sid in zip(ids, ("sess-pg-A", "sess-pg-B")):
+            await _create(store, _task(task_id, sid), created_ids)
+            await engine.upsert(ClaimKind.TOOL_CALL, task_id)
+
+        for task_id in ids:
+            assert await engine.has_lease(ClaimKind.TOOL_CALL, task_id)
+        leases = await engine.claim_due("worker-A", max_count=10, kinds=[ClaimKind.TOOL_CALL])
+        assert sorted(lse.entity_id for lse in leases) == sorted(ids)
+    finally:
+        await seeder.cleanup()

@@ -71,7 +71,7 @@ async def test_the_pgvector_pool_keeps_its_own_init_when_keepalive_is_off(captur
     assert callable(captured["init"])
 
 
-async def test_the_pgvector_init_runs_the_keepalive_and_then_its_own_setup(monkeypatch, captured):
+async def test_the_pgvector_init_runs_the_keepalive_then_the_codec_and_the_pool_setup_sets_the_guc(monkeypatch, captured):
     order: list[str] = []
 
     class _Conn:
@@ -89,5 +89,7 @@ async def test_the_pgvector_init_runs_the_keepalive_and_then_its_own_setup(monke
 
     await _open_pgvector(PoolConfig())
     await captured["init"](_Conn())
-
+    # The search GUC is the pool's per-acquire ``setup`` hook (asyncpg's release RESET ALLs it), not part of ``init`` (review 3.2).
+    assert order == ["keepalive", "register_vector"]
+    await captured["setup"](_Conn())
     assert order == ["keepalive", "register_vector", "search_guc"]

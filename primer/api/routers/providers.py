@@ -87,7 +87,7 @@ from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_o
 from primer.api.routers._probe_text import draft_error
 from primer.api.routers._probe_text import validation_detail as _validation_detail
 from primer.common.entity_checks import EntityCheckError
-from primer.common.log import redact_url_secrets
+from primer.common.log import redact_credentials, redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import (
     check_mcp_url_resolves_public,
@@ -2036,8 +2036,10 @@ async def list_toolset_tools(
         # Otherwise, take the first sub-exception's type+message
         first = group.exceptions[0] if group.exceptions else group
         raise ProviderError(
-            f"toolset {toolset_id!r} provider failed to enumerate tools: "
-            f"{type(first).__name__}: {first}"
+            redact_credentials(
+                f"toolset {toolset_id!r} provider failed to enumerate tools: "
+                f"{type(first).__name__}: {first}"
+            )
         ) from group
     except Exception as exc:
         # Re-raise the documented primer error types so the registry
@@ -2051,8 +2053,10 @@ async def list_toolset_tools(
         # types like mcp.shared.exceptions.McpError. Map to 502
         # provider-error rather than letting the 500 leak.
         raise ProviderError(
-            f"toolset {toolset_id!r} provider failed to enumerate tools: "
-            f"{type(exc).__name__}: {exc}"
+            redact_credentials(
+                f"toolset {toolset_id!r} provider failed to enumerate tools: "
+                f"{type(exc).__name__}: {exc}"
+            )
         ) from exc
     return {"tools": tools}
 
@@ -2383,7 +2387,7 @@ class ValidatePythonSourceBody(BaseModel):
 @toolset_router.post(
     "/toolsets/{toolset_id}/validate",
     summary="Dry-run: what would this source register, and what is wrong with it",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 413, 500),
 )
 @route_tool(scoped_id="toolsets__validate_python_source")
 async def validate_python_source(
@@ -2401,7 +2405,9 @@ async def validate_python_source(
 
     Always 200: a source that cannot register is the normal case here, not an
     HTTP error. ``ok`` distinguishes them. (The PUT path still 422s -- there,
-    invalid source is a rejected write.)
+    invalid source is a rejected write.) A source over the registrar's
+    :data:`MAX_PYTHON_TOOLSET_SOURCE_BYTES` cap is refused with a 413 before
+    anything is parsed; the parse itself runs off the event loop.
 
     Safe by construction: :func:`register_module_report` walks the AST and
     never imports or executes the module, which is the same property that
@@ -2414,10 +2420,13 @@ async def validate_python_source(
     per-function failure instead shows up as ``ok: false`` on that one
     entry in ``tools``, alongside the others.
     """
+    from primer.model.payload_too_large import PayloadTooLargeError
     from primer.model.providers.toolset import PythonConfig
     from primer.toolset.python_runner.registration import (
+        MAX_PYTHON_TOOLSET_SOURCE_BYTES,
         RegisteredTool,
         RegistrationError,
+        SourceTooLargeError,
         register_module_report,
     )
 
@@ -2433,10 +2442,17 @@ async def validate_python_source(
     if row is not None and isinstance(row.config, PythonConfig):
         default_timeout = row.config.default_timeout_seconds
 
+    # The parse runs off the event loop: a large source must not stall it.
+    # The registrar's source cap (review 4.2) is enforced inside it, right
+    # before ast.parse, so this route and the save path share one bound.
     try:
-        registered = register_module_report(
-            body.source, toolset_id, default_timeout,
+        registered = await asyncio.to_thread(
+            register_module_report, body.source, toolset_id, default_timeout,
         )
+    except SourceTooLargeError as exc:
+        raise PayloadTooLargeError(
+            str(exc), limit_bytes=MAX_PYTHON_TOOLSET_SOURCE_BYTES,
+        ) from exc
     except RegistrationError as exc:
         return {
             "ok": False,
@@ -2505,10 +2521,16 @@ async def toolset_runtime(
 ) -> dict:
     """What a python toolset actually is at runtime.
 
-    ``isolation_level`` is what this deployment ENFORCES, not what the
-    strongest backend could: ``rlimit-only`` bounds CPU and memory but stops
-    neither filesystem reads nor egress, and the console shows that rather
-    than a generic "sandboxed" badge.
+    ``isolation_level`` is what a call from a LOCAL workspace ENFORCES
+    (not what the strongest backend could): ``rlimit-only`` bounds CPU and
+    memory but stops neither filesystem reads nor egress, and the console
+    shows that rather than a generic "sandboxed" badge.
+
+    A call from a container/k8s workspace runs in that workspace's own
+    sandbox instead: ``container_isolation`` is true where this deployment
+    wires the per-call sandbox resolver, and ``image`` is the runner image
+    the toolset names (informational: the running workspace's image comes
+    from its template).
     """
     # the runtime facts reveal the toolset's derived tools: read level.
     # Reserved ids are not rows, so the gate skips them as before.
@@ -2527,9 +2549,17 @@ async def toolset_runtime(
         entry.update(tool_catalogue_flags(t))
         tools.append(entry)
     error = getattr(provider, "registration_error", None)
+    image = None
+    if row is not None and row.provider == ToolsetProviderType.PYTHON:
+        from primer.model.providers.toolset import PythonConfig
+
+        if isinstance(row.config, PythonConfig):
+            image = row.config.image
     return {
         "toolset_id": toolset_id,
         "isolation_level": getattr(provider, "isolation_level", None),
+        "container_isolation": getattr(provider, "container_isolation", None),
+        "image": image,
         "tools": tools,
         "registration_error": (
             {

@@ -350,6 +350,12 @@ var window = globalThis;
     })(root.tree);
     return out;
   }
+  // A window that takes listeners and events (addEventListener, removeEventListener, dispatchEvent, CustomEvent), as a browser's does; a prelude may replace them.
+  var listeners = {};
+  g.addEventListener = function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); };
+  g.removeEventListener = function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); };
+  g.dispatchEvent = function (ev) { (listeners[ev.type] || []).slice().forEach(function (f) { f(ev); }); return true; };
+  g.CustomEvent = function (type, init) { this.type = type; this.detail = init ? init.detail : null; };
   g.React = {
     createElement: createElement, Fragment: Fragment, Component: Component, useState: useState, useReducer: useReducer, useRef: useRef,
     useMemo: useMemo, useCallback: useCallback, useEffect: useEffect, useLayoutEffect: useEffect, useId: useId,

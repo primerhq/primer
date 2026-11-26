@@ -59,6 +59,7 @@ from primer.model.except_ import (
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.tree import check_body_size
+from primer.knowledge.document_service import MAX_LIST_LIMIT
 from primer.model.agent import Agent
 from primer.model.storage import (
     Op,
@@ -2073,6 +2074,23 @@ class _ListDocumentsArgs(BaseModel):
             "every document in the collection."
         ),
     )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_LIST_LIMIT,
+        description=(
+            "Page size: at most this many entries (1 to "
+            f"{MAX_LIST_LIMIT}). Omit for the default page "
+            f"({MAX_LIST_LIMIT})."
+        ),
+    )
+    after_path: str | None = Field(
+        default=None,
+        description=(
+            "Page cursor: the ``next_after_path`` of the previous page "
+            "(its last path). Omit for the first page."
+        ),
+    )
 
 
 class _MoveDocumentArgs(BaseModel):
@@ -2600,8 +2618,9 @@ def _document_extras(
         if denied is not None:
             return denied
         try:
-            entries = await service_factory().list(
-                collection_id=args.collection_id, prefix=args.prefix
+            page = await service_factory().list(
+                collection_id=args.collection_id, prefix=args.prefix,
+                limit=args.limit, after_path=args.after_path,
             )
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
@@ -2609,8 +2628,11 @@ def _document_extras(
             {
                 "documents": [
                     {"path": e.path, "document_id": e.document_id, "size": e.size}
-                    for e in entries
-                ]
+                    for e in page.entries
+                ],
+                "next_after_path": (
+                    page.entries[-1].path if page.truncated else None
+                ),
             }
         )
 
@@ -2621,15 +2643,22 @@ def _document_extras(
             purpose="List a collection's documents by path (no bodies).",
             when=(
                 "Use when you want the path hierarchy of a collection; pass "
-                "an optional ``prefix`` to scope to a subtree. Returns "
-                "``{documents: [{path, document_id, size}]}`` without loading "
-                "any body; use ``get_document_content`` to read a body."
+                "an optional ``prefix`` to scope to a subtree. Returns at "
+                f"most {MAX_LIST_LIMIT} entries per page as "
+                "``{documents: [{path, document_id, size}], "
+                "next_after_path}`` (``next_after_path`` is null on the last "
+                "page; pass it back as ``after_path`` for the next page) "
+                "without loading any body; use ``get_document_content`` to "
+                "read a body."
             ),
             args_schema=_ListDocumentsArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"collection_id": "kb-1", "prefix": "concepts/"},
-                    returns="``{documents: [{path, document_id, size}, ...]}``",
+                    returns=(
+                        "``{documents: [{path, document_id, size}, ...], "
+                        "next_after_path: null}``"
+                    ),
                 )
             ],
             required_role="user",

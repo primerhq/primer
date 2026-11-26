@@ -305,6 +305,7 @@ async def test_fresh_custom_volume_is_initialized_by_isolated_root_helper_before
             }],
             "NetworkMode": "none",
             "ReadonlyRootfs": True,
+            "CapDrop": ["ALL"],
             "SecurityOpt": ["no-new-privileges:true"],
         },
         "Tty": False,

@@ -298,7 +298,11 @@ async def create_trigger(
     # wait_timeout_seconds, hmac_secret) instead of re-listing them, which is
     # what used to silently drop newly added config fields.
     if config.kind == "webhook":
-        config = config.model_copy(update={"token": _mint_webhook_token()})
+        update: dict[str, Any] = {"token": _mint_webhook_token()}
+        # A new trigger requires the timestamped (replay-protected) signature unless the creator chose otherwise; the model default (True) is for stored rows that predate the flag.
+        if "legacy_body_hmac" not in config.model_fields_set:
+            update["legacy_body_hmac"] = False
+        config = config.model_copy(update=update)
     _validate_config(config)
 
     source = get_source(config.kind)
@@ -469,6 +473,9 @@ async def update_trigger(
                     "a webhook token is 32 lowercase hex characters; leave it empty to keep the stored one, or rotate it for a new one"
                 )
             adopted = False
+        # An update that does not name the flag keeps the stored one (a config body omitting it parses to the model default, which would silently re-enable body-only signatures on a trigger created without them); naming it is the operator's switch.
+        if config.kind == "webhook" and trigger.config.kind == "webhook" and "legacy_body_hmac" not in config.model_fields_set:
+            config = config.model_copy(update={"legacy_body_hmac": trigger.config.legacy_body_hmac})
         # The hmac_secret mask (a SecretStr serialised by a read) round-trips
         # to the stored secret, never to the literal mask.
         if (

@@ -17,7 +17,7 @@ An agent row is created and edited through the `crud` and `system` agent tools, 
 - `description` - free text, embedded for search. Must not be blank.
 - `access` - who owns the agent and who it is shared with: `owners`, people granted `read` or `full`, and whether it is `public`. The server sets it on create (the creator owns the agent) and ignores it in create and update bodies; change it with `system__set_entity_access`, owners only.
 - `model` - `{profile_id}` naming a stored model profile, which carries the provider and the model.
-- `default_priority` - JSON integer from 0 to 1,000,000 inclusive, default 0. A scheduled or delayed trigger uses this value when it starts a fresh session with this agent. A webhook or channel trigger uses 0 when its saved configuration is interactive at fire time and the agent default otherwise. You can save a nonzero default, but selecting it currently fails delivery before a session slot is allocated. Direct starts default to 0 and starts from a session turn inherit the caller's priority when omitted.
+- `default_priority` - JSON integer from 0 to 1,000,000 inclusive, default 0. A scheduled or delayed trigger uses this value when it starts a fresh session with this agent. A webhook or channel trigger uses 0 when its saved configuration is interactive at fire time and the agent default otherwise. A nonzero default starts its fresh session at that urgency. Direct starts default to 0 and starts from a session turn inherit the caller's priority when omitted.
 - `temperature` - optional sampling temperature; `null` defers to the provider's default.
 - `max_tool_turns` - cap on tool-call rounds within one turn; default 50; `null` is unbounded.
 - `max_output_tokens` - cap on tokens per completion; `null` is unbounded.

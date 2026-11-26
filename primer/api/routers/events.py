@@ -47,6 +47,12 @@ events_router = APIRouter(tags=["events"])
 # defensive walk cap.
 _SCAN_CAP = 10_000
 
+# A backward read (``before_id``) walks the id space downward in windows of this many ids, one query each, and stops after
+# ``_BACK_MAX_WINDOWS`` windows even when the page is not full: it then hands back ``next_before_id`` and the caller asks again, so one
+# request stays bounded however sparse the filter is.
+_BACK_WINDOW = 2_000
+_BACK_MAX_WINDOWS = 20
+
 # What a non-admin may see of the log (their workspace's operational
 # lifecycle, never entity CRUD) is ``user_safe``, checked against the
 # redacted stream, and a canvas.event reaches them without what the user
@@ -62,6 +68,10 @@ class EventListResponse(BaseModel):
         ..., description="Highest id in the log (0 when empty); poll "
         "with after_id=max_id for a tail.",
     )
+    next_before_id: int | None = Field(
+        None, description="Only on a before_id read: pass it as before_id for the next older page; "
+        "null when nothing older is left to read.",
+    )
 
 
 @events_router.get(
@@ -74,6 +84,11 @@ class EventListResponse(BaseModel):
 async def list_events(
     request: Request,
     after_id: int = Query(0, ge=0, description="Return events with id above this."),
+    before_id: int | None = Query(
+        None, ge=1,
+        description="Read backwards: the newest events with id below this (the filters applied), in id order. "
+        "A page may come back short with next_before_id set when the bounded scan ran out; ask again with it. Not with after_id.",
+    ),
     limit: int = Query(100, ge=1, le=500),
     event_type: str | None = Query(
         None, description="Event-type glob, e.g. 'agent.*'."),
@@ -101,6 +116,8 @@ async def list_events(
             storage_provider, person_from_request(request),
             workspace_id, AccessLevel.READ,
         )
+    if before_id is not None and after_id:
+        raise SemanticValidationError("before_id and after_id cannot be combined")
     store = storage_provider.get_event_store()
     prefix = None
     if event_type:
@@ -110,6 +127,11 @@ async def list_events(
             default=len(event_type),
         )
         prefix = event_type[:head] or None
+    if before_id is not None:
+        return await _read_back(
+            store, before_id, limit=limit, is_admin=is_admin, event_type=event_type, prefix=prefix,
+            entity_kind=entity_kind, entity_id=entity_id, workspace_id=workspace_id, since=since,
+        )
     # Read until the page has ``limit`` rows that pass the Python-side filters
     # (the glob tail, the non-admin visibility) or the log runs out: a page
     # whose first rows are all filtered must not starve the reader. Bounded
@@ -128,15 +150,7 @@ async def list_events(
             break
         after = seen = max(seen, page[-1].id)
         scanned += len(page)
-        if is_admin:
-            kept.extend(e for e in page if not event_type or fnmatchcase(e.event_type, event_type))
-        else:
-            # The feed is scoped to a workspace the caller can read (above), whose
-            # sessions they may all open, so it does not scope events to sessions;
-            # it drops the INPUT of a canvas interaction, which never leaves its
-            # session (audit G8-08). An admin reads the full event: the one door
-            # to another session's input.
-            kept.extend(without_input(e) for e in page if user_safe(e.event_type))
+        kept.extend(_visible(page, is_admin, event_type))
         if len(page) < limit:
             break
     # A non-admin's head is the newest event of the readable workspace they
@@ -147,6 +161,46 @@ async def list_events(
     # control, not an excuse to ship stored secrets to a browser.
     items = [redact_event(e) for e in kept[:limit]]
     return EventListResponse(items=items, max_id=max_id)
+
+
+def _visible(page: list[Event], is_admin: bool, event_type: str | None) -> list[Event]:
+    """The rows of a store page that pass the Python-side filters (the glob tail, the non-admin visibility)."""
+    if is_admin:
+        return [e for e in page if not event_type or fnmatchcase(e.event_type, event_type)]
+    # The feed is scoped to a workspace the caller can read, whose sessions they may all open, so it does not scope events to sessions;
+    # it drops the INPUT of a canvas interaction, which never leaves its session (audit G8-08). An admin reads the full event: the one
+    # door to another session's input.
+    return [without_input(e) for e in page if user_safe(e.event_type)]
+
+
+async def _read_back(
+    store, before_id: int, *, limit: int, is_admin: bool, event_type: str | None, prefix: str | None,
+    entity_kind: str | None, entity_id: str | None, workspace_id: str | None, since: datetime | None,
+) -> EventListResponse:
+    """The newest ``limit`` matching events below ``before_id``, in id order, read window by window (the store only reads forward)."""
+    head = await store.max_id()
+    hi = min(before_id, head + 1)  # exclusive upper bound; ids above the log's head hold nothing
+    kept: list[Event] = []
+    windows = 0
+    while hi > 1 and len(kept) < limit and windows < _BACK_MAX_WINDOWS:
+        lo = max(0, hi - 1 - _BACK_WINDOW)  # the window is the ids in (lo, hi): at most _BACK_WINDOW of them
+        page = await store.read_after(
+            lo, limit=_BACK_WINDOW + 1, event_type_prefix=prefix, entity_kind=entity_kind, entity_id=entity_id,
+            workspace_id=workspace_id, since=since,
+        )
+        kept = _visible([e for e in page if e.id < hi], is_admin, event_type) + kept
+        hi = lo + 1  # everything from lo + 1 up has been read
+        windows += 1
+    if len(kept) >= limit:
+        kept = kept[-limit:]
+        nxt = kept[0].id if kept else None
+    else:
+        nxt = hi if hi > 1 else None
+    if nxt is not None and nxt <= 1:
+        nxt = None
+    # A non-admin's head is the newest event of the readable workspace they named, never the global log's.
+    max_id = head if is_admin else (kept[-1].id if kept else 0)
+    return EventListResponse(items=[redact_event(e) for e in kept], max_id=max_id, next_before_id=nxt)
 
 
 class _PausedBody(BaseModel):

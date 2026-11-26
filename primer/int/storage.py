@@ -445,8 +445,15 @@ class Storage(ABC, Generic[ModelT]):
         page: PageRequest,
         *,
         order_by: list[OrderBy] | None = None,
+        conn: Any | None = None,
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         """Paginated search filtered by a predicate.
+
+        ``conn``, when given, runs the query on the caller's open connection
+        (and its transaction) instead of a backend-owned one: the read then
+        sees the caller's own uncommitted writes (Postgres), which an
+        in-transaction re-read needs (``DocumentTreeService``'s post-write
+        child-set diff).
 
         Parameters
         ----------

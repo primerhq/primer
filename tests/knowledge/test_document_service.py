@@ -12,9 +12,9 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from primer.knowledge.document_service import DocumentService
+from primer.knowledge.document_service import MAX_LIST_LIMIT, DocumentService
 from primer.model.collection import Document
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
 from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
@@ -65,7 +65,7 @@ async def test_concurrent_upsert_same_path_converges(svc):
         svc.upsert(collection_id="c1", path="race.md", content="B"),
     )
     assert r1.id == r2.id  # converged to one entity
-    entries = await svc.list(collection_id="c1")
+    entries = (await svc.list(collection_id="c1")).entries
     race = [e for e in entries if e.path == "race.md"]
     assert len(race) == 1
     final = (await svc.read(collection_id="c1", path="race.md")).content
@@ -80,7 +80,7 @@ async def test_read_missing_is_notfound(svc):
 async def test_list_no_bodies(svc):
     await svc.upsert(collection_id="c1", path="docs/a.md", content="abc", title="A")
     await svc.upsert(collection_id="c1", path="docs/b.md", content="de")
-    entries = await svc.list(collection_id="c1", prefix="docs/")
+    entries = (await svc.list(collection_id="c1", prefix="docs/")).entries
     paths = sorted(e.path for e in entries)
     assert paths == ["docs/a.md", "docs/b.md"]
     assert all(not hasattr(e, "content") for e in entries)
@@ -157,7 +157,7 @@ async def test_entity_without_content_row_is_invisible(svc):
     await svc._docs.create(doc)
     with pytest.raises(NotFoundError):
         await svc.read(collection_id="c1", path="legacy/only.md")
-    assert [e.path for e in await svc.list(collection_id="c1")] == []
+    assert [e.path for e in (await svc.list(collection_id="c1")).entries] == []
 
 async def test_read_truly_missing_still_404(svc):
     with pytest.raises(NotFoundError):
@@ -168,10 +168,43 @@ async def test_list_dedups_content_row_over_entity(svc):
     # A doc with BOTH a content row and an entity row must appear ONCE,
     # with the content-row size winning.
     await svc.upsert(collection_id="c1", path="dup.md", content="hello")
-    entries = await svc.list(collection_id="c1")
+    entries = (await svc.list(collection_id="c1")).entries
     dup = [e for e in entries if e.path == "dup.md"]
     assert len(dup) == 1
     assert dup[0].size == len("hello")
+
+
+async def test_list_pages_by_keyset_and_reports_truncation(svc):
+    for path in ("a/1.md", "a/2.md", "b/1.md", "b/2.md", "c.md"):
+        await svc.upsert(collection_id="c1", path=path, content="x")
+
+    page = await svc.list(collection_id="c1", limit=2)
+    assert [e.path for e in page.entries] == ["a/1.md", "a/2.md"]
+    assert page.truncated is True
+
+    page = await svc.list(collection_id="c1", limit=2, after_path="a/2.md")
+    assert [e.path for e in page.entries] == ["b/1.md", "b/2.md"]
+    assert page.truncated is True
+
+    page = await svc.list(collection_id="c1", limit=2, after_path="b/2.md")
+    assert [e.path for e in page.entries] == ["c.md"]
+    assert page.truncated is False
+
+
+async def test_a_full_page_that_is_the_last_page_does_not_claim_truncation(svc):
+    for i in range(3):
+        await svc.upsert(collection_id="c1", path=f"d/{i}.md", content="x")
+
+    page = await svc.list(collection_id="c1", limit=3)
+    assert len(page.entries) == 3
+    assert page.truncated is False, "a full final page must not claim a next page exists"
+
+
+async def test_a_limit_outside_the_page_range_is_refused(svc):
+    with pytest.raises(BadRequestError):
+        await svc.list(collection_id="c1", limit=0)
+    with pytest.raises(BadRequestError):
+        await svc.list(collection_id="c1", limit=MAX_LIST_LIMIT + 1)
 
 
 async def test_upsert_indexer_called_on_success(svc):

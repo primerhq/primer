@@ -97,6 +97,7 @@ async def test_move_subtree_rewrites_descendant_paths(tree):
     assert moved.path == "dst/src"
     res = await tree.read(collection_id="c1", path="dst/src/kid")
     assert res.body == "K" and res.document.id == kid.id  # id stable across moves
+    assert res.document.path == "dst/src/kid"  # the entity row follows, not just the content row
 
 
 async def test_move_into_own_subtree_rejected(tree):
@@ -176,3 +177,96 @@ async def test_update_racing_a_move_keeps_the_moved_path(tree, body):
     res = await tree.read(collection_id="c1", path="b")
     assert res.document.id == doc.id and (res.document.path, res.document.slug) == ("b", "b")
     assert res.body == "v1" and res.document.title is None
+
+
+def _update_after_first_resolve(tree, **update):
+    """Run ``tree.update(**update)`` right after the move's first resolve, before it writes: a
+    title/meta edit committing in that window (3.6)."""
+    original = tree.resolve
+    fired = False
+
+    async def resolve(**kw):
+        nonlocal fired
+        doc = await original(**kw)
+        if not fired:
+            fired = True
+            await tree.update(**update)
+        return doc
+
+    tree.resolve = resolve
+
+
+async def test_move_keeps_a_concurrent_title_edit(tree):
+    """3.6: a title edit that commits between the move's read and its write is not reverted: the move
+    writes the fields it changes, guarded, not the whole row (a whole-row write from the pre-read
+    snapshot would have written the old title back)."""
+    await tree.create(collection_id="c1", parent="", slug="src", body="S")
+    await tree.create(collection_id="c1", parent="src", slug="kid", body="K")
+    await tree.create(collection_id="c1", parent="", slug="dst", body="")
+    _update_after_first_resolve(tree, collection_id="c1", path="src", title="Src!")
+
+    moved = await tree.move(collection_id="c1", path="src", new_parent="dst")
+    assert moved.path == "dst/src"
+    res = await tree.read(collection_id="c1", path="dst/src")
+    assert res.document.title == "Src!"  # the concurrent edit survived the move
+    res = await tree.read(collection_id="c1", path="dst/src/kid")
+    assert res.body == "K"  # the subtree moved whole
+    assert res.document.path == "dst/src/kid"  # the entity row follows the content row, not just the path resolution
+
+
+def _create_after_first_walk(tree, **create):
+    """Run ``tree.create(**create)`` right after delete's first (check) subtree walk: a child landing
+    between the check and the write (3.6)."""
+    original = tree._descendants
+    fired = False
+
+    async def walk(collection_id, root, conn=None):
+        nonlocal fired
+        out = await original(collection_id, root, conn=conn)
+        if not fired:
+            fired = True
+            await tree.create(**create)
+        return out
+
+    tree._descendants = walk
+
+
+async def test_delete_refuses_when_a_child_lands_in_the_window(tree):
+    """3.6: a child created between delete's check and its write makes the node non-recursive: the
+    answer is a conflict, not a delete that orphans the child (the pre-read set would have deleted the
+    node and left the child addressed under a path whose parent no longer exists)."""
+    parent = await tree.create(collection_id="c1", parent="", slug="a", body="A")
+    _create_after_first_walk(tree, collection_id="c1", parent="a", slug="late", body="L")
+
+    with pytest.raises(ConflictError):
+        await tree.delete(collection_id="c1", path="a")
+
+    res = await tree.read(collection_id="c1", path="a")
+    assert res.document.id == parent.id
+    res = await tree.read(collection_id="c1", path="a/late")
+    assert res.body == "L"
+
+
+async def test_descendants_walk_is_batched_not_per_node(tree):
+    """3.5: one ``parent_id IN (...)`` query per level, not one query per descendant node (a per-node
+    walk paid a collection scan per descendant)."""
+    root = await tree.create(collection_id="c1", parent="", slug="root", body="")
+    n = 250
+    for i in range(n):
+        await tree.create(collection_id="c1", parent="root", slug=f"n{i:03d}", body="x")
+
+    finds = 0
+    original_find = tree._docs.find
+
+    async def counting_find(predicate, page, **kw):
+        nonlocal finds
+        finds += 1
+        return await original_find(predicate, page, **kw)
+
+    tree._docs.find = counting_find
+
+    out = await tree._descendants("c1", root)
+    assert len(out) == n
+    # A per-node walk would have paid one query per descendant (251); the level-batched walk pays a
+    # handful of paged ``parent_id IN (...)`` queries.
+    assert finds < n // 10, finds

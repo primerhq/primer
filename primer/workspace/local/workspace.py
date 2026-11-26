@@ -154,11 +154,17 @@ class LocalWorkspace(Workspace):
         # a tool write and a same-dir exec / API write serialize.
         locks = WorkspaceLockTable()
         strict = template.strict_write_locking
+        # The git-internals directory the agent's write / edit tools must
+        # refuse: a file planted there (a git hook, a clobbered config)
+        # is executed or parsed by primer's own per-turn commit later.
+        # The rest of the state tree (.state/shared/ notes,
+        # .state/sessions/<sid>/ state) stays agent-writable.
+        git_dir = f"{template.state_path}/.git"
         tools: list[WorkspaceTool] = [
             Ls(root),
             Read(root),
-            Write(root, locks=locks, strict=strict),
-            Edit(root, locks=locks, strict=strict),
+            Write(root, locks=locks, strict=strict, git_dir=git_dir),
+            Edit(root, locks=locks, strict=strict, git_dir=git_dir),
             Glob(root),
             Grep(root),
             Exec(root, env=env if env else None, locks=locks, strict=strict),
@@ -859,15 +865,11 @@ class LocalWorkspace(Workspace):
                     )
 
     def _reserved_tree_of_resolved(self, resolved: Path) -> str | None:
-        root_resolved = self._root.resolve()
-        for reserved_name in (self._template.state_path, self._template.tmp_path):
-            reserved = (root_resolved / reserved_name).resolve()
-            try:
-                resolved.relative_to(reserved)
-            except ValueError:
-                continue
-            return reserved_name
-        return None
+        return reserved_tree_of_resolved(
+            self._root,
+            (self._template.state_path, self._template.tmp_path),
+            resolved,
+        )
 
     def reserved_tree_of(self, path: str) -> str | None:
         """The reserved tree (``state_path`` / ``tmp_path``) ``path`` lands in
@@ -1025,6 +1027,31 @@ def _make_file_entry(target: Path, workspace_root: Path) -> FileEntry:
         size_bytes=size,
         modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
     )
+
+
+def reserved_tree_of_resolved(
+    root: Path, reserved_names, resolved: Path
+) -> str | None:
+    """The reserved tree ``resolved`` lands in, or ``None``.
+
+    ONE membership check for the reserved trees (the template's
+    ``state_path`` / ``tmp_path``): a path is reserved when it resolves
+    inside one of them. ``reserved_names`` are root-relative paths. Used
+    by the workspace's own mutations (``_refuse_reserved``) AND by the
+    agent-facing write / edit tools, which resolve the agent's path the
+    same way before asking this.
+    """
+    root_resolved = root.resolve()
+    for reserved_name in reserved_names:
+        if not reserved_name:
+            continue
+        reserved = (root_resolved / reserved_name).resolve()
+        try:
+            resolved.relative_to(reserved)
+        except ValueError:
+            continue
+        return reserved_name
+    return None
 
 
 def _reserved_rel_paths(template) -> tuple[str, ...]:

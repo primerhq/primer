@@ -781,11 +781,14 @@ class TestAdapterLifecycle:
     async def test_aclose_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = MagicMock()
         inst.close = MagicMock()
+        inst.aio.aclose = AsyncMock()
         monkeypatch.setattr("primer.llm.gemini.genai.Client", MagicMock(return_value=inst))
         llm = GeminiLLM(_make_provider())
         llm._get_client()
         await llm.aclose()
         await llm.aclose()
+        assert llm._client is None  # the second call sees no client and does nothing
+        inst.aio.aclose.assert_awaited_once()
         inst.close.assert_called_once()
 
     async def test_count_tokens_delegates(self) -> None:

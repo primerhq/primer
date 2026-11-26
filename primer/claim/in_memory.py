@@ -10,6 +10,7 @@ from primer.int.claim import (
     CLAIM_PRIORITY_FRESH, CLAIM_PRIORITY_RESUME, ClaimAdapter, ClaimEngine, ClaimKind, EligibilityReadError, Lease,
     ReleaseOutcome,
 )
+from primer.claim.statement_stamp import claim_statement_at
 from primer.observability import tracing as _tracing
 from primer.model.work_priority import validate_work_priority
 import primer.observability.metrics as _metrics
@@ -79,10 +80,8 @@ class InMemoryClaimEngine(ClaimEngine):
         adapters: dict[ClaimKind, ClaimAdapter],
         lease_ttl_seconds: int = 60,
         clock: Callable[[], datetime] = _utc_now,
-        work_priority_enabled: bool = False,
     ) -> None:
         self._adapters = adapters
-        self._work_priority_enabled = work_priority_enabled
         self._clock = clock
         self._leases: dict[tuple[ClaimKind, str], _LeaseRow] = {}
         self._priority_reads: dict[tuple[ClaimKind, str], _PriorityReads] = {}
@@ -122,8 +121,6 @@ class InMemoryClaimEngine(ClaimEngine):
         self._wake.set()
 
     async def _priority_snapshot(self, kind: ClaimKind, entity_id: str) -> int:
-        if not self._work_priority_enabled:
-            return 0
         adapter = self._adapters[kind]
         key = (kind, entity_id)
         reads = self._priority_reads.setdefault(key, _PriorityReads())
@@ -165,7 +162,7 @@ class InMemoryClaimEngine(ClaimEngine):
             row.settling = False
 
     async def arm_memory_job(self, job, *, conn) -> None:
-        work_priority = validate_work_priority(job.priority) if self._work_priority_enabled else 0
+        work_priority = validate_work_priority(job.priority)
         key = (ClaimKind.MEMORY, job.id)
         row = self._leases.get(key)
         if row is not None and row.memory_occurrence == job.occurrence_id:
@@ -198,7 +195,7 @@ class InMemoryClaimEngine(ClaimEngine):
     async def has_lease(self, kind: ClaimKind, entity_id: str, *, work_priority: int | None = None) -> bool:
         row = self._leases.get((kind, entity_id))
         return row is not None and (
-            work_priority is None or not self._work_priority_enabled or row.work_priority == work_priority
+            work_priority is None or row.work_priority == work_priority
         )
 
     async def lease_exists(self, kind: ClaimKind, entity_ids: Sequence[str]) -> set[str]:
@@ -255,7 +252,7 @@ class InMemoryClaimEngine(ClaimEngine):
         key = (row.kind, row.entity_id)
         try:
             eligible = await adapter.is_eligible(row.entity_id, now)
-            if eligible and self._work_priority_enabled:
+            if eligible:
                 eligible = await adapter.priority_snapshot_matches(row.entity_id, row.work_priority)
         except EligibilityReadError as exc:
             _metrics.claim_eligibility_read_errors_total.labels(row.kind.value).inc()
@@ -283,7 +280,7 @@ class InMemoryClaimEngine(ClaimEngine):
         :meth:`~primer.int.claim.ClaimAdapter.is_eligible`, the twin of the ``eligibility_sql`` the query joins in), so a
         released lease whose entity is not due (a parked session, a finished harness operation, a trigger before its tick,
         a finished tool call) is not claimed again. Eligibility is decided before ``max_count`` is applied, in
-        ``(priority_score, next_attempt_at)`` order (prefixed by work priority when enabled), as the query's per-kind
+        ``(work priority, priority_score, next_attempt_at)`` order, as the query's per-kind
         filter runs before its ``LIMIT``.
 
         Reading an entity awaits, and another claim or a release can run meanwhile, so each row is checked again after its
@@ -294,8 +291,6 @@ class InMemoryClaimEngine(ClaimEngine):
         """
         if max_work_priority is not None:
             validate_work_priority(max_work_priority)
-            if not self._work_priority_enabled:
-                raise ValueError("work priority is not enabled")
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
             now = self._clock()
@@ -306,8 +301,7 @@ class InMemoryClaimEngine(ClaimEngine):
                 and (max_work_priority is None or row.work_priority <= max_work_priority)
             ]
             candidates.sort(key=lambda candidate: (
-                candidate[0].work_priority if self._work_priority_enabled else 0,
-                candidate[0].priority_score, _as_utc(candidate[0].next_attempt_at),
+                candidate[0].work_priority, candidate[0].priority_score, _as_utc(candidate[0].next_attempt_at),
             ))
             out: list[Lease] = []
             for row, generation in candidates:
@@ -338,22 +332,22 @@ class InMemoryClaimEngine(ClaimEngine):
                     claimed_at=stamp, expires_at=row.expires_at,
                     attempt_count=row.attempt_count, last_error=row.last_error,
                     memory_occurrence=row.memory_occurrence, memory_claim_id=row.memory_claim_id,
-                    work_priority=row.work_priority if self._work_priority_enabled else 0,
+                    work_priority=row.work_priority,
                 )
                 out.append(lease)
                 _metrics.claim_enqueue_latency_seconds.labels(
                     lease.kind.value
                 ).observe(wait)
-                if self._work_priority_enabled:
-                    _metrics.claim_work_priority_total.labels(
-                        lease.kind.value, "foreground" if lease.work_priority == 0 else "background",
-                    ).inc()
+                _metrics.claim_work_priority_total.labels(
+                    lease.kind.value, "foreground" if lease.work_priority == 0 else "background",
+                ).inc()
                 _span.add_event("claim_assigned", {"kind": lease.kind.value})
             # The claim-time hooks run before the leases are handed out: an
             # adapter that owns a claim-scoped entity field (the session
             # adapter's last_worker_id stamp) writes it while the claim is
             # fresh, so the claiming worker observes a stamped row, and a
             # failing hook fails the claim instead of a half-stamped hand-out.
+            claim_statement_at.set(asyncio.get_running_loop().time())  # the leases are stamped; the hooks follow
             for lease in out:
                 adapter = self._adapters.get(lease.kind)
                 if adapter is not None:

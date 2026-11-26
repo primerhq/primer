@@ -273,9 +273,14 @@ class PythonConfig(BaseModel):
     image: str | None = Field(
         default=None,
         description=(
-            "Container image for the runner on container/k8s backends. None "
-            "uses the default runner image. Ignored by the local runner, "
-            "which is stdlib-only by construction."
+            "Runner image requested for container isolation. A call from a "
+            "container/k8s workspace runs inside that workspace's own "
+            "runtime container (its image comes from the workspace "
+            "template), so this value is informational: it is reported by "
+            "GET /v1/toolsets/{id}/runtime and is not applied to a running "
+            "workspace. To pick the runner image for real, set it on the "
+            "workspace template. Ignored by the local runner, which is "
+            "stdlib-only by construction."
         ),
     )
     allow_network: bool = Field(

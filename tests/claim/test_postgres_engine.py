@@ -113,7 +113,8 @@ async def entity_seeder(pg_storage: PostgresStorageProvider) -> AsyncIterator[En
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_upsert_creates_row(pg_engine, pg_storage):
+async def test_postgres_upsert_creates_row(pg_engine, pg_storage, entity_seeder):
+    await entity_seeder.seed("harness", ["c-1"])
     await pg_engine.upsert(ClaimKind.HARNESS, "c-1", priority=100)
 
     async with pg_storage.pool.acquire() as conn:
@@ -129,7 +130,8 @@ async def test_postgres_upsert_creates_row(pg_engine, pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_upsert_updates_priority(pg_engine, pg_storage):
+async def test_postgres_upsert_updates_priority(pg_engine, pg_storage, entity_seeder):
+    await entity_seeder.seed("harness", ["c-1"])
     await pg_engine.upsert(ClaimKind.HARNESS, "c-1", priority=100)
     await pg_engine.upsert(ClaimKind.HARNESS, "c-1", priority=50)
 
@@ -144,10 +146,11 @@ async def test_postgres_upsert_updates_priority(pg_engine, pg_storage):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_upsert_preserves_next_attempt_when_null(pg_engine, pg_storage):
+async def test_postgres_upsert_preserves_next_attempt_when_null(pg_engine, pg_storage, entity_seeder):
     """Re-upserting without next_attempt_at should preserve the existing value."""
     from datetime import datetime, UTC, timedelta
 
+    await entity_seeder.seed("sessions", ["s-1"])
     future = datetime.now(UTC) + timedelta(hours=1)
     await pg_engine.upsert(ClaimKind.SESSION, "s-1", priority=100, next_attempt_at=future)
 
@@ -173,7 +176,8 @@ async def test_postgres_upsert_preserves_next_attempt_when_null(pg_engine, pg_st
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_delete_lease_removes_row(pg_engine, pg_storage):
+async def test_postgres_delete_lease_removes_row(pg_engine, pg_storage, entity_seeder):
+    await entity_seeder.seed("harness", ["c-del"])
     await pg_engine.upsert(ClaimKind.HARNESS, "c-del", priority=100)
     await pg_engine.delete_lease(ClaimKind.HARNESS, "c-del")
 
@@ -210,7 +214,10 @@ async def test_postgres_claim_due_with_no_adapters_returns_empty(pg_storage):
         storage_provider=pg_storage,
         adapters={},
     )
-    await bare_engine.upsert(ClaimKind.HARNESS, "c-bare")
+    # Arming a kind the engine has no adapter for is a programming error (the arm
+    # reads the entity through the adapter), so it refuses instead of writing a row.
+    with pytest.raises(KeyError):
+        await bare_engine.upsert(ClaimKind.HARNESS, "c-bare")
     leases = await bare_engine.claim_due("worker-A", max_count=5)
     # No adapters → no CTEs → no rows claimed.
     assert leases == []
@@ -918,22 +925,27 @@ async def test_postgres_release_failure_bumps_attempt_count(pg_storage, entity_s
 
 
 # ---------------------------------------------------------------------------
-# Tests — on_release transaction integration (chat adapter)
+# Tests - on_release transaction integration (harness adapter)
 # ---------------------------------------------------------------------------
 
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
+@pytest.mark.parametrize("success", [False, True], ids=["failed_release", "success_with_gap_op"])
+async def test_postgres_release_on_release_runs_in_transaction(pg_storage, success):
     """release calls adapter.on_release inside the same transaction.
 
     Scenario: create a Harness entity with a pending operation, upsert +
     claim its lease, release with drop_lease=True, then verify the lease
-    row is gone AND on_release cleared ``pending_operation``.
+    row is gone AND on_release ran in that same release.
+
+    Contract (review 2026-11-23 finding 1.3): a FAILED release finalises the
+    row (clears ``pending_operation``, status ERROR, error recorded); a
+    SUCCESSFUL release that still sees a pending operation is a gap-enqueued
+    operation, so on_release leaves the row alone.
     """
     from datetime import datetime, UTC
     from primer.model.harness import Harness, HarnessOperation, HarnessStatus
-    from primer.storage.postgres import PostgresStorage
 
     from primer.int.storage import Storage
     harness_storage: Storage[Harness] = pg_storage.get_storage(Harness)
@@ -947,8 +959,6 @@ async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
         pending_operation=HarnessOperation.INSTALL,
     )
     await harness_storage.create(harness)
-    chat = harness
-    chat_storage = harness_storage
 
     try:
         adapter = HarnessClaimAdapter(harness_storage=harness_storage)
@@ -962,13 +972,16 @@ async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
         adapters = {ClaimKind.HARNESS: real_adapter}
         engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
 
-        await engine.upsert(ClaimKind.HARNESS, chat.id)
+        await engine.upsert(ClaimKind.HARNESS, harness.id)
         [lease] = await engine.claim_due("worker-txn", max_count=1)
 
-        # Release with drop_lease=True + success=True -> on_release should set turn_status='idle'.
         await engine.release(
             lease,
-            outcome=ReleaseOutcome(success=True, drop_lease=True),
+            outcome=ReleaseOutcome(
+                success=success,
+                drop_lease=True,
+                last_error=None if success else "worker bailed before dispatch",
+            ),
         )
 
         # Verify lease row is gone.
@@ -976,21 +989,30 @@ async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
             lease_row = await conn.fetchrow(
                 f"SELECT 1 FROM {pg_storage.leases_table} "
                 f"WHERE kind = 'harness' AND entity_id = $1",
-                chat.id,
+                harness.id,
             )
         assert lease_row is None, "Lease row should have been deleted"
 
-        # Verify on_release cleared the pending operation.
         updated = await harness_storage.get(harness.id)
         assert updated is not None
-        assert updated.pending_operation is None, (
-            f"Expected pending_operation cleared, got {updated.pending_operation!r}"
-        )
+        if success:
+            # Gap-enqueued operation: the row (operation AND status) is untouched.
+            assert updated.pending_operation is HarnessOperation.INSTALL, (
+                f"Expected pending_operation left alone, got {updated.pending_operation!r}"
+            )
+            assert updated.status == HarnessStatus.DRAFT
+            assert updated.last_operation_error is None
+        else:
+            # Failed release: on_release finalised the row in the release transaction.
+            assert updated.pending_operation is None, (
+                f"Expected pending_operation cleared, got {updated.pending_operation!r}"
+            )
+            assert updated.status == HarnessStatus.ERROR
+            assert updated.last_operation_error == "worker bailed before dispatch"
 
     finally:
-        # Clean up the entity row.
         try:
-            await chat_storage.delete(chat.id)
+            await harness_storage.delete(harness.id)
         except Exception:
             pass
 
@@ -1104,8 +1126,9 @@ async def test_postgres_release_fenced_when_reclaimed_by_other_worker(
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_mark_resumable_inserts_with_priority(pg_engine, pg_storage):
+async def test_postgres_mark_resumable_inserts_with_priority(pg_engine, pg_storage, entity_seeder):
     """mark_resumable inserts a new row with the given priority."""
+    await entity_seeder.seed("harness", ["mr-new"])
     await pg_engine.mark_resumable(ClaimKind.HARNESS, "mr-new", priority=30)
 
     async with pg_storage.pool.acquire() as conn:
@@ -1120,10 +1143,11 @@ async def test_postgres_mark_resumable_inserts_with_priority(pg_engine, pg_stora
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_mark_resumable_updates_existing_priority(pg_engine, pg_storage):
+async def test_postgres_mark_resumable_updates_existing_priority(pg_engine, pg_storage, entity_seeder):
     """mark_resumable lowers priority and resets next_attempt_at on conflict."""
     from datetime import datetime, UTC, timedelta
 
+    await entity_seeder.seed("harness", ["mr-exist"])
     future = datetime.now(UTC) + timedelta(hours=1)
     await pg_engine.upsert(ClaimKind.HARNESS, "mr-exist", priority=100, next_attempt_at=future)
 
@@ -1149,10 +1173,11 @@ async def test_postgres_mark_resumable_updates_existing_priority(pg_engine, pg_s
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_watch_ready_yields_on_upsert(pg_engine):
+async def test_postgres_watch_ready_yields_on_upsert(pg_engine, entity_seeder):
     """watch_ready yields (ClaimKind, entity_id) tuples when pg_notify fires."""
     import asyncio
 
+    await entity_seeder.seed("sessions", ["wr-1"])
     gen = pg_engine.watch_ready()
 
     async def consume_one():
@@ -1171,10 +1196,11 @@ async def test_postgres_watch_ready_yields_on_upsert(pg_engine):
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine):
+async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine, entity_seeder):
     """watch_ready also fires when mark_resumable notifies claim_ready."""
     import asyncio
 
+    await entity_seeder.seed("harness", ["wr-mr-1"])
     gen = pg_engine.watch_ready()
 
     async def consume_one():
@@ -1182,12 +1208,17 @@ async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine):
 
     task = asyncio.create_task(consume_one())
     await asyncio.sleep(0.05)
-
-    await pg_engine.mark_resumable(ClaimKind.HARNESS, "wr-mr-1", priority=40)
-    result = await asyncio.wait_for(task, timeout=5.0)
-    assert result == (ClaimKind.HARNESS, "wr-mr-1")
-
-    await gen.aclose()
+    try:
+        await pg_engine.mark_resumable(ClaimKind.HARNESS, "wr-mr-1", priority=40)
+        result = await asyncio.wait_for(task, timeout=5.0)
+        assert result == (ClaimKind.HARNESS, "wr-mr-1")
+    finally:
+        # A failing arm (or a timed-out wait) leaves the watcher with no
+        # notify to consume: cancel it and close the generator so teardown
+        # fails instead of hanging on the open LISTEN connection.
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await gen.aclose()
 
 
 # --- the LISTEN backend dying -----------------------------------------------
@@ -1256,7 +1287,7 @@ async def test_postgres_watch_ready_raises_listen_connection_lost_when_its_backe
 @_needs_pg
 @pytest.mark.asyncio
 async def test_engine_bus_loop_wakes_the_claim_loop_after_its_listen_backend_is_terminated(
-    pg_engine, pg_storage,
+    pg_engine, pg_storage, entity_seeder,
 ):
     """The pool's restart arm re-subscribes, and a claim_ready sent AFTER the
     drop wakes the claim loop again (before the fix it never did)."""
@@ -1264,6 +1295,8 @@ async def test_engine_bus_loop_wakes_the_claim_loop_after_its_listen_backend_is_
 
     from primer.model.scheduler import WorkerConfig
     from primer.worker.pool import WorkerPool
+
+    await entity_seeder.seed("sessions", ["loop-before-drop", "loop-after-drop"])
 
     pool = WorkerPool(
         config=WorkerConfig(concurrency=1, poll_interval_seconds=0.1),
@@ -1392,7 +1425,8 @@ async def test_claim_due_binds_configured_lease_ttl():
     await engine.claim_due("worker-A", max_count=5)
     assert conn.fetch_calls, "claim_due did not run a fetch"
     _query, args = conn.fetch_calls[-1]
-    assert args == (5, "worker-A", "15")
+    # $4 is the always-bound priority ceiling; None binds no ceiling.
+    assert args == (5, "worker-A", "15", None)
 
 
 @pytest.mark.asyncio
@@ -1417,7 +1451,7 @@ async def test_default_lease_ttl_is_60_seconds():
     assert engine.lease_ttl_seconds == 60
     await engine.claim_due("worker-A", max_count=1)
     _query, args = conn.fetch_calls[-1]
-    assert args[-1] == "60"
+    assert args == (1, "worker-A", "60", None)
 
 
 @_needs_pg
@@ -1473,7 +1507,10 @@ async def test_postgres_has_lease_counts_armed_claimed_and_expired_rows(
 
 @_needs_pg
 @pytest.mark.asyncio
-async def test_postgres_lease_exists_answers_the_subset_in_one_query(pg_engine, pg_storage):
+async def test_postgres_lease_exists_answers_the_subset_in_one_query(pg_engine, pg_storage, entity_seeder):
+    # The arm snapshots each entity's priority, so the rows must exist.
+    await entity_seeder.seed("harness", ["a", "b"])
+    await entity_seeder.seed("sessions", ["c"])
     await pg_engine.upsert(ClaimKind.HARNESS, "a")
     await pg_engine.upsert(ClaimKind.HARNESS, "b")
     await pg_engine.upsert(ClaimKind.SESSION, "c")           # other kind
@@ -1511,9 +1548,11 @@ async def test_postgres_prune_dead_leases_matches_the_adapters_in_process_rule(p
 
     mirror = _InMemoryStorage(ToolCallTask)
     ids = {}
+    # A tool call's work priority is read from its session, so each task names a seeded session.
+    await entity_seeder.seed("sessions", ["s"])
     for state in ToolCallTaskState:
         ids[state] = f"t-{state.value}"
-        await entity_seeder.seed("toolcalltask", [ids[state]], data={"state": state.value})
+        await entity_seeder.seed("toolcalltask", [ids[state]], data={"state": state.value, "session_id": "s"})
         await mirror.create(ToolCallTask(
             id=ids[state], session_id="s", turn_no=0, tool_name="t", state=state, record_seq=1,
             created_at=datetime.now(UTC),
@@ -1521,7 +1560,17 @@ async def test_postgres_prune_dead_leases_matches_the_adapters_in_process_rule(p
     all_ids = [*ids.values(), "t-ghost"]
     engine = _tool_call_engine(pg_storage)
     for tid in all_ids:
-        await engine.upsert(ClaimKind.TOOL_CALL, tid)
+        if tid == "t-ghost":
+            # A ghost lease cannot be armed without its task row (the arm
+            # requires the entity), so plant the row directly: the missing
+            # entity is exactly what this case pins.
+            async with pg_storage.pool.acquire() as conn:
+                await conn.execute(
+                    f"INSERT INTO {pg_storage.leases_table} (kind, entity_id) VALUES ($1, $2)",
+                    "tool_call", "t-ghost",
+                )
+        else:
+            await engine.upsert(ClaimKind.TOOL_CALL, tid)
 
     in_process = ToolCallClaimAdapter(task_storage=mirror)
     expected_dead = {tid for tid in all_ids if await in_process.is_dead(tid)}
@@ -1536,7 +1585,8 @@ async def test_postgres_prune_dead_leases_matches_the_adapters_in_process_rule(p
 @_needs_pg
 @pytest.mark.asyncio
 async def test_postgres_prune_never_deletes_a_held_lease_but_takes_a_lapsed_one(pg_storage, entity_seeder):
-    await entity_seeder.seed("toolcalltask", ["held", "lapsed"], data={"state": "done"})
+    await entity_seeder.seed("sessions", ["s"])
+    await entity_seeder.seed("toolcalltask", ["held", "lapsed"], data={"state": "done", "session_id": "s"})
     engine = _tool_call_engine(pg_storage)
     await engine.upsert(ClaimKind.TOOL_CALL, "held")
     await engine.upsert(ClaimKind.TOOL_CALL, "lapsed")
@@ -1564,10 +1614,19 @@ async def test_postgres_prune_never_deletes_a_held_lease_but_takes_a_lapsed_one(
 async def test_postgres_prune_is_scoped_to_its_kind_and_skips_kinds_with_no_dead_rule(
     pg_storage, entity_seeder,
 ):
-    await entity_seeder.seed("toolcalltask", ["x"], data={"state": "failed"})
+    await entity_seeder.seed("sessions", ["s"])
+    await entity_seeder.seed("toolcalltask", ["x"], data={"state": "failed", "session_id": "s"})
     engine = _tool_call_engine(pg_storage)
     await engine.upsert(ClaimKind.TOOL_CALL, "x")
-    await engine.upsert(ClaimKind.HARNESS, "x")              # same id, no entity row, no rule for its kind
+    # Same id, no harness entity row and no dead rule for its kind: such a
+    # lease cannot be armed (the arm requires the entity), so plant the row
+    # directly - the point is that prune skips the kind before touching the
+    # entity table.
+    async with pg_storage.pool.acquire() as conn:
+        await conn.execute(
+            f"INSERT INTO {pg_storage.leases_table} (kind, entity_id) VALUES ($1, $2)",
+            "harness", "x",
+        )
 
     assert await engine.prune_dead_leases(ClaimKind.HARNESS) == 0
     assert await engine.prune_dead_leases(ClaimKind.TRIGGER) == 0, "no adapter registered"
@@ -1596,7 +1655,13 @@ async def test_postgres_prune_on_a_fresh_schema_ensures_the_entity_table(pg_stor
         storage_provider=pg_storage, adapters={ClaimKind.TOOL_CALL: _FreshTableAdapter(task_storage=None)},
     )
     try:
-        await engine.upsert(ClaimKind.TOOL_CALL, "orphan")
+        # The fresh entity table is empty, so the orphan lease cannot be armed:
+        # plant the row directly to pin the missing-entity prune.
+        async with pg_storage.pool.acquire() as conn:
+            await conn.execute(
+                f"INSERT INTO {pg_storage.leases_table} (kind, entity_id) VALUES ($1, $2)",
+                "tool_call", "orphan",
+            )
         assert await engine.prune_dead_leases(ClaimKind.TOOL_CALL) == 1, "no entity table means no entity"
         async with pg_storage.pool.acquire() as conn:
             assert await conn.fetchval("SELECT to_regclass($1)", f'"{pg_storage.schema}"."{table}"') is not None
@@ -1614,7 +1679,8 @@ async def test_postgres_prune_leaves_a_lapsed_lease_a_concurrent_heartbeat_exten
     run on another connection but not committed. The DELETE blocks on that row lock; once the heartbeat commits, READ
     COMMITTED re-evaluates the statement's own predicate on the new row version, the lease is held again, and it survives.
     A second finished task whose lease nobody touches is pruned in the same statement."""
-    await entity_seeder.seed("toolcalltask", ["racing", "plain"], data={"state": "done"})
+    await entity_seeder.seed("sessions", ["s"])
+    await entity_seeder.seed("toolcalltask", ["racing", "plain"], data={"state": "done", "session_id": "s"})
     engine = _tool_call_engine(pg_storage)
     await engine.upsert(ClaimKind.TOOL_CALL, "racing")
     await engine.upsert(ClaimKind.TOOL_CALL, "plain")

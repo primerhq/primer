@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,6 +119,13 @@ class FakeStorage(_InMemoryStorage[ToolCallTask]):
     async def get(self, id: str, *, conn=None) -> ToolCallTask | None:
         self.get_calls.append(id)
         return await super().get(id, conn=conn)
+
+
+class _Sessions:
+    """The tasks' parent session at its default priority; these tests do not model the session row."""
+
+    async def get(self, session_id: str, *, conn=None):
+        return SimpleNamespace(priority=0)
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +808,9 @@ async def test_the_engine_drops_the_lease_of_a_terminal_rejection_and_requeues_a
     from primer.claim.in_memory import InMemoryClaimEngine
 
     storage = FakeStorage(_make_task("term"), _make_task("retry"))
-    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage)})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
+        task_storage=storage, session_storage=_Sessions(),
+    )})
     for tid in ("term", "retry"):
         await engine.upsert(ClaimKind.TOOL_CALL, tid)
     leases = {l.entity_id: l for l in await engine.claim_due("w", max_count=10, kinds=[ClaimKind.TOOL_CALL])}
@@ -998,7 +1008,9 @@ async def test_a_malformed_id_on_the_last_sibling_commits_the_release_and_wakes_
         _make_task(bad, batch_task_ids=batch),
         _make_task(batch[1], state=ToolCallTaskState.DONE, batch_task_ids=batch),
     )
-    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=storage)})
+    engine = InMemoryClaimEngine(adapters={ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
+        task_storage=storage, session_storage=_Sessions(),
+    )})
     woken: list[PostReleaseWake] = []
 
     async def _hook(signal: PostReleaseWake) -> None:

@@ -283,7 +283,26 @@ async def test_channel_event_action_journey(tmp_path: Path, async_closers) -> No
     )
     await router.route_event(event=msg_event, channel=ch)
 
-    assert bus.published == [("ask_user:sess-evj:tc-evj", {"response": "go ahead"})]
+    # Reply delivery is DUAL (the durable-wake fix): the durable
+    # session.wake append publishes an events_appended hint (the
+    # appended event's max_id) onto the bus, then the legacy ask_user
+    # key carries the payload. Assert the reply key was published with
+    # its payload and that the extra publish is the hint, not exact
+    # list equality.
+    assert ("ask_user:sess-evj:tc-evj", {"response": "go ahead"}) in bus.published
+    hints = [entry for entry in bus.published if entry[0] == "events_appended"]
+    assert len(hints) == 1, (
+        f"dual delivery publishes exactly one events hint for the reply; "
+        f"got {bus.published!r}"
+    )
+    assert isinstance(hints[0][1].get("max_id"), int), (
+        f"the events hint carries the appended event's max_id; "
+        f"got {hints[0]!r}"
+    )
+    assert len(bus.published) == 2, (
+        f"dual delivery publishes the hint and the reply key; "
+        f"got {bus.published!r}"
+    )
     # No new session was created by the correlated reply.
     page2 = await sessions.find(
         Q(WorkspaceSession)

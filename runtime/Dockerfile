@@ -46,7 +46,7 @@ COPY primer_runtime/ ./primer_runtime/
 # primer_runtime into site-packages so it is importable from any cwd.
 # watchfiles ships with pre-built wheels for linux/amd64 and linux/arm64 so
 # no Rust toolchain is required.
-RUN pip install --no-cache-dir aiohttp watchfiles pydantic && \
+RUN pip install --no-cache-dir aiohttp watchfiles pydantic "regex>=2026.9.3" && \
     pip install --no-cache-dir --no-deps .
 
 # Workspace dir - the real workspace is mounted by `docker run -v`; this

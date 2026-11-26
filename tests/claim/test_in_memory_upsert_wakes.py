@@ -10,6 +10,7 @@ import asyncio
 
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
+from tests.claim._platform import platform_adapters
 
 
 async def _ready(eng: InMemoryClaimEngine, settle: float = 0.05) -> list:
@@ -27,14 +28,14 @@ async def _ready(eng: InMemoryClaimEngine, settle: float = 0.05) -> list:
 
 async def test_every_upsert_queues_a_ready_event_like_the_postgres_notify():
     """CV-6: a re-arm of an existing lease row (a harness op, a requeued trigger) used to wait for the claim poll."""
-    eng = InMemoryClaimEngine(adapters={})
+    eng = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS))
     await eng.upsert(ClaimKind.HARNESS, "h1")
     await eng.upsert(ClaimKind.HARNESS, "h1")
     assert await _ready(eng) == [(ClaimKind.HARNESS, "h1")] * 2
 
 
 async def test_a_re_arm_wakes_a_waiting_watcher():
-    eng = InMemoryClaimEngine(adapters={})
+    eng = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS))
     await eng.upsert(ClaimKind.HARNESS, "h1")
     seen: list = []
 

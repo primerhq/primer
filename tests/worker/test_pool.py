@@ -21,6 +21,7 @@ from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
+from tests.claim._platform import platform_adapters
 
 
 @pytest.fixture
@@ -33,7 +34,12 @@ async def scheduler():
 
 @pytest.fixture
 def engine():
-    return InMemoryClaimEngine(adapters={})
+    # The pool tests upsert HARNESS/SESSION/TOOL_CALL leases as pure tokens
+    # (the pool here has no storage), so those kinds stand in with the base
+    # platform contract (snapshot 0, no entity read).
+    return InMemoryClaimEngine(
+        adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL),
+    )
 
 
 

@@ -14,9 +14,12 @@ interactive user-regex executor. Every other jsonschema user in the process (the
 harness overrides, the ask_user answer) sees no change. ``tests/common/test_bounded_jsonschema.py`` pins each keyword route, so
 a jsonschema release that stops reading ``re`` through those modules fails the suite instead of silently unbounding them.
 
-The rest of the validation is bounded as well (GS-17). An instance over 1 MiB of JSON or 64 levels deep is refused before
+The rest of the validation is bounded as well (GS-17). An instance over its size bound - the default
+:data:`MAX_INSTANCE_BYTES` (1 MiB); callers validating bodies the app admits further pass a larger
+``max_instance_bytes``, measured as the instance's real UTF-8 JSON - or 64 levels deep is refused before
 validating, a ``RecursionError`` is a violation, and every subschema step and every ``uniqueItems`` comparison checks one
-deadline of the same ``seconds``. Each bound raises ``jsonschema.ValidationError``, so callers report it as a violation.
+deadline of the same ``seconds`` (a spent deadline raises :class:`ValidationTimeout`). Each bound raises ``jsonschema.ValidationError``,
+so callers report it as a violation.
 """
 
 from __future__ import annotations
@@ -48,10 +51,22 @@ _DEADLINE: ContextVar[float | None] = ContextVar("primer_jsonschema_deadline", d
 def _check_deadline() -> None:
     deadline = _DEADLINE.get()
     if deadline is not None and time.perf_counter() > deadline:
-        raise jsonschema.ValidationError(
+        raise ValidationTimeout(
             "validation stopped: it used its time budget (uniqueItems over many objects, or a schema that branches "
             "at every level, is slow)"
         )
+
+
+class ValidationTimeout(jsonschema.ValidationError):
+    """The whole-validation deadline expired mid-validation (GS-17).
+
+    A :class:`jsonschema.ValidationError` subclass, so the handlers that
+    already catch ``ValidationError`` (the graph node checks, the yields
+    response_schema) keep reporting it as a violation with the same
+    message. Callers that can tell "the schema is too slow to run safely"
+    apart from "the arguments are wrong" (the MCP meta-tools) catch this
+    first and answer the tool-side refusal instead of blaming the caller.
+    """
 
 
 class _BoundedRe:
@@ -70,12 +85,12 @@ class _BoundedRe:
         if budget.exhausted:
             # Spent: answer before compiling anything (#859 round 3, R2-9).
             raise UserRegexTimeout(
-                f"output_schema pattern matching used its {budget.seconds:g} s budget", seconds=budget.seconds,
+                f"{budget.what} matching used its {budget.seconds:g} s budget", seconds=budget.seconds,
             )
         started = time.perf_counter()
         try:
             # A schema is stored with its graph and runs again: a stored pattern on its match path (cached, verdict included).
-            compiled = compile_user_regex(pattern, what="output_schema pattern", stored=True)
+            compiled = compile_user_regex(pattern, what=budget.what, stored=True)
         finally:
             # A compile is work done for this validation: it is charged like a search.
             budget.charge(time.perf_counter() - started)
@@ -133,27 +148,79 @@ def _deeper_than(value: Any, limit: int) -> bool:
     return False
 
 
-def validate_bounded(instance: Any, schema: dict[str, Any], *, seconds: float = OUTPUT_SCHEMA_MATCH_SECONDS) -> None:
+# The size check's encoder (review 2026-11-23, X3.6.2): the same compact
+# form the old json.dumps call built (separators, ensure_ascii=False), but
+# iterencode yields the JSON in chunks, so the byte size is summed without
+# materializing the whole string. The old dumps + encode held ~2x a 32 MiB
+# body per validation thread (the string, then its UTF-8 encoding); the
+# chunk sum holds the largest chunk.
+_COMPACT = json.JSONEncoder(separators=(",", ":"), ensure_ascii=False)
+
+
+def _compact_json_size(instance: Any, max_bytes: int) -> int | None:
+    """The UTF-8 byte length of ``instance``'s compact JSON, summed over
+    ``iterencode`` chunks (never materialized), or ``None`` as soon as the
+    running total passes ``max_bytes``: the refusal needs no further
+    measuring (review 2026-11-23, X3.6.2). A chunk's UTF-8 length is its
+    ``len`` when it is ASCII, and the ``surrogatepass`` encoding otherwise
+    (a lone surrogate a ``json.loads`` admits is 3 bytes, never an encode
+    error). Serialization errors (a TypeError, a ValueError, a circular
+    structure's RecursionError) propagate exactly as the old dumps call's
+    did.
+    """
+    total = 0
+    for chunk in _COMPACT.iterencode(instance):
+        total += len(chunk) if chunk.isascii() else len(chunk.encode("utf-8", errors="surrogatepass"))
+        if total > max_bytes:
+            return None
+    return total
+
+
+def validate_bounded(
+    instance: Any,
+    schema: dict[str, Any],
+    *,
+    seconds: float = OUTPUT_SCHEMA_MATCH_SECONDS,
+    label: str = "output_schema pattern",
+    max_instance_bytes: int = MAX_INSTANCE_BYTES,
+) -> None:
     """``jsonschema.validate``, its regex keywords under one ``seconds`` budget and the whole validation under ``seconds``.
 
+    ``label`` names the schema in the budget and pattern errors
+    (``output_schema pattern`` for the existing callers; ``input_schema``
+    for the session-create pre-check of a graph's ``input_schema``).
+
+    ``max_instance_bytes`` sizes the largest instance that validates: the
+    default is :data:`MAX_INSTANCE_BYTES` (the historical bound for the
+    model/tool-output callers). Callers that receive bodies the app lets
+    through further (the MCP meta-tools, which the body-cap middleware
+    admits up to the app's request-body cap) pass that cap, so a body the
+    middleware accepted is not refused here. The size is the instance's
+    real UTF-8 JSON (``ensure_ascii=False``), so a multi-byte string is
+    measured as its actual size, not its ASCII-escaped inflation; it is
+    summed over the stdlib encoder's chunks, so the check never holds a
+    copy of the instance's JSON (review 2026-11-23, X3.6.2).
+
     Raises ``jsonschema.ValidationError`` as before, and also when the
-    instance is over :data:`MAX_INSTANCE_BYTES` or :data:`MAX_INSTANCE_DEPTH`,
+    instance is over ``max_instance_bytes`` or :data:`MAX_INSTANCE_DEPTH`,
     when the schema or the instance nests too deeply to validate, or when the
-    validation runs past ``seconds``; and
+    validation runs past ``seconds`` (that one as
+    :class:`ValidationTimeout`); and
     :class:`~primer.common.user_regex.UserRegexError` (a schema pattern over
     the size caps) or :class:`~primer.common.user_regex.UserRegexTimeout`
     (the regex budget ran out).
     """
     try:
-        if len(json.dumps(instance, separators=(",", ":"))) > MAX_INSTANCE_BYTES:
+        # surrogatepass: a lone surrogate (json.loads accepts a \\ud800 escape) is a string to jsonschema, 3 bytes here, never an encode error.
+        if _compact_json_size(instance, max_instance_bytes) is None:
             raise jsonschema.ValidationError(
-                f"the value is larger than {MAX_INSTANCE_BYTES >> 20} MiB of JSON, the most a schema validates"
+                f"the value is larger than {max_instance_bytes >> 20} MiB of JSON, the most a schema validates"
             )
         if _deeper_than(instance, MAX_INSTANCE_DEPTH):
             raise jsonschema.ValidationError(
                 f"the value nests deeper than {MAX_INSTANCE_DEPTH} levels, the most a schema validates"
             )
-        token = _BUDGET.set(MatchBudget(seconds, what="output_schema pattern"))
+        token = _BUDGET.set(MatchBudget(seconds, what=label))
         try:
             # jsonschema.validate, with the deadline on the instance's validation (the schema check is linear in the schema).
             cls = jsonschema.validators.validator_for(schema)
@@ -173,12 +240,17 @@ def validate_bounded(instance: Any, schema: dict[str, Any], *, seconds: float = 
 
 async def validate_bounded_off_loop(
     instance: Any, schema: dict[str, Any], *, seconds: float | None = None,
+    label: str = "output_schema pattern", max_instance_bytes: int = MAX_INSTANCE_BYTES,
 ) -> None:
     """:func:`validate_bounded` in a worker thread (the regex engine releases the GIL while it matches)."""
     bound = OUTPUT_SCHEMA_MATCH_SECONDS if seconds is None else seconds
-    await run_interactive(validate_bounded, instance, schema, seconds=bound)
+    await run_interactive(
+        validate_bounded, instance, schema,
+        seconds=bound, label=label, max_instance_bytes=max_instance_bytes,
+    )
 
 
 __all__ = [
-    "MAX_INSTANCE_BYTES", "MAX_INSTANCE_DEPTH", "OUTPUT_SCHEMA_MATCH_SECONDS", "validate_bounded", "validate_bounded_off_loop",
+    "MAX_INSTANCE_BYTES", "MAX_INSTANCE_DEPTH", "OUTPUT_SCHEMA_MATCH_SECONDS",
+    "ValidationTimeout", "validate_bounded", "validate_bounded_off_loop",
 ]

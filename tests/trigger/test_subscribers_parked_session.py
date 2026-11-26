@@ -159,7 +159,9 @@ async def test_dispatch_skips_when_session_unparked(
     fake_storage_provider, fake_claim_engine, fake_scheduler,
     fake_event_bus, seeded_workspace, seeded_agent,
 ):
-    """Running (unparked) session → skip + delete sub, no bus publish."""
+    """Running (unparked) session: the fire raced the park write (the turn is
+    in flight and still writing the park) -> skip WITHOUT deleting the sub,
+    no bus publish; a later fire finds the landed park."""
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
     running = WorkspaceSession(
         id="se-running",
@@ -189,10 +191,10 @@ async def test_dispatch_skips_when_session_unparked(
         deps=deps,
     )
     assert res.ok and res.skipped
-    assert res.error_code == "skipped_session_unparked"
+    assert res.error_code == "skipped_park_pending"
     assert fake_event_bus.published == []
-    # Orphan sub was cleaned up.
-    assert await subs.get("sb-1") is None
+    # The park is still being written: the sub is kept, not cleaned up.
+    assert await subs.get("sb-1") is not None
 
 
 @pytest.mark.asyncio

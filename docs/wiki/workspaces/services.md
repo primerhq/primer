@@ -12,7 +12,9 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 
 ## Concepts
 
-- Service management and publishing have generated route-backed tools. Workspace sessions also offer `system__publish_service`. The browser `Primer.tool` API remains planned.
+- Service management and publishing have generated route-backed tools. Workspace sessions also offer `system__publish_service` and, before it, `system__inspect_service_bundle`. The browser `Primer.tool` API remains planned.
+- Publishing runs the workspace's code on the API host: the bundle's `functions.py` executes there (in the same hardened python-runner sandbox as python tools, not in the workspace's container), and the app's JS is served first-party on the console origin. The admin approving a publish approves that.
+- A publish is bound to its content: `system__publish_service` requires the `bundle_digest` that `system__inspect_service_bundle` returned for the path, the approval card shows the digest, and a capture that no longer matches it is refused until it is re-inspected and re-approved.
 - Directory capture can take up to 30 seconds. If a prior capture is still reading the workspace, a new attempt returns a conflict. Capture failures occur before a service or version is created.
 - Read the exact publish schema before supplying the manifest and file payloads. A successful publish creates a new immutable version; activating an earlier version is a rollback, not a rewrite of historical artifact bytes.
 - Each artifact retains its storage-provider identity. Changing the active artifact store routes new writes there; reads of existing DB or filesystem versions still use their original provider.
@@ -21,9 +23,14 @@ A service is an admin-managed name and a sequence of published bundle versions. 
 ## How to
 
 From an admin workspace session, prepare a dedicated directory with your app files
-and optional `service.yaml`. Call `system__publish_service` with
-`{"name":"status-app","path":"apps/status"}`. The default policy requires an
-admin to approve, including after an upgrade. Existing operator-customized
+and optional `service.yaml`. Call `system__inspect_service_bundle` with
+`{"path":"apps/status"}`: it validates the directory and returns the
+`bundle_digest` and the file list to show the approver. Then call
+`system__publish_service` with
+`{"name":"status-app","path":"apps/status","bundle_digest":"..."}`. The default
+policy requires an admin to approve the card (name, path and digest), including
+after an upgrade. If the directory changes after approval, the publish is
+refused: inspect again and approve the new digest. Existing operator-customized
 policies remain in effect, including disabled policies. On an uncached lookup,
 a malformed matching publisher policy refuses the call rather than being treated
 as absent. A cached decision can still be served while a background refresh runs;
@@ -73,6 +80,7 @@ The following operations belong to this feature family. The role shown is the mi
 | [`services__list_service_versions`](reference/tools/services/list_service_versions) | List a service's published versions, newest first. | admin |
 | [`services__publish_service_version`](reference/tools/services/publish_service_version) | Publish a bundle as a new service version. | admin |
 | [`services__update`](reference/tools/services/update) | Replace Service. | admin |
+| [`system__inspect_service_bundle`](reference/tools/system/inspect_service_bundle) | Show a workspace bundle's digest and file list, before approving a publish. | admin |
 | [`system__publish_service`](reference/tools/system/publish_service) | Publish and activate a directory from the calling workspace. | admin |
 | [`svc__svc_gateway_function`](reference/tools/svc/svc_gateway_function) | Call a bundle function in the python-runner sandbox. | user |
 | [`svc__svc_serve`](reference/tools/svc/svc_serve) | Serve a service asset. | user |

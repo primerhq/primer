@@ -33,6 +33,7 @@ from primer.int.claim import ClaimKind, Lease as ClaimLease
 from primer.model.scheduler import WorkerConfig
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
+from tests.claim._platform import platform_adapters
 
 KIND = ClaimKind.HARNESS
 
@@ -63,7 +64,9 @@ class _Harness:
     """A pool whose handlers block until released, and a scriptable engine.heartbeat."""
 
     def __init__(self) -> None:
-        self.engine = InMemoryClaimEngine(adapters={})
+        # The memory-receipt test arms a MEMORY lease as a token (storage=None);
+        # the stand-in answers the base platform contract (snapshot 0).
+        self.engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.MEMORY))
         self.scheduler = InMemoryScheduler()
         self.pool = WorkerPool(
             config=_config(), scheduler=self.scheduler,

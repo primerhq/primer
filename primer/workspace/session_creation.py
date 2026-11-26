@@ -118,7 +118,6 @@ async def preparing_creation(
     sp: StorageProvider, *, sid: str, workspace: Workspace, person: Person | None,
     sources: Sequence[Agent | Graph], caller_id: str | None, caller_turn: int | None,
     requested_priority: int | None, fire: TriggerFireMetadata | None, binding_default: int,
-    nonzero_priority_available: bool,
 ) -> AsyncIterator[CreationAttempt]:
     """Only the allocator that inserted the receipt may attempt to publish."""
     sessions = sp.get_storage(WorkspaceSession)
@@ -130,7 +129,6 @@ async def preparing_creation(
     version = _caller_version(caller, caller_turn) if caller_id is not None else None
     priority = choose_creation_priority(
         requested=requested_priority, caller=caller, fire=fire, binding_default=binding_default,
-        nonzero_available=nonzero_priority_available,
     )
     receipt = SessionCreationIntent(id=sid, workspace_id=workspace.id, priority=priority)
 

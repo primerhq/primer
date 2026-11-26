@@ -11,6 +11,7 @@ Spec: ``docs/superpowers/specs/2026-08-08-services-design.md`` section 5.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import tarfile
 from dataclasses import dataclass, field
@@ -231,10 +232,28 @@ def validate_bundle(tar_gz: bytes, *, workspace_capture: bool = False) -> Valida
     )
 
 
+def bundle_digest(bundle: ValidatedBundle) -> str:
+    """Canonical content hash of a validated bundle: SHA-256 over its file map.
+
+    Hashed per file (path, then the file's own SHA-256), sorted by path, and
+    NOT over the capture bytes: a capture's member order and tar framing are
+    not canonical, so two unchanged captures of the same directory must hash
+    alike while any content or file-set change hashes different.
+    """
+    outer = hashlib.sha256()
+    for path in sorted(bundle.files):
+        outer.update(path.encode("utf-8"))
+        outer.update(b"\x00")
+        outer.update(hashlib.sha256(bundle.files[path]).digest())
+        outer.update(b"\x00")
+    return outer.hexdigest()
+
+
 __all__ = [
     "MAX_BUNDLE_BYTES",
     "MAX_BUNDLE_FILES",
     "BundleError",
     "ValidatedBundle",
+    "bundle_digest",
     "validate_bundle",
 ]

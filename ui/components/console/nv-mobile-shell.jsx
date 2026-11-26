@@ -998,15 +998,18 @@ function NV_Mobile_FilesSubtree(props) {
   // Local copy of nv-files-sidebar.jsx's own NV_FilesSubtree (hook-bearing
   // leaf, same "kept local" reasoning as NV_Mobile_Pulse above) - same
   // cache key though, so this shares its fetch/poll with the desktop tree.
+  // The poll is staggered like the desktop's (review 8.4): N expanded
+  // directories must not all re-list on the same 5 s tick.
   var tree = window.primerApi.useResource(
     SH_api.keys.tree(props.wid, props.path),
     function (signal) { return SH_api.filesTree(props.wid, props.path, signal); },
-    { pollMs: 5000, deps: [props.wid, props.path] }
+    { pollMs: (typeof window.NV_filesStaggerMs === "function" ? window.NV_filesStaggerMs(props.wid, props.path, 5000) : 5000), deps: [props.wid, props.path] }
   );
   var items = (tree.data && tree.data.items) || [];
   return (
     <React.Fragment>
       {items.map(function (entry) { return props.row(entry, props.depth); })}
+      {window.NV_filesTruncatedNote ? window.NV_filesTruncatedNote(tree.data, "nv-mob-files-truncated") : null}
     </React.Fragment>
   );
 }
@@ -1167,6 +1170,7 @@ function NV_MobileFiles() {
             <div className="card-list-empty">This workspace has no files yet.</div>
           ) : null}
           {items.map(function (entry) { return row(entry, 0); })}
+          {window.NV_filesTruncatedNote ? window.NV_filesTruncatedNote(tree.data, "nv-mob-files-truncated") : null}
         </div>
       )}
       <window.BottomSheet open={pickerOpen}

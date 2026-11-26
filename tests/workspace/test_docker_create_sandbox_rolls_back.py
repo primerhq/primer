@@ -150,7 +150,7 @@ def _adapter(docker: _FakeDocker) -> DockerRuntimeAdapter:
 async def _create(adapter: DockerRuntimeAdapter):
     return await adapter.create_sandbox(
         name=NAME, image="img:1", command=["run"], env={}, workdir="/workspace", volume_name=VOLUME, volume_target="/workspace",
-        extra_mounts=[], user=None, resources=ResourceLimits(), network="none", pull_policy="if_missing",
+        extra_mounts=[], user=None, resources=ResourceLimits(), network="full", pull_policy="if_missing",
         reachability=ContainerReachabilityHostPort(), token="tok",
     )
 

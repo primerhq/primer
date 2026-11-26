@@ -257,17 +257,31 @@ async def test_the_new_indexes_exist_and_events_are_indexed(postgres_storage_pro
 async def test_a_binding_agent_lookup_does_not_seq_scan_a_seeded_sessions_table(postgres_storage_provider):
     sp = postgres_storage_provider
     await sp.get_storage(WorkspaceSession).get("__bootstrap__")
-    async with sp.pool.acquire() as conn:
-        await conn.execute(
-            f'INSERT INTO "{sp.schema}".sessions (id, data) '
-            "SELECT 'x' || g, jsonb_build_object('id', 'x' || g, 'binding', jsonb_build_object('agent_id', 'a' || (g % 500))) "
-            "FROM generate_series(1, 20000) g ON CONFLICT DO NOTHING"
-        )
-        await conn.execute(f'ANALYZE "{sp.schema}".sessions')
-        await conn.execute("SET enable_seqscan = off")  # the index must be USABLE for the planner to pick it at all
-        plan = "\n".join(
-            r[0] for r in await conn.fetch(
-                f"EXPLAIN SELECT id FROM \"{sp.schema}\".sessions WHERE data->'binding'->>'agent_id' = 'a7'"
+    plan = ""
+    try:
+        async with sp.pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO "{sp.schema}".sessions (id, data) '
+                "SELECT 'x' || g, jsonb_build_object('id', 'x' || g, 'binding', jsonb_build_object('agent_id', 'a' || (g % 500))) "
+                "FROM generate_series(1, 20000) g ON CONFLICT DO NOTHING"
             )
-        )
+            await conn.execute(f'ANALYZE "{sp.schema}".sessions')
+            await conn.execute("SET enable_seqscan = off")  # the index must be USABLE for the planner to pick it at all
+            plan = "\n".join(
+                r[0] for r in await conn.fetch(
+                    f"EXPLAIN SELECT id FROM \"{sp.schema}\".sessions WHERE data->'binding'->>'agent_id' = 'a7'"
+                )
+            )
+    finally:
+        # The seeded rows belong to this test: delete exactly what was inserted
+        # (a crashed earlier run's leftovers have the same ids) and refresh the
+        # stats, so no other test's plan shape depends on them being left behind
+        # (the terminal tool-wait index test in test_postgres_hot_indexes.py in
+        # particular).
+        async with sp.pool.acquire() as conn:
+            await conn.execute(
+                f'DELETE FROM "{sp.schema}".sessions '
+                "WHERE id IN (SELECT 'x' || g FROM generate_series(1, 20000) g)"
+            )
+            await conn.execute(f'ANALYZE "{sp.schema}".sessions')
     assert "sessions_binding_agent_id" in plan, plan

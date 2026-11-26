@@ -13,13 +13,9 @@ if TYPE_CHECKING:
     from primer.trigger.subscribers import TriggerFireMetadata
 
 
-class SessionPriorityUnavailable(ConfigError):
-    """The deployment cannot admit a new session with nonzero priority."""
-
-
 def choose_creation_priority(
     *, requested: int | None, caller: WorkspaceSession | None, fire: TriggerFireMetadata | None,
-    binding_default: int, nonzero_available: bool,
+    binding_default: int,
 ) -> int:
     if fire is not None:
         if requested is not None or caller is not None:
@@ -31,7 +27,4 @@ def choose_creation_priority(
         priority = floor if requested is None else validate_work_priority(requested)
         if priority < floor:
             raise AccessDeniedError("child priority cannot be more urgent than its calling session")
-
-    if priority != 0 and nonzero_available is not True:
-        raise SessionPriorityUnavailable("nonzero session priority is unavailable before scheduling cutover")
     return priority

@@ -28,6 +28,8 @@ Errors as values: adapters never raise on provider failure. `ASR.transcribe` ret
 
 Yield-through streaming: `TTS.stream` is an async generator and the proxy pumps chunks straight to the browser. Collecting chunks and returning the join is the mistake the interface exists to prevent, because it reintroduces the whole synthesis wait while still looking like streaming.
 
+Shared `RateLimiter`: each adapter holds a slot for the whole call the way the LLM adapters do (`limits.max_concurrency` from the row), keyed `stt:{provider.id}` / `tts:{provider.id}`. The default factories pass the limiter through, and `SpeechRegistry.bind_rate_limiter` (mirroring `ProviderRegistry.bind_rate_limiter`) wires the coordinator's shared limiter in for distributed mode (the lifespan binds it to both the STT and the TTS registry at startup, and a rebind takes the latest limiter); unbound, an adapter falls back to a per-adapter `InMemoryRateLimiter`, which enforces the cap within the process only. `total_timeout_seconds` is not yet honoured by the speech adapters (the SDK's per-event read timeout is the only bound there) -- follow-up.
+
 Server-side credentials: the browser never sees a provider URL or key. It posts to the proxy and the server holds the configuration.
 
 Enumeration over hardcoding: model and voice lists come off the configured endpoint. Voice names are not portable between providers, so a shipped table would be wrong for everyone but its author.

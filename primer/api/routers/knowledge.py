@@ -88,7 +88,12 @@ from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
 from primer.knowledge import importer
 from primer.knowledge.importer import import_zip
-from primer.knowledge.tree import BODY_CAP_MESSAGE, DOCUMENT_BODY_CAP, check_body_size
+from primer.knowledge.tree import (
+    BODY_CAP_MESSAGE,
+    DOCUMENT_BODY_CAP,
+    DocumentTreeService,
+    check_body_size,
+)
 from primer.knowledge.lifecycle import (
     disable_search,
     enable_search,
@@ -490,7 +495,7 @@ async def grep_docs(
 @collection_router.get(
     "/collections/{collection_id}/documents",
     summary="Read one document by path, or list documents under a prefix",
-    responses=common_responses(404, 500),
+    responses=common_responses(400, 404, 500),
 )
 @route_tool(mapping_state="curated", curated_tool_ids=("system__get_document_content", "system__list_documents"))
 async def get_or_list_collection_documents(
@@ -512,6 +517,22 @@ async def get_or_list_collection_documents(
             "``path`` is set."
         ),
     ),
+    limit: int | None = Query(
+        default=None,
+        description=(
+            "Page size for the listing: at most this many entries, 1 to "
+            "1000. Omit for the default page (1000). Ignored when "
+            "``path`` is set."
+        ),
+    ),
+    after_path: str | None = Query(
+        default=None,
+        description=(
+            "Page cursor for the listing: the ``next_after_path`` of the "
+            "previous page (its last entry). Omit for the first page. "
+            "Ignored when ``path`` is set."
+        ),
+    ),
     collections=Depends(get_collection_storage),
     service=Depends(get_document_service),
 ) -> dict:
@@ -520,9 +541,13 @@ async def get_or_list_collection_documents(
     * ``?path=<p>`` set -> return the single document at that path as
       ``{"document": {...}, "content": "..."}`` (404 if missing).
     * no ``path`` -> list entries under the optional ``?prefix=`` as
-      ``{"documents": [{path, document_id, size}, ...]}``, NO bodies. The
-      listing is sourced from the content store, which is authoritative for
-      ``(collection_id, path)`` resolution.
+      ``{"documents": [{path, document_id, size}, ...], "next_after_path":
+      <cursor or null>}``, NO bodies, in path order. One page holds at most
+      1000 entries (``limit`` outside 1..1000 is a 400); ``next_after_path``
+      is the page's last path, null on the last page, and is passed back as
+      ``?after_path=`` for the next page, so a caller never silently loses
+      rows. The listing is sourced from the content store, which is
+      authoritative for ``(collection_id, path)`` resolution.
     """
     await _require_collection(request, collections, collection_id, AccessLevel.READ)
 
@@ -534,8 +559,14 @@ async def get_or_list_collection_documents(
             "content": result.content,
         }
 
-    entries = await service.list(collection_id=collection_id, prefix=prefix)
-    return {"documents": [e.model_dump(mode="json") for e in entries]}
+    page = await service.list(
+        collection_id=collection_id, prefix=prefix,
+        limit=limit, after_path=after_path,
+    )
+    return {
+        "documents": [e.model_dump(mode="json") for e in page.entries],
+        "next_after_path": page.entries[-1].path if page.truncated else None,
+    }
 
 
 @collection_router.put(
@@ -708,7 +739,6 @@ async def import_collection_zip(
     parent: str = Query(default="", description="Parent path to import under"),
     conflict: Literal["fail", "skip", "overwrite"] = Query(default="fail"),
     collections=Depends(get_collection_storage),
-    service=Depends(get_document_tree_service),
 ) -> dict:
     """Map an archive's directories onto the document tree.
 
@@ -716,12 +746,18 @@ async def import_collection_zip(
     binary or non-UTF-8 entries are reported rather than failing the whole
     import. ``conflict`` selects what happens at an existing path.
 
+    The archive is written without per-file embedding: one batched index
+    pass over the collection (the same pass turning search on runs) runs
+    after the writes, so search picks the import up from that pass rather
+    than from one embedder call per entry inside this request.
+
     Size caps answer 413 (FS-04): an upload over ``MAX_ARCHIVE_BYTES``
     (32 MiB), an archive listing more than ``MAX_ENTRIES`` entries, or one
     inflating past ``MAX_UNCOMPRESSED_BYTES``; nothing is written then.
     """
-    await _require_collection(request, collections, collection_id, AccessLevel.FULL)
+    coll = await _require_collection(request, collections, collection_id, AccessLevel.FULL)
     cap = importer.MAX_ARCHIVE_BYTES
+    sp = request.app.state.storage_provider
     # Copy the upload in chunks into a spool that moves to disk past 1 MiB, refusing it the moment
     # it passes the cap, rather than reading the whole of it into memory before checking.
     with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
@@ -736,10 +772,34 @@ async def import_collection_zip(
         if size == 0:
             raise BadRequestError("uploaded archive is empty")
         spool.seek(0)
+        # The tree service here has no indexer: a per-file embedder call inside the request
+        # outlives any proxy timeout on a large archive, and the batch pass below is the import's
+        # indexing (the per-file hook is the single-write path's way of reaching the same store).
         report = await import_zip(
-            service, collection_id=collection_id, data=spool,
+            DocumentTreeService(sp), collection_id=collection_id, data=spool,
             parent=parent, conflict=conflict,
         )
+    from primer.knowledge.indexing import index_documents
+    from primer.knowledge.lifecycle import _collection_documents
+
+    try:
+        await index_documents(
+            documents=await _collection_documents(sp, collection_id),
+            collection=coll,
+            provider_registry=get_provider_registry(request),
+            semantic_search_registry=get_semantic_search_registry(request),
+            content_store=sp.get_content_store(),
+            storage_provider=sp,
+        )
+    except DimensionMismatchError:
+        # Operator-configuration error: surface as 422 like the single-write indexer does.
+        raise
+    except Exception:  # noqa: BLE001 - best-effort indexing: the rows are written, the index catches up on the next pass
+        logger.exception(
+            "import into %s: indexing failed; rows persisted but not searchable",
+            collection_id,
+        )
+        report.index_failed = True
     return report.model_dump(mode="json")
 
 
@@ -1048,19 +1108,15 @@ async def _document_pre_create(entity: Document, request: Request) -> None:
 async def _document_pre_update(
     entity: Document, existing: Document, request: Request
 ) -> None:
-    """on_pre_update hook: moving a document needs full on the target collection too (the row guard checked the source);
-    block edits that target a system collection (covers both a system source and a system destination)."""
-    if existing.collection_id != entity.collection_id:
-        await _require_document_collection(
-            request, entity.collection_id, AccessLevel.FULL, what=f"Collection {entity.collection_id!r}",
-        )
+    """on_pre_update hook: the place in the tree and the collection are immutable through this door - the content row lives at the path, and only the tree move route writes it (the system document tool's update answers the same refusal); block edits that target a system collection."""
+    for field in ("path", "slug", "parent_id", "collection_id"):
+        if getattr(entity, field) != getattr(existing, field):
+            raise BadRequestError(
+                f"a document's {field} cannot be changed here; use the move route to relocate it"
+            )
     await _reject_system_collection(
         entity.collection_id, request, verb="updated",
     )
-    if existing.collection_id != entity.collection_id:
-        await _reject_system_collection(
-            existing.collection_id, request, verb="updated",
-        )
 
 
 def build_document_indexer(request: Request):
@@ -1189,12 +1245,12 @@ async def _unindex_document_hook(
 async def _document_pre_delete(
     stored: Document, request: Request
 ) -> None:
-    """on_pre_delete hook: block deleting documents of system collections,
-    then drop the document's indexed chunks before the row is removed."""
+    """on_pre_delete hook: block deleting documents of system collections, then drop the document's indexed chunks and its body row before the entity row is removed. The entity and content rows never diverge: a body row left behind keeps its path taken (409 on create, 404 on resolve) and still shows in listings and grep, so the body is dropped here and a failure aborts the delete rather than orphaning it (unlike the derived index, which is best-effort)."""
     await _reject_system_collection(
         stored.collection_id, request, verb="deleted",
     )
     await _unindex_document_hook(stored, request)
+    await request.app.state.storage_provider.get_content_store().delete(stored.id)
 
 
 document_router = make_crud_router(

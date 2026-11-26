@@ -220,10 +220,10 @@ def test_refcount_frees_accumulated_records_after_a_grace() -> None:
           window.clearTimeout = function (id) { if (TIMERS[id - 1]) TIMERS[id - 1].live = false; };
           SS_dispose(a);
           var withinGrace = kept(a);
-          var graceMs = TIMERS.map(function (t) { return t.ms; });
+          var graceMs = TIMERS.map(function (t) { return t.ms; }).filter(function (ms) { return ms === 60000; });
           SS_dispose(b);
           SS_retain(b);   // re-mounted inside the grace
-          TIMERS.forEach(function (t) { if (t.live) t.fn(); });
+          TIMERS.forEach(function (t) { if (t.live && t.ms === 60000) t.fn(); });
           return JSON.stringify({
             refs: a.refs,
             withinGrace: withinGrace,
@@ -861,3 +861,28 @@ def test_an_older_page_does_not_walk_back_a_status_the_tap_already_moved() -> No
     ctx.eval("var p = " + json.dumps(_PAGE) + "; p.forEach(function (r) { SS_apply(s, r); });")
     after = _status(ctx)
     assert after["verb"] == "read_file" and after["startedMs"] == ctx.eval("Date.parse('2026-10-31T10:01:00Z')"), after
+
+
+def test_records_are_kept_sorted_without_sorting_per_insert() -> None:
+    """Review 8.8: every insert re-sorted the whole record array, so a catch-up of thousands of records was quadratic. In-order records append,
+    one out of order is placed by binary search, a duplicate seq is refused; and the array is never sorted by the insert."""
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var sorts = 0, orig = Array.prototype.sort;
+          Array.prototype.sort = function () { sorts += 1; return orig.apply(this, arguments); };
+          var s = SS_getStore("w8", "s8");
+          for (var i = 1; i <= 3000; i++) SS_apply(s, {"class": "assistant_token", session_id: "s8", seq: i * 2, payload: {text: "t" + i}});
+          var late = [3001, 1, 4999, 2999, 6000, 6000];      // odd seqs fall between, 6000 is already there
+          var added = late.map(function (q) { return SS_apply(s, {"class": "assistant_token", session_id: "s8", seq: q, payload: {text: "x"}}); });
+          Array.prototype.sort = orig;
+          var seqs = s.recordsBySeq.map(function (r) { return r.seq; });
+          var sorted = seqs.every(function (q, i) { return i === 0 || seqs[i - 1] < q; });
+          return JSON.stringify({ sorts: sorts, n: seqs.length, sorted: sorted, first: seqs[0], has: [1, 2999, 3001, 4999].map(function (q) { return !!s.records[q]; }) });
+        })()
+        """
+    ))
+    assert out["sorted"] is True and out["n"] == 3000 + 4 and out["first"] == 1
+    assert out["has"] == [True, True, True, True]
+    assert out["sorts"] <= 1, "inserting a record must not sort the array (the transcript derivation may sort once per commit)"

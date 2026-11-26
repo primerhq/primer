@@ -913,7 +913,11 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
           <div className="field-help muted text-sm" style={{ marginBottom: 12 }}>
             The server will generate a unique, unguessable URL for this webhook.
             You can optionally add an HMAC secret for signature verification after
-            the trigger is created.
+            the trigger is created. With a secret set, senders must send an
+            <span className="mono"> X-Primer-Timestamp </span> header and sign
+            <span className="mono"> {"<timestamp>\\n<body>"} </span>
+            (HMAC-SHA256) as <span className="mono">X-Primer-Signature</span>; a 300 s
+            window rejects replayed requests.
           </div>
           <div className="field">
             <div
@@ -1041,6 +1045,10 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
   const [fireAtLocal, setFireAtLocal] = React.useState(String(cfg.fire_at || "").slice(0, 16));
   const [whInteractive, setWhInteractive] = React.useState(!!cfg.interactive);
   const [whWait, setWhWait] = React.useState(String(cfg.wait_timeout_seconds ?? 60));
+  // Lane J carry: naming the flag is the operator's switch (an update that omits it keeps the
+  // stored one; a new trigger that omits it defaults off), so the dialog seeds it from the row
+  // and sends it explicitly - the toggle, not an omitted field, decides.
+  const [whLegacyHmac, setWhLegacyHmac] = React.useState(cfg.legacy_body_hmac !== false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
   const timezones = React.useMemo(() => TR_supportedTimezones(), []);
@@ -1070,6 +1078,9 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
           hmac_secret: cfg.hmac_secret ?? null,
           interactive: whInteractive,
           wait_timeout_seconds: Number(whWait) || 60,
+          // Named explicitly: that is the operator's switch (an omitted flag
+          // keeps the stored value; a created trigger that omits it is off).
+          legacy_body_hmac: whLegacyHmac,
         };
       }
       const updated = await apiFetch(
@@ -1231,6 +1242,23 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
                 onChange={(e) => setWhWait(e.target.value)}
                 style={{ width: "100%" }}
               />
+            </div>
+            <div className="field">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  id="tr-edit-legacy-hmac"
+                  data-testid="tr-edit-legacy-hmac"
+                  checked={whLegacyHmac}
+                  onChange={(e) => setWhLegacyHmac(e.target.checked)}
+                />
+                <span>Also accept body-only signatures</span>
+              </label>
+              <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+                Legacy senders sign the raw body alone, with no X-Primer-Timestamp, so their
+                requests can be replayed. Off accepts only the timestamped signature. Only
+                meaningful while an HMAC secret is set.
+              </div>
             </div>
           </div>
         )}
@@ -1868,10 +1896,20 @@ function TR_TriggerDetail({ id }) {
                     {whUrl && <TR_CopyButton text={whUrl} label="Copy URL" testId="copy-webhook-url-btn" />}
                   </dd>
                   <dt>HMAC secret</dt>
-                  <dd style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <dd style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span className={hasHmac ? "pill pill-claimed" : "muted text-sm"} style={{ fontSize: 10.5 }}>
                       {hasHmac ? "configured" : "not set"}
                     </span>
+                    {hasHmac && t.config.legacy_body_hmac !== false && (
+                      // Lane J carry: the trigger also accepts the legacy body-only HMAC, which
+                      // carries no timestamp, so a captured request replays indefinitely. Say so,
+                      // and only with a secret set: without one no signature is accepted at all,
+                      // so the flag (and its replay risk) does not apply.
+                      <span className="pill pill-claimed" data-testid="webhook-legacy-hmac-badge" style={{ fontSize: 10.5 }}
+                        title="This trigger also accepts the legacy body-only signature, which carries no timestamp: a captured request can be replayed indefinitely. Turn the flag off in Edit to accept only the timestamped signature.">
+                        Body-only signatures accepted (replayable)
+                      </span>
+                    )}
                     <Btn
                       size="sm"
                       kind="ghost"
@@ -1898,7 +1936,9 @@ function TR_TriggerDetail({ id }) {
                           setHmacError(null);
                           try {
                             // The service replaces the config whole: carry the current mode and
-                            // wait, or clearing the secret would also switch interactive off.
+                            // wait, or clearing the secret would also switch interactive off;
+                            // and the legacy-signature flag, so the write never depends on the
+                            // keep-stored-when-omitted default.
                             await apiFetch(
                               "PUT",
                               "/triggers/" + encodeURIComponent(id),
@@ -1909,6 +1949,7 @@ function TR_TriggerDetail({ id }) {
                                   hmac_secret: null,
                                   interactive: !!t.config.interactive,
                                   wait_timeout_seconds: t.config.wait_timeout_seconds || 60,
+                                  legacy_body_hmac: t.config.legacy_body_hmac !== false,
                                 },
                               },
                             );
@@ -2670,8 +2711,9 @@ function TR_HmacSecretDialog({ triggerId, config, onClose, onSaved }) {
     setError(null);
     try {
       // The service replaces the config whole and the model defaults the fields a PUT omits
-      // (interactive off, 60 s wait): send the webhook config as it stands, or setting the
-      // secret would silently turn an interactive webhook non-interactive.
+      // (interactive off, 60 s wait): send the webhook config as it stands - the legacy-
+      // signature flag included - or setting the secret would silently turn an interactive
+      // webhook non-interactive.
       const cfg = config || {};
       await apiFetch(
         "PUT",
@@ -2683,6 +2725,7 @@ function TR_HmacSecretDialog({ triggerId, config, onClose, onSaved }) {
             hmac_secret: secret,
             interactive: !!cfg.interactive,
             wait_timeout_seconds: cfg.wait_timeout_seconds || 60,
+            legacy_body_hmac: cfg.legacy_body_hmac !== false,
           },
         },
       );

@@ -12,29 +12,25 @@ in its own table:
         created_at  timestamptz NOT NULL DEFAULT now(),
         updated_at  timestamptz NOT NULL DEFAULT now()
     );
-    CREATE INDEX IF NOT EXISTS <table>_data_gin
-        ON <schema>.<table> USING gin (data jsonb_path_ops);
 
 The ``id`` column is hoisted out of the JSON document so it can be
 the table's primary key with the obvious B-tree index. Everything
 else lives under ``data`` (Pydantic's ``model_dump(mode="json")``
-output minus ``id``). The GIN index makes containment-style
-predicate scans fast; ``WHERE`` fragments produced by
-:mod:`primer.storage._predicate` use ``data->>'field'`` paths that
-remain index-friendly when combined with that GIN.
-
-A GIN over ``jsonb_path_ops`` does NOT, however, help the scalar
-``data->>'field' = $1`` equality fragments the predicate translator
-emits. A small set of fields queried on hot paths therefore gets a
+output minus ``id``). There is deliberately no whole-document GIN: the
+``WHERE`` fragments produced by :mod:`primer.storage._predicate` use
+``data->>'field' = $1`` and ``data->'field' ? $1``, which a
+``jsonb_path_ops`` GIN cannot serve, so it only taxed every write (finding
+3.7; a table an older release created keeps its copy, see storage.md).
+A small set of fields queried on hot paths therefore gets a
 dedicated B-tree expression index on the extracted scalar (see
 ``_HOT_FIELD_INDEXES``): ``apitoken.token_hash`` (bearer auth, every
 request), ``sessions.status`` (recovery + live-session sweeps), and
 ``channel.(provider_id, external_id)`` (inbound routing), plus
 ``artifactlocation.provider_id`` (artifact ownership counts). They are
-created with plain ``CREATE INDEX IF NOT EXISTS`` in the transactional
-table-create path, not ``CONCURRENTLY`` (which cannot run in a
-transaction); see ``_HOT_FIELD_INDEXES`` for the lock tradeoff on
-pre-existing large tables.
+created with ``CREATE INDEX IF NOT EXISTS``: in the transactional
+table-create path when the table is new; when it already exists, UNIQUE ones
+inline and non-unique ones by a bounded background task (see
+``_ensure_table`` and ``_HOT_FIELD_INDEXES``).
 
 Pagination supports both styles required by :class:`primer.int.Storage`:
 
@@ -61,6 +57,7 @@ import asyncpg
 from primer.storage._ddl import (
     CONCURRENT_CREATE_RACE,
     execute_create_idempotent,
+    execute_idempotent_ddl,
 )
 from pydantic import BaseModel, ValidationError
 
@@ -97,7 +94,7 @@ from primer.model.storage import (
     PageRequest,
     Predicate,
 )
-from primer.storage._pg_pool import keepalive_init_hook, warn_unenforced_pool_options
+from primer.storage._pg_pool import BoundedPool, keepalive_init_hook, warn_unenforced_pool_options
 from primer.storage._locking import (
     LockingTransaction, locking_context, current_transaction, drain_cleanup, model_operation,
     prepared_models, require_transaction,
@@ -203,6 +200,10 @@ class PostgresStorageProvider(StorageProvider):
         self._pool: asyncpg.Pool | None = None
         self._transaction_tasks: dict[Any, int] = {}
         self._handles: dict[type[Identifiable], PostgresStorage[Any]] = {}
+        # Background index builds of every handle: bounded to ``_INDEX_BUILD_SLOTS`` connections at a time so an upgrade boot that finds
+        # many tables missing an index cannot pin the pool, and tracked so ``aclose`` can cancel them.
+        self._index_slots = asyncio.Semaphore(_INDEX_BUILD_SLOTS)
+        self._index_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def pool(self) -> asyncpg.Pool:
@@ -217,6 +218,11 @@ class PostgresStorageProvider(StorageProvider):
     def schema(self) -> str:
         """Sanitised schema name where tables are created."""
         return self._schema
+
+    @property
+    def acquire_timeout(self) -> float:
+        """The pool's acquire timeout (s), which bounds every connection wait the ensure pass makes under its lock (``PoolConfig.acquire_timeout``)."""
+        return self._config.pool.acquire_timeout
 
     @property
     def rate_limit_lease_table(self) -> str:
@@ -244,21 +250,27 @@ class PostgresStorageProvider(StorageProvider):
         cfg = self._config
         warn_unenforced_pool_options(cfg.pool, pool_name="storage")
         try:
-            self._pool = await asyncpg.create_pool(
-                host=cfg.hostname,
-                port=cfg.port,
-                user=cfg.username,
-                password=cfg.password.get_secret_value(),
-                database=cfg.database,
-                min_size=cfg.pool.min_size,
-                max_size=cfg.pool.max_size,
+            # The pool is wrapped so that every acquire() without its own
+            # timeout is bounded by the configured acquire_timeout: an
+            # unbounded acquire would wait forever on a saturated pool.
+            self._pool = BoundedPool(
+                await asyncpg.create_pool(
+                    host=cfg.hostname,
+                    port=cfg.port,
+                    user=cfg.username,
+                    password=cfg.password.get_secret_value(),
+                    database=cfg.database,
+                    min_size=cfg.pool.min_size,
+                    max_size=cfg.pool.max_size,
+                    timeout=cfg.pool.acquire_timeout,
+                    max_inactive_connection_lifetime=cfg.pool.max_idle,
+                    command_timeout=cfg.pool.acquire_timeout,
+                    # Kernel TCP keepalive on every connection, so an idle LISTEN
+                    # connection whose peer vanished without a FIN or RST is
+                    # detected instead of staying deaf. None when switched off.
+                    init=keepalive_init_hook(cfg.pool, pool_name="storage"),
+                ),
                 timeout=cfg.pool.acquire_timeout,
-                max_inactive_connection_lifetime=cfg.pool.max_idle,
-                command_timeout=cfg.pool.acquire_timeout,
-                # Kernel TCP keepalive on every connection, so an idle LISTEN
-                # connection whose peer vanished without a FIN or RST is
-                # detected instead of staying deaf. None when switched off.
-                init=keepalive_init_hook(cfg.pool, pool_name="storage"),
             )
         except Exception as exc:
             raise ProviderError(
@@ -330,8 +342,8 @@ class PostgresStorageProvider(StorageProvider):
                 'ADD COLUMN IF NOT EXISTS memory_occurrence TEXT, '
                 'ADD COLUMN IF NOT EXISTS memory_claim_id TEXT'
             )
-            # Additive groundwork only: production engines retain old ordering.
-            # Nonzero backfill/index preparation is explicit, never startup work.
+            # The work priority column: existing leases keep their zero default; the claim
+            # ordering reads it on every arm (the engines snapshot the entity's priority).
             await conn.execute(
                 f'ALTER TABLE "{self._schema}"."leases" '
                 'ADD COLUMN IF NOT EXISTS work_priority INTEGER NOT NULL DEFAULT 0 '
@@ -350,6 +362,24 @@ class PostgresStorageProvider(StorageProvider):
                 f'CREATE INDEX IF NOT EXISTS leases_expiry_by_kind '
                 f'ON "{self._schema}"."leases" (kind, expires_at) '
                 f'WHERE claimed_by IS NOT NULL',
+            )
+            # The priority-ordered claim reads work_priority first, so both branches carry a
+            # priority-prefixed index, created by the same boot ensure (fresh and upgraded
+            # databases alike). The old indexes stay: leases_expiry_by_kind still serves the
+            # expired branch's expires_at filter, and leases_unclaimed_by_kind is the rollback
+            # path. The legacy (priority_score, next_attempt_at) index with no kind prefix
+            # (leases_claim_order) is dropped, as before.
+            await execute_create_idempotent(
+                conn,
+                f'CREATE INDEX IF NOT EXISTS leases_work_priority_unclaimed_v1 '
+                f'ON "{self._schema}"."leases" '
+                f'(kind, work_priority, priority_score, next_attempt_at) WHERE claimed_by IS NULL',
+            )
+            await execute_create_idempotent(
+                conn,
+                f'CREATE INDEX IF NOT EXISTS leases_work_priority_expired_v1 '
+                f'ON "{self._schema}"."leases" '
+                f'(kind, work_priority, priority_score, next_attempt_at, expires_at) WHERE claimed_by IS NOT NULL',
             )
             await conn.execute(f'DROP INDEX IF EXISTS "{self._schema}".leases_claim_order')
             await execute_create_idempotent(
@@ -403,10 +433,21 @@ class PostgresStorageProvider(StorageProvider):
     async def aclose(self) -> None:
         if self._pool is None:
             return
+        tasks = list(self._index_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await self._pool.close()
         self._pool = None
         self._handles.clear()
         logger.info("PostgresStorageProvider closed")
+
+    def _spawn_index_task(self, coro: Any) -> asyncio.Task[None]:
+        """Run a background index build that ``aclose`` will cancel and await."""
+        task = asyncio.get_running_loop().create_task(coro)
+        self._index_tasks.add(task)
+        task.add_done_callback(self._index_tasks.discard)
+        return task
 
     def get_storage(self, model_class: type[ModelT]) -> Storage[ModelT]:
         cached = self._handles.get(model_class)
@@ -643,11 +684,14 @@ class PostgresStorageProvider(StorageProvider):
 # Hot-field expression indexes
 # ---------------------------------------------------------------------------
 #
-# The per-table GIN index keeps containment-style scans fast, but a GIN over
-# ``data jsonb_path_ops`` does NOT accelerate the scalar ``data->>'field' = $1``
-# equality fragments that ``_PredicateTranslator`` emits -- those still fall
-# back to a sequential scan. A handful of fields are queried on hot paths and
-# benefit from a dedicated B-tree expression index on the extracted scalar:
+# Entity tables carry no whole-document GIN (``data jsonb_path_ops`` served only
+# ``@>`` / ``@?`` / ``@@``, which no entity query uses, and cost a GIN entry per
+# JSON leaf on every write; one an older release already created is left in
+# place, because rolling back to that release would rebuild it in the request
+# path under the 30 s command timeout). The ``_PredicateTranslator`` emits scalar
+# ``data->>'field' = $1`` equality fragments, which are served by a dedicated
+# B-tree expression index on the extracted scalar. A handful of fields are
+# queried on hot paths and get one:
 #
 #   * ``apitoken.token_hash``        -- looked up on EVERY bearer-authenticated
 #                                       request (auth middleware ``_find_by_hash``).
@@ -662,21 +706,24 @@ class PostgresStorageProvider(StorageProvider):
 # These mirror the JSONB expression-index style already used for the
 # ``channelcorrelation`` UNIQUE index in ``primer.channel.correlation`` --
 # ``((data->>'field'))`` -- and are created with plain
-# ``CREATE INDEX IF NOT EXISTS`` (NOT ``CONCURRENTLY``) inside the same
-# transactional ``_ensure_table`` block as the base table + GIN index.
+# ``CREATE INDEX IF NOT EXISTS`` (NOT ``CONCURRENTLY``).
 #
-# Why plain, not CONCURRENTLY: ``CREATE INDEX CONCURRENTLY`` cannot run inside
-# a transaction block, and the table-create path here is deliberately
-# transactional (table + indexes commit atomically, which is also what the
-# cold-start race handling in ``primer.storage._ddl`` relies on). On a fresh
-# table the index build is instant and takes no meaningful lock because the
-# table is empty. The tradeoff: applying one of these indexes for the first
-# time to an ALREADY-LARGE pre-existing table takes a brief ``ACCESS
-# EXCLUSIVE``-equivalent lock for the duration of the build. For a large
-# production table, pre-create the index out-of-band with
-# ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` (same name + expression) before
-# the upgrade; the ``IF NOT EXISTS`` here then becomes a no-op. See
-# ``docs/dev/architecture/storage.md``.
+# Where they are created: ``CREATE INDEX CONCURRENTLY`` cannot run inside a
+# transaction block, and creating a NEW table is deliberately transactional
+# (table + indexes commit atomically, which the cold-start race handling in
+# ``primer.storage._ddl`` relies on). On a new, empty table the build is
+# instant, so it runs there. On a table that ALREADY exists:
+#   * a missing UNIQUE index is built inline, before the table counts as
+#     ensured (a write that lands first could insert the duplicates it exists
+#     to stop), under ``_INDEX_BUILD_TIMEOUT`` and one first-use pass per handle;
+#   * a missing or INVALID non-unique index is built by
+#     ``PostgresStorage._maintain_indexes`` in the background with CREATE INDEX
+#     CONCURRENTLY (an INVALID index is dropped and rebuilt, never counted as
+#     present), outside any transaction, retried with backoff, at most
+#     ``_INDEX_BUILD_SLOTS`` at once per provider, cancelled by ``aclose``.
+# For a very large production table with a missing UNIQUE index, pre-create it
+# out-of-band with ``CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS`` (same
+# name + expression) before the upgrade. See ``docs/dev/architecture/storage.md``.
 #
 # Keyed by table name (post ``_table_name_for`` mapping, so the session model
 # lands under ``sessions``). Each entry is ``(index_suffix, unique, expr)``
@@ -741,6 +788,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
         # flat /v1/documents lists push `collection_id IN <readable>` into the
         # query (access-control P3); index-backed.
         ("collection_id", False, "((data->>'collection_id'))"),
+        # M1: the batched tree walk lists a collection's children with
+        # `parent_id IN (...)`; the composite index covers that lookup.
+        ("parent_id", False, "((data->>'collection_id'), (data->>'parent_id'))"),
     ],
     "channel": [
         (
@@ -854,6 +904,12 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
 # later read and write of the table. Their creation runs under a savepoint
 # that tolerates the unique violation (log and continue without the index,
 # for an admin to resolve); every other hot-field index keeps raising.
+# A hot index missing from a table that already exists is built off the request path (finding 3.4) with its own long timeout,
+# not the pool's 30 s command timeout, and a failed build is retried after these delays.
+_INDEX_BUILD_TIMEOUT = 3600.0
+_INDEX_BUILD_SLOTS = 2
+_INDEX_RETRY_BACKOFF = (30.0, 120.0, 600.0, 1800.0)
+
 _DUP_TOLERANT_UNIQUE_INDEX_NAMES = ("serviceversion_service_version_uniq", "user_username_uniq", "service_name_uniq")
 
 
@@ -875,17 +931,22 @@ def _trigram_index_ddl(table: str, qualified: str, field: str) -> str:
     return f'CREATE INDEX IF NOT EXISTS "{table}_{field}_trgm" ON {qualified} USING gin (({expr}) gin_trgm_ops)'
 
 
+def _hot_index_specs(table: str, qualified: str, *, concurrently: bool = False) -> list[tuple[str, bool, str]]:
+    """``(index name, unique, CREATE statement)`` for each of *table*'s hot fields (empty when it has none).
+
+    ``concurrently`` builds a non-unique index without blocking writers; it cannot run in a transaction and a failed build leaves an INVALID index.
+    """
+    out: list[tuple[str, bool, str]] = []
+    for suffix, unique, expr in _HOT_FIELD_INDEXES.get(table, ()):
+        kind = "UNIQUE INDEX" if unique else "INDEX CONCURRENTLY" if concurrently and not unique else "INDEX"
+        out.append((f"{table}_{suffix}", unique, f'CREATE {kind} IF NOT EXISTS "{table}_{suffix}" ON {qualified} {expr}'))
+    return out
+
+
 def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
     """Return the ``CREATE INDEX IF NOT EXISTS`` statements for *table*'s hot
     fields (empty when the table has none registered)."""
-    out: list[str] = []
-    for suffix, unique, expr in _HOT_FIELD_INDEXES.get(table, ()):
-        kind = "UNIQUE INDEX" if unique else "INDEX"
-        out.append(
-            f'CREATE {kind} IF NOT EXISTS "{table}_{suffix}" '
-            f"ON {qualified} {expr}"
-        )
-    return out
+    return [ddl for _name, _unique, ddl in _hot_index_specs(table, qualified)]
 
 
 async def _append_crud_event(
@@ -932,12 +993,20 @@ class PostgresStorage(Storage[ModelT]):
         # missing table. The provider's handle cache keeps one handle per
         # model, so the flag is shared exactly as broadly as before.
         self._table_ensured = False
+        # One first-use DDL pass at a time per handle (concurrent first requests share it), and at most one background index task.
+        self._ensure_lock = asyncio.Lock()
+        self._index_task: asyncio.Task[None] | None = None
 
     # ---------- DDL --------------------------------------------------------
 
     async def _ensure_table(self) -> None:
         if self._table_ensured:
             return
+        async with self._ensure_lock:
+            if not self._table_ensured:
+                await self._ensure_table_once()
+
+    async def _ensure_table_once(self) -> None:
         ddl_table = (
             f'CREATE TABLE IF NOT EXISTS {self._qualified} ('
             'id text PRIMARY KEY, '
@@ -946,23 +1015,32 @@ class PostgresStorage(Storage[ModelT]):
             'updated_at timestamptz NOT NULL DEFAULT now()'
             ')'
         )
-        ddl_index = (
-            f'CREATE INDEX IF NOT EXISTS '
-            f'"{self._table}_data_gin" '
-            f'ON {self._qualified} USING gin (data jsonb_path_ops)'
-        )
-        # Plain (non-CONCURRENTLY) B-tree expression indexes on the hot
-        # equality fields for this table, if any. Created in the same
-        # transaction as the base table so they commit atomically and
-        # tolerate the cold-start race the same way the GIN index does.
-        ddl_hot = _hot_field_index_ddl(self._table, self._qualified)
-        try:
-            async with self._provider.pool.acquire() as conn:
+        # B-tree expression indexes on the hot fields of this table, if any.
+        # On a table this call creates they run in the same transaction (the
+        # table is empty: the build is instant and the table + indexes commit
+        # atomically, which the cold-start race handling relies on). On a
+        # table that ALREADY exists, a missing UNIQUE index is built inline
+        # before the table counts as ensured (a write that lands first could
+        # insert the duplicates it exists to stop), under its own long
+        # timeout; a missing or INVALID non-unique index is built off the
+        # request path by ``_maintain_indexes`` (finding 3.4).
+        specs = _hot_index_specs(self._table, self._qualified)
+        present: dict[str, bool] = {}
+        existed = False
+
+        async def _unit() -> None:
+            nonlocal present, existed
+            # Every acquire this pass makes while holding the ensure lock is
+            # bounded by the pool's acquire timeout: asyncpg's acquire has no
+            # default timeout, so an unbounded one here would wait forever for
+            # a connection a peer holds inside a transaction (N2-1).
+            async with self._provider.pool.acquire(timeout=self._provider.acquire_timeout) as conn:
+                present = await self._index_state(conn)
+                existed = bool(present)
                 async with conn.transaction():
                     await conn.execute(ddl_table)
-                    await conn.execute(ddl_index)
-                    for ddl in ddl_hot:
-                        if any(f'"{name}"' in ddl for name in _DUP_TOLERANT_UNIQUE_INDEX_NAMES):
+                    for name, _unique, ddl in () if existed else specs:
+                        if name in _DUP_TOLERANT_UNIQUE_INDEX_NAMES:
                             # A failed statement aborts the whole
                             # Postgres transaction, so this one index
                             # (possibly dirty rows, KN-19j) runs under a
@@ -970,9 +1048,27 @@ class PostgresStorage(Storage[ModelT]):
                             await self._create_dup_tolerant_index(conn, ddl)
                         else:
                             await conn.execute(ddl)
+
+        try:
+            # A peer's background CREATE INDEX CONCURRENTLY on this table
+            # (lane N's index builder) holds SHARE UPDATE EXCLUSIVE while
+            # waiting on this transaction: a deadlock aborts the unit, so
+            # re-run the whole unit in a fresh transaction (see
+            # primer.storage._ddl).
+            await execute_idempotent_ddl(_unit)
+        except TimeoutError as exc:
+            # The pool was saturated for longer than the acquire timeout
+            # while this handle held the ensure lock (N2-1): fail fast,
+            # naming the table, instead of waiting for a connection a peer
+            # will never release; the lock is released with the raise.
+            raise ProviderError(
+                f"timed out waiting for a pool connection to ensure {self._qualified} "
+                f"(pool acquire timeout {self._provider.acquire_timeout:g} s): the pool is saturated",
+                cause=exc,
+            ) from exc
         except CONCURRENT_CREATE_RACE as exc:
             # Concurrent-creation race (see primer.storage._ddl): another
-            # process won the race and created the table + index atomically
+            # process won the race and created the table + indexes atomically
             # in one transaction, so the object exists now -- treat as
             # ensured rather than crashing startup.
             logger.debug(
@@ -984,10 +1080,116 @@ class PostgresStorage(Storage[ModelT]):
                 f"failed to create table {self._qualified}: {exc}",
                 cause=exc,
             ) from exc
+        # A UNIQUE hot index the snapshot shows missing or INVALID is built
+        # inline before the table counts as ensured (a write that lands first
+        # could insert the duplicates it exists to stop). When every unique
+        # index is already valid this pass takes NO second pool connection:
+        # an acquire under the ensure lock is a wait edge that can cycle with
+        # peers holding the pool (N2-1).
+        if existed and any(unique and not present.get(name) for name, unique, _ in specs):
+            await self._build_unique_indexes(present)
         # Reached only when the DDL committed (a race loss means the other
         # process committed the same table): mark this handle ensured.
         self._table_ensured = True
-        await self._ensure_trigram_indexes()
+        if existed and any(not unique and not present.get(name) for name, unique, _ in specs):
+            self._index_task = self._provider._spawn_index_task(self._maintain_indexes())  # noqa: SLF001
+        if any(not present.get(f"{self._table}_{field}_trgm") for field in _TRIGRAM_FIELDS.get(self._table, ())):
+            await self._ensure_trigram_indexes()
+
+    async def _index_state(self, conn: Any) -> dict[str, bool]:
+        """``{index name: is valid}`` for the indexes on this table (empty when the table does not exist)."""
+        rows = await conn.fetch(
+            "SELECT c.relname AS name, i.indisvalid AS valid FROM pg_index i "
+            "JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid "
+            "JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = $1 AND t.relname = $2",
+            self._provider.schema, self._table,
+        )
+        return {r["name"]: r["valid"] for r in rows}
+
+    async def _build_unique_indexes(self, present: dict[str, bool]) -> None:
+        """Inline, before the table counts as ensured: build each missing (or INVALID) UNIQUE hot index of a table that already existed."""
+
+        async def _unit() -> None:
+            # Bounded acquire under the ensure lock (N2-1); a peer holding the
+            # pool inside a transaction would otherwise pin this pass forever.
+            # The acquire is INSIDE the retried unit: a deadlock aborts it and
+            # returns the connection to the pool, so the helper's backoff
+            # sleep never holds a connection (or any DDL window) open.
+            async with self._provider.pool.acquire(timeout=self._provider.acquire_timeout) as conn:
+                for name, unique, ddl in _hot_index_specs(self._table, self._qualified):
+                    if not unique or present.get(name):
+                        continue
+                    if name in present:  # INVALID: never counted as present
+                        await conn.execute(f'DROP INDEX IF EXISTS "{self._provider.schema}"."{name}"', timeout=_INDEX_BUILD_TIMEOUT)
+                    await self._create_unique_index(conn, name, ddl)
+
+        try:
+            # A peer's background CREATE INDEX CONCURRENTLY on the same table
+            # (the builder skips unique indexes, so both passes run in the
+            # upgrade window) can deadlock this plain build: re-run the whole
+            # idempotent unit in a fresh connection and transaction (see
+            # primer.storage._ddl). The UniqueViolation duplicate-data outcome
+            # of _create_unique_index is NOT retried: only a
+            # DeadlockDetectedError is, so round 1's re-check semantics are
+            # unchanged.
+            await execute_idempotent_ddl(_unit)
+        except TimeoutError as exc:
+            raise ProviderError(
+                f"timed out waiting for a pool connection to create the unique indexes of {self._qualified} "
+                f"(pool acquire timeout {self._provider.acquire_timeout:g} s): the pool is saturated",
+                cause=exc,
+            ) from exc
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(f"failed to create the unique indexes of {self._qualified}: {exc}", cause=exc) from exc
+
+    async def _create_unique_index(self, conn: Any, name: str, ddl: str) -> None:
+        try:
+            await conn.execute(ddl, timeout=_INDEX_BUILD_TIMEOUT)
+        except CONCURRENT_CREATE_RACE as exc:
+            if (await self._index_state(conn)).get(name):
+                return  # a peer built it first, which is all we wanted
+            if not isinstance(exc, asyncpg.UniqueViolationError):
+                raise
+            # The index is absent, so the violation is in the DATA.
+            msg = f"could not create the unique index {name} on {self._qualified}: duplicate rows already exist"
+            if name not in _DUP_TOLERANT_UNIQUE_INDEX_NAMES:
+                raise ProviderError(f"{msg}; resolve them and restart", cause=exc) from exc
+            logger.warning("%s; continuing without it until an admin resolves them (KN-19j, GS-20)", msg)
+
+    async def _maintain_indexes(self) -> None:
+        """Bring a pre-existing table's non-unique indexes up to date in the background, retrying with backoff until done."""
+        for delay in (*_INDEX_RETRY_BACKOFF, None):
+            try:
+                async with self._provider._index_slots:  # noqa: SLF001
+                    await self._build_missing_indexes()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - an index is an optimisation; the table already works
+                logger.warning("could not build the indexes of %s%s", self._qualified, "" if delay is None else f"; retrying in {delay:.0f}s", exc_info=True)
+                if delay is None:
+                    return
+                await asyncio.sleep(delay)
+
+    async def _build_missing_indexes(self) -> None:
+        """Build each missing non-unique hot index CONCURRENTLY (own long timeout, outside any transaction); an INVALID one is dropped and rebuilt."""
+        failed: Exception | None = None
+        async with self._provider.pool.acquire() as conn:
+            state = await self._index_state(conn)
+            for name, unique, ddl in _hot_index_specs(self._table, self._qualified, concurrently=True):
+                if unique or state.get(name):
+                    continue
+                try:
+                    if name in state:
+                        await conn.execute(f'DROP INDEX CONCURRENTLY IF EXISTS "{self._provider.schema}"."{name}"', timeout=_INDEX_BUILD_TIMEOUT)
+                    await conn.execute(ddl, timeout=_INDEX_BUILD_TIMEOUT)
+                except Exception as exc:  # noqa: BLE001 - keep building the others, then retry this one
+                    if not (await self._index_state(conn)).get(name):
+                        failed = failed or exc
+        if failed is not None:
+            raise failed
 
     async def _ensure_trigram_indexes(self) -> None:
         """Best-effort trigram indexes for this table's searchable fields (see ``_TRIGRAM_FIELDS``). Never raises."""
@@ -996,7 +1198,9 @@ class PostgresStorage(Storage[ModelT]):
         if not fields:
             return
         try:
-            async with self._provider.pool.acquire() as conn:
+            # Bounded acquire under the ensure lock (N2-1); the best-effort
+            # contract keeps a timeout from failing the request (it logs).
+            async with self._provider.pool.acquire(timeout=self._provider.acquire_timeout) as conn:
                 try:
                     await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
                 except Exception as exc:  # noqa: BLE001 - the role may not create extensions
@@ -1434,8 +1638,11 @@ class PostgresStorage(Storage[ModelT]):
         page: PageRequest,
         *,
         order_by: list[OrderBy] | None = None,
+        conn: Any | None = None,
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
-        return await self._paged(predicate=predicate, page=page, order_by=order_by)
+        return await self._paged(
+            predicate=predicate, page=page, order_by=order_by, conn=conn,
+        )
 
     #: Rows per query of :meth:`find_ids`.
     _IDS_PAGE = 2000
@@ -1509,6 +1716,7 @@ class PostgresStorage(Storage[ModelT]):
         predicate: Predicate | None,
         page: PageRequest,
         order_by: list[OrderBy] | None,
+        conn: Any | None = None,
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
         await self._ensure_table()
 
@@ -1523,6 +1731,7 @@ class PostgresStorage(Storage[ModelT]):
                 where_sql=where_sql,
                 order_clause=order_clause,
                 page=page,
+                conn=conn,
             )
         if isinstance(page, CursorPage):
             return await self._page_cursor(
@@ -1531,6 +1740,7 @@ class PostgresStorage(Storage[ModelT]):
                 order_clause=order_clause,
                 order_by=order_by,
                 page=page,
+                conn=conn,
             )
         raise BadRequestError(f"unknown PageRequest variant {type(page).__name__!r}")
 
@@ -1543,6 +1753,7 @@ class PostgresStorage(Storage[ModelT]):
         where_sql: str,
         order_clause: str,
         page: OffsetPage,
+        conn: Any | None = None,
     ) -> OffsetPageResponse[ModelT]:
         # Bind LIMIT and OFFSET as parameters (cheap, planner-friendly).
         limit_ph = translator.append_param(page.length)
@@ -1563,15 +1774,29 @@ class PostgresStorage(Storage[ModelT]):
 
         total: int | None = None
         try:
-            # One connection and one snapshot for the page and its count, so ``total`` agrees with the page (SQLite already did this, L1).
-            async with self._provider.pool.acquire() as conn:
-                async with conn.transaction(isolation="repeatable_read", readonly=True):
-                    rows = await conn.fetch(select_sql, *params)
-                    if len(rows) < page.length:
-                        # A short page is the end of the result: the count is the rows before it plus these, no COUNT(*) needed.
-                        total = page.offset + len(rows) if (rows or page.offset == 0) else None
-                    if total is None and page.want_total:
-                        total = await conn.fetchval(count_sql, *count_params)
+            if conn is not None:
+                # The caller's open connection (an in-transaction re-read, e.g.
+                # DocumentTreeService's post-write child-set diff): run the
+                # statements on it so the read sees the caller's own
+                # uncommitted writes. No repeatable-read wrapper here -
+                # asyncpg forbids a second transaction on a connection that is
+                # already inside one.
+                rows = await conn.fetch(select_sql, *params)
+                if len(rows) < page.length:
+                    # A short page is the end of the result: the count is the rows before it plus these, no COUNT(*) needed.
+                    total = page.offset + len(rows) if (rows or page.offset == 0) else None
+                if total is None and page.want_total:
+                    total = await conn.fetchval(count_sql, *count_params)
+            else:
+                # One connection and one snapshot for the page and its count, so ``total`` agrees with the page (SQLite already did this, L1).
+                async with self._provider.pool.acquire() as conn:
+                    async with conn.transaction(isolation="repeatable_read", readonly=True):
+                        rows = await conn.fetch(select_sql, *params)
+                        if len(rows) < page.length:
+                            # A short page is the end of the result: the count is the rows before it plus these, no COUNT(*) needed.
+                            total = page.offset + len(rows) if (rows or page.offset == 0) else None
+                        if total is None and page.want_total:
+                            total = await conn.fetchval(count_sql, *count_params)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
@@ -1593,6 +1818,7 @@ class PostgresStorage(Storage[ModelT]):
         order_clause: str,
         order_by: list[OrderBy] | None,
         page: CursorPage,
+        conn: Any | None = None,
     ) -> CursorPageResponse[ModelT]:
         cursor_clause = ""
         if page.cursor is not None:
@@ -1617,7 +1843,7 @@ class PostgresStorage(Storage[ModelT]):
         )
 
         try:
-            async with self._provider.pool.acquire() as conn:
+            async with self._acquire_or_use(conn) as conn:
                 rows = await conn.fetch(select_sql, *params)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
@@ -1756,6 +1982,20 @@ def _wrap_content_error(exc: Exception, *, op: str) -> Exception:
     )
 
 
+# Deferred X2.5: the full-text search ranks only this many index matches.
+# The match itself is index-backed (the GIN index on
+# ``to_tsvector('english', content)``), but ranking a body means parsing it
+# (ts_rank re-parses the text it scores). Ranking EVERY matching row would
+# re-parse every matching body, so the query first selects up to this many
+# matching document ids through the index and ranks only those. A query that
+# matches more documents than the cap is therefore ranked over up to
+# _FULLTEXT_CANDIDATE_CAP matching documents picked by the index scan (not a
+# stable prefix - the candidate select has no ORDER BY); the ranking orders
+# within that set, and the page (limit <= 50 at the tool rung) still comes
+# from it, best-first.
+_FULLTEXT_CANDIDATE_CAP = 1000
+
+
 class PostgresDocumentContentStore(DocumentContentStore):
     """Postgres-backed document body store keyed by stable document id.
 
@@ -1850,19 +2090,30 @@ class PostgresDocumentContentStore(DocumentContentStore):
         query = query.replace("\x00", "")  # Postgres refuses a NUL in a text parameter; it cannot be searched for (CV-5)
         if not query.strip():
             return []
+        # Deferred X2.5: the inner select is the match - the GIN index
+        # answers it, and the cap bounds the work of the outer pass, which
+        # parses a body only to rank it. A query that matches more documents
+        # than the cap is ranked over up to _FULLTEXT_CANDIDATE_CAP matching
+        # documents picked by the index scan (not a stable prefix); the
+        # ranking orders within that set (see the constant's comment above).
         sql = (
-            "SELECT path, "
-            "ts_headline('english', content, "
+            "SELECT d.path, "
+            "ts_headline('english', d.content, "
             "websearch_to_tsquery('english', $2), "
             "'MaxFragments=1, MaxWords=18, MinWords=6, "
             "StartSel=\"\", StopSel=\"\"') AS excerpt, "
-            "ts_rank(to_tsvector('english', content), "
+            "ts_rank(to_tsvector('english', d.content), "
             "websearch_to_tsquery('english', $2)) AS score "
+            "FROM ("
+            "SELECT document_id "
             f"FROM {self._qualified} "
             "WHERE collection_id = $1 "
             "AND to_tsvector('english', content) "
             "@@ websearch_to_tsquery('english', $2) "
             "AND ($3::text IS NULL OR path LIKE $3 || '%' ESCAPE '\\') "
+            f"LIMIT {_FULLTEXT_CANDIDATE_CAP}"
+            ") AS m "
+            f"JOIN {self._qualified} d ON d.document_id = m.document_id "
             "ORDER BY score DESC LIMIT $4"
         )
         try:
@@ -1983,10 +2234,21 @@ class PostgresDocumentContentStore(DocumentContentStore):
             )
 
     async def list(
-        self, collection_id: str, *, prefix: str | None = None
+        self,
+        collection_id: str,
+        *,
+        prefix: str | None = None,
+        limit: int | None = None,
+        after_path: str | None = None,
     ) -> list[ContentListEntry]:
+        """Entries in path order. ``limit=None`` (the default) returns every entry, as callers such as grep rely on; ``limit`` plus ``after_path`` (the last path of the previous page) pages by keyset on the unique ``(collection_id, path)`` index.
+
+        ``size`` is the UTF-8 byte length: ``octet_length`` reads the TOAST header, where ``length`` would detoast and decompress every body.
+        """
+        if limit is not None and limit < 1:
+            raise BadRequestError("limit must be at least 1")
         sql = (
-            'SELECT document_id, path, length(content) AS size '
+            'SELECT document_id, path, octet_length(content) AS size '
             f'FROM {self._qualified} WHERE collection_id = $1'
         )
         params: list[Any] = [collection_id]
@@ -1994,8 +2256,15 @@ class PostgresDocumentContentStore(DocumentContentStore):
             # Escape LIKE metacharacters in the bound prefix so a `%`/`_`
             # in the path prefix matches LITERALLY rather than as a wildcard
             # (would otherwise over-match). The escape char is backslash.
-            sql += " AND path LIKE $2 || '%' ESCAPE '\\'"
             params.append(_escape_like(prefix))
+            sql += f" AND path LIKE ${len(params)} || '%' ESCAPE '\\'"
+        if after_path is not None:
+            params.append(after_path)
+            sql += f' AND path > ${len(params)}'
+        sql += ' ORDER BY path'
+        if limit is not None:
+            params.append(limit)
+            sql += f' LIMIT ${len(params)}'
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(sql, *params)
@@ -2089,17 +2358,23 @@ class PostgresEventStore(EventStore):
             'updated_at    timestamptz NOT NULL DEFAULT now()'
             ')'
         )
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(ddl_table)
-                await conn.execute(ddl_type)
-                await conn.execute(ddl_entity)
-                await conn.execute(ddl_occurred)
-                await conn.execute(ddl_workspace)
-                await conn.execute(ddl_session)
-                await conn.execute(ddl_workspace_id)
-                await conn.execute(ddl_type_pattern)
-                await conn.execute(ddl_cursors)
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(ddl_table)
+                    await conn.execute(ddl_type)
+                    await conn.execute(ddl_entity)
+                    await conn.execute(ddl_occurred)
+                    await conn.execute(ddl_workspace)
+                    await conn.execute(ddl_session)
+                    await conn.execute(ddl_workspace_id)
+                    await conn.execute(ddl_type_pattern)
+                    await conn.execute(ddl_cursors)
+        except CONCURRENT_CREATE_RACE as exc:
+            # Two pods booting together race on the catalogs even with IF NOT
+            # EXISTS (see primer.storage._ddl, and the content store above):
+            # the winner committed the whole schema, so losing is success.
+            logger.debug("events schema created concurrently by another process; continuing (%s)", type(exc).__name__)
 
     async def append(
         self,
@@ -2157,6 +2432,7 @@ class PostgresEventStore(EventStore):
         entity_kind: str | None = None,
         entity_id: str | None = None,
         workspace_id: str | None = None,
+        session_id: str | None = None,
         since: datetime | None = None,
     ) -> list[Event]:
         where = ["id > $1"]
@@ -2176,6 +2452,8 @@ class PostgresEventStore(EventStore):
             _bind("entity_id = ${n}", entity_id)
         if workspace_id is not None:
             _bind("workspace_id = ${n}", workspace_id)
+        if session_id is not None:
+            _bind("session_id = ${n}", session_id)
         if since is not None:
             _bind("occurred_at >= ${n}", since)
         params.append(max(0, limit))

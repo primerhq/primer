@@ -41,6 +41,34 @@ logger = logging.getLogger(__name__)
 InitHook = Callable[[Any], Awaitable[None]]
 
 
+class BoundedPool:
+    """Pool wrapper that bounds every acquire() without an explicit timeout.
+
+    ``asyncpg.Pool.acquire()`` waits forever when no timeout is passed: a
+    saturated pool (all ``max_size`` connections checked out) then parks the
+    caller for good. Every primer ``pool.acquire(`` site that can wait for a
+    connection is meant to be bounded by the configured
+    ``PoolConfig.acquire_timeout``, so the bound is applied here - at the two
+    places primer builds a pool (the storage and the pgvector providers) -
+    rather than at each call site. An acquire that passes its own timeout
+    keeps it; a wait that outlasts the bound raises ``TimeoutError`` (a
+    saturated pool then surfaces instead of hanging).
+
+    Everything else is delegated to the wrapped pool, so callers see the
+    usual pool surface (``close``, ``expire_connections``, ...).
+    """
+
+    def __init__(self, pool: Any, timeout: float) -> None:
+        self._pool = pool
+        self._timeout = timeout
+
+    def acquire(self, *, timeout: float | None = None):
+        return self._pool.acquire(timeout=self._timeout if timeout is None else timeout)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+
 def warn_unenforced_pool_options(pool_cfg: PoolConfig, *, pool_name: str) -> None:
     """Warn once, at pool creation, about a PoolConfig option that does nothing.
 

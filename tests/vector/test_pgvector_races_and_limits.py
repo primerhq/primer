@@ -55,7 +55,9 @@ class _Pool:
     def __init__(self, conn):
         self.conn = conn
 
-    def acquire(self):
+    def acquire(self, *, timeout=None):
+        # ``timeout``: the provider wraps the pool in a BoundedPool that passes
+        # the configured acquire_timeout down; the stand-in accepts it.
         @asynccontextmanager
         async def _acq():
             yield self.conn
@@ -126,8 +128,10 @@ async def test_a_search_within_ef_search_issues_no_extra_statement():
     assert conn.executed == [] and conn.transactions == 0 and len(conn.fetched) == 1
 
 
-async def test_initialize_applies_the_guc_after_the_extension_and_recycles_earlier_connections(monkeypatch):
+async def test_the_pool_applies_the_guc_on_every_acquire_and_initialize_recycles_earlier_connections(monkeypatch):
+    # asyncpg's release RESET ALLs a used connection, so the GUC is the pool's ``setup`` hook (every acquire), not only ``init`` (review 3.2).
     events: list[str] = []
+    captured: dict = {}
 
     class _InitConn(_Conn):
         async def execute(self, sql, *args):
@@ -143,6 +147,7 @@ async def test_initialize_applies_the_guc_after_the_extension_and_recycles_earli
             return None
 
     async def create_pool(**kwargs):
+        captured.update(kwargs)
         return _P(conn)
 
     async def register(_conn):
@@ -152,8 +157,82 @@ async def test_initialize_applies_the_guc_after_the_extension_and_recycles_earli
     monkeypatch.setattr("primer.vector.pgvector.register_vector", register)
     provider = PgVectorStoreProvider(_cfg())
     await provider.initialize()
-    after_extension = events[events.index('CREATE EXTENSION IF NOT EXISTS "vector"'):]
-    assert "SET hnsw.ef_search = 100" in after_extension and "expire_connections" in after_extension
+    assert "expire_connections" in events[events.index('CREATE EXTENSION IF NOT EXISTS "vector"'):]
+    events.clear()
+    await captured["setup"](conn)
+    assert events == ["SET hnsw.ef_search = 100"]
+    await captured["init"](conn)
+    assert events == ["SET hnsw.ef_search = 100", "register_vector"]
+
+
+async def test_a_pgvectorscale_diskann_pool_applies_its_own_guc_on_every_acquire(monkeypatch):
+    from primer.model.provider import PgVectorScaleConfig
+    from primer.vector.pgvectorscale import PgVectorScaleStoreProvider
+
+    captured: dict = {}
+    executed: list[str] = []
+
+    class _C(_Conn):
+        async def execute(self, sql, *args):
+            executed.append(sql)
+
+    class _P(_Pool):
+        async def close(self):
+            return None
+
+    async def create_pool(**kwargs):
+        captured.update(kwargs)
+        return _P(_C())
+
+    async def register(_conn):
+        return None
+
+    monkeypatch.setattr("primer.vector.pgvector.asyncpg.create_pool", create_pool)
+    monkeypatch.setattr("primer.vector.pgvector.register_vector", register)
+    cfg = PgVectorScaleConfig(hostname="h", username="u", password="p", database="d", enable_diskann=True, diskann_search_list_size=77)
+    await PgVectorScaleStoreProvider(cfg).initialize()
+    executed.clear()
+    await captured["setup"](_C())
+    assert executed == ["SET diskann.query_search_list_size = 77"]
+
+
+@pytest.mark.parametrize("metric", ["l2", "ip", "cosine"])
+async def test_a_non_cosine_distance_metric_is_accepted_without_warning(monkeypatch, caplog, metric):
+    # ``distance_metric`` is honoured (deferred X2.4): a collection this provider
+    # creates is made with the configured metric, so initialise says nothing
+    # about it.
+    class _P(_Pool):
+        async def close(self):
+            return None
+
+    async def create_pool(**kwargs):
+        return _P(_Conn())
+
+    async def register(_conn):
+        return None
+
+    monkeypatch.setattr("primer.vector.pgvector.asyncpg.create_pool", create_pool)
+    monkeypatch.setattr("primer.vector.pgvector.register_vector", register)
+    with caplog.at_level("WARNING", logger="primer.vector.pgvector"):
+        await PgVectorStoreProvider(_cfg(distance_metric=metric)).initialize()
+    assert not any("distance_metric" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_new_collection_uses_the_providers_configured_distance_metric():
+    # Deferred X2.4: ``create_collection`` with no explicit distance resolves
+    # the provider's configured metric instead of the old hard-coded cosine.
+    store = _store(_Conn(rows=(None,)), distance_metric="l2")
+    await store.create_collection("notes", dimensions=384)
+    assert store._collections["notes"].distance == "l2"  # noqa: SLF001
+
+
+async def test_recreating_with_a_different_metric_conflicts_naming_both_metrics():
+    # The drift message carries BOTH the stored and the requested metric: the
+    # indexing path (primer/knowledge/indexing.py) parses it to tell a metric
+    # drift (the collection keeps its stored metric) from a dimension mismatch.
+    store = _store(_Conn(rows=(_winner(dimensions=384, distance="l2"),)))
+    with pytest.raises(ConflictError, match=r"distance='l2'.*distance='cosine'"):
+        await store.create_collection("notes", dimensions=384)
 
 
 # --- GI-22 -------------------------------------------------------------------------------------------------------------------------------------

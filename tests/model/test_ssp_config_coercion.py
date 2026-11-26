@@ -121,3 +121,15 @@ def test_config_already_typed_is_left_alone() -> None:
         config=PgVectorScaleConfig(**_core_pg_fields()),
     )
     assert isinstance(row.config, PgVectorScaleConfig)
+
+
+def test_lance_config_carries_the_distance_metric_field() -> None:
+    """Deferred X2.4: Lance gains the same ``distance_metric`` the pgvector
+    family already has (default ``cosine``), so the provider's configured
+    metric can create non-cosine collections on every backend. The field
+    takes the store's distance vocabulary, not a backend-specific one."""
+    assert LanceConfig(path="/tmp/lance-store").distance_metric == "cosine"
+    assert LanceConfig(path="/tmp/lance-store", distance_metric="l2").distance_metric == "l2"
+    assert LanceConfig(path="/tmp/lance-store", distance_metric="ip").distance_metric == "ip"
+    with pytest.raises(ValidationError):
+        LanceConfig(path="/tmp/lance-store", distance_metric="dot")

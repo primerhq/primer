@@ -15,6 +15,7 @@ just the plumbing that binds it to one provider row.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from pydantic import BaseModel
@@ -51,7 +52,7 @@ class RetryingLLM(LLM):
         # adapter's own reasoning mapping.
         return self._inner.profile_extended(config, model=model)
 
-    def stream(  # type: ignore[override]
+    async def stream(  # type: ignore[override]
         self,
         *,
         model: str,
@@ -65,13 +66,22 @@ class RetryingLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        # An async GENERATOR, not a plain def that returns one: the registry's
+        # retirement tracker counts async-generator methods in place, and a
+        # plain def returning an iterator is invisible to it, so a retire
+        # closed the client under every in-flight stream (GX-1).
         if self._max_retries <= 0:
-            return self._inner.stream(
+            # aclosing: a consumer's aclose() reaches the inner generator before it returns, so the slot it
+            # holds is free for the caller's very next attempt (a bare ``async for`` leaves it to the GC finalizer).
+            async with aclosing(self._inner.stream(
                 model=model, messages=messages, temperature=temperature,
                 top_p=top_p, max_output_tokens=max_output_tokens, stop=stop,
                 response_format=response_format, tools=tools,
                 tool_choice=tool_choice, extended=extended,
-            )
+            )) as inner:
+                async for event in inner:
+                    yield event
+            return
 
         def _open() -> AsyncIterator[StreamEvent]:
             # A fresh iterator per attempt: a retry re-opens the call rather
@@ -83,14 +93,16 @@ class RetryingLLM(LLM):
                 tool_choice=tool_choice, extended=extended,
             )
 
-        return stream_with_retry(
+        async with aclosing(stream_with_retry(
             _open,
             provider_id=self._provider.id,
             provider_kind=self._provider.provider.value,
             max_retries=self._max_retries,
             base_backoff_seconds=self._base,
             max_backoff_seconds=self._cap,
-        )
+        )) as retried:
+            async for event in retried:
+                yield event
 
     async def count_tokens(
         self,

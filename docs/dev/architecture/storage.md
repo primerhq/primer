@@ -4,7 +4,7 @@
 
 The storage layer is how Primer persists every addressable entity (providers, agents, graphs, collections, documents, sessions, channels, triggers, API tokens, turn-log records, ...) behind a single backend-agnostic interface. Two ABCs define the contract: `StorageProvider` (`primer/int/storage_provider.py`) owns the shared backend state (connection pool or single embedded connection, schema setup) and hands out model-bound `Storage[ModelT]` handles; `Storage[ModelT]` (`primer/int/storage.py`) is the generic CRUD-plus-search surface for one Pydantic model type. Callers receive a concrete `Storage[Document]` or `Storage[Agent]` from `provider.get_storage(model_class)` and operate on it without knowing whether Postgres or SQLite is on the other side.
 
-Two backends implement the contract: `PostgresStorageProvider` (`primer/storage/postgres.py`, asyncpg pool over JSONB tables with a GIN index per table) and `SqliteStorageProvider` (`primer/storage/sqlite.py`, a single embedded aiosqlite connection over JSON-as-TEXT tables). `StorageProviderFactory.create` (`primer/storage/factory.py`) dispatches on a discriminated `StorageProviderConfig`. SQLite is the zero-config default for clone-and-run; Postgres is the production path that also unlocks cross-process workers, the Postgres scheduler, and the Postgres coordinator. Predicate translation, cursor encoding, and the type-safe `Q[ModelT]` query builder are shared utilities layered on top.
+Two backends implement the contract: `PostgresStorageProvider` (`primer/storage/postgres.py`, asyncpg pool over JSONB tables with targeted expression indexes) and `SqliteStorageProvider` (`primer/storage/sqlite.py`, a single embedded aiosqlite connection over JSON-as-TEXT tables). `StorageProviderFactory.create` (`primer/storage/factory.py`) dispatches on a discriminated `StorageProviderConfig`. SQLite is the zero-config default for clone-and-run; Postgres is the production path that also unlocks cross-process workers, the Postgres scheduler, and the Postgres coordinator. Predicate translation, cursor encoding, and the type-safe `Q[ModelT]` query builder are shared utilities layered on top.
 
 This document covers the two ABCs, the two backend implementations, the predicate and pagination model that `find` consumes, the `Q` builder, and the wiring from `AppConfig` through the factory into the lifespan. Higher-level concerns that sit on top of storage (the claim engine's `leases` table, first-boot auto-bootstrap, the CRUD router factory, the semantic-search vector store) have their own docs and are cross-linked rather than re-described here.
 
@@ -267,14 +267,55 @@ The contract test in `tests/storage/test_storage_contract.py` runs the same scen
 
 Two backends are live.
 
-`PostgresStorageProvider` / `PostgresStorage` (`primer/storage/postgres.py`) own an asyncpg pool sized by `PoolConfig`. Each model lives in its own JSONB table: `id` (text) is hoisted out of the document to be the primary key, everything else lives under a `data` jsonb column, plus `created_at` / `updated_at` timestamps. Each table gets a GIN index `<table>_data_gin ON ... USING gin (data jsonb_path_ops)` so containment-style predicate scans stay fast. `initialize` is the only eager DDL: it creates the schema, the coordinator `rate_limit_lease` and `leader_lease` tables, the claim-engine `leases` table (plus its two partial indexes `leases_unclaimed_by_kind` and `leases_expiry_by_kind`, and drops the legacy `leases_claim_order` index where an older build created it; the SQLite backend still creates `leases_claim_order`), and the `system_state` singleton; per-model tables defer to first handle use. The schema name comes from `PostgresConfig.db_schema` (named `db_schema` to avoid shadowing Pydantic's `BaseModel.schema()`), is sanitised against a safe-identifier regex, and isolates two deployments that share a cluster.
+`PostgresStorageProvider` / `PostgresStorage` (`primer/storage/postgres.py`) own an asyncpg pool sized by `PoolConfig`. Each model lives in its own JSONB table: `id` (text) is hoisted out of the document to be the primary key, everything else lives under a `data` jsonb column, plus `created_at` / `updated_at` timestamps. A table has no whole-document GIN index: the predicate translator emits `data->>'field' = $1` and `data->'field' ? $1`, which a `jsonb_path_ops` GIN cannot serve, so older releases' `<table>_data_gin` only added a GIN entry per JSON leaf to every write. New tables are created without it. An existing table keeps its copy, on purpose: rolling back to an older release would rebuild a dropped one inside that release's request path under the 30 s command timeout. Once a deployment no longer needs to roll back past this release it may drop each one out of band with `DROP INDEX CONCURRENTLY "<table>_data_gin"`. `initialize` is the only eager DDL: it creates the schema, the coordinator `rate_limit_lease` and `leader_lease` tables, the claim-engine `leases` table (plus its two partial indexes `leases_unclaimed_by_kind` and `leases_expiry_by_kind`, and drops the legacy `leases_claim_order` index where an older build created it; the SQLite backend still creates `leases_claim_order`), and the `system_state` singleton; per-model tables defer to first handle use. The schema name comes from `PostgresConfig.db_schema` (named `db_schema` to avoid shadowing Pydantic's `BaseModel.schema()`), is sanitised against a safe-identifier regex, and isolates two deployments that share a cluster.
 
-A GIN over `jsonb_path_ops` accelerates containment (`@>`) but NOT the scalar
-`data->>'field' = $1` equality fragments the predicate translator emits, so
-fields queried on hot paths get dedicated expression indexes. These live in
-the `_HOT_FIELD_INDEXES` registry in `primer/storage/postgres.py`, keyed by
-table name, and `_ensure_table` creates them in the same transaction as the
-base table and its broad GIN index. The scalar and compound entries cover:
+Fields queried on hot paths get dedicated expression indexes (the scalar
+`data->>'field' = $1` equality fragments the predicate translator emits need
+one). These live in the `_HOT_FIELD_INDEXES` registry in
+`primer/storage/postgres.py`, keyed by table name. `_ensure_table` runs on a
+handle's first use (one pass per handle: concurrent first requests share it).
+For a table that does not exist yet it creates the table and its hot indexes
+in one transaction (the table is empty, so the build is instant, and the
+cold-start race handling in `primer/storage/_ddl.py` relies on the atomic
+commit). For a table that already exists:
+
+- a missing UNIQUE hot index is built inline, before the table counts as
+  ensured, under `_INDEX_BUILD_TIMEOUT` (one hour, not the pool's 30 s command
+  timeout), because a write that landed first could insert the duplicates the
+  index exists to stop. The inline pass runs only when the index state fetched
+  in the same pass shows a unique index missing or INVALID: when every unique
+  index is already valid the pass takes no pool connection at all. After a
+  `UniqueViolationError` the index state is re-read: present means a peer
+  built it; absent means duplicate rows, which logs a WARNING naming the index
+  and table and, for an index outside the duplicate-tolerant list below,
+  raises `ProviderError` (the table stays unusable until the rows are
+  resolved);
+- a missing or INVALID non-unique hot index is built by a background task
+  (`PostgresStorage._maintain_indexes`) with `CREATE INDEX CONCURRENTLY`
+  outside any transaction, so writers are not blocked: single flight per handle
+  (nothing starts when nothing is missing), at most two builds at once per
+  provider, retried with backoff (30 s, 2 min, 10 min, 30 min) after a failure,
+  and cancelled and awaited by `aclose`. A failed CONCURRENTLY build leaves an
+  INVALID index; the next attempt drops it and rebuilds it, it is never counted
+  as present.
+
+Every pool acquire the ensure pass makes while holding the per-handle ensure
+lock (the DDL pass, the inline unique pass and the trigram pass) is bounded by
+the pool's `acquire_timeout`: asyncpg's `Pool.acquire` has no default timeout
+of its own, so an unbounded wait under the lock would hang the process whenever
+peers hold the pool's connections inside transactions and queue on the lock
+(the cold-start herd). On timeout the pass raises a `ProviderError` naming the
+table and releases the lock; the trigram pass, which is best-effort, instead
+logs and continues. Since deferred X2.5 every pool primer builds is wrapped in
+a `BoundedPool` (`primer/storage/_pg_pool.py`) that applies this same bound to
+every `acquire()` that passes no explicit timeout - the ~90 unbounded call
+sites (claim engine, scheduler, bus, vector store, startup phases) included -
+and an acquire that outlasts the bound raises `TimeoutError`, so a saturated
+pool surfaces instead of hanging a caller for good.
+
+A release that adds a non-unique index to a large table therefore no longer
+makes every request retry the build and fail: the table keeps working while the
+index builds. The scalar and compound entries cover:
 
 - bearer auth (`apitoken.token_hash`, UNIQUE), services (`service.name`,
   UNIQUE), usernames (`user.username`, UNIQUE), artifact locations
@@ -286,7 +327,8 @@ base table and its broad GIN index. The scalar and compound entries cover:
   `turn_status`, `parked_status`, and the default `created_at DESC, id`
   ordering);
 - inbound channel routing (`channel.provider_id` plus `external_id`),
-  collection and trigger children (`document.collection_id`,
+  collection and trigger children (`document.collection_id`, `document`'s
+  children walk on `collection_id` plus `parent_id`,
   `subscription.trigger_id`), webhook delivery recovery
   (`webhookdelivery.status`), and terminal delivery retention (a separate
   `completed_at`, `id` index, partial only on literal `completed_at IS NOT
@@ -316,13 +358,11 @@ that may not create the extension gets one log line and the search stays a
 scan; these indexes never fail a boot.
 
 The expression indexes mirror the style of the `channelcorrelation` UNIQUE
-index in `primer/channel/correlation.py`. They use `CREATE INDEX IF NOT
-EXISTS`, plain rather than `CONCURRENTLY`, because the table-create path is
-transactional (the cold-start race handling in `primer/storage/_ddl.py`
-depends on that). On a fresh table the build is instant because the table is
-empty. To avoid blocking writes when adding one to a large existing table,
-pre-create it out of band with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`
-using the same name and expression; the in-path statement then no-ops.
+index in `primer/channel/correlation.py` and use `CREATE INDEX IF NOT EXISTS`. The inline
+build of a missing UNIQUE index on a large existing table takes a SHARE lock,
+which blocks writers for the build's duration. To avoid that, pre-create it out
+of band with `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS` using the same name
+and expression; boot then finds it present and does nothing.
 
 Startup session recovery (`primer/api/app.py` lifespan) re-arms the claim engine from persisted `WorkspaceSession` rows after a restart. It uses `find()` with a `status IN (<every non-ENDED status>)` predicate (built via `Q`) rather than `list()`-ing every row and dropping ENDED in Python, so it never loads the full session history into memory at scale; the `sessions_status` index keeps that scan cheap. The IN-set is computed as "all statuses except `ENDED`" so a newly added live status is recovered (fail-safe) rather than silently skipped.
 
@@ -482,7 +522,7 @@ is rewritten to the current one.
 
 ### The `document_content` table
 
-Knowledge documents are path-addressed and their bodies are the source of truth, so the body does not live under the generic `data` JSONB column with the `Document` entity row, nor in the vector store. Instead each `StorageProvider` hands out a `DocumentContentStore` (`primer/int/document_content.py`) via `get_content_store()`, backed by a dedicated `document_content` table that is a sibling to the JSONB entity tables rather than another `Storage[ModelT]` handle. Its columns are `document_id` (PRIMARY KEY), `collection_id`, `path`, `content`, and `updated_at`, with a `UNIQUE(collection_id, path)` index (the authoritative `path -> document_id` resolver) plus a `(collection_id)` index for prefix listing. Postgres stores `content` as `text` and `updated_at` as `timestamptz`; SQLite stores both as `TEXT`. The store exposes path-keyed reads (`get`, `get_by_path`, `resolve_id`), `upsert`, `delete`, `move`, and a prefix `list`, and runs `ensure_schema()` at startup (see `docs/dev/subsystems/knowledge.md`). It is the only first-class table outside the one-table-per-model rule; the vector index over the same bodies is separate and optional.
+Knowledge documents are path-addressed and their bodies are the source of truth, so the body does not live under the generic `data` JSONB column with the `Document` entity row, nor in the vector store. Instead each `StorageProvider` hands out a `DocumentContentStore` (`primer/int/document_content.py`) via `get_content_store()`, backed by a dedicated `document_content` table that is a sibling to the JSONB entity tables rather than another `Storage[ModelT]` handle. Its columns are `document_id` (PRIMARY KEY), `collection_id`, `path`, `content`, and `updated_at`, with a `UNIQUE(collection_id, path)` index (the authoritative `path -> document_id` resolver) plus a `(collection_id)` index for prefix listing. Postgres stores `content` as `text` and `updated_at` as `timestamptz`; SQLite stores both as `TEXT`. The store exposes path-keyed reads (`get`, `get_by_path`, `resolve_id`), `upsert`, `delete`, `move`, and a prefix `list`. `list` returns entries in path order and never reads a body: `size` is the UTF-8 byte length (`octet_length` on Postgres, which reads the TOAST header instead of decompressing every body; `length(CAST(content AS BLOB))` on SQLite). With no `limit` it returns every entry, which grep and the document routes rely on; the optional `limit` (below 1 is a `BadRequestError` on both backends) and `after_path` (the last path of the previous page) page it by keyset on the unique `(collection_id, path)` index. Postgres full-text search (`search_fulltext`) matches through the GIN index on `to_tsvector('english', content)` - the match is index-backed (the index stores the parsed vectors, so matching re-parses no body) - and ranks only a bounded candidate set: an inner select picks at most `_FULLTEXT_CANDIDATE_CAP` (1000) matching `document_id`s through the index, and `ts_rank` (which re-parses the body it scores) runs only over those, where the pre-change query re-parsed every matching body (deferred X2.5). A query that matches more documents than the cap is therefore ranked over up to 1000 matching documents picked by the index scan (not a stable prefix: the candidate select has no ORDER BY); the ranking orders within that set, and the page (`limit`, at most 50 at the tool rung) is best-first within it. A stored generated tsvector column was considered and rejected: the `ALTER TABLE` rewrites the whole table under an ACCESS EXCLUSIVE lock at boot, and retiring the expression index would break a rollback. It runs `ensure_schema()` at startup, as does the event store, and both treat the loser of a concurrent create (two pods booting together) as success (see `docs/dev/subsystems/knowledge.md`). It is the only first-class table outside the one-table-per-model rule; the vector index over the same bodies is separate and optional.
 
 The vector / semantic-search store is a separate provider family (`VectorStoreProvider` with pgvector, pgvectorscale, and lance backends, configured by `SemanticSearchProvider` rows) and is not part of this entity-storage layer; see the semantic-search subsystem and provider-pattern docs.
 

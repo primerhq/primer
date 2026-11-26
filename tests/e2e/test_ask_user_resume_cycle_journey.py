@@ -160,16 +160,22 @@ async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
     )
     initial_turn_no = parked["turn_no"]
 
-    # Edit the real park at the shipping cutover setting. A successful
-    # priority edit must neither answer the question nor wake the session.
+    # Edit the real park. Work priority is on by default, so the edit may
+    # range up to WORK_PRIORITY_MAX; a successful priority edit must neither
+    # answer the question nor wake the session.
     detail = (await client.get(f"/v1/sessions/{sid}")).json()
     priority_path = f"/v1/workspaces/{detail['workspace_id']}/sessions/{sid}/priority"
     generation = detail["parked_priority_token"]
-    assert generation and detail["parked_priority_max"] == 0
+    assert generation and detail["parked_priority_max"] == 1_000_000
     r = await client.put(priority_path, json={"generation": generation, "priority": 0})
     assert r.status_code == 200 and r.json()["parked_status"] == "parked", r.text
     r = await client.put(priority_path, json={"generation": generation, "priority": 1})
-    assert r.status_code == 503, r.text
+    assert r.status_code == 200 and r.json()["parked_status"] == "parked", r.text
+    # A real edit moves the park's priority token (it covers priority and
+    # priority_revision): read the session again before the next edit.
+    detail = (await client.get(f"/v1/sessions/{sid}")).json()
+    assert detail["priority"] == 1 and detail["parked_priority_token"] != generation, detail
+    generation = detail["parked_priority_token"]
     await _edit_park_over_mcp(client, unique_suffix, detail, generation)
 
     # ----- 2. Sanity: /ask_user/pending sees the park ---------------

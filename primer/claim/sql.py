@@ -9,7 +9,7 @@ The returned SQL uses numbered bind parameters ($1–$3, optionally $4):
   $1  max_count  (integer)
   $2  worker_id  (text)
   $3  ttl_seconds (text, e.g. ``"60"``)
-  $4  optional priority ceiling (only with the internal priority capability)
+  $4  optional priority ceiling
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ def build_claim_query(
     leases_table: str,
     *,
     schema: str | None = None,
-    work_priority_enabled: bool = False,
 ) -> str:
     """Compose CTEs + UNION ALL + final UPDATE returning claimed leases.
 
@@ -37,11 +36,11 @@ def build_claim_query(
         When None, entity tables are referenced without schema prefix
         (works only when Postgres search_path includes the schema).
     """
-    order_prefix = "work_priority, " if work_priority_enabled else ""
-    qualified_prefix = "l.work_priority, " if work_priority_enabled else ""
-    ceiling = " AND ($4::integer IS NULL OR l.work_priority <= $4)" if work_priority_enabled else ""
-    empty_ceiling = "AND $4::integer IS NULL " if work_priority_enabled else ""
-    returned_priority = "l.work_priority" if work_priority_enabled else "0 AS work_priority"
+    order_prefix = "work_priority, "
+    qualified_prefix = "l.work_priority, "
+    ceiling = " AND ($4::integer IS NULL OR l.work_priority <= $4)"
+    empty_ceiling = "AND $4::integer IS NULL "
+    returned_priority = "l.work_priority"
     if not adapters:
         # No adapters → produce a valid but no-op UPDATE that always
         # returns zero rows. This keeps claim_due safe when called with
@@ -76,7 +75,7 @@ def build_claim_query(
     for adapter in adapters.values():
         entity_ref = _entity_ref(adapter.entity_table)
         kind = adapter.kind.value
-        snapshot_guard = f" AND ({adapter.priority_snapshot_guard_sql()})" if work_priority_enabled else ""
+        snapshot_guard = f" AND ({adapter.priority_snapshot_guard_sql()})"
 
         def _branch(claim_state: str, alias: str, entity_ref: str = entity_ref, kind: str = kind, adapter: ClaimAdapter = adapter) -> str:
             # Each branch is locked in its own FROM-subquery: FOR UPDATE cannot be applied to a UNION. ``claim_state`` is one of the two disjoint

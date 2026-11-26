@@ -6,7 +6,9 @@ fresh one, but closed only when no call of its is running and it has been idle f
 
 The calls are counted by wrapping the adapter's own coroutine and async-generator methods IN PLACE (instance attributes), so the adapter keeps its
 identity and its type; a method that returns a plain value, and an adapter that cannot take instance attributes, are simply not counted and fall
-back to the idle period.
+back to the idle period. A call that goes silent (a stuck adapter or SDK) is the exception to the wait: after ``close_bound_seconds`` without any activity (an entry,
+an exit, or a streamed item) the adapter is closed anyway and the stuck call is logged, so a leaked stream cannot hold a retired client
+forever, while a long generation that keeps producing output is never cut.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 RETIRE_IDLE_SECONDS = 30.0
+# An INACTIVITY bound, not a total one: the row's total timeout may be unset, so a healthy long generation can run for hours. It only fires for a
+# call that has produced nothing for this long and would otherwise leak the client.
+RETIRE_CLOSE_BOUND_SECONDS = 900.0
 _STATE_ATTR = "_primer_in_flight"
 
 
@@ -38,6 +43,9 @@ class _State:
 
     def leave(self) -> None:
         self.in_flight -= 1
+        self.last_activity = time.monotonic()
+
+    def touch(self) -> None:
         self.last_activity = time.monotonic()
 
 
@@ -60,6 +68,7 @@ def _wrap_async_generator(bound: Callable[..., Any], state: _State) -> Callable[
         inner = bound(*args, **kwargs)
         try:
             async for item in inner:
+                state.touch()                         # a stream still producing output is not stuck: the close bound counts silence
                 yield item
         finally:
             try:
@@ -73,8 +82,13 @@ def _wrap_async_generator(bound: Callable[..., Any], state: _State) -> Callable[
 class AdapterRetirement:
     """Counts the running calls of the adapters a registry hands out, and closes the replaced ones once they are idle."""
 
-    def __init__(self, idle_seconds: float = RETIRE_IDLE_SECONDS) -> None:
+    def __init__(
+        self,
+        idle_seconds: float = RETIRE_IDLE_SECONDS,
+        close_bound_seconds: float = RETIRE_CLOSE_BOUND_SECONDS,
+    ) -> None:
         self._idle = idle_seconds
+        self._bound = close_bound_seconds
         self._retiring: dict[int, tuple[Any, asyncio.Task[None]]] = {}
         self._labels: dict[int, str] = {}
 
@@ -120,7 +134,16 @@ class AdapterRetirement:
                 quiet = time.monotonic() - state.last_activity
                 if state.in_flight == 0 and quiet >= self._idle:
                     break
-                await asyncio.sleep(max(self._idle - quiet, 0.01) if state.in_flight == 0 else self._idle)
+                if state.in_flight and quiet >= self._bound:
+                    logger.warning(
+                        "registry: closing retired %s %s after %.1fs without activity with %d call(s) still in flight",
+                        type(adapter).__name__, self._labels.get(id(adapter), ""), quiet, state.in_flight,
+                    )
+                    break
+                if state.in_flight == 0:
+                    await asyncio.sleep(max(self._idle - quiet, 0.01))
+                else:
+                    await asyncio.sleep(max(min(self._idle, self._bound - quiet), 0.01))
         except asyncio.CancelledError:
             raise
         await self._close(adapter)

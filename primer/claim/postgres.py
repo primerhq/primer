@@ -53,9 +53,10 @@ from primer.int.claim import (
     ReleaseOutcome,
 )
 from primer.claim.sql import build_claim_query
+from primer.claim.statement_stamp import claim_statement_at
 from primer.model.work_priority import validate_work_priority
 from primer.model.except_ import ListenConnectionLost
-from primer.storage._ddl import CONCURRENT_CREATE_RACE
+from primer.storage._ddl import execute_create_idempotent
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -83,10 +84,8 @@ class PostgresClaimEngine(ClaimEngine):
         storage_provider: Any,
         adapters: dict[ClaimKind, ClaimAdapter],
         lease_ttl_seconds: int = 60,
-        work_priority_enabled: bool = False,
     ) -> None:
         self._storage = storage_provider
-        self._work_priority_enabled = work_priority_enabled
         self._adapters = adapters
         self._table = storage_provider.leases_table
         # Lease TTL (seconds) fed into the claim_due + heartbeat SQL intervals.
@@ -100,7 +99,7 @@ class PostgresClaimEngine(ClaimEngine):
         self._claim_query = build_claim_query(
             adapters,
             self._table,
-            schema=storage_provider.schema, work_priority_enabled=work_priority_enabled,
+            schema=storage_provider.schema,
         )
         # Phase 3 stage 7a (01a0518b) pool-class separation: claim_due's
         # optional kinds filter needs a DIFFERENT compiled query (a
@@ -123,7 +122,7 @@ class PostgresClaimEngine(ClaimEngine):
         self._entity_tables = sorted(
             {a.entity_table for a in adapters.values()}
         )
-        if work_priority_enabled and ClaimKind.TOOL_CALL in adapters and "sessions" not in self._entity_tables:
+        if ClaimKind.TOOL_CALL in adapters and "sessions" not in self._entity_tables:
             self._entity_tables.append("sessions")
         self._entity_tables_ensured = False
 
@@ -145,7 +144,6 @@ class PostgresClaimEngine(ClaimEngine):
         }
         query = build_claim_query(
             scoped_adapters, self._table, schema=self._storage.schema,
-            work_priority_enabled=self._work_priority_enabled,
         )
         self._claim_query_cache[key] = query
         return query
@@ -157,32 +155,29 @@ class PostgresClaimEngine(ClaimEngine):
     async def _ensure_entity_tables(self, conn: Any) -> None:
         for table in self._entity_tables:
             qualified = self._qualified_entity(table)
-            try:
-                await conn.execute(
-                    f"CREATE TABLE IF NOT EXISTS {qualified} ("
-                    "id text PRIMARY KEY, "
-                    "data jsonb NOT NULL, "
-                    "created_at timestamptz NOT NULL DEFAULT now(), "
-                    "updated_at timestamptz NOT NULL DEFAULT now()"
-                    ")"
-                )
-            except CONCURRENT_CREATE_RACE:
-                # A peer process is creating the same entity table; treat
-                # as already created (see primer.storage._ddl). Each execute
-                # is its own autocommit statement, so a race on one table
-                # does not poison the others.
-                pass
+            # Each statement is its own autocommit transaction. A peer's
+            # background CREATE INDEX CONCURRENTLY on the same table (lane N's
+            # index builder) can deadlock this DDL while holding the table
+            # lock: the helper retries it in a fresh transaction, and a peer
+            # racing the same object is swallowed by it (see
+            # primer.storage._ddl).
+            await execute_create_idempotent(
+                conn,
+                f"CREATE TABLE IF NOT EXISTS {qualified} ("
+                "id text PRIMARY KEY, "
+                "data jsonb NOT NULL, "
+                "created_at timestamptz NOT NULL DEFAULT now(), "
+                "updated_at timestamptz NOT NULL DEFAULT now()"
+                ")",
+            )
             # Create any adapter-declared backing indexes for this table.
-            # Each is CREATE INDEX IF NOT EXISTS (idempotent); a peer racing
-            # the same index raises CONCURRENT_CREATE_RACE, which we swallow.
+            # Each is CREATE INDEX IF NOT EXISTS (idempotent); peer races and
+            # deadlocks are handled by the same helper.
             for adapter in self._adapters.values():
                 if adapter.entity_table != table:
                     continue
                 for ddl in adapter.entity_indexes(qualified):
-                    try:
-                        await conn.execute(ddl)
-                    except CONCURRENT_CREATE_RACE:
-                        pass
+                    await execute_create_idempotent(conn, ddl)
         self._entity_tables_ensured = True
 
     # ------------------------------------------------------------------
@@ -197,35 +192,13 @@ class PostgresClaimEngine(ClaimEngine):
         priority: int = CLAIM_PRIORITY_FRESH,
         next_attempt_at: datetime | None = None,
     ) -> None:
-        """Insert or update a lease row.
+        """Insert or update a lease row, snapshotting the entity's work priority.
 
-        On conflict (kind, entity_id):
-        - Always update ``priority_score`` to the new value.
-        - Update ``next_attempt_at`` only when ``$4`` is non-NULL;
-          otherwise preserve the existing value (``le.next_attempt_at``).
-
-        The ``AS le`` alias on the INSERT target is used to reference
-        the *existing* row in the DO UPDATE SET clause, avoiding any
-        ambiguity with the unqualified table name in schema-qualified
-        contexts.
+        The arm reads the entity's authoritative priority (``_arm_priority``);
+        a missing or malformed source refuses the arm rather than promoting
+        unknown work.
         """
-        if self._work_priority_enabled:
-            await self._arm_priority(kind, entity_id, priority=priority, next_attempt_at=next_attempt_at)
-            return
-        async with self._storage.pool.acquire() as conn:
-            await conn.execute(
-                f"INSERT INTO {self._table} AS le (kind, entity_id, priority_score, next_attempt_at)"
-                f" VALUES ($1, $2, $3, COALESCE($4, now()))"
-                f" ON CONFLICT (kind, entity_id) DO UPDATE"
-                f"   SET priority_score   = EXCLUDED.priority_score,"
-                f"       next_attempt_at  = COALESCE($4, le.next_attempt_at)",
-                kind.value, entity_id, priority, next_attempt_at,
-            )
-            await conn.execute(
-                "SELECT pg_notify($1, $2)",
-                "claim_ready",
-                f"{kind.value}:{entity_id}",
-            )
+        await self._arm_priority(kind, entity_id, priority=priority, next_attempt_at=next_attempt_at)
 
     # ------------------------------------------------------------------
     # delete_lease
@@ -286,7 +259,7 @@ class PostgresClaimEngine(ClaimEngine):
             "attempt_count = EXCLUDED.attempt_count, last_error = EXCLUDED.last_error, work_priority = EXCLUDED.work_priority "
             "WHERE le.memory_occurrence IS DISTINCT FROM EXCLUDED.memory_occurrence RETURNING 1",
             job.id, job.occurrence_id, job.requested_due_at, job.retry_count, job.retry_error,
-            validate_work_priority(job.priority) if self._work_priority_enabled else 0,
+            validate_work_priority(job.priority),
         )
         if changed:
             await db.execute("SELECT pg_notify('claim_ready', $1)", f"memory:{job.id}")
@@ -318,7 +291,7 @@ class PostgresClaimEngine(ClaimEngine):
         """
         sql = f"SELECT 1 FROM {self._table} WHERE kind = $1 AND entity_id = $2"
         args = [kind.value, entity_id]
-        if work_priority is not None and self._work_priority_enabled:
+        if work_priority is not None:
             sql += " AND work_priority = $3"
             args.append(work_priority)
         async with self._storage.pool.acquire() as conn:
@@ -421,8 +394,6 @@ class PostgresClaimEngine(ClaimEngine):
         """
         if max_work_priority is not None:
             validate_work_priority(max_work_priority)
-            if not self._work_priority_enabled:
-                raise ValueError("work priority is not enabled")
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
             async with self._storage.pool.acquire() as conn:
@@ -435,8 +406,11 @@ class PostgresClaimEngine(ClaimEngine):
                     # TTL in seconds (string cast to interval in the query,
                     # $3). Configured via WorkerConfig.lease_ttl_seconds.
                     str(self.lease_ttl_seconds),
-                    *((max_work_priority,) if self._work_priority_enabled else ()),
+                    max_work_priority,
                 )
+                # The statement is done (it stamped the lease expiry from its own start): tell the caller, so its
+                # staleness clock leaves out the wait for a pool connection above and the hooks below.
+                claim_statement_at.set(asyncio.get_running_loop().time())
                 leases = [
                     Lease(
                         kind=ClaimKind(r["kind"]),
@@ -469,10 +443,9 @@ class PostgresClaimEngine(ClaimEngine):
                 _metrics.claim_enqueue_latency_seconds.labels(
                     lease.kind.value
                 ).observe(0.0)
-                if self._work_priority_enabled:
-                    _metrics.claim_work_priority_total.labels(
-                        lease.kind.value, "foreground" if lease.work_priority == 0 else "background",
-                    ).inc()
+                _metrics.claim_work_priority_total.labels(
+                    lease.kind.value, "foreground" if lease.work_priority == 0 else "background",
+                ).inc()
                 _span.add_event("claim_assigned", {"kind": lease.kind.value})
             return leases
 
@@ -630,24 +603,7 @@ class PostgresClaimEngine(ClaimEngine):
         After the upsert a ``pg_notify('claim_ready', ...)`` wakes any
         :meth:`watch_ready` consumers.
         """
-        if self._work_priority_enabled:
-            await self._arm_priority(kind, entity_id, priority=priority, resume=True)
-            return
-        async with self._storage.pool.acquire() as conn:
-            await conn.execute(
-                f"INSERT INTO {self._table} AS le"
-                f"  (kind, entity_id, priority_score, next_attempt_at)"
-                f" VALUES ($1, $2, $3, now())"
-                f" ON CONFLICT (kind, entity_id) DO UPDATE"
-                f"   SET priority_score  = EXCLUDED.priority_score,"
-                f"       next_attempt_at = now()",
-                kind.value, entity_id, priority,
-            )
-            await conn.execute(
-                "SELECT pg_notify($1, $2)",
-                "claim_ready",
-                f"{kind.value}:{entity_id}",
-            )
+        await self._arm_priority(kind, entity_id, priority=priority, resume=True)
 
     # ------------------------------------------------------------------
     # watch_ready

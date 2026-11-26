@@ -371,7 +371,7 @@ async def test_create_sandbox_maps_image_pull_failure_to_config_error() -> None:
             extra_mounts=[],
             user=None,
             resources=ResourceLimits(),
-            network="none",
+            network="full",
             pull_policy="if_missing",
         )
     docker.images.pull.assert_awaited_once()

@@ -41,7 +41,7 @@ from primer.access.person import person_from_request
 from primer.access.workspaces import require_session, scope_to_readable_workspaces
 from primer.model.access import AccessLevel
 from primer.api.approver_guard import enforce_approvers
-from primer.api.gate_fence import GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
+from primer.api.gate_fence import ALREADY_DECIDED, GateNotPendingError, count_gate_token, decided_gate_error, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate, undecided_pending_gates
 from primer.session.responder_attribution import classic_gate_responder_decision
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
@@ -445,6 +445,23 @@ async def _publish_decision(
     if not did:
         # The gate already holds a decision (or the park moved on): this one was not applied, so nothing is recorded or published. Recording it
         # used to leave the audit naming one decision while the worker ran another (ticket 01a12606).
+        # X3.8: when the park moved on because the session was CANCELLED
+        # (the cancel flips the park to resumable and the claim ends the
+        # session), "already decided" would mislead -- no other decision
+        # won. Re-read the row (the flip raced the route's own read) and
+        # say what actually happened.
+        fresh = await session_storage.get(id_str)
+        if fresh is not None and getattr(fresh, "cancel_requested", False):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ALREADY_DECIDED,
+                    "message": (
+                        f"session {id_str!r} was cancelled before this "
+                        "approval answer arrived; the answer was not applied"
+                    ),
+                },
+            )
         raise decided_gate_error("approval")
     if storage_provider is not None:
         # 01a068da: write the durable ToolApprovalRecord HERE, at the

@@ -14,7 +14,7 @@ from primer.harness.git import (
     HarnessGitError,
     clone_at_ref,
     ls_remote,
-    _inject_token,
+    _prepare_remote,
     _redact,
 )
 
@@ -36,14 +36,38 @@ def local_bare_repo(tmp_path) -> str:
     return f"file://{bare}"
 
 
-def test_inject_token_https():
-    out = _inject_token("https://github.com/a/b", "tk")
-    assert out == "https://oauth2:tk@github.com/a/b"
+def test_prepare_remote_strips_the_credential_from_the_url_and_scopes_the_helper_to_the_origin():
+    url, env = _prepare_remote("https://github.com:8443/a/b", "tk")
+    assert url == "https://github.com:8443/a/b"
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "credential.helper" and env["GIT_CONFIG_VALUE_0"] == ""
+    assert env["GIT_CONFIG_KEY_1"] == "credential.https://github.com:8443.helper"
+    assert env["PRIMER_GIT_CREDENTIAL_USERNAME"] == "oauth2" and env["PRIMER_GIT_CREDENTIAL_PASSWORD"] == "tk"
+    assert "tk" not in env["GIT_CONFIG_VALUE_1"], "the helper reads the secret from the environment; it does not hold it"
 
 
-def test_inject_token_skips_non_https():
-    out = _inject_token("file:///tmp/x", "tk")
-    assert out == "file:///tmp/x"
+def test_prepare_remote_moves_a_url_credential_into_the_environment_and_the_token_wins():
+    url, env = _prepare_remote("https://ghp_abc@github.com/a/b", None)
+    assert url == "https://github.com/a/b"
+    assert (env["PRIMER_GIT_CREDENTIAL_USERNAME"], env["PRIMER_GIT_CREDENTIAL_PASSWORD"]) == ("ghp_abc", "")
+    url, env = _prepare_remote("https://me:p%40ss@github.com/a/b", None)
+    assert url == "https://github.com/a/b"
+    assert (env["PRIMER_GIT_CREDENTIAL_USERNAME"], env["PRIMER_GIT_CREDENTIAL_PASSWORD"]) == ("me", "p@ss")
+    url, env = _prepare_remote("https://ghp_abc@github.com/a/b", "stored")
+    assert url == "https://github.com/a/b"
+    assert (env["PRIMER_GIT_CREDENTIAL_USERNAME"], env["PRIMER_GIT_CREDENTIAL_PASSWORD"]) == ("oauth2", "stored")
+
+
+def test_prepare_remote_sends_nothing_without_a_credential_or_over_a_non_https_url():
+    assert _prepare_remote("file:///tmp/x", "tk") == ("file:///tmp/x", {})
+    assert _prepare_remote("https://github.com/a/b", None) == ("https://github.com/a/b", {})
+
+
+def test_prepare_remote_appends_to_config_entries_already_in_the_environment(monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    _, env = _prepare_remote("https://h.example/r", "tk")
+    assert env["GIT_CONFIG_COUNT"] == "4"
+    assert "GIT_CONFIG_KEY_2" in env and "GIT_CONFIG_KEY_0" not in env
 
 
 def test_redact_strips_token():

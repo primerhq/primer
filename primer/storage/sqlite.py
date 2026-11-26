@@ -165,6 +165,11 @@ _SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "(json_extract(data,'$.provider_id'))",
         ),
     ],
+    # M1: the batched tree walk lists a collection's children with
+    # `parent_id IN (...)`; the composite index covers that lookup.
+    "document": [
+        ("parent_id", False, "(json_extract(data,'$.collection_id'), json_extract(data,'$.parent_id'))"),
+    ],
     "useridentity": [
         (
             "provider_subject_uniq",
@@ -919,7 +924,7 @@ class SqliteStorage(Storage[ModelT]):
             "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
             ")"
         )
-        # Access .connection first — propagates ConfigError unchanged if the
+        # Access .connection first - propagates ConfigError unchanged if the
         # provider has not been initialised yet.
         conn = self._provider.connection
         try:
@@ -1376,7 +1381,11 @@ class SqliteStorage(Storage[ModelT]):
         page: PageRequest,
         *,
         order_by: list[OrderBy] | None = None,
+        conn: Any | None = None,
     ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
+        # SQLite uses a single shared connection so there is nothing to
+        # thread; accept the kwarg for Protocol parity and ignore it.
+        del conn
         return await self._paged(predicate=predicate, page=page, order_by=order_by)
 
     #: Rows per query of :meth:`find_ids`.
@@ -1937,10 +1946,18 @@ class SqliteDocumentContentStore(DocumentContentStore):
             )
 
     async def list(
-        self, collection_id: str, *, prefix: str | None = None
+        self,
+        collection_id: str,
+        *,
+        prefix: str | None = None,
+        limit: int | None = None,
+        after_path: str | None = None,
     ) -> list[ContentListEntry]:
+        """Entries in path order. ``limit=None`` (the default) returns every entry; ``limit`` plus ``after_path`` (the last path of the previous page) pages by keyset. ``size`` is the UTF-8 byte length, as on Postgres."""
+        if limit is not None and limit < 1:
+            raise BadRequestError("limit must be at least 1")
         sql = (
-            "SELECT document_id, path, length(content) AS size "
+            "SELECT document_id, path, length(CAST(content AS BLOB)) AS size "
             "FROM document_content WHERE collection_id = ?"
         )
         params: list[Any] = [collection_id]
@@ -1950,6 +1967,13 @@ class SqliteDocumentContentStore(DocumentContentStore):
             # (would otherwise over-match). The escape char is backslash.
             sql += " AND path LIKE ? || '%' ESCAPE '\\'"
             params.append(_escape_like(prefix))
+        if after_path is not None:
+            sql += " AND path > ?"
+            params.append(after_path)
+        sql += " ORDER BY path"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
         try:
             cur = await self._conn.execute(sql, params)
             rows = await cur.fetchall()
@@ -2103,6 +2127,7 @@ class SqliteEventStore(EventStore):
         entity_kind: str | None = None,
         entity_id: str | None = None,
         workspace_id: str | None = None,
+        session_id: str | None = None,
         since: datetime | None = None,
     ) -> list["Event"]:
         where = ["id > ?"]
@@ -2122,6 +2147,9 @@ class SqliteEventStore(EventStore):
         if workspace_id is not None:
             where.append("workspace_id = ?")
             params.append(workspace_id)
+        if session_id is not None:
+            where.append("session_id = ?")
+            params.append(session_id)
         if since is not None:
             where.append("occurred_at >= ?")
             params.append(since.isoformat())

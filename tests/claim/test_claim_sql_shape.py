@@ -48,7 +48,8 @@ def test_each_kind_selects_an_unclaimed_branch_and_an_expired_branch(kinds):
         assert "l.claimed_by IS NOT NULL" in expired and "l.expires_at < now()" in expired
         for branch in (unclaimed, expired):
             assert "l.next_attempt_at <= now()" in branch
-            assert re.search(r"ORDER BY l\.priority_score, l\.next_attempt_at\s+LIMIT \$1 FOR UPDATE OF l SKIP LOCKED", branch), branch
+            assert re.search(r"ORDER BY l\.work_priority, l\.priority_score, l\.next_attempt_at\s+LIMIT \$1 FOR UPDATE OF l SKIP LOCKED", branch), branch
+            assert "AND ($4::integer IS NULL OR l.work_priority <= $4)" in branch, "the priority ceiling must filter both branches"
 
 
 def test_each_branch_locks_inside_its_own_from_subquery_never_over_the_union():
@@ -62,8 +63,8 @@ def test_each_branch_locks_inside_its_own_from_subquery_never_over_the_union():
 
 def test_the_outer_query_still_orders_and_limits_across_kinds_and_binds_every_parameter():
     sql = _sql(ClaimKind.HARNESS, ClaimKind.SESSION)
-    assert re.search(r"all_cand AS \(.*ORDER BY priority_score, next_attempt_at LIMIT \$1\)", sql, re.S)
-    for n in (1, 2, 3):
+    assert re.search(r"all_cand AS \(.*ORDER BY work_priority, priority_score, next_attempt_at LIMIT \$1\)", sql, re.S)
+    for n in (1, 2, 3, 4):
         assert f"${n}" in sql
 
 

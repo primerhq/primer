@@ -426,8 +426,14 @@ class LanceVectorStore(VectorStore):
         collection_id: str,
         *,
         dimensions: int,
-        distance: str = "cosine",
+        distance: str | None = None,
     ) -> None:
+        # An omitted distance resolves to the provider's configured metric
+        # (deferred X2.4): NEW collections take it, an EXISTING one keeps its
+        # stored metric (the drift check below raises ConflictError, which
+        # the indexing path treats as "keep going under the stored metric").
+        if distance is None:
+            distance = self._provider.config.distance_metric
         if distance not in _DISTANCE_LANCE:
             raise BadRequestError(
                 f"unsupported distance {distance!r}; expected one of "
@@ -608,6 +614,77 @@ class LanceVectorStore(VectorStore):
                 f"LanceDB delete failed for {collection_id}/{document_id}: {exc}",
                 cause=exc,
             ) from exc
+
+    async def replace_document(
+        self,
+        collection_id: str,
+        document_id: str,
+        records: list[EmbeddingRecord],
+        *,
+        stored_count: int | None = None,
+    ) -> None:
+        """Replace the document's chunks: the destructive step (one delete) runs only when the new
+        set is shorter than the stored one, and the put is the same single merge_insert put_many
+        uses. LanceDB has no cross-operation transaction, so a failed put after the delete leaves
+        the document unsearchable until the next pass - the narrowest window the backend allows.
+        ``stored_count`` is accepted for the ABC signature and ignored: the shrink check counts the
+        table's own rows."""
+        records = list(records or [])
+        table = await self._open_table(collection_id)
+        cat = await self._provider._catalogue_get(collection_id)
+        assert cat is not None  # _open_table would have raised
+        expected_dim = int(cat["dimensions"])
+        for record in records:
+            if len(record.vector) != expected_dim:
+                raise BadRequestError(
+                    f"vector length {len(record.vector)} does not match "
+                    f"collection {collection_id!r} dimensions={expected_dim}"
+                )
+        where = f"document_id = '{_escape_sql_string(document_id)}'"
+        try:
+            if len(records) < int(await table.count_rows(where)):
+                await table.delete(where)
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB replace_document delete failed for "
+                f"{collection_id}/{document_id}: {exc}",
+                cause=exc,
+            ) from exc
+        if not records:
+            return
+        rows = [
+            {
+                "document_id": record.document_id,
+                "chunk_id": record.chunk_id,
+                "text": record.text,
+                "vector": [float(x) for x in record.vector],
+                "meta": json.dumps(record.meta or {}, sort_keys=True),
+            }
+            for record in records
+        ]
+        try:
+            await (
+                table.merge_insert(["document_id", "chunk_id"])
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute(rows)
+            )
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB replace_document put failed for "
+                f"{collection_id}/{document_id}: {exc}",
+                cause=exc,
+            ) from exc
+        if not cat.get("indexed", False):
+            try:
+                row_count = await table.count_rows()
+            except Exception:
+                row_count = 0
+            if row_count >= int(self._provider.config.index_min_rows):
+                await self._build_index(
+                    table=table, collection_id=collection_id,
+                    distance_metric=cat["distance"],
+                )
 
     async def search(
         self,

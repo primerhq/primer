@@ -35,11 +35,11 @@ class _Conn:
 
 def _handle(conn, table="modelprofile"):
     @asynccontextmanager
-    async def acquire():
+    async def acquire(timeout=None):
         yield conn
 
     handle = pg.PostgresStorage.__new__(pg.PostgresStorage)
-    handle._provider = SimpleNamespace(pool=SimpleNamespace(acquire=acquire))
+    handle._provider = SimpleNamespace(acquire_timeout=30.0, pool=SimpleNamespace(acquire=acquire))
     handle._table, handle._qualified = table, f'"s"."{table}"'
     return handle
 

@@ -1591,6 +1591,22 @@ class KubernetesWorkspaceConfig(BaseModel):
         default_factory=list,
         description="Names of pre-created imagePullSecrets in the namespace.",
     )
+    default_deny_egress: bool = Field(
+        default=False,
+        description=(
+            "Apply the default-deny egress NetworkPolicy to the workspace "
+            "pods at backend start (idempotent create, the operator owns "
+            "the policy's lifecycle): it selects the workspace pods (label "
+            "app.kubernetes.io/managed-by=primer) and allows NO egress - "
+            "the pods cannot reach the internet, other namespaces or "
+            "cluster services (DNS included) until the operator adds allow "
+            "rules. Off by default. What the pods may reach stays as the "
+            "policy allows - DNS and the runtime port are not carved out "
+            "here; the operator's allow rules decide. The platform's own "
+            "reach to the pods is inbound (headless service, ingress or "
+            "the per-workspace Gateway HTTPRoute) and is not affected."
+        ),
+    )
 
 
 WorkspaceProviderConfig = Annotated[

@@ -469,3 +469,49 @@ async def test_run_stamps_the_marker_when_another_pod_wins_a_create(
     # The marker is the point: without it every later boot looks fresh.
     state = await storage_provider.get_system_state()
     assert state.bootstrap_completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_installing_an_extra_and_restarting_creates_its_default_rows(
+    storage_provider: SqliteStorageProvider,
+    root_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review 7.3: a slim boot stamps the marker with the extra-gated rows skipped;
+    after the operator installs the extras, the next plain run() (no force) creates them."""
+    import primer.common.optional as optional_mod
+    from primer.model.provider import CrossEncoderProvider, EmbeddingProvider, SemanticSearchProvider
+    from primer.model.workspace import WorkspaceTemplate
+
+    real_find_spec = optional_mod._find_spec
+    with monkeypatch.context() as slim:
+        slim.setattr(
+            optional_mod, "_find_spec",
+            lambda name, *a, **k: None if name in ("sentence_transformers", "lancedb") else real_find_spec(name, *a, **k),
+        )
+        first = await _make_runner(storage_provider, root_dir).run()
+    assert first.errors == []
+    assert (await storage_provider.get_system_state()).bootstrap_completed_at is not None
+    assert await storage_provider.get_storage(EmbeddingProvider).get(RESERVED_HUGGINGFACE_EMBEDDER) is None
+
+    # An operator removed a row that is not extra-gated (direct storage access: the API refuses).
+    await storage_provider.get_storage(WorkspaceTemplate).delete(RESERVED_LOCAL_WORKSPACE_TEMPLATE)
+
+    # Extras installed, restart: the marker is set and force is off. (Both extras are faked present so the test does not depend on the host.)
+    monkeypatch.setattr(
+        optional_mod, "_find_spec",
+        lambda name, *a, **k: object() if name in ("sentence_transformers", "lancedb") else real_find_spec(name, *a, **k),
+    )
+    second = await _make_runner(storage_provider, root_dir).run()
+    assert second.errors == []
+    assert {RESERVED_HUGGINGFACE_EMBEDDER, RESERVED_LANCE_SSP, RESERVED_HUGGINGFACE_CROSS_ENCODER} <= set(second.created)
+    assert await storage_provider.get_storage(EmbeddingProvider).get(RESERVED_HUGGINGFACE_EMBEDDER) is not None
+    assert await storage_provider.get_storage(SemanticSearchProvider).get(RESERVED_LANCE_SSP) is not None
+    assert await storage_provider.get_storage(CrossEncoderProvider).get(RESERVED_HUGGINGFACE_CROSS_ENCODER) is not None
+    # The marker contract is kept: rows that never depended on an extra are not re-created.
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE not in second.created
+    assert await storage_provider.get_storage(WorkspaceTemplate).get(RESERVED_LOCAL_WORKSPACE_TEMPLATE) is None
+
+    # And a third restart is quiet.
+    third = await _make_runner(storage_provider, root_dir).run()
+    assert third.created == [] and third.errors == []

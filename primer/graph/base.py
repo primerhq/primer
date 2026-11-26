@@ -76,6 +76,7 @@ from primer.model.graph import (
     NodeRuntimeStatus,
     _CallableRouter,
     _ConditionalEdge,
+    _EndNode,
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
@@ -152,6 +153,7 @@ from primer.graph._checkpoint import (  # noqa: E402
 )
 from primer.graph._agent_node import _AgentNodeMixin  # noqa: E402
 from primer.graph._node_identity import (  # noqa: E402
+    enter_node_run,
     reset_current_graph_node_id,
     reset_current_toolcall,
     set_current_graph_node_id,
@@ -370,6 +372,19 @@ class _BaseGraphExecutor(
         # tail can run to completion without re-triggering).
         self._max_iter_routed: bool = False
         self._node_states: dict[str, NodeRuntimeState] = {}
+        # 6.2: True only around _save_cancelled's own _save_state. The
+        # workspace executor then commits the run as of its LAST commit
+        # (the head of the cut superstep, or the boundary before it),
+        # marked ENDED/cancelled, without this superstep's buffered node
+        # turns: a resume re-runs the cut superstep whole, so nothing it
+        # did may be committed (lane K2 round 1).
+        self._saving_cut: bool = False
+        # The identity of THIS run, which the persisted state.json is keyed
+        # by: a reclaim of the same run resumes it, any other run with the
+        # same state subtree starts fresh (lane K2 round 1, ruling K2-1).
+        # The worker binds the session row's (invocation, turn_no); a child
+        # takes the executing parent node's key (bind_run_id).
+        self._run_id: str = f"turn-{turn_no}"
 
         # Turn-log emission. Subclasses (WorkspaceGraphExecutor /
         # GraphExecutor) override the factory and graph-level writer in
@@ -1506,14 +1521,29 @@ class _BaseGraphExecutor(
         context: GraphContext,
         node_states: dict[str, NodeRuntimeState],
     ) -> None:
-        """A run closed or cancelled mid-flight is saved ENDED/cancelled, not left RUNNING (AG-L11c). Best effort: the close or cancel goes on regardless."""
+        """A run closed or cancelled mid-flight is saved ENDED/cancelled, not left RUNNING (AG-L11c). Best effort: the close or cancel goes on regardless.
+
+        The cut superstep contributes nothing (6.2, lane K2 round 1: per
+        superstep, all or nothing): the workspace executor saves the run as
+        of its last commit, without this superstep's buffered node turns,
+        exactly what a hard crash at the same point leaves. A reclaim of the
+        same run re-runs the cut superstep whole; a node that finished in it
+        runs again and does not read its own cut answer back. A run that
+        already ended is left as it ended.
+        """
+        if getattr(self, "_last_ended_reason", None) is not None:
+            return
         try:
-            await self._save_state(
-                iteration=context.iteration,
-                node_states=node_states,
-                status=SessionStatus.ENDED,
-                ended_reason="cancelled",
-            )
+            self._saving_cut = True
+            try:
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.ENDED,
+                    ended_reason="cancelled",
+                )
+            finally:
+                self._saving_cut = False
         except Exception:  # noqa: BLE001 -- must not mask the close or the cancel it runs for
             logger.warning("GraphExecutor: could not save the cancelled run", extra={"graph_id": self._graph.id}, exc_info=True)
 
@@ -1842,6 +1872,105 @@ class _BaseGraphExecutor(
 
     # ---- Public surface --------------------------------------------------
 
+    # ---- Reclaim resume (review 2026-11-23, 6.2) --------------------------
+
+    def bind_run_id(self, run_id: str) -> None:
+        """Key this executor's persisted state to the run ``run_id`` (lane K2 round 1, ruling K2-1).
+
+        ``invoke`` resumes the persisted state only when it was written by the same run: a worker's
+        reclaim of the turn. A new turn, a reopen or a restart of the session (the worker binds the
+        row's invocation and turn), a ``graph`` node that runs again, or another ``invoke_graph``
+        call (the parent binds the node execution's key, :meth:`_node_run_key`) starts fresh.
+        """
+        self._run_id = run_id
+
+    def _node_run_key(self, node_id: str, iteration: int) -> str:
+        """The key of one execution of ``node_id`` in this run (see :class:`primer.graph._node_identity.NodeRun`)."""
+        return f"{self._run_id}/{node_id}@{iteration}"
+
+    async def _load_persisted_state(self) -> "dict[str, Any] | None":
+        """The persisted state payload for this executor's state subtree, or None.
+
+        Executors without a persisted state subtree (the in-memory
+        ``GraphExecutor``) return None and always run fresh from Begin.
+        :class:`WorkspaceGraphExecutor` returns the ``state.json`` it
+        writes at every superstep boundary, which a fresh executor of the
+        same graph session reads when the claim loop reclaims a dead turn
+        (review 2026-11-23, 6.2).
+        """
+        return None
+
+    @staticmethod
+    def _persistable_outputs(nodes: dict) -> dict:
+        """The ``GraphContext.nodes`` mapping serialised for state.json.
+
+        History is dropped (resume never reads ``context.nodes[...].
+        history`` - a node's prompt comes from its own messages.jsonl):
+        re-persisting every completed node's full history at every
+        superstep boundary would grow the commit quadratically.
+        """
+
+        def _dump(out: NodeOutput) -> dict:
+            raw = out.model_dump(mode="json")
+            raw["history"] = []
+            return raw
+
+        persisted: dict = {}
+        for nid, value in nodes.items():
+            if isinstance(value, list):
+                persisted[nid] = [None if x is None else _dump(x) for x in value]
+            elif value is not None:
+                persisted[nid] = _dump(value)
+        return persisted
+
+    def _restore_persisted_context(self, persisted: "dict[str, Any]") -> GraphContext:
+        """The ``GraphContext`` a resume seeds the loop with, from state.json."""
+        nodes: dict[str, NodeOutput | list[NodeOutput | None]] = {}
+        for nid, value in (persisted.get("outputs") or {}).items():
+            if isinstance(value, list):
+                nodes[nid] = [
+                    None if x is None else NodeOutput.model_validate(x)
+                    for x in value
+                ]
+            else:
+                nodes[nid] = NodeOutput.model_validate(value)
+        if persisted.get("initial_input_kind") == "messages":
+            initial_input: Any = [
+                Message.model_validate(m) for m in (persisted.get("initial_input") or [])
+            ]
+        else:
+            initial_input = persisted.get("initial_input")
+        return GraphContext(
+            initial_input=initial_input,
+            iteration=int(persisted.get("iteration", 0)),
+            nodes=nodes,
+            ctx=self._execution_context,
+        )
+
+    def _terminal_reemit_events(self, context: GraphContext, persisted: "dict[str, Any]") -> list:
+        """The terminal events a no-op reclaim of a finished run re-emits.
+
+        A non-session-owning executor (a subgraph node's or ``invoke_graph``'s
+        child) re-emits its End outputs so a re-running parent node
+        re-derives the same NodeOutput the original run produced; the
+        session owner re-emits nothing - its session log already holds the
+        terminal record and a second copy would duplicate it.
+        """
+        if persisted.get("ended_reason") != "completed":
+            return []
+        if getattr(self, "_owns_session_lifecycle", True):
+            return []
+        events: list = []
+        for nid in sorted(self._nodes_by_id):
+            if not isinstance(self._nodes_by_id[nid], _EndNode):
+                continue
+            out = context.nodes.get(nid)
+            if isinstance(out, NodeOutput):
+                events.append(
+                    _GraphEndOutputEvent(text=out.text, parsed=out.parsed, end_node_id=nid)
+                )
+        return events
+
     async def invoke(
         self,
         messages: "list[Message] | Any",
@@ -1860,26 +1989,84 @@ class _BaseGraphExecutor(
         executor relaying ``session.metadata['graph_input']``) can pass
         dict / str / list / any JSON-serialisable value. Begin-firing
         branches on the runtime type to shape the right NodeOutput.
+
+        A reclaimed turn (review 2026-11-23, 6.2) continues the run from
+        the persisted ``state.json`` its state subtree holds, when that
+        state was written by THIS run (``bind_run_id``; any other run
+        starts fresh from Begin). Every commit records what the next
+        superstep needs: the ready set, the iteration it runs at, the
+        settled outputs, the fan-out bookkeeping and the sticky flags, so
+        the resume runs exactly the superstep the dead worker would have
+        run next (a cut superstep re-runs whole) and routes nothing again.
+        A finished run does nothing more (its persisted outcome is exposed
+        for the worker's status mapper). Executors without persisted state
+        always run fresh.
         """
-        node_states: dict[str, NodeRuntimeState] = {
-            n.id: NodeRuntimeState(status=NodeRuntimeStatus.PENDING)
-            for n in self._graph.nodes
-        }
-        # Preserve non-list inputs verbatim so Begin can materialise its
-        # NodeOutput from dict / str / Any.
-        if isinstance(messages, list):
-            initial_input: Any = list(messages)
+        persisted = await self._load_persisted_state()
+        if persisted is None:
+            node_states: dict[str, NodeRuntimeState] = {
+                n.id: NodeRuntimeState(status=NodeRuntimeStatus.PENDING)
+                for n in self._graph.nodes
+            }
+            # Preserve non-list inputs verbatim so Begin can materialise its
+            # NodeOutput from dict / str / Any.
+            if isinstance(messages, list):
+                initial_input: Any = list(messages)
+            else:
+                initial_input = messages
+            context = GraphContext(
+                initial_input=initial_input,
+                iteration=0,
+                nodes={},
+                ctx=self._execution_context,
+            )
+            ready: set[str] = {_resolve_initial_ready_node(self._graph)}
+            self._max_iter_routed = False
+            self._pending_ended_reason = None
+            self._pending_ended_detail = None
         else:
-            initial_input = messages
-        context = GraphContext(
-            initial_input=initial_input,
-            iteration=0,
-            nodes={},
-            ctx=self._execution_context,
-        )
-        ready: set[str] = {_resolve_initial_ready_node(self._graph)}
-        self._admitted = set(ready)
-        self._max_iter_routed = False
+            context = self._restore_persisted_context(persisted)
+            node_states = {
+                nid: NodeRuntimeState.model_validate(raw)
+                for nid, raw in (persisted.get("node_states") or {}).items()
+            }
+            if (
+                persisted.get("status") == SessionStatus.ENDED.value
+                and persisted.get("ended_reason") not in (None, "cancelled")
+            ):
+                # The run finished before the worker died: nothing more runs.
+                # Expose the persisted outcome (the worker's post-turn status
+                # mapper reads last_done_reason off the executor) and re-emit
+                # the End outputs a child's re-running parent node needs.
+                # The reason must be a real outcome (X3.8): an ENDED state
+                # with no reason is not a finished run -- falling through
+                # makes the resume logic answer resume_state_incomplete
+                # instead of exposing a None outcome the status mapper would
+                # read as a clean stop (a silent false success).
+                self._context = context
+                self._node_states = node_states
+                self._ready_set = set()
+                self._admitted = set(context.nodes.keys())
+                self._last_ended_reason = persisted.get("ended_reason")
+                self._last_ended_detail = persisted.get("ended_detail")
+                for ev in self._terminal_reemit_events(context, persisted):
+                    yield ev
+                return
+            ready = set(persisted.get("ready_set") or [])
+            self._restore_fanout_bookkeeping(persisted)
+            self._max_iter_routed = bool(persisted.get("max_iter_routed", False))
+            self._pending_ended_reason = persisted.get("pending_ended_reason")
+            self._pending_ended_detail = persisted.get("pending_ended_detail")
+            if not ready and self._pending_ended_reason is None:
+                # Nothing to run and no outcome decided: a resume never reports
+                # ``completed`` for a run whose End did not run.
+                self._pending_ended_reason = "failed"
+                self._pending_ended_detail = "resume_state_incomplete"
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="resume_state_incomplete",
+                    message="the persisted run state names nothing left to run and no outcome; the run cannot be resumed",
+                    node_id=None,
+                )
         # Phase 6 — expose mid-flight state on the executor so
         # :meth:`snapshot_state` can capture it the moment a ToolCall
         # yields for approval. Kept in sync after every superstep
@@ -1887,6 +2074,10 @@ class _BaseGraphExecutor(
         self._context = context
         self._ready_set = ready
         self._node_states = node_states
+        # restore_state's own seeding rule (a resumed executor must not
+        # forget that a settled source with a persisted output must gate a
+        # downstream FanIn): the frontier plus every completed node.
+        self._admitted = set(ready) | set(context.nodes.keys())
 
         try:
             async with contextlib.aclosing(self._run_superstep_loop(
@@ -2113,6 +2304,8 @@ class _BaseGraphExecutor(
 
             async def _run_node_bounded(nid: str) -> None:
                 try:
+                    # This node execution's identity, for the child runs it starts (its own task's context).
+                    enter_node_run(self._node_run_key(nid, context.iteration))
                     await self._stream_node(nid, context, queue)
                 finally:
                     node_semaphore.release()
@@ -2357,13 +2550,11 @@ class _BaseGraphExecutor(
                         )
                     )
 
-            # Persist superstep results so each turn-end is recoverable
-            # (and, in the workspace executor, git-committed).
-            await self._save_state(
-                iteration=context.iteration,
-                node_states=node_states,
-                status=SessionStatus.RUNNING,
-            )
+            # No commit here (lane K2 round 1): the superstep's results are
+            # committed together with what they decide - the WAITING save
+            # of a park, the terminal save of a failure, or the boundary
+            # save below once the next ready set is known - so a resume
+            # never has to route a settled superstep again.
 
             # Spec B §2.3 step 3 / Phase 6 — if any ToolCall(s) yielded
             # for approval this superstep, save the checkpoint via the
@@ -2528,6 +2719,19 @@ class _BaseGraphExecutor(
             # safe" static reasoning conflicting with what actually ran.
             self._ready_set |= next_ready
             context.iteration += 1
+            if self._ready_set:
+                # The superstep boundary commit (6.2, lane K2 round 1): the
+                # settled results, their node turns, and what runs next (the
+                # ready set at the iteration it runs at, the fan-out
+                # bookkeeping). A reclaim resumes from here without routing
+                # again. A drained ready set ends the run: the terminal save
+                # below is its commit, and a crash before it re-runs the last
+                # superstep (its End emits again and the run ends as usual).
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.RUNNING,
+                )
 
         if ended_reason is None:
             ended_reason = "completed"

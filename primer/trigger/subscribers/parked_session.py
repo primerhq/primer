@@ -15,7 +15,10 @@ On fire:
    reuses the raw ``tool_call_id`` (a provider repeats it across
    rounds) but was not created by THIS subscription is such a park:
    the park's own yield must carry ``resume_metadata.subscription_id
-   == sub.id``.
+   == sub.id``. The one exception to deleting: a session whose turn is
+   still in flight with NO park at all - the fire raced the park write
+   (the tool created the subscription before the park was durable). The
+   row is kept so a later fire finds the landed park.
 3. Build the tool result envelope (``{ok, fire_context, payload}``).
 4. Publish the result onto the parked session's resume ``event_key``
    via the shared :func:`primer.session.yields.respond_to_yield`
@@ -85,6 +88,26 @@ class ParkedSessionDispatcher:
                 ),
             )
         if session.parked_status != "parked":
+            if session.turn_status == "running" or session.parked_status == "resumable":
+                # The fire raced a park write: the session's turn is in
+                # flight (the tool created this subscription BEFORE the park
+                # row was durable), or the row is 'resumable' - a park being
+                # resumed keeps its old park until the resumed turn releases,
+                # and a wait made in that turn is live (a graph superstep
+                # after a gate). Keep the subscription: a later fire (a
+                # recurring tick, a redelivery) finds the landed park and
+                # wakes the session. Only a row that is neither parked,
+                # resumable nor running (the turn ended and the park never
+                # came) may delete the subscription.
+                return SubscriptionDispatchResult(
+                    ok=True,
+                    skipped=True,
+                    error_code="skipped_park_pending",
+                    error_message=(
+                        "the session's turn is still writing its park; "
+                        "a later fire will wake it"
+                    ),
+                )
             await _delete_sub(deps, sub.id)
             return SubscriptionDispatchResult(
                 ok=True,

@@ -28,7 +28,10 @@ db:
       max_size: 25
 
 # --- HTTP server -----------------------------------------------------------
-host: 0.0.0.0
+# Loopback by default: first registration mints an admin, so a reachable
+# bind must be deliberate. Use 0.0.0.0 for containers or a reverse proxy
+# on another host (the Docker entrypoint and compose set it explicitly).
+host: 127.0.0.1
 port: 8000
 
 # --- Logging ---------------------------------------------------------------

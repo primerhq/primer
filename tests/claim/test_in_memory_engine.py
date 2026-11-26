@@ -3,11 +3,12 @@ import pytest
 from datetime import datetime, UTC, timedelta
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.claim.in_memory import InMemoryClaimEngine
+from tests.claim._platform import platform_adapters
 
 
 @pytest.mark.asyncio
 async def test_upsert_creates_lease_row():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "chat-1", priority=100)
     row = engine._leases[(ClaimKind.HARNESS, "chat-1")]
     assert row.priority_score == 100
@@ -16,7 +17,7 @@ async def test_upsert_creates_lease_row():
 
 @pytest.mark.asyncio
 async def test_upsert_updates_existing_priority():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "chat-1", priority=100)
     await engine.upsert(ClaimKind.HARNESS, "chat-1", priority=50)
     assert engine._leases[(ClaimKind.HARNESS, "chat-1")].priority_score == 50
@@ -24,7 +25,7 @@ async def test_upsert_updates_existing_priority():
 
 @pytest.mark.asyncio
 async def test_delete_lease_removes_row():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "chat-1")
     await engine.delete_lease(ClaimKind.HARNESS, "chat-1")
     assert (ClaimKind.HARNESS, "chat-1") not in engine._leases
@@ -32,7 +33,7 @@ async def test_delete_lease_removes_row():
 
 @pytest.mark.asyncio
 async def test_claim_due_returns_eligible_leases_sorted_by_priority():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS,    "c1", priority=100)
     await engine.upsert(ClaimKind.SESSION, "s1", priority=50)   # higher priority
     await engine.upsert(ClaimKind.HARNESS, "h1", priority=10)   # highest
@@ -45,7 +46,7 @@ async def test_claim_due_returns_eligible_leases_sorted_by_priority():
 @pytest.mark.asyncio
 async def test_claim_due_kinds_none_admits_every_kind():
     """Default (no kinds arg) is byte-identical to every existing caller."""
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "h1")
     await engine.upsert(ClaimKind.SESSION, "s1")
     leases = await engine.claim_due("worker-A", max_count=10)
@@ -58,7 +59,7 @@ async def test_claim_due_kinds_filter_restricts_to_subset():
     twice per iteration - once excluding TOOL_CALL for general capacity,
     once restricted to it for the reserve. The filter must not leak
     other kinds into either slice."""
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "h1")
     await engine.upsert(ClaimKind.SESSION, "s1")
     await engine.upsert(ClaimKind.TOOL_CALL, "t1")
@@ -76,7 +77,7 @@ async def test_claim_due_kinds_filter_restricts_to_subset():
 
 @pytest.mark.asyncio
 async def test_claim_due_respects_max_count():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     for i in range(5):
         await engine.upsert(ClaimKind.HARNESS, f"c{i}")
     leases = await engine.claim_due("worker-A", max_count=2)
@@ -85,7 +86,7 @@ async def test_claim_due_respects_max_count():
 
 @pytest.mark.asyncio
 async def test_claim_due_skips_claimed_leases():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     first = await engine.claim_due("worker-A", max_count=1)
     second = await engine.claim_due("worker-B", max_count=1)
@@ -95,7 +96,7 @@ async def test_claim_due_skips_claimed_leases():
 
 @pytest.mark.asyncio
 async def test_claim_due_reclaims_expired_leases():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     leases = await engine.claim_due("worker-A", max_count=1)
     # Force expiry
@@ -107,7 +108,7 @@ async def test_claim_due_reclaims_expired_leases():
 
 @pytest.mark.asyncio
 async def test_heartbeat_refreshes_expiry():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     orig_expires = engine._leases[(ClaimKind.HARNESS, "c1")].expires_at
@@ -119,7 +120,7 @@ async def test_heartbeat_refreshes_expiry():
 
 @pytest.mark.asyncio
 async def test_heartbeat_rejects_non_owner():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     await engine.claim_due("worker-A", max_count=1)
     confirmed = await engine.heartbeat("worker-B", [(ClaimKind.HARNESS, "c1")])
@@ -128,7 +129,7 @@ async def test_heartbeat_rejects_non_owner():
 
 @pytest.mark.asyncio
 async def test_release_with_drop_lease_removes_row():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
@@ -137,7 +138,7 @@ async def test_release_with_drop_lease_removes_row():
 
 @pytest.mark.asyncio
 async def test_release_without_drop_makes_lease_reclaimable():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=False))
@@ -148,7 +149,7 @@ async def test_release_without_drop_makes_lease_reclaimable():
 
 @pytest.mark.asyncio
 async def test_release_bumps_attempt_count_on_failure():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.HARNESS, "c1")
     [lease] = await engine.claim_due("worker-A", max_count=1)
     await engine.release(lease, outcome=ReleaseOutcome(
@@ -162,7 +163,7 @@ async def test_release_bumps_attempt_count_on_failure():
 
 @pytest.mark.asyncio
 async def test_mark_resumable_lowers_priority_and_wakes():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     await engine.upsert(ClaimKind.SESSION, "s1", priority=100)
     await engine.mark_resumable(ClaimKind.SESSION, "s1", priority=50)
     row = engine._leases[(ClaimKind.SESSION, "s1")]
@@ -171,7 +172,7 @@ async def test_mark_resumable_lowers_priority_and_wakes():
 
 @pytest.mark.asyncio
 async def test_default_lease_ttl_is_60_seconds():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     assert engine.lease_ttl_seconds == 60
     await engine.upsert(ClaimKind.HARNESS, "c1")
     before = datetime.now(UTC)
@@ -184,7 +185,7 @@ async def test_default_lease_ttl_is_60_seconds():
 async def test_claim_due_honors_custom_lease_ttl():
     # A custom lease_ttl_seconds must drive the claimed lease's expiry
     # (A-I1: the configured TTL now actually reaches the engine).
-    engine = InMemoryClaimEngine(adapters={}, lease_ttl_seconds=5)
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL), lease_ttl_seconds=5)
     await engine.upsert(ClaimKind.HARNESS, "c1")
     before = datetime.now(UTC)
     [lease] = await engine.claim_due("worker-A", max_count=1)
@@ -195,7 +196,7 @@ async def test_claim_due_honors_custom_lease_ttl():
 
 @pytest.mark.asyncio
 async def test_heartbeat_honors_custom_lease_ttl():
-    engine = InMemoryClaimEngine(adapters={}, lease_ttl_seconds=5)
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL), lease_ttl_seconds=5)
     await engine.upsert(ClaimKind.HARNESS, "c1")
     await engine.claim_due("worker-A", max_count=1)
     before = datetime.now(UTC)
@@ -208,7 +209,7 @@ async def test_heartbeat_honors_custom_lease_ttl():
 
 @pytest.mark.asyncio
 async def test_watch_ready_yields_on_upsert():
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.TOOL_CALL))
     gen = engine.watch_ready()
     task = asyncio.create_task(anext(gen))
     await asyncio.sleep(0.01)

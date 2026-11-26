@@ -19,7 +19,7 @@ import pytest
 from primer.bus.in_memory import InMemoryEventBus
 from primer.bus.mcp_tasks import McpTaskBridge
 from primer.model.workspace_session import WorkspaceSession
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler
 from tests.conftest import _FakeStorageProvider
 from tests.toolset.test_mcp_tasks import (
     _FakeSession,

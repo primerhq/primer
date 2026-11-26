@@ -19,7 +19,7 @@ behaviour can be asserted.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -37,6 +37,7 @@ from primer.tap.selector import TapSelector
 from tests._support.segmented_io import ListsFiles
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
+_LATER = _NOW + timedelta(minutes=1)
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ async def _seed_session(
     agent_id: str | None = "ag1",
     graph_id: str | None = None,
     status: SessionStatus = SessionStatus.RUNNING,
+    last_turn_at: datetime | None = None,
 ) -> WorkspaceSession:
     if graph_id is not None:
         binding = GraphSessionBinding(graph_id=graph_id)
@@ -110,6 +112,8 @@ async def _seed_session(
         created_at=_NOW,
         turn_status="idle",
     )
+    if last_turn_at is not None:
+        sess.last_turn_at = last_turn_at
     await store.create(sess)
     return sess
 
@@ -432,6 +436,44 @@ class TestReadBatch:
         ]
         # Cursor advanced only as far as consumed.
         assert new_cursor.resume_seq("s1") == 2
+
+    @pytest.mark.asyncio
+    async def test_visits_sessions_newest_first_and_stops_reading_at_the_limit(self) -> None:
+        # review 2026-11-23, I2, M-4: the drain fills its limit from the
+        # most recently active sessions and stops reading logs once the
+        # limit is filled - sessions older than the filled events cannot
+        # contribute to this drain, so their logs are never read.
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        # "a-old" sorts FIRST by id but is older by activity; "z-new"
+        # sorts LAST by id but is the most recently active session.
+        await _seed_session(
+            provider.store, "a-old", agent_id="ag1", last_turn_at=_NOW,
+        )
+        await _seed_session(
+            provider.store, "z-new", agent_id="ag2", last_turn_at=_LATER,
+        )
+        io.write(_msg_path("a-old"), _line(1, "done"))
+        io.write(
+            _msg_path("z-new"),
+            _line(1, "user_input") + _line(2, "tool_call") + _line(3, "done"),
+        )
+        events, new_cursor = await read_batch(
+            provider,
+            io,
+            workspace_id="ws-1",
+            selector=TapSelector(),
+            cursor=TapCursor(seqs={}, known_as_of=_NOW),
+            limit=3,
+        )
+        # The newest session alone fills the limit: its log is the only
+        # one the drain reads.
+        assert io.read_calls == 1
+        assert [e.session_id for e in events] == ["z-new"] * 3
+        # The skipped older session's cursor is untouched: the next
+        # drain picks it up from the start.
+        assert new_cursor.resume_seq("a-old") == 0
+        assert new_cursor.resume_offset("a-old") == 0
 
     @pytest.mark.asyncio
     async def test_session_excluded_by_selector_yields_nothing(self) -> None:

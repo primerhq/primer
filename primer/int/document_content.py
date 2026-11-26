@@ -26,7 +26,7 @@ class ContentRow(BaseModel):
 class ContentListEntry(BaseModel):
     document_id: str
     path: str
-    size: int  # len(content) in characters; never loads the body
+    size: int  # UTF-8 byte length of the body (octet_length); never loads the body
 
 
 class FulltextHit(BaseModel):
@@ -83,7 +83,11 @@ class DocumentContentStore(ABC):
 
         ``query`` is natural language, never engine syntax: implementations
         must neutralise operator characters so user text cannot raise.
-        Results are ordered best-first."""
+        Results are ordered best-first; an implementation may rank within a
+        bounded candidate set of its matching rows (the Postgres store ranks
+        only up to ``_FULLTEXT_CANDIDATE_CAP`` matching documents picked by
+        the index scan - not a stable prefix - so a query matching more
+        documents is ordered best-first within that set)."""
 
     @abstractmethod
     async def delete(self, document_id: str, *, conn: Any | None = None) -> None:
@@ -103,6 +107,16 @@ class DocumentContentStore(ABC):
 
     @abstractmethod
     async def list(
-        self, collection_id: str, *, prefix: str | None = None
+        self,
+        collection_id: str,
+        *,
+        prefix: str | None = None,
+        limit: int | None = None,
+        after_path: str | None = None,
     ) -> list[ContentListEntry]:
-        """List entries under an optional path prefix. NEVER selects the body."""
+        """List entries under an optional path prefix, in path order. NEVER selects the body.
+
+        ``limit`` (at least 1; the backends refuse a smaller) pages by keyset on
+        ``after_path`` (the last path of the previous page); with neither it
+        returns every entry, as callers such as grep rely on. ``size`` is the
+        body's UTF-8 byte length."""

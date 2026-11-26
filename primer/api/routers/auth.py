@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from primer.api.route_tools import route_tool
 
+import asyncio
 import ipaddress
 import logging
 import re
@@ -498,8 +499,48 @@ async def reopen_welcome(body: WelcomeRoleBody, request: Request, user: User = D
     return await _write_welcome(request, user, body.role, acknowledged=False)
 
 
+def _registration_locked() -> None:
+    """Raise the 409 that closes registration once an account exists."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "user_already_exists",
+            "message": "registration is locked; an account already exists",
+        },
+    )
+
+
+def _registration_busy() -> HTTPException:
+    """503 for a registration whose wait for the provider's migration lock
+    used its bound (fix round 1): a migration on another replica, or a
+    registration from another process, holds the lock."""
+    return HTTPException(
+        status_code=503,
+        detail={"error": "registration_busy", "message": "registration is busy, retry"},
+    )
+
+
+# How long one registration may wait for the provider's migration lock
+# before answering 503 (fix round 1). A Postgres waiter holds a pooled
+# connection while it polls, and the winner needs a SECOND connection for
+# its insert, so an unbounded wait by every concurrent first registration
+# can exhaust the pool and 500 the winner.
+REGISTRATION_LOCK_WAIT_S = 15.0
+
+
+def _registration_gate(request: Request) -> asyncio.Lock:
+    """At most one registration at a time may wait on the provider's
+    migration lock; the rest queue here without holding a pool connection
+    (fix round 1, the same lazily-on-app.state shape as ``_hash_gate``)."""
+    state = request.app.state
+    gate = getattr(state, "registration_gate", None)
+    if gate is None:
+        gate = state.registration_gate = asyncio.Lock()
+    return gate
+
+
 @auth_router.post(
-    "/register", response_model=AuthOk, responses=common_responses(400, 409),
+    "/register", response_model=AuthOk, responses=common_responses(400, 409, 503),
 )
 @route_tool(mapping_state="skip", skip_code="human_sign_in")
 async def register(
@@ -512,15 +553,18 @@ async def register(
     _validate_username(username)
 
     if await _has_any_user(request):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "user_already_exists",
-                "message": "registration is locked; an account already exists",
-            },
-        )
+        _registration_locked()
 
-    pw_hash = await hash_password(body.password)
+    # Hash through the app's HashGate like login does, BEFORE taking the
+    # lock (review 4.8 + fix round 1): the slow work stays out of the
+    # critical section, and while no user exists every concurrent
+    # anonymous register reaches this point, so without the gate a
+    # registration storm would run unbounded argon2 hashes.
+    try:
+        async with _hash_gate(request).slot():
+            pw_hash = await hash_password(body.password)
+    except HashBusy:
+        raise _busy() from None
     user = User(
         id=f"user-{uuid.uuid4().hex[:12]}",
         username=username,
@@ -528,11 +572,48 @@ async def register(
         created_at=datetime.now(timezone.utc),
         # Single-user v1 register is only reachable when no user exists
         # yet (see the 409 guard above), so this is always the first
-        # account — Layer 1 RBAC requires there's always an admin.
+        # account -- Layer 1 RBAC requires there's always an admin.
         role="admin",
     )
-    storage = get_storage_provider(request).get_storage(User)
-    await storage.create(user)
+
+    # Review 4.8: the check above and the insert are not atomic on their
+    # own -- two concurrent first registrations (an attacker racing the
+    # operator) can both pass it and both would become admin. The
+    # provider's global lock (the same primitive migrations take: a
+    # Postgres advisory lock / SQLite sidecar flock) serialises the
+    # re-check and the insert, so exactly one of them wins; the loser
+    # answers the same 409.
+    # Fix round 1: only one registration at a time may WAIT on that lock
+    # (a Postgres waiter holds a pooled connection while it polls); the
+    # rest queue on the per-app gate without a connection. X3.7: BOTH
+    # waits are bounded -- the gate wait (an unbounded ``gate.acquire()``
+    # would let a held gate park anonymous registrations forever) and
+    # the lock wait -- and the lock deadline covers the lock WAIT ONLY:
+    # once the lock is held, the critical section (the re-check + insert,
+    # a few milliseconds) runs to completion, so a committed insert never
+    # answers 503. Past either bound the call answers the retryable 503.
+    storage_provider = get_storage_provider(request)
+    gate = _registration_gate(request)
+    try:
+        async with asyncio.timeout(REGISTRATION_LOCK_WAIT_S):
+            await gate.acquire()
+    except TimeoutError:
+        raise _registration_busy() from None
+    try:
+        lock = storage_provider.migration_lock()
+        try:
+            async with asyncio.timeout(REGISTRATION_LOCK_WAIT_S):
+                await lock.__aenter__()
+        except TimeoutError:
+            raise _registration_busy() from None
+        try:
+            if await _has_any_user(request):
+                _registration_locked()
+            await storage_provider.get_storage(User).create(user)
+        finally:
+            await lock.__aexit__(None, None, None)
+    finally:
+        gate.release()
     _set_session_cookie(request, response, user)
     logger.info("auth.register success username=%s", username)
     return AuthOk(username=username)

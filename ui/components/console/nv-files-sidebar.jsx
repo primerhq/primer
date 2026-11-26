@@ -99,13 +99,37 @@ function NV_useFilesPollMs(wid) {
   return window.NV_anySessionRunning(sessions.data, wid) ? 5000 : 15000;
 }
 
+// Poll stagger (console review 8.4): N expanded directories must not all re-list on the same
+// tick. The root keeps the exact cadence; a subtree's period is the base plus a deterministic
+// path-derived offset (0..base-1), so its ticks land between the root's instead of with it.
+function NV_filesStaggerMs(wid, path, base) {
+  if (!base) return base;
+  var s = wid + "\u0000" + path;
+  var h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return base + (Math.abs(h) % base);
+}
+window.NV_filesStaggerMs = NV_filesStaggerMs;
+
+// The server caps one directory listing (5000 entries; lane I2's half of 8.4) and says so:
+// the tree shows how many of how many instead of implying the listing is complete.
+function NV_filesTruncatedNote(data, testid) {
+  if (!data || !data.truncated) return null;
+  return (
+    <div className="nv-files-truncated" data-testid={testid}>
+      Showing {((data.items || []).length)} of {data.total} entries here.
+    </div>
+  );
+}
+window.NV_filesTruncatedNote = NV_filesTruncatedNote;
+
 function NV_FilesSubtree(props) {
   var con = NV_useConsole();
   var filesPollMs = NV_useFilesPollMs(con.wid);
   var tree = window.primerApi.useResource(
     SH_api.keys.tree(con.wid, props.path),
     function (signal) { return SH_api.filesTree(con.wid, props.path, signal); },
-    { pollMs: filesPollMs, deps: [con.wid, props.path] }
+    { pollMs: NV_filesStaggerMs(con.wid, props.path, filesPollMs), deps: [con.wid, props.path] }
   );
   var items = (tree.data && tree.data.items) || [];
   return (
@@ -113,6 +137,7 @@ function NV_FilesSubtree(props) {
       {items.map(function (entry) {
         return props.row(entry, props.depth);
       })}
+      {NV_filesTruncatedNote(tree.data, "nv-files-truncated")}
     </React.Fragment>
   );
 }
@@ -354,6 +379,7 @@ function NV_FilesSidebar() {
               </div>
             ) : null}
             {items.map(function (entry) { return row(entry, 0); })}
+            {NV_filesTruncatedNote(tree.data, "nv-files-truncated")}
           </React.Fragment>
         )}
         {menu ? (

@@ -16,9 +16,9 @@ related: [triggers/triggers, triggers/subscriptions]
 - **Webhook calls.** An outside system sends `POST /v1/webhooks/{token}` with any body up to 1 MB. There is no login: the token in the URL is the credential. Each token takes 60 calls a minute.
   - A trigger that is not `interactive` answers `202` with `{delivery_id, status: "accepted"}`, and the fire runs in the background.
   - An `interactive` trigger holds the call until the fired runs end and answers `200` with `{fire_id, results}`. Past `wait_timeout_seconds` it answers `202` with `{delivery_id, status: "pending"}`; the caller then polls `GET /v1/webhooks/{token}/deliveries/{delivery_id}` for `status`, `fire_id` and `results`.
-  - Refusals: `404` for an unknown token, `403` for a disabled trigger, `401` for a bad signature, `413` for a body over 1 MB, `429` for too many calls.
-- **The signature.** With an `hmac_secret` set, the caller must send `X-Primer-Signature: sha256=<hex>`: the lowercase hex HMAC-SHA256 of the raw body, keyed with the secret. A bare hex digest is accepted too. A missing or wrong signature is refused with `401`, and nothing fires.
-- **What the run sees.** A webhook fire adds `webhook_body` (the raw body as text), `webhook_headers` (without `Authorization`, cookies, `X-Primer-Signature` and the forwarding headers), `webhook_query` and `webhook_method` to the fire context ([subscriptions](triggers/subscriptions)).
+  - Refusals: `404` for an unknown token, `403` for a disabled trigger, `401` for a bad signature (`hmac_mismatch`), a timestamp outside the 5-minute window (`timestamp_stale`), a malformed timestamp (`timestamp_invalid`), a body-only signature on a trigger that requires a timestamp (`timestamp_required`) or a repeated signed request (`replayed`), `413` for a body over 1 MB, `429` for too many calls.
+- **The signature.** With an `hmac_secret` set, the caller must send `X-Primer-Signature: sha256=<hex>`, keyed with the secret. Recommended: also send `X-Primer-Timestamp: <unix seconds>` and sign `"<timestamp>\n<raw body>"` (the timestamp inside the signature). A timestamp more than 5 minutes off is refused `timestamp_stale`, and the same signed body and timestamp are only accepted once inside the window (`replayed`) - a capture cannot be replayed inside the window, on this API process or any other (the accepted signature is recorded in the shared store, so a replay to another process inside the window is refused too). Without the timestamp header the signature is over the raw body only (the pre-timestamp scheme). Whether that is accepted is the trigger's `legacy_body_hmac` setting: triggers that existed before it keep `true` so deployed senders still work, but a body-only signature can be replayed forever, so set it to `false` on a trigger (send `legacy_body_hmac: false` in an update) once its sender signs a timestamp. Triggers created from now on default to `false`: the timestamp is required (`timestamp_required`) unless you create the trigger with `legacy_body_hmac: true`. A bare hex digest is accepted too. A missing or wrong signature is refused with `401`, and nothing fires.
+- **What the run sees.** A webhook fire adds `webhook_body` (the raw body as text), `webhook_headers` (without `Authorization`, cookies, `X-Primer-Signature`, `X-Primer-Timestamp` and the forwarding headers), `webhook_query` and `webhook_method` to the fire context ([subscriptions](triggers/subscriptions)).
 - **Rotating the token.** A person rotates it with `POST /v1/triggers/{id}/rotate_token` (the console's rotate control); only the owner or an admin may. The old URL stops working at once. No tool rotates a token.
 - **Delivery.** Every POST is its own fire: a sender that retries fires the trigger again. A delivery cut short by a crash after its `202` runs again when the server restarts.
 
@@ -31,6 +31,14 @@ related: [triggers/triggers, triggers/subscriptions]
 
 ```bash
 BODY='{"event": "order.placed", "order_id": "123"}'
+TS=$(date +%s)
+SIG=$(printf '%s\n%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+curl -X POST "https://primer.example.com/v1/webhooks/$TOKEN" -H "Content-Type: application/json" -H "X-Primer-Signature: sha256=$SIG" -H "X-Primer-Timestamp: $TS" -d "$BODY"
+```
+
+Without the timestamp (only a trigger with `legacy_body_hmac` `true`, such as one that existed before the setting), sign the body alone:
+
+```bash
 SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
 curl -X POST "https://primer.example.com/v1/webhooks/$TOKEN" -H "Content-Type: application/json" -H "X-Primer-Signature: sha256=$SIG" -d "$BODY"
 ```
@@ -47,12 +55,13 @@ Reference: [`trigger__fire_now`](reference/tools/trigger/fire_now)
 
 ## Gotchas
 - Use the trigger's `id`, not its slug.
-- A fire now skips the clock, not `parallelism`: a `skip` subscription whose last session is still at work starts nothing (`skipped_subscription_busy`).
+- A fire now skips the clock, not `parallelism`: a `skip` subscription whose last session is still at work starts nothing (`skipped_subscription_busy`); a `skip` subscription whose fire is already in flight on another process (its cross-process claim is held) starts nothing either (`skipped_subscription_claimed`).
 - On a webhook trigger, `trigger__fire_now` has no request: `webhook_body`, `webhook_headers` and `webhook_query` are missing, and a template that names them fails with `payload_template_failed`.
 - On a channel trigger there is no event: every binding with an `event_matcher` skips (`skipped_no_match`).
 - A trigger with a subscription whose target workspace you do not hold `full` access to answers `trigger_not_found`, as an unknown id does (admins are never refused). That check comes first: such a trigger answers `trigger_not_found` even when its owner outranks you.
 - Owning a trigger does not let a run fire it above the run's rank: from a session only your run's rank counts, so a run capped below its creator's role cannot fire that creator's higher-ranked triggers.
 - A webhook fire is at least once. If the sender may retry, make the run safe to repeat.
+- Sign with the current time when you send `X-Primer-Timestamp`: a timestamp more than 5 minutes off is refused (`timestamp_stale`), and the same signed body and timestamp sent a second time is refused `replayed` - resend a retry with a fresh timestamp.
 
 ## Related
 [triggers](triggers/triggers), [subscriptions](triggers/subscriptions), [observe a session](sessions/observe-a-session).

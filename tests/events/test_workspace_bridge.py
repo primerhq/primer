@@ -202,3 +202,37 @@ async def test_workspaces_past_the_first_page_still_stream_and_keep_their_stream
     finally:
         for t in bridge._streams.values():
             t.cancel()
+
+
+async def test_an_events_config_edit_restarts_the_running_stream(sp):
+    """Review 2026-11-23 6.9: a changed ``kinds`` / ``path_prefixes`` was ignored while the stream stayed up."""
+    workspaces = sp.get_storage(Workspace)
+    await workspaces.create(_workspace("ws-edit", WorkspaceEventsConfig(kinds=["file_changed"])))
+    configs: list[WorkspaceEventsConfig] = []
+
+    async def resolver(workspace_id, config):
+        configs.append(config)
+
+        async def _stream():
+            yield {"kind": "file_changed", "path": "a"}
+            yield {"kind": "exec_started", "cmd": ["x"]}
+            await asyncio.Event().wait()
+
+        return _stream()
+
+    bridge = WorkspaceEventBridge(storage_provider=sp, stream_resolver=resolver, scan_interval_seconds=0.05)
+    bridge.start()
+    try:
+        await _drain_until(sp, 1)
+        first = bridge._streams["ws-edit"]
+        row = await workspaces.get("ws-edit")
+        await workspaces.update(row.model_copy(update={"events": WorkspaceEventsConfig(kinds=["exec_started"])}))
+        events = await _drain_until(sp, 2)
+        assert [e.event_type for e in events] == ["workspace.file_changed", "workspace.exec_started"]
+        assert [c.kinds for c in configs] == [["file_changed"], ["exec_started"]]
+        assert first.done() and bridge._streams["ws-edit"] is not first
+        task = bridge._streams["ws-edit"]
+        await asyncio.sleep(0.2)  # an unchanged config is left alone
+        assert bridge._streams["ws-edit"] is task and len(configs) == 2
+    finally:
+        await bridge.stop()

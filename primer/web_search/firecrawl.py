@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from primer.common.transport_text import require_sendable_key, transport_failure, unexpected_status, vendor_text
+from primer.web_fetch.adapter import MAX_RESPONSE_BYTES, send_capped
 from primer.web_search.adapter import (
     SafeSearchLevel,
     SearchHit,
@@ -95,7 +96,8 @@ class FirecrawlAdapter(WebSearchAdapter):
         }
 
         try:
-            r = await self._client.post(
+            r = await send_capped(
+                self._client, "POST",
                 f"{self._base_url}/v1/search",
                 json=body,
                 headers=headers,
@@ -119,6 +121,9 @@ class FirecrawlAdapter(WebSearchAdapter):
             )
         if r.status_code != 200:
             raise WebSearchProviderError(unexpected_status("firecrawl", r.status_code, r.text, self._config))
+
+        if r.truncated:
+            raise WebSearchUnavailable(f"firecrawl response is larger than {MAX_RESPONSE_BYTES} bytes")
 
         try:
             data = r.json()

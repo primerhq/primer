@@ -119,10 +119,17 @@ async def test_the_ask_user_and_tool_approval_membership_fallback_answers_as_bef
 
 
 async def test_a_graph_sleep_is_due_at_its_own_deadline() -> None:
-    """The probe's first half: 60 s after a ``sleep(30)`` the timer is due, though the row was parked for the old 3600 s."""
+    """The probe's first half: 60 s after a ``sleep(30)`` the timer is due.
+
+    The row's ``parked_until`` is the earliest entry's deadline - the
+    invariant every current park writer holds
+    (``_CheckpointMixin._seconds_to_earliest_deadline``): the sweep
+    selects on it, so a park whose row deadline lags its entries (written
+    by an older build) resolves at the row's ``parked_until``.
+    """
     storage = _storage()
     at = datetime.now(UTC) - timedelta(seconds=60)
-    await storage.create(_graph_row([(TIMER, at + timedelta(seconds=30))], parked_until=at + timedelta(seconds=3600), at=at))
+    await storage.create(_graph_row([(TIMER, at + timedelta(seconds=30))], parked_until=at + timedelta(seconds=30), at=at))
 
     assert await _find_due_timer_keys(storage) == [TIMER]
 

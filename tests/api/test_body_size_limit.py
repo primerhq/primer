@@ -10,6 +10,9 @@ that legitimately take big bodies carry their own, larger caps.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 from fastapi import FastAPI, Request
@@ -18,7 +21,15 @@ from httpx import ASGITransport
 from primer.api.app import create_app
 from primer.api.config import AppConfig, RequestLimitsConfig
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, register_error_handlers
-from primer.api.middleware.body_limit import BodySizeLimitMiddleware, body_limit_options
+from primer.api.middleware.body_limit import (
+    BodySizeLimitMiddleware,
+    _NO_AUTH_LAYER,
+    body_limit_options,
+)
+from primer.auth.api_tokens import extract_prefix, hash_token, mint_plaintext
+from primer.model.api_token import ApiToken
+from primer.model.storage import OffsetPage
+from primer.model.user import User
 
 
 def _app(limits: RequestLimitsConfig) -> FastAPI:
@@ -192,6 +203,131 @@ def test_every_route_cap_applies_with_and_without_a_trailing_slash() -> None:
         ("POST", "/v1/workspaces/w/sessions/s/canvas/events"),
         ("POST", "/v1/workspaces/w/sessions/s/canvas/ops"),
     ):
-        assert mw._limit_for(method, path + "/") == mw._limit_for(method, path), path
-    assert mw._limit_for("PUT", "/v1/workspaces/w/files/") == 9_000_000
-    assert mw._limit_for("PUT", "/v1/workspaces/w/files/x") == 10_000_000      # a longer path is still not the route
+        # ``_NO_AUTH_LAYER`` keeps the historical caps: the comparison is about
+        # the route's own cap, not the anonymous one.
+        assert mw._limit_for(method, path + "/", _NO_AUTH_LAYER) == mw._limit_for(method, path, _NO_AUTH_LAYER), path
+    assert mw._limit_for("PUT", "/v1/workspaces/w/files/", _NO_AUTH_LAYER) == 9_000_000
+    assert mw._limit_for("PUT", "/v1/workspaces/w/files/x", _NO_AUTH_LAYER) == 10_000_000      # a longer path is still not the route
+
+
+# --- Review 4.4 (fix round 1): the anonymous cap through the REAL
+# AuthMiddleware, in the app's order ----------------------------------------
+#
+# The bare apps above install no auth layer, so their scopes carry no
+# state and keep the historical caps (the tests above pin that). These
+# run through the real test app: ``BodySizeLimitMiddleware`` inside the
+# real ``AuthMiddleware``, which publishes a Starlette ``State``
+# (attribute access) on ``scope["state"]``. The anonymous 413 test
+# doubles as the drift canary: if the auth state shape or the middleware
+# order changes so an anonymous request no longer reads as "auth ran, no
+# user", the 413 becomes a 404/422 and the test fails.
+
+
+_ANON_CAP = 1024 * 1024  # RequestLimitsConfig().anonymous_max_body_bytes
+_FILES_PUT = "/v1/workspaces/w-1/files?path=t.txt"
+
+
+def _valid_file_body(content_len: int) -> bytes:
+    """A valid FileWriteBody JSON padded past the anonymous cap."""
+    return json.dumps(
+        {"encoding": "text", "content": "a" * (content_len - 30)},
+    ).encode()
+
+
+@pytest.mark.asyncio
+async def test_anonymous_body_over_the_anonymous_cap_is_refused_before_the_route(
+    raw_client,
+) -> None:
+    """The reviewer's repro: an anonymous PUT to the 128 MiB
+    workspace-files route over the 1 MiB anonymous cap is refused at the
+    cap, before the route reads a byte."""
+    r = await raw_client.put(_FILES_PUT, content=b"x" * (_ANON_CAP + 1))
+    _assert_413(r, _ANON_CAP)
+
+
+@pytest.mark.asyncio
+async def test_invalid_cookie_and_invalid_bearer_get_the_anonymous_cap(
+    raw_client,
+) -> None:
+    over = b"x" * (_ANON_CAP + 1)
+    for headers in (
+        {"cookie": "primer_session=garbage"},
+        {"authorization": "Bearer not-a-real-token"},
+    ):
+        r = await raw_client.put(_FILES_PUT, content=over, headers=headers)
+        _assert_413(r, _ANON_CAP)
+
+
+@pytest.mark.asyncio
+async def test_anonymous_streamed_body_over_the_anonymous_cap_is_refused(
+    raw_client,
+) -> None:
+    # Chunked (no Content-Length): the bytes actually received are counted.
+    r = await raw_client.put(
+        _FILES_PUT, content=_chunks(3, _ANON_CAP // 3 + 1),
+    )
+    _assert_413(r, _ANON_CAP)
+
+
+@pytest.mark.asyncio
+async def test_a_valid_cookie_keeps_the_route_caps(raw_client) -> None:
+    """A signed-in caller keeps the route caps: the same over-anonymous-cap
+    body passes the middleware and reaches the route (unknown workspace:
+    404, not 413)."""
+    resp = await raw_client.post(
+        "/v1/auth/register",
+        json={"username": "capuser", "password": "testpassword"},
+    )
+    assert resp.status_code == 200, resp.text
+    r = await raw_client.put(
+        _FILES_PUT,
+        content=_valid_file_body(1_500_000),
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 404, r.text  # workspace w-1 does not exist
+
+
+@pytest.mark.asyncio
+async def test_a_valid_bearer_keeps_the_route_caps(
+    raw_client, fake_storage_provider,
+) -> None:
+    resp = await raw_client.post(
+        "/v1/auth/register",
+        json={"username": "bearuser", "password": "testpassword"},
+    )
+    assert resp.status_code == 200, resp.text
+    user = (
+        await fake_storage_provider.get_storage(User).list(OffsetPage(offset=0, length=10))
+    ).items[0]
+    plaintext = mint_plaintext()
+    await fake_storage_provider.get_storage(ApiToken).create(
+        ApiToken(
+            id="at-cap",
+            user_id=user.id,
+            name="cap-test",
+            token_hash=hash_token(plaintext),
+            prefix=extract_prefix(plaintext),
+            scopes=[],
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    r = await raw_client.put(
+        _FILES_PUT,
+        content=_valid_file_body(1_500_000),
+        headers={
+            "authorization": f"Bearer {plaintext}",
+            "content-type": "application/json",
+        },
+    )
+    assert r.status_code == 404, r.text  # the body passed the caps; unknown workspace
+
+
+def test_the_anonymous_cap_defaults_and_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    limits = AppConfig().limits
+    assert limits.anonymous_max_body_bytes == 1024 * 1024
+    assert limits.max_body_bytes > limits.anonymous_max_body_bytes
+    monkeypatch.setenv("PRIMER_LIMITS__ANONYMOUS_MAX_BODY_BYTES", "5555")
+    assert AppConfig().limits.anonymous_max_body_bytes == 5555
+    # The production wiring passes the cap through to the middleware.
+    options = body_limit_options(RequestLimitsConfig(anonymous_max_body_bytes=77))
+    assert options["anonymous_max_body_bytes"] == 77

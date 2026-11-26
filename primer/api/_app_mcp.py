@@ -9,7 +9,11 @@ are its helpers. All are re-exported from ``primer.api.app``.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
+
+logger = logging.getLogger(__name__)
 
 
 async def _mcp_send_simple_response(send, status, body, extra_headers=None):
@@ -67,6 +71,28 @@ def _make_mcp_auth_gate(app: FastAPI):
     )
     from starlette.datastructures import State
 
+    # Review 4.7: the SDK's per-session owner check only binds a session to
+    # a credential when ``scope["user"]`` is an SDK ``AuthenticatedUser``;
+    # an unbound session (no such scope entry) is usable by ANY authenticated
+    # caller who learns its ``Mcp-Session-Id``. The installed mcp SDK exposes
+    # no public principal types (checked: ``mcp.server.auth`` and
+    # ``mcp.server`` export none), so these classes are read from the SDK's
+    # internal ``bearer_auth`` module. If that import degrades, the gate
+    # fails CLOSED: it refuses the session (503) instead of serving one it
+    # cannot bind.
+    try:
+        from mcp.server.auth.middleware.bearer_auth import (
+            AccessToken,
+            AuthenticatedUser,
+        )
+    except ImportError:
+        AccessToken = None  # type: ignore[assignment]
+        AuthenticatedUser = None  # type: ignore[assignment,misc]
+        logger.error(
+            "mcp session owner classes unavailable; MCP requests will be "
+            "refused (503) until the installed mcp SDK exposes them again",
+        )
+
     async def _mcp_auth_gate(scope, receive, send):
         if scope["type"] != "http":
             # WebSocket / lifespan scopes are not part of the MCP
@@ -112,6 +138,47 @@ def _make_mcp_auth_gate(app: FastAPI):
             )
             return
 
+        # Review 4.7: bind the MCP session to the credential that opens it.
+        # The SDK compares ``authorization_context(scope["user"])`` against
+        # the session owner, so a synthetic SDK user keyed on the credential
+        # gives the check something to compare: a cookie session is keyed
+        # on the user id, a bearer token on its row id (a token and its
+        # owner's cookie are distinct credentials and must not share
+        # sessions). Without this the owner is None for every caller and
+        # ``None == None`` lets any authenticated caller use any session.
+        # The binding is mandatory: without it the session would be usable
+        # by any authenticated caller who learns its id, so a missing or
+        # drifted SDK class refuses the session (503) instead of serving
+        # it unbound. The refusal happens before any identity is stashed.
+        if AuthenticatedUser is None or AccessToken is None:
+            await _mcp_send_simple_response(
+                send, 503,
+                {"detail": {"code": "mcp_session_owner_unavailable"}},
+            )
+            return
+        try:
+            scope["user"] = AuthenticatedUser(
+                AccessToken(
+                    token="primer-session-owner",
+                    client_id=(
+                        f"token:{api_token.id}"
+                        if api_token is not None
+                        else f"user:{user.id}"
+                    ),
+                    scopes=[],
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - SDK drift: refuse, do not crash
+            logger.error(
+                "mcp session owner binding failed (%s); refusing the session",
+                exc,
+            )
+            await _mcp_send_simple_response(
+                send, 503,
+                {"detail": {"code": "mcp_session_owner_unavailable"}},
+            )
+            return
+
         actor_tok = _current_actor.set(actor)
         principal_tok = _current_principal.set(principal)
         api_token_id_tok = _current_api_token_id.set(
@@ -124,6 +191,7 @@ def _make_mcp_auth_gate(app: FastAPI):
         api_token_scopes_tok = _current_api_token_scopes.set(
             api_token.scopes if api_token is not None else None
         )
+
         try:
             await session_manager.handle_request(scope, receive, send)
         finally:
@@ -209,6 +277,11 @@ async def _start_mcp_mount(
             provider_registry=provider_registry,
             approval_resolver=approval_resolver,
             semantic_search=semantic_search,
+            # The app's request-body cap (the BodySizeLimitMiddleware is
+            # installed with the same config): a body the middleware admits
+            # must not be refused by the meta-tool argument validation at
+            # the historical 1 MiB default (fix round 1).
+            max_body_bytes=app.state.config.limits.max_body_bytes,
         )
 
     mcp_server = build_mcp_server(_deps_factory)

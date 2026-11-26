@@ -74,10 +74,12 @@ a one-line reason; it may not simply be omitted.
 
 - Add the page component under `ui/components/` and export it on `window`.
 - Add its overlay name to `SH_OVERLAYS` in `ui/foundation/shell-url.js` and a mount
-  for it in `ui/components/shell/sh-overlay-host.jsx`.
-- Give it a verb label in `SH_OVERLAY_LABELS` (`ui/components/shell/sh-doc-host.jsx`);
-  an overlay no verb opens is one a user cannot find, and the dual-render guard
-  fails on it.
+  for it in `NV_OVERLAY_MOUNTS` in `ui/components/console/nv-overlays.jsx`.
+- Register its palette/pointer verb (a verb-noun, Title Case label, linted by
+  `SH_lintVerbLabel` in `ui/foundation/shell-verbs.js`) in the verb registry of
+  `ui/components/console/nv-shell.jsx`; an overlay no verb opens is one a user
+  cannot find, and the dual-render guard
+  (`tests/ui/test_shell_dual_render_guard.py`) fails on it.
 - Provide a mobile adaptation via `useViewport`.
 - Render loading, error, and empty states for every `useResource`.
 - Wire user feedback through `pushToast`.

@@ -112,3 +112,22 @@ def test_the_default_factories_build_the_right_adapters() -> None:
 
     assert isinstance(default_stt_factory(_stt_row()), OpenAIASR)
     assert isinstance(default_tts_factory(_tts_row()), OpenAITTS)
+
+
+@pytest.mark.asyncio
+async def test_bind_rate_limiter_twice_takes_the_latest_without_error() -> None:
+    seen: list = []
+
+    def factory(row, *, rate_limiter=None):
+        seen.append(rate_limiter)
+        return _Adapter(row)
+
+    storage = _InMemoryStorage(SpeechToTextProvider)
+    await storage.create(_stt_row())
+    registry = SpeechRegistry(storage=storage, factory=factory)
+    first, second = object(), object()
+    registry.bind_rate_limiter(first)  # type: ignore[arg-type]
+    registry.bind_rate_limiter(second)  # type: ignore[arg-type]  # used to raise TypeError (wrapper wrapped again)
+    await registry.get("stt-a")
+    assert seen == [second]
+    await registry.aclose()

@@ -137,11 +137,17 @@ async def delete_worker(
     worker_id: str = Path(...),
     scheduler=Depends(get_scheduler),
 ) -> None:
-    """Deregister one worker — but only if it is ``dead``.
+    """Deregister one worker: only if it is ``dead``.
 
     Refuses (409) to remove an ``active`` or ``draining`` worker: those
     are still (or soon to be) doing work and their rows are managed by
     the heartbeat/drain lifecycle. Unknown ids are 404.
+
+    The removal keeps this process's registration of the worker: a worker
+    that is in fact still running here (its row was only marked dead by a
+    peer's boot sweep) is re-registered by its next heartbeat, so the row
+    reappears within one heartbeat interval. The registration is forgotten
+    only by the worker pool's own deregistration on shutdown.
     """
     workers = await scheduler.list_workers()
     match = next((w for w in workers if w.id == worker_id), None)
@@ -152,7 +158,7 @@ async def delete_worker(
             f"Worker {worker_id!r} is {match.status!r}, not dead; only dead "
             "workers can be removed. Drain it and let it be reaped first."
         )
-    await scheduler.deregister_worker(worker_id)
+    await scheduler.deregister_worker(worker_id, keep_registration=True)
 
 
 __all__ = ["router", "worker_lane_stats"]

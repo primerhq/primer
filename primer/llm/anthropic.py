@@ -24,6 +24,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._openai_common import parse_tool_arguments
 from primer.llm._reasoning import anthropic_extended, claude_traits, debug_once
 from primer.llm._timeout import (
     GenerationBudgetExceeded, _close_streams, _iter_with_timeout,
@@ -209,6 +210,11 @@ def _tools_to_anthropic(tools: list[Tool] | None) -> list[dict[str, Any]] | None
     ]
 
 
+# The tool the response_format emulation forces (below): the model's structured
+# answer arrives as this tool's input JSON, which the adapter streams out as TEXT.
+_STRUCTURED_OUTPUT_TOOL = "structured_output"
+
+
 def _tool_choice_to_anthropic(choice: ToolChoice | None) -> dict[str, Any] | None:
     if choice is None:
         return None
@@ -226,15 +232,20 @@ def _response_format_to_emulation(
     *,
     has_tools: bool,
     has_tool_choice: bool,
-) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The ``structured_output`` emulation for ``response_format`` (Anthropic
+    has no JSON mode), as ``(synthetic_tool, tool_choice)``.
+
+    With caller-supplied tools the synthetic tool is OFFERED ALONGSIDE them
+    and ``tool_choice`` is ``auto``: a call to it is the final structured
+    answer (the adapter streams its input JSON out as text), while calls to
+    real tools run normally (review 2026-11-23, finding 2.2 round 1: every
+    agent with a toolset or workspace session lists tools, so refusing the
+    combination died every such turn). Without real tools the synthetic tool
+    is the only one, so it is forced as before.
+    """
     if fmt is None:
         return None
-    if has_tools:
-        raise ConfigError(
-            "response_format cannot be combined with tools on Anthropic; "
-            "include the schema as one of your tools and use "
-            "tool_choice='required' or tool_choice='structured_output'"
-        )
     if has_tool_choice:
         raise ConfigError(
             "response_format cannot be combined with explicit tool_choice on Anthropic"
@@ -248,13 +259,16 @@ def _response_format_to_emulation(
             f"response_format must be a Pydantic class or dict; "
             f"got {type(fmt).__name__}"
         )
-    synthetic_tools = [{
-        "name": "structured_output",
+    synthetic_tool = {
+        "name": _STRUCTURED_OUTPUT_TOOL,
         "description": "Emit the response in the structured shape defined by input_schema.",
         "input_schema": schema,
-    }]
-    synthetic_tool_choice = {"type": "tool", "name": "structured_output"}
-    return synthetic_tools, synthetic_tool_choice
+    }
+    if has_tools:
+        synthetic_tool_choice: dict[str, Any] = {"type": "auto"}
+    else:
+        synthetic_tool_choice = {"type": "tool", "name": _STRUCTURED_OUTPUT_TOOL}
+    return synthetic_tool, synthetic_tool_choice
 
 
 def _build_sampling_kwargs(
@@ -450,6 +464,10 @@ class _StreamState:
     request_id: str | None = None
     sdk_model: str | None = None
     saw_tool_use: bool = False
+    # Set by ``stream()`` when the request carries the synthetic
+    # structured_output tool (response_format emulation active): the
+    # text-path key for that tool (see the content_block_start branch).
+    emulation_active: bool = False
     block_kinds: dict[int, str] = field(default_factory=dict)
     tool_call_meta: dict[int, dict[str, str]] = field(default_factory=dict)
     accumulated_args: dict[int, str] = field(default_factory=dict)
@@ -480,13 +498,19 @@ def _map_stop_reason(reason: str | None, state: _StreamState) -> StopReason:
 
     ``end_turn`` collapses to ``tool_use`` when the stream emitted any
     ``tool_use`` block (the model finished mid-tool-call), else ``stop``.
+    ``tool_use`` with no ``tool_use`` block is the structured_output
+    emulation (the forced synthetic choice; the answer streamed as text):
+    nothing queues a continuation for it, so the turn reads as ``stop``.
     Unknown / missing reasons collapse to ``other``.
     """
     if reason is None:
         return "other"
     if reason == "end_turn":
         return "tool_use" if state.saw_tool_use else "stop"
-    return _STOP_REASON_MAP.get(reason, "other")
+    mapped = _STOP_REASON_MAP.get(reason, "other")
+    if mapped == "tool_use" and not state.saw_tool_use:
+        return "stop"
+    return mapped
 
 
 def _citation_to_universal(citation: Any, index: int) -> Citation:
@@ -567,10 +591,21 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
             return []
 
         if block_type == "tool_use":
-            state.block_kinds[idx] = "tool_use"
-            state.saw_tool_use = True
             block_id = getattr(block, "id", "") or ""
             block_name = getattr(block, "name", "") or ""
+            if block_name == _STRUCTURED_OUTPUT_TOOL and state.emulation_active:
+                # The response_format emulation block (the adapter offered it with the
+                # request's tools; the answer is the model's final structured answer,
+                # so it streams out as TEXT (input_json_delta below): no ToolCallStart,
+                # no argument accumulation, and ``saw_tool_use`` stays False so the
+                # turn's Done maps to stop (the answer is text, not a pending tool).
+                # Keyed on emulation_active, not on the name alone: a caller's REAL
+                # tool named "structured_output" without response_format takes the
+                # ordinary tool_use path (review 2026-11-23, finding 2.2 round 1).
+                state.block_kinds[idx] = "structured_text"
+                return []
+            state.block_kinds[idx] = "tool_use"
+            state.saw_tool_use = True
             state.tool_call_meta[idx] = {"id": block_id, "name": block_name}
             return [ToolCallStart(id=block_id, name=block_name, index=idx)]
 
@@ -606,6 +641,11 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
 
         if delta_type == "input_json_delta":
             partial = getattr(delta, "partial_json", "") or ""
+            if state.block_kinds.get(idx) == "structured_text":
+                # The structured answer streaming out as text (see the
+                # content_block_start branch above); judge_structured and the
+                # loop's text path both read TextDelta.
+                return [TextDelta(text=partial, index=idx)]
             state.accumulated_args[idx] = (
                 state.accumulated_args.get(idx, "") + partial
             )
@@ -649,13 +689,12 @@ def _translate_event(  # noqa: C901  (intentional dispatch table)
         if state.block_kinds.get(idx) != "tool_use":
             return []
         meta = state.tool_call_meta.get(idx, {})
-        raw_args = state.accumulated_args.get(idx, "") or "{}"
-        try:
-            parsed = json.loads(raw_args)
-        except json.JSONDecodeError:
-            parsed = {}
-        if not isinstance(parsed, dict):
-            parsed = {}
+        # The shared settle (review 2026-11-23, 2.5 round 1): a blank stream
+        # is ``{}`` and a string holding a JSON object is decoded once more,
+        # exactly as primer.llm._openai_common does for the OpenAI adapters,
+        # so a double-encoded call reaches the loop with its real arguments
+        # instead of ``{}``.
+        parsed = parse_tool_arguments(state.accumulated_args.get(idx, ""))
         return [
             ToolCallEnd(id=meta.get("id", ""), arguments=parsed, index=idx)
         ]
@@ -835,7 +874,11 @@ class AnthropicLLM(LLM):
         emulation = _response_format_to_emulation(
             response_format,
             has_tools=bool(tools),
-            has_tool_choice=tool_choice is not None,
+            # "auto" is the caller declining to choose a tool; the emulation overrides
+            # it with the synthetic structured_output choice anyway, so it is not a
+            # conflict. None, "auto" and a real choice are the only values the loop
+            # (and any LLM-level caller) can send.
+            has_tool_choice=tool_choice not in (None, "auto"),
         )
 
         request: dict[str, Any] = {
@@ -855,9 +898,22 @@ class AnthropicLLM(LLM):
         )
 
         if emulation is not None:
-            synthetic_tools, synthetic_tool_choice = emulation
-            request["tools"] = synthetic_tools
-            request["tool_choice"] = synthetic_tool_choice
+            # The emulation tool is offered ALONGSIDE the caller's tools
+            # (never instead of them): a call to it is the final structured
+            # answer, a call to a real tool runs normally (review 2026-11-23,
+            # finding 2.2 round 1). ``auto`` lets the model choose either
+            # when real tools are present; with none, the synthetic tool is
+            # forced (the answer then streams out as text).
+            synthetic_tool, emulation_tool_choice = emulation
+            real_tools = _tools_to_anthropic(tools) or []
+            if any(t["name"] == _STRUCTURED_OUTPUT_TOOL for t in real_tools):
+                raise ConfigError(
+                    f"a tool named {_STRUCTURED_OUTPUT_TOOL!r} clashes with the "
+                    "response_format emulation tool on Anthropic; rename the "
+                    "tool or drop response_format"
+                )
+            request["tools"] = [*real_tools, synthetic_tool]
+            request["tool_choice"] = emulation_tool_choice
         else:
             tool_payload = _tools_to_anthropic(tools)
             if tool_payload is not None:
@@ -929,7 +985,13 @@ class AnthropicLLM(LLM):
 
                     tokens_in = 0
                     tokens_out = 0
-                    state = _StreamState()
+                    # True only when THIS request carries the synthetic
+                    # structured_output tool (response_format was given):
+                    # the text path for that tool is keyed on this flag,
+                    # not on the name alone, so a caller's REAL tool named
+                    # "structured_output" without response_format is never
+                    # swallowed (review 2026-11-23, finding 2.2 round 1).
+                    state = _StreamState(emulation_active=emulation is not None)
                     timed_stream = _iter_with_timeout(
                         sdk_stream, self._request_timeout_seconds, self._total_timeout_seconds,
                     )

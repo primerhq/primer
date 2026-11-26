@@ -38,6 +38,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.workspace.session_factory import SessionCancelDeps, cancel_session
+from tests.claim._platform import platform_adapters
 
 
 class _Scheduler:
@@ -200,7 +201,7 @@ async def test_resume_in_flight_blocks_cancel_then_cancel_is_honored(
     inner = fake_storage_provider.get_storage(WorkspaceSession)
     storage = _GatedStorage(inner)
     provider = _YieldingProvider(fake_storage_provider, storage)
-    engine = InMemoryClaimEngine(adapters={})
+    engine = InMemoryClaimEngine(adapters=platform_adapters(ClaimKind.SESSION))
     scheduler = _Scheduler()
     sid = "sess-resume-first"
     await _seed_created(inner, sid)

@@ -94,6 +94,11 @@ class PostgresScheduler(Scheduler):
         # aclose() can release the ones whose watcher was abandoned without
         # being closed (see _close_listener).
         self._listeners: set[_Listener] = set()
+        # What each worker registered with (this process only), so a heartbeat can register a row a peer purged.
+        self._registrations: dict[str, dict[str, Any]] = {}
+        # Workers this process has put into its drain (drain_worker): their rows come back
+        # DRAINING from a dead mark, not active (H-3 r1 minor 3).
+        self._draining_here: set[str] = set()
         # ---- metrics (spec §14) ----
         self._notify_received_total: int = 0
         self._listen_reconnects_total: int = 0
@@ -178,6 +183,7 @@ class PostgresScheduler(Scheduler):
     async def register_worker(
         self, *, worker_id: str, host: str, pid: int, capacity: int, label: str | None = None,
     ) -> None:
+        self._registrations[worker_id] = {"host": host, "pid": pid, "capacity": capacity, "label": label}
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
                 f"""
@@ -197,6 +203,8 @@ class PostgresScheduler(Scheduler):
             )
 
     async def report_worker_label(self, worker_id: str, *, label: str) -> None:
+        if worker_id in self._registrations:
+            self._registrations[worker_id]["label"] = label
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
                 f"UPDATE {self._workers_table} SET label = $2 WHERE id = $1",
@@ -204,11 +212,36 @@ class PostgresScheduler(Scheduler):
             )
 
     async def heartbeat_worker(self, worker_id: str) -> None:
+        """Stamp the liveness time. A row a peer's boot sweep marked ``dead`` is restored by the next
+        heartbeat: to ``draining`` when this process drained it (the dead mark is a liveness verdict,
+        not a change out of the drain), otherwise to ``active``; each revival is logged once. A row
+        ``purge_dead_workers`` deleted is registered again from what this process registered with (a
+        draining worker comes back draining): a live worker must not vanish from the registry because
+        its writes were slow once. A worker this process never registered (or deregistered) is not
+        brought back."""
+        restore = "draining" if worker_id in self._draining_here else "active"
         async with self._storage.pool.acquire() as conn:
-            await conn.execute(
+            # The first statement only touches DEAD rows, so its row count IS the revival
+            # transition (one log per dead episode); the second stamps liveness whatever
+            # the row now is, and its zero count is the missing-row (purged) signal.
+            revived = await conn.execute(
+                f"UPDATE {self._workers_table} SET status = $2 WHERE id = $1 AND status = 'dead'",
+                worker_id, restore,
+            )
+            tag = await conn.execute(
                 f"UPDATE {self._workers_table} SET last_heartbeat = now() WHERE id = $1",
                 worker_id,
             )
+        if revived.endswith(" 1"):
+            logger.warning(
+                "heartbeat_worker: worker %s was marked dead; restored to %s",
+                worker_id, restore,
+            )
+        if tag.endswith(" 0") and worker_id in self._registrations:
+            logger.warning("heartbeat_worker: the row of worker %s was purged; registering it again", worker_id)
+            await self.register_worker(worker_id=worker_id, **self._registrations[worker_id])
+            if worker_id in self._draining_here:
+                await self.drain_worker(worker_id)  # the re-registered row comes back draining, not active
 
     async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
         async with self._storage.pool.acquire() as conn:
@@ -218,17 +251,20 @@ class PostgresScheduler(Scheduler):
             )
 
     async def drain_worker(self, worker_id: str) -> None:
+        self._draining_here.add(worker_id)
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
                 f"UPDATE {self._workers_table} SET status = 'draining' WHERE id = $1",
                 worker_id,
             )
 
-    async def deregister_worker(self, worker_id: str) -> None:
+    async def deregister_worker(self, worker_id: str, *, keep_registration: bool = False) -> None:
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
                 f"DELETE FROM {self._workers_table} WHERE id = $1", worker_id,
             )
+        if not keep_registration:
+            self._registrations.pop(worker_id, None)
 
     async def purge_dead_workers(self) -> int:
         """One DELETE over the whole tombstone set."""

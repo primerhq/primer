@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -155,7 +157,14 @@ class _SP:
         return SystemState()
 
     def __init__(self) -> None:
+        self._migration_lock = asyncio.Lock()
         self._stores: dict[type, _Storage] = {}
+
+    @asynccontextmanager
+    async def migration_lock(self):
+        # Serialize like the shared fake: /v1/auth/register takes this lock.
+        async with self._migration_lock:
+            yield
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())

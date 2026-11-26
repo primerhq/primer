@@ -152,6 +152,7 @@ class BootstrapRunner:
         self._root_dir = root_dir
         self._db_config = db_config
         self._legacy_vector_store = legacy_vector_store
+        self._skip_log = logger.info      # a marked boot repeats the skips every restart: it lowers this to DEBUG
 
     # ------------------------------------------------------------------
     # Public API
@@ -177,10 +178,22 @@ class BootstrapRunner:
             Contains the ids that were created, skipped, or errored.
         """
         if not force and not await self.needs_bootstrap():
-            # Marker is set and caller did not ask for force — nothing to do.
-            # Retrieve all four as skipped so callers see a consistent result.
+            # Marker is set and caller did not ask for force. The rows that do
+            # not depend on an optional extra were settled on the first boot
+            # and are reported as skipped without a read. The extra-gated rows
+            # are re-checked on every boot (a cheap get-then-create), so
+            # installing an extra and restarting creates its default rows. The
+            # API refuses to delete a reserved row, so this never resurrects a
+            # row an operator removed.
             result = BootstrapResult()
             await self._skip_all_present(result)
+            self._skip_log = logger.debug
+            try:
+                await self._ensure_huggingface_embedder(result)
+                await self._ensure_lance_ssp(result)
+                await self._ensure_huggingface_cross_encoder(result)
+            finally:
+                self._skip_log = logger.info
             await self._follow_app_settings()
             return result
 
@@ -295,7 +308,7 @@ class BootstrapRunner:
             # row here would create a default provider that fails at use time.
             if not has_extra("huggingface"):
                 result.skipped.append(reserved_id)
-                logger.info(
+                self._skip_log(
                     "bootstrap: skipping default embedder %r — the "
                     "'huggingface' extra (sentence-transformers) is not "
                     "installed",
@@ -506,7 +519,7 @@ class BootstrapRunner:
             # default provider that can't open a store.
             if not has_extra("lance"):
                 result.skipped.append(reserved_id)
-                logger.info(
+                self._skip_log(
                     "bootstrap: skipping default Lance SSP %r — the 'lance' "
                     "extra (lancedb) is not installed",
                     reserved_id,
@@ -551,7 +564,7 @@ class BootstrapRunner:
             # a default cross-encoder that can't import at rerank time.
             if not has_extra("huggingface"):
                 result.skipped.append(reserved_id)
-                logger.info(
+                self._skip_log(
                     "bootstrap: skipping default cross-encoder %r — the "
                     "'huggingface' extra (sentence-transformers) is not "
                     "installed",
@@ -628,18 +641,16 @@ class BootstrapRunner:
     # ------------------------------------------------------------------
 
     async def _skip_all_present(self, result: BootstrapResult) -> None:
-        """Fill ``result.skipped`` with all four reserved ids.
+        """Fill ``result.skipped`` with the extra-independent reserved ids.
 
         Used when the marker is already set (force=False, early exit).
-        We don't query storage — just mark all as skipped since by
-        definition the marker only gets stamped when all four succeeded.
+        We don't query storage: the marker is only stamped once these
+        succeeded. The extra-gated ids (embedder, Lance, cross-encoder)
+        are not listed here; the caller re-runs their ensure steps.
         """
         result.skipped.extend([
             RESERVED_LOCAL_WORKSPACE_PROVIDER,
             RESERVED_LOCAL_WORKSPACE_TEMPLATE,
-            RESERVED_HUGGINGFACE_EMBEDDER,
-            RESERVED_LANCE_SSP,
-            RESERVED_HUGGINGFACE_CROSS_ENCODER,
         ])
 
 

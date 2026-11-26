@@ -125,9 +125,12 @@ EXCLUSIVELY.** It is not part of the default contributor loop. When you do run i
   The suite is skipped unless `PRIMER_RUN_E2E=1` is set.
 
 Some tests are environment-gated: real-LLM tests need a reachable LM Studio
-(`LMSTUDIO_API_KEY` set), and the Kubernetes workspace tests need a live
-cluster. After a code-changing task, restart the dogfood `uv run primer api`
-and confirm `/v1/health` returns 200.
+(the bearer token in `PRIMER_E2E_LMSTUDIO_TOKEN` set; the server address
+defaults to `http://localhost:8080` and `PRIMER_E2E_LMSTUDIO_URL` overrides
+it; the provider must use `max_concurrency: 1` for a single-request
+backend), and the Kubernetes workspace tests need a live cluster. After a
+code-changing task, restart the dogfood `uv run primer api` and
+confirm `/v1/health` returns 200.
 
 ## Pull requests
 

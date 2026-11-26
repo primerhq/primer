@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from primer.toolset.python_runner import runners
 from primer.toolset.python_runner.protocol import build_request
 from primer.toolset.python_runner.runners import (
     IsolationLevel,
@@ -83,6 +84,45 @@ def test_the_local_runner_never_claims_container_isolation() -> None:
     # The level must describe what is enforced HERE, not what the strongest
     # backend could enforce elsewhere.
     assert LocalHardenedRunner().isolation_level is not IsolationLevel.CONTAINER
+
+
+def test_missing_seccomp_logs_the_best_effort_note_once(monkeypatch, caplog) -> None:
+    # Without libseccomp the shim installs no syscall filter: on a Linux
+    # level (no other egress confinement) the process must say so once
+    # (review 2026-11-23, 5.10; round 1: per host type).
+    import logging
+
+    monkeypatch.setattr(runners, "_seccomp_note_done", False)
+    monkeypatch.setattr(runners.ctypes.util, "find_library", lambda name: None)
+    monkeypatch.setattr(runners, "detect_local_isolation", lambda: IsolationLevel.LANDLOCK)
+    with caplog.at_level(logging.WARNING, logger="primer.toolset.python_runner.runners"):
+        LocalHardenedRunner()
+        LocalHardenedRunner()
+    assert len([r for r in caplog.records if "best effort" in r.getMessage()]) == 1
+
+
+def test_sandbox_exec_level_logs_no_best_effort_note(monkeypatch, caplog) -> None:
+    # Round 1 (review M1): on macOS the sandbox-exec profile already carries
+    # (deny network*), so the network deny is enforced there without
+    # libseccomp and there is nothing to warn about.
+    import logging
+
+    monkeypatch.setattr(runners, "_seccomp_note_done", False)
+    monkeypatch.setattr(runners.ctypes.util, "find_library", lambda name: None)
+    monkeypatch.setattr(runners, "detect_local_isolation", lambda: IsolationLevel.SANDBOX_EXEC)
+    with caplog.at_level(logging.WARNING, logger="primer.toolset.python_runner.runners"):
+        LocalHardenedRunner()
+    assert not [r for r in caplog.records if "best effort" in r.getMessage()]
+
+
+def test_seccomp_present_logs_no_best_effort_note(monkeypatch, caplog) -> None:
+    import logging
+
+    monkeypatch.setattr(runners, "_seccomp_note_done", False)
+    monkeypatch.setattr(runners.ctypes.util, "find_library", lambda name: "libseccomp.so.2")
+    with caplog.at_level(logging.WARNING, logger="primer.toolset.python_runner.runners"):
+        LocalHardenedRunner()
+    assert not [r for r in caplog.records if "best effort" in r.getMessage()]
 
 
 def test_the_sandbox_runner_claims_container() -> None:

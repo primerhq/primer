@@ -9,7 +9,7 @@ import httpx
 
 from primer.common.transport_text import require_sendable_key, transport_failure
 from primer.web_fetch.adapter import (
-    FetchedPage, WebFetchAdapter, WebFetchProviderError, WebFetchUnavailable,
+    FetchedPage, MAX_RESPONSE_BYTES, WebFetchAdapter, WebFetchProviderError, WebFetchUnavailable, send_capped,
 )
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ class JinaAdapter(WebFetchAdapter):
         if self._api_key is not None:
             headers["Authorization"] = f"Bearer {self._api_key.get_secret_value()}"
         try:
-            r = await self._client.get(f"{self._base_url}/{url}", headers=headers)
+            r = await send_capped(self._client, "GET", f"{self._base_url}/{url}", headers=headers)
         except httpx.HTTPError as exc:
             raise WebFetchUnavailable(transport_failure("jina", exc, self._config)) from None
         if r.status_code in (401, 403):
@@ -45,8 +45,12 @@ class JinaAdapter(WebFetchAdapter):
             raise WebFetchUnavailable(f"jina server error (HTTP {r.status_code})")
         if r.status_code != 200:
             raise WebFetchProviderError(f"jina unexpected status {r.status_code}")
+        text = r.text
+        if r.truncated:
+            # Plain markdown survives a cut: keep what fits and say so (the service's own limit marks nothing for this).
+            text += f"\n\n[response truncated: the provider's reply exceeded {MAX_RESPONSE_BYTES} bytes]"
         return FetchedPage(
-            final_url=url, title="", content_markdown=r.text,
+            final_url=url, title="", content_markdown=text,
             content_type="text/markdown", status=r.status_code,
         )
 

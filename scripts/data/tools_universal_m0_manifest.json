@@ -10871,6 +10871,14 @@
       "toolset_id": "system"
     },
     {
+      "bare_id": "inspect_service_bundle",
+      "exposable": false,
+      "exposure_reason": "needs_workspace",
+      "required_role": "admin",
+      "scoped_id": "system__inspect_service_bundle",
+      "toolset_id": "system"
+    },
+    {
       "bare_id": "invalidate_semantic_search_provider",
       "exposable": true,
       "exposure_reason": null,

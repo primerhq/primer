@@ -348,6 +348,12 @@ class _BusSubscription(EventSubscription):
     def wants(self, event_key: str) -> bool:
         return matches(self._key, self._prefix, event_key, self._suffix)
 
+    @property
+    def dropped(self) -> int:
+        """The events the mailbox dropped (never delivered to this
+        subscription): the public counter a loss hook reads."""
+        return self._mailbox.dropped
+
     def __aiter__(self) -> "_BusSubscription":
         return self
 

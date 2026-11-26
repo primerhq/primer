@@ -57,6 +57,11 @@ function SH_ActivityPanel() {
   var errorState = React.useState(null);
   var error = errorState[0];
   var setError = errorState[1];
+  // The id to read below for the next older page (the server's next_before_id), or null when nothing older is left. A read under a filter
+  // scans a bounded stretch of the log and may come back short, so "older" is a cursor, never "rows.length < limit".
+  var olderState = React.useState(null);
+  var olderCursor = olderState[0];
+  var setOlderCursor = olderState[1];
   // user id -> username, for the actor cell. The log is admin-gated and so is the list; a list that cannot be read leaves the ids as they are.
   var namesState = React.useState({});
   var names = namesState[0];
@@ -77,13 +82,16 @@ function SH_ActivityPanel() {
   var appliedFilters = React.useRef({ eventType: null, entityKind: null, workspaceId: null });
   var reqSeq = React.useRef(0);
 
-  function query(afterId, replace) {
+  // mode: "replace" (a refresh: the newest window, read backwards from beforeId), "append" (Load More: newer rows after afterId) or "prepend"
+  // (Load older: the window below beforeId).
+  function query(span, mode) {
     setLoading(true);
     setError(null);
     var seq = ++reqSeq.current;
     var f = appliedFilters.current;
     SH_api.events({
-      afterId: afterId,
+      afterId: span.afterId,
+      beforeId: span.beforeId,
       limit: 100,
       eventType: f.eventType || null,
       entityKind: f.entityKind || null,
@@ -93,7 +101,11 @@ function SH_ActivityPanel() {
       setLoading(false);
       var items = (out && out.items) || [];
       setMaxId(out && out.max_id);
-      setRows(function (prev) { return replace ? items : prev.concat(items); });
+      if (mode !== "append") setOlderCursor((out && out.next_before_id) || null);
+      setRows(function (prev) {
+        if (mode === "replace") return items;
+        return mode === "prepend" ? items.concat(prev) : prev.concat(items);
+      });
     }, function (err) {
       if (seq !== reqSeq.current) return;
       setLoading(false);
@@ -101,8 +113,9 @@ function SH_ActivityPanel() {
     });
   }
 
-  // Open on the newest window: everything after (max_id - 100). Two
-  // requests only on first load; Refresh repeats it.
+  // Open on the newest window: the newest 100 events that match the filters, read backwards from the log's head (the filters are applied
+  // by the server while it reads back, so a filter reaches past the newest 100 ids; Load older keeps going). Two requests on a first load;
+  // Refresh repeats it.
   function refresh() {
     appliedFilters.current = {
       eventType: filters.eventType || null,
@@ -111,7 +124,7 @@ function SH_ActivityPanel() {
     };
     SH_api.events({ limit: 1 }).then(function (out) {
       var head = (out && out.max_id) || 0;
-      query(Math.max(0, head - 100), true);
+      query({ beforeId: head + 1 }, "replace");
     }, function (err) {
       setError(err && err.message ? err.message : String(err));
     });
@@ -181,7 +194,11 @@ function SH_ActivityPanel() {
         </table>
         {!rows.length && !loading ? (
           <div className="sh-empty">
-            <span>No events in this window.</span>
+            <span>
+              {olderCursor != null
+                ? "No matching events in the part of the log read so far; Load older reads further back."
+                : "No events in this window."}
+            </span>
             <button type="button" className="sh-verb" onClick={refresh}>
               Refresh
             </button>
@@ -195,8 +212,14 @@ function SH_ActivityPanel() {
         <button type="button" className="sh-verb"
           data-testid="activity-load-more"
           disabled={loading || lastId == null || (maxId != null && lastId >= maxId)}
-          onClick={function () { query(lastId, false); }}>
+          onClick={function () { query({ afterId: lastId }, "append"); }}>
           Load More
+        </button>
+        <button type="button" className="sh-verb"
+          data-testid="activity-load-older"
+          disabled={loading || olderCursor == null}
+          onClick={function () { query({ beforeId: olderCursor }, "prepend"); }}>
+          Load older
         </button>
       </div>
       <SH_EventSubscriptionsTable />
@@ -335,8 +358,15 @@ function SH_EventSubscriptionsTable() {
                   <td style={{ textAlign: "right" }}>
                     <button type="button" className="sh-verb"
                       data-testid={"sub-toggle-pause:" + row.id}
-                      disabled={busyId === row.id}
-                      onClick={function () { togglePause(row); }}>
+                      aria-busy={busyId === row.id}
+                      aria-disabled={busyId === row.id || undefined}
+                      onClick={function (ev) {
+                        // A focused button that turns natively `disabled` drops focus to <body> (the
+                        // ratchet's whole point): keep it focusable, refuse the click while the
+                        // toggle is out (the <Btn busy> semantics, on this table's raw button).
+                        if (busyId === row.id) { ev.preventDefault(); ev.stopPropagation(); return; }
+                        togglePause(row);
+                      }}>
                       {busyId === row.id ? "…" : (row.paused ? "Resume" : "Pause")}
                     </button>
                   </td>

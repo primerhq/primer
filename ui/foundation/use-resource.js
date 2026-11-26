@@ -71,20 +71,30 @@
     return "loading";
   }
 
-  // Reference + structural equality. Used to skip re-renders when a
-  // poll returns identical data. The serialise-then-compare path is
-  // good-enough for the JSON shapes the API returns; we deliberately
-  // stop at one level of stringify so a very deep response still
-  // converges in constant memory.
+  // Reference + structural equality, used to skip re-renders when a poll returns identical data. One walk with an early exit at the first
+  // difference over the JSON shapes the API returns (plain objects, arrays, scalars): it copies nothing (only the per-object Object.keys arrays the
+  // walk filters), where comparing two JSON.stringify copies built both whole every poll, 10,000 rows of the Sessions page included (review 8.7).
+  // Own enumerable keys only, as JSON has them, so the non-enumerable `failure` of a cut-short list read is not compared; an undefined-valued key
+  // counts as absent, as in JSON. Key order does not matter.
   function _eq(a, b) {
     if (a === b) return true;
     if (a == null || b == null) return false;
     if (typeof a !== "object" || typeof b !== "object") return false;
-    try {
-      return JSON.stringify(a) === JSON.stringify(b);
-    } catch {
-      return false;
+    const arrA = Array.isArray(a);
+    if (arrA !== Array.isArray(b)) return false;
+    if (arrA) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (!_eq(a[i], b[i])) return false;
+      return true;
     }
+    const ka = Object.keys(a).filter((k) => a[k] !== undefined);
+    const kb = Object.keys(b).filter((k) => b[k] !== undefined);
+    if (ka.length !== kb.length) return false;
+    for (let i = 0; i < ka.length; i++) {
+      const k = ka[i];
+      if (!Object.prototype.hasOwnProperty.call(b, k) || !_eq(a[k], b[k])) return false;
+    }
+    return true;
   }
 
   function emit(entry, force) {
@@ -129,6 +139,8 @@
   function schedule(entry, key) {
     clearTimer(entry);
     if (!entry.fetcher) return;
+    // The session ended (api.js noticeUnauthorized): AuthGate is dropping the console; no further poll can succeed.
+    if (window.primerApi && window.primerApi.sessionExpired) return;
     // retryMs is a failure-only cadence: unlike pollMs it stops after a
     // successful response. It is for resources such as auth status that must
     // recover from a transient first-read failure without polling forever.
@@ -150,6 +162,7 @@
   }
 
   async function runFetch(entry, key) {
+    if (window.primerApi && window.primerApi.sessionExpired) return;
     abortInflight(entry);
     const ctrl = new AbortController();
     entry.abortCtrl = ctrl;
@@ -175,6 +188,7 @@
       // shown: like a failed refresh, the data is kept and the failure is the error (stale-while-error). Only a first read shows the partial list,
       // with its note (ticket 01a16dfa, round 2).
       const partial = entry.data !== undefined && typeof window.PR_partialFailure === "function" ? window.PR_partialFailure(data) : null;
+      entry.settledAt = Date.now();
       if (partial) {
         entry.error = partial;
         entry.loading = false;
@@ -194,6 +208,7 @@
     } catch (e) {
       if (e && (e.name === "AbortError" || e.code === 20)) return;
       if (entry.abortCtrl !== ctrl) return;
+      entry.settledAt = Date.now();
       entry.error = e;
       entry.loading = false;
       entry.errorCount += 1;
@@ -204,8 +219,42 @@
     }
   }
 
+  // Waking a tab (visible again, or the first input after idle) used to refetch EVERY live entry at once: the whole-table paged lists (up to 50 requests
+  // each), the read-once palette lists and file reads included (review 8.6). Now an entry whose last answer is younger than its own poll interval (at
+  // least WAKE_FRESH_MS) keeps it and only resumes its poll; the rest refetch one WAKE_STAGGER_MS after the other, uncapped (the old 2 s cap piled
+  // every entry beyond the 20th at the same instant, review 2026-11-23, P minor).
+  const WAKE_FRESH_MS = 5000;
+  const WAKE_STAGGER_MS = 100;
+
+  function wakeEntries() {
+    const now = Date.now();
+    let order = 0;
+    for (const [key, entry] of cache) {
+      if (entry.subscribers.size === 0 || !entry.fetcher) continue;
+      if (entry.refetchOnWake === false) continue;
+      entry.errorCount = 0;
+      const freshFor = Math.max(WAKE_FRESH_MS, entry.pollMs > 0 ? entry.pollMs : 0);
+      if (entry.settledAt && now - entry.settledAt < freshFor && entry.data !== undefined) {
+        if (entry.timer == null && !entry.abortCtrl) schedule(entry, key);
+        continue;
+      }
+      clearTimer(entry);
+      const delay = order * WAKE_STAGGER_MS;
+      order++;
+      if (delay === 0) {
+        runFetch(entry, key);
+      } else {
+        // The entry's own timer slot: a hide, an unsubscribe or a cadence change cancels it like a poll's.
+        entry.timer = setTimeout(() => {
+          entry.timer = null;
+          if (cache.get(key) === entry && entry.subscribers.size > 0) runFetch(entry, key);
+        }, delay);
+      }
+    }
+  }
+
   // Single page-wide visibilitychange listener; cancel/clear on hide,
-  // immediate refetch + resume on show. A resource that opted out
+  // staggered refetch + resume on show. A resource that opted out
   // (refetchOnWake: false) is left alone both ways: it is not read again on
   // the show, so its one read must not be aborted on the hide either.
   let visibilityBound = false;
@@ -213,16 +262,14 @@
     if (visibilityBound) return;
     visibilityBound = true;
     document.addEventListener("visibilitychange", () => {
-      const hidden = document.hidden;
-      for (const [key, entry] of cache) {
-        if (entry.refetchOnWake === false) continue;
-        if (hidden) {
+      if (document.hidden) {
+        for (const entry of cache.values()) {
+          if (entry.refetchOnWake === false) continue;
           abortInflight(entry);
           clearTimer(entry);
-        } else if (entry.subscribers.size > 0 && entry.fetcher) {
-          entry.errorCount = 0;
-          runFetch(entry, key);
         }
+      } else {
+        wakeEntries();
       }
     });
   }
@@ -407,17 +454,12 @@
   // a registered fetcher) that did not opt out with refetchOnWake: false.
   // Used by the idle module on wake-up to resync the UI after a quiet period.
   function refetchAll() {
-    for (const [key, entry] of cache) {
-      if (entry.subscribers.size === 0 || !entry.fetcher) continue;
-      if (entry.refetchOnWake === false) continue;
-      entry.errorCount = 0;
-      runFetch(entry, key);
-    }
+    wakeEntries();
   }
 
   const ns = (window.primerApi = window.primerApi || {});
   ns.useResource = useResource;
   ns.resourceState = resourceState;
-  ns._resource = { findKeys, peekData, replaceData, refetchKey };
+  ns._resource = { findKeys, peekData, replaceData, refetchKey, eq: _eq };
   ns._refetchAll = refetchAll;
 })();

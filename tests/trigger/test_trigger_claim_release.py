@@ -136,7 +136,10 @@ def _on_a_fake_clock(monkeypatch, sp, start: datetime, *, engine_ahead: timedelt
     async def _release(lease, outcome) -> None:
         await engine.release(lease, outcome=outcome)
 
-    pool = SimpleNamespace(_storage=sp, _engine=engine, _scheduler=None, _workspace_registry=None, _event_bus=None, _release_lease=_release)
+    pool = SimpleNamespace(
+        _storage=sp, _engine=engine, _scheduler=None, _workspace_registry=None,
+        _event_bus=None, _release_lease=_release, _hand_back_outcome=lambda lease: None,
+    )
     return clock, engine, pool
 
 

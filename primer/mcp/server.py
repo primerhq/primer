@@ -48,6 +48,7 @@ from mcp.types import (
     Tool as McpTool,
 )
 
+from primer.common.bounded_jsonschema import validate_bounded_off_loop
 from primer.mcp.audit import log_invoke
 from primer.mcp.exposure import ExposureDeps
 from primer.mcp.meta_tools import (
@@ -129,12 +130,19 @@ async def _input_validation_error(
     caller-supplied values back to the client, and the three meta
     schemas are fixed and fetchable from ``tools/list``.
     """
-    del deps
     schema = META_TOOL_SCHEMAS.get(name)
     if schema is None:
         return None
     try:
-        jsonschema.validate(instance=arguments, schema=schema)
+        # Bounded and off the loop (review 7.1b): the instance is the
+        # caller's, so a pathological payload must not stall the event
+        # loop; the fixed schemas carry no pattern keyword, so only the
+        # jsonschema paths below can fire. The size bound is the app's
+        # request-body cap (fix round 1): the meta-tool arguments are MCP
+        # posts the body-cap middleware admits up to that cap.
+        await validate_bounded_off_loop(
+            arguments, schema, max_instance_bytes=deps.max_body_bytes,
+        )
     except jsonschema.exceptions.ValidationError:
         return "arguments"
     except jsonschema.exceptions.SchemaError:

@@ -66,6 +66,11 @@ _PRIVILEGED = {
         "id": "tpl-k", "provider_id": "p-1", "description": "d",
         "backend": {"kind": "kubernetes", "image": "alpine:3", "pod_overrides": {"dnsPolicy": "ClusterFirst"}},
     },
+    "container_security_context_overrides": {
+        "id": "tpl-k", "provider_id": "p-1", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "alpine:3",
+                    "container_security_context_overrides": {"readOnlyRootFilesystem": True}},
+    },
     "service_account_name": {
         "id": "tpl-k", "provider_id": "p-1", "description": "d",
         "backend": {"kind": "kubernetes", "image": "alpine:3", "service_account_name": "runner"},
@@ -110,6 +115,41 @@ async def test_an_admin_run_can_create_a_template_with_an_admin_only_field(world
 
     assert not is_error, answer
     assert await sp.get_storage(WorkspaceTemplate).get(body["id"]) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overrides", [
+    {"privileged": True},
+    {"allowPrivilegeEscalation": True},
+    {"capabilities": {"add": ["SYS_ADMIN"]}},
+])
+async def test_the_allowlist_refuses_a_privilege_escalation_even_for_an_admin_run(world, overrides) -> None:
+    """The escalation values are refused for every caller, so no run (admin included) can store a root-on-the-node
+    template through the tool."""
+    sp, toolset = world
+    body = {"id": "tpl-k", "provider_id": "p-1", "description": "d", "backend": {
+        "kind": "kubernetes", "image": "alpine:3", "container_security_context_overrides": overrides}}
+
+    is_error, answer = await _call(toolset, "create_workspace_template", ctx=_ctx("admin"), entity=body)
+
+    assert is_error and answer["type"] == "validation-error", answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-k") is None
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_cannot_set_the_container_security_context_overrides(world) -> None:
+    """A non-admin is refused as ``forbidden`` before the allowlist even runs, for a value the allowlist would accept
+    and for one it would not."""
+    sp, toolset = world
+    for overrides in ({"readOnlyRootFilesystem": True}, {"privileged": True}):
+        body = {"id": "tpl-k", "provider_id": "p-1", "description": "d", "backend": {
+            "kind": "kubernetes", "image": "alpine:3", "container_security_context_overrides": overrides}}
+
+        is_error, answer = await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=body)
+
+        assert is_error and answer["type"] == "forbidden", answer
+        assert "container_security_context_overrides" in answer["message"]
+        assert await sp.get_storage(WorkspaceTemplate).get("tpl-k") is None
 
 
 @pytest.mark.asyncio

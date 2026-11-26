@@ -413,6 +413,9 @@ class TimeoutSweeper(_BackgroundTask):
     async def _report_unwakeable_parks(self) -> None:
         """Log an ERROR, once per session, for a park nothing here can ever time out.
 
+        Only the rows missing a deadline or a key are read (the predicate selects
+        them in storage), so the 30 s tripwire costs no full-row reads of healthy parks.
+
         The sweeps above select on ``parked_until`` and ``parked_event_key``; a parked row
         missing either is skipped silently, so a park with no deadline would sit forever
         with nothing recording that it is stuck. No current park writer produces one
@@ -420,9 +423,7 @@ class TimeoutSweeper(_BackgroundTask):
         a tripwire for a future writer, not a handled case.
         """
         current: set[str] = set()
-        async for sess in _iter_parked_sessions(self._storage):
-            if sess.parked_until is not None and sess.parked_event_key is not None:
-                continue
+        async for sess in _page_parked(self._storage, _unwakeable_parked_predicate()):
             current.add(sess.id)
             if sess.id in self._reported_unwakeable:
                 continue
@@ -1140,7 +1141,15 @@ def _at_rest(session) -> bool:
 
 
 class HarnessSweeper(_BackgroundTask):
-    """Periodically reclaims harnesses whose worker died mid-operation."""
+    """Leader-elected harness sweep: re-arms a harness lease the release window can drop.
+
+    The ClaimEngine owns lease expiry and worker-death reclaim; the one case
+    left is the harness lease a ``drop_lease=True`` release deletes after an
+    enqueue armed it in the window between the handler's fresh re-read and
+    the release (review 2026-11-23 finding 1.3, round 1). The sweep re-arms
+    every harness with a pending operation and no lease, so such a row
+    self-heals within one sweep interval instead of at the next restart.
+    """
 
     role = ROLE_HARNESS_SWEEPER
 
@@ -1151,6 +1160,7 @@ class HarnessSweeper(_BackgroundTask):
         scheduler,
         event_bus,
         provider_registry=None,
+        claim_engine=None,
         poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
     ) -> None:
         super().__init__(name="harness-sweeper")
@@ -1158,6 +1168,11 @@ class HarnessSweeper(_BackgroundTask):
         self._scheduler = scheduler
         self._event_bus = event_bus
         self._provider_registry = provider_registry
+        # Without the engine the sweep cannot re-arm a harness lease the
+        # release window dropped (review 2026-11-23 finding 1.3, round 1)
+        # and stays a no-op; passing it is what heals such a row within one
+        # sweep interval instead of at the next restart.
+        self._claim_engine = claim_engine
         self._poll = poll_seconds
 
     async def _run(self) -> None:
@@ -1169,7 +1184,7 @@ class HarnessSweeper(_BackgroundTask):
         )
         while not self._stopping:
             try:
-                await sweep_harnesses(deps)
+                await sweep_harnesses(deps, claim_engine=self._claim_engine)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("harness-sweeper: tick failed: %s", exc)
             try:
@@ -1297,14 +1312,83 @@ class WebhookDeliveryRetentionPruner(_BackgroundTask):
 _PARKED_PAGE_SIZE = 200
 
 
-async def _iter_parked_sessions(session_storage: Storage):
-    """Yield every session with ``parked_status == 'parked'``, paging through
-    all rows so nothing past a single fixed cap is dropped."""
-    predicate = Predicate(
+def _parked_predicate() -> Predicate:
+    """``parked_status == 'parked'`` (the row shape every park lookup starts from)."""
+    return Predicate(
         left=FieldRef(name="parked_status"),
         op=Op.EQ,
         right=Value(value="parked"),
     )
+
+
+def _unwakeable_parked_predicate() -> Predicate:
+    """``parked_status == 'parked' AND (parked_until IS NULL OR parked_event_key IS NULL)``."""
+    def _is_null(name: str) -> Predicate:
+        return Predicate(left=FieldRef(name=name), op=Op.IS_NULL, right=Value(value=None))
+
+    return Predicate(
+        left=_parked_predicate(),
+        op=Op.AND,
+        right=Predicate(
+            left=_is_null("parked_until"), op=Op.OR, right=_is_null("parked_event_key"),
+        ),
+    )
+
+
+def _parked_until_bound(now: datetime) -> str:
+    """The text a ``parked_until <= now`` predicate binds against.
+
+    The storage layer holds datetimes in the pydantic dump's ISO form
+    (UTC as ``...Z``, with a fraction only when there is one), and both
+    backends compare that text lexicographically. A whole second
+    (``...05Z``) sorts AFTER a fractional one in the same second
+    (``...05.3Z``: ``Z`` > ``.``), so a bound with a fraction would skip a
+    whole-second row that is due. The bound is therefore ``now`` truncated
+    to the whole second: every row due at ``now`` compares <= it, in either
+    form. The cost is a read that is up to a second EARLY (a row with a
+    fraction past the bound's second also sorts under it) - harmless,
+    because the sweeps' per-key check in Python is the exact judgement.
+    """
+    whole = now.astimezone(timezone.utc).replace(microsecond=0)
+    return whole.isoformat().replace("+00:00", "Z")
+
+
+def _due_parked_predicate(now: datetime) -> Predicate:
+    """``parked_status == 'parked' AND parked_until <= now`` (6.4).
+
+    ``parked_until`` is the EARLIEST deadline of the park (every current
+    park writer sets it from the pending entries' earliest deadline,
+    ``_CheckpointMixin._seconds_to_earliest_deadline``; a single park's is
+    its only one), so a key whose own deadline is due can live on no row
+    past its deadline: the predicate is a safe superset, and the per-key
+    judgement (``pending_key_deadlines``) stays the exact one. A row with
+    no ``parked_until`` has no due key (the unwakeable-parks tripwire logs
+    it) and is skipped without being read.
+    """
+    return Predicate(
+        left=_parked_predicate(),
+        op=Op.AND,
+        right=Predicate(
+            left=FieldRef(name="parked_until"),
+            op=Op.LE,
+            right=Value(value=_parked_until_bound(now)),
+        ),
+    )
+
+
+def _escape_like_prefix(prefix: str) -> str:
+    """Escape the LIKE metacharacters of a literal prefix.
+
+    The ILIKE renderer emits ``ESCAPE '\\'``, so the escape char, ``%``
+    and ``_`` are escaped here, in that order: ``mcp_task:``'s ``_`` must
+    stay literal (a bare ``LIKE`` renders no ESCAPE clause, and an
+    unescaped ``_`` matches any single character).
+    """
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def _page_parked(session_storage: Storage, predicate: Predicate):
+    """Page a parked-row predicate through ALL matching rows (no fixed cap)."""
     offset = 0
     while True:
         page = await session_storage.find(
@@ -1317,53 +1401,80 @@ async def _iter_parked_sessions(session_storage: Storage):
         offset += _PARKED_PAGE_SIZE
 
 
+async def _iter_parked_sessions(session_storage: Storage):
+    """Yield every session with ``parked_status == 'parked'``, paging through
+    all rows so nothing past a single fixed cap is dropped."""
+    async for sess in _page_parked(session_storage, _parked_predicate()):
+        yield sess
+
+
+async def _iter_parked_sessions_due(session_storage: Storage, now: datetime):
+    """The parked rows the deadline sweeps need (6.4): ``parked_until <= now``
+    (see :func:`_due_parked_predicate`); idle parks cost no reads per tick."""
+    async for sess in _page_parked(session_storage, _due_parked_predicate(now)):
+        yield sess
+
+
 async def _iter_parks(scheduler: Any, prefix: str):
     """Yield every parked session whose ``parked_event_key`` starts with ``prefix``, read from session storage.
 
-    The scheduler only carries the storage provider; a scheduler built without one has no parks to find. Paged through every row (the old Postgres
-    query stopped at 200 with no order).
+    The prefix is pushed into the predicate (ILIKE, ``_`` escaped so
+    ``mcp_task:`` matches literally): the 2 s watcher loop and the 5 s
+    mcp loop no longer page through every parked row to filter in Python
+    (6.4). The scheduler only carries the storage provider; a scheduler
+    built without one has no parks to find. Paged through every matching
+    row (the old Postgres query stopped at 200 with no order).
     """
     provider = getattr(scheduler, "_storage", None)
     if provider is None:
         return
     from primer.model.workspace_session import WorkspaceSession
 
-    async for sess in _iter_parked_sessions(provider.get_storage(WorkspaceSession)):
-        key = sess.parked_event_key
-        if key is not None and key.startswith(prefix):
-            yield sess
+    predicate = Predicate(
+        left=_parked_predicate(),
+        op=Op.AND,
+        right=Predicate(
+            left=FieldRef(name="parked_event_key"),
+            op=Op.ILIKE,
+            right=Value(value=_escape_like_prefix(prefix) + "%"),
+        ),
+    )
+    async for sess in _page_parked(provider.get_storage(WorkspaceSession), predicate):
+        yield sess
 
 
 async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
-    """Find the ``timer:*`` keys of parked sessions whose deadline is due (all rows).
+    """Find the ``timer:*`` keys of parked sessions whose deadline is due.
 
     Every key of a park is judged on its own deadline (GR-4, ``pending_key_deadlines``): a graph park's ``sleep`` that is not its primary key
-    fires too, at its own deadline.
+    fires too, at its own deadline. The row predicate (``parked_until <= now``) reads only the rows that can hold a due key (6.4); the per-key
+    prefix and deadline checks stay in Python.
     """
     from primer.session.pending_gates import pending_key_deadlines
 
     now = datetime.now(timezone.utc)
     return [
         key
-        async for sess in _iter_parked_sessions(session_storage)
+        async for sess in _iter_parked_sessions_due(session_storage, now)
         for key, deadline in pending_key_deadlines(sess).items()
         if key.startswith("timer:") and deadline <= now
     ]
 
 
 async def _find_expired_non_timer_keys(session_storage: Storage) -> list[str]:
-    """Find the non-``timer:`` keys of parked sessions whose deadline elapsed (all rows).
+    """Find the non-``timer:`` keys of parked sessions whose deadline elapsed.
 
     These are the waits whose external event never fired -- the
     sweeper publishes a timeout marker so the resume hook produces
-    a YieldTimeout result. Each key on its own deadline, as above.
+    a YieldTimeout result. Each key on its own deadline, as above; the
+    row predicate (``parked_until <= now``) as above (6.4).
     """
     from primer.session.pending_gates import pending_key_deadlines
 
     now = datetime.now(timezone.utc)
     return [
         key
-        async for sess in _iter_parked_sessions(session_storage)
+        async for sess in _iter_parked_sessions_due(session_storage, now)
         for key, deadline in pending_key_deadlines(sess).items()
         if not key.startswith("timer:") and deadline <= now
     ]

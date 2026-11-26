@@ -5,6 +5,7 @@ subgraph machinery (a child WorkspaceGraphExecutor)."""
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -121,7 +122,9 @@ async def run_invoke_graph(
     tool_call_id: str,
 ) -> str:
     """Run ``graph_id`` to completion inside the session, namespaced under
-    ``<graph_session_id>__invoke_<tool_call_id>``, and return its output text.
+    ``<graph_session_id>__invoke_<run key>`` (the call's run identity, X3.8;
+    the provider's tool call id when the call happens outside a graph node),
+    and return its output text.
 
     When the child graph hits a HITL gate it raises a ``YieldToWorker``
     carrying its OWN leaf (an ``_approval`` / ``ask_user`` / ... gate). The
@@ -158,9 +161,51 @@ async def run_invoke_graph(
     from primer.graph.base import _GraphEndOutputEvent, _GraphErrorEvent
     from primer.model.yield_ import YieldToWorker
 
+    from primer.graph._node_identity import current_node_run
+    from primer.model.graph import _BeginNode
+    from primer.workspace.session_factory import validate_graph_input
+
     graph = await services.resolve_graph(graph_id)
-    sub_gsid = f"{services.graph_session_id}__invoke_{tool_call_id}"
+    # Review 2026-11-23 7.1b: the child's Begin.input_schema gets the pre-check session create gives the same schema, with the
+    # same helper and errors. The tool's ``input`` is a string, so it is read as JSON first (a child whose Begin expects an
+    # object is invoked with the object JSON-encoded), and as the plain string when it is not JSON (lane K2 round 1).
+    begin = next(
+        (n for n in (getattr(graph, "nodes", None) or []) if isinstance(n, _BeginNode)),
+        None,
+    )
+    if begin is not None and begin.input_schema is not None:
+        try:
+            checked: Any = json.loads(graph_input)
+        except (ValueError, RecursionError):  # not JSON (or nested past the parser): the string itself is checked
+            checked = graph_input
+        await validate_graph_input(checked, begin.input_schema)
+    # X3.8: the child's graph-session id (its ``graphs/<gsid>`` state
+    # subtree) is keyed by the SAME run identity the child's run gets,
+    # never by the provider's tool call id alone: Ollama and Gemini
+    # synthesise ``call_{idx}`` per response, so a repeated id used to
+    # hand one call's child session to another. A reclaimed node execution
+    # derives the same key (the same child resumes); a different execution
+    # a different one (a fresh child). The key is path-safe: node ids
+    # inside it carry no ``/`` (they are path segments themselves), so the
+    # replacement is injective.
+    node_run = current_node_run()
+    bound_run_id: str | None = (
+        node_run.next_call_run_id() if node_run is not None else None
+    )
+    call_key = (
+        bound_run_id.replace("/", "_")
+        if bound_run_id is not None
+        else tool_call_id  # outside a graph node the caller's run is not known: keep the call-id-keyed subtree; the fresh run id below still forces a fresh run
+    )
+    sub_gsid = f"{services.graph_session_id}__invoke_{call_key}"
     child = await services.build_child_executor(graph=graph, gsid=sub_gsid)
+    # The child's run identity (lane K2 round 1): the node execution that makes the call plus the call's position in it, so a
+    # provider that repeats ``call_0`` never hands one call's child to another, and a reclaimed node's same call resumes its
+    # child. Outside a graph node the caller's run is not known here: the child gets an identity of its own and always runs
+    # fresh. (A stub child without the hook is a test's.)
+    bind_run_id = getattr(child, "bind_run_id", None)
+    if bind_run_id is not None:
+        bind_run_id(bound_run_id or f"invoke-{uuid.uuid4().hex}")
 
     end_text: str | None = None
     delta_buf: list[str] = []

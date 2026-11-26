@@ -640,6 +640,9 @@ class _NodeDispatchMixin:
         sub_executor = await self._build_sub_executor(
             node, sub_graph, instance_suffix=instance_suffix
         )
+        # Lane K2 round 1: the child's persisted state belongs to THIS execution of the node, so a node that runs again (a
+        # loop) runs its child again, and a reclaim that re-runs the same execution resumes it.
+        sub_executor.bind_run_id(self._node_run_key(current_graph_node_id() or node.id, context.iteration))
         # The child's nodes await a dispatch barrier on the CHILD's queue, which its drainer resolves once the events reached THIS queue: chain it to a barrier on this
         # one (resolved by this executor's drainer, after ITS parent's if it is a child too), so a delegated run still starts after its call row is written.
         sub_executor.bind_parent_dispatch_barrier(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +16,7 @@ from primer.model.collection import (
     CollectionSearchConfig,
     Document,
 )
+from primer.int.vector_store import VectorStore
 from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerError
 from primer.model.storage import OffsetPage, OffsetPageResponse
 
@@ -81,7 +83,9 @@ class _Emb:
         return _R()
 
 
-class _Store:
+class _Store(VectorStore):
+    """A duck-typed-enough VectorStore: replace_document runs on it for real (the ABC default)."""
+
     def __init__(self):
         self.created = None
         self.puts = []
@@ -105,6 +109,18 @@ class _Store:
 
     async def put(self, record):
         self.puts.append(record)
+
+    async def get(self, cid, did):
+        return [r for r in self.puts if r.collection_id == cid and r.document_id == did]
+
+    async def search(self, cid, vector, k):
+        raise NotImplementedError
+
+    async def count_documents(self, cid):
+        return len({r.document_id for r in self.puts if r.collection_id == cid})
+
+    async def drop_collection(self, cid):
+        self.puts = [r for r in self.puts if r.collection_id != cid]
 
     async def search_by_meta(self, cid, meta=None):
         # ``meta`` is positional-or-keyword on the real interface; forcing
@@ -144,8 +160,8 @@ class TestIndexDocument:
         assert store.puts[0].chunk_id == "0"
         assert store.puts[1].chunk_id == "1"
         assert len(store.puts[0].vector) == 4
-        # Re-index clears old chunks first.
-        assert ("kb-1", "doc-1") in store.deleted
+        # A first index writes: nothing is stored yet, so no destructive step runs (3.11).
+        assert store.deleted == []
 
     @pytest.mark.asyncio
     async def test_system_collection_is_indexed_when_search_is_on(self):
@@ -208,11 +224,23 @@ class TestIndexDocument:
 
     @pytest.mark.asyncio
     async def test_empty_document_clears_but_indexes_nothing(self):
-        store = _Store()
+        store = _RecordingStore()
         reg = AsyncMock()
         reg.get_embedder = AsyncMock(return_value=_Emb())
         ssr = AsyncMock()
         ssr.get_store = AsyncMock(return_value=store)
+
+        # Seed a 2-chunk index, then re-index with an empty body: the stored
+        # chunks go and nothing is written back (3.11: the delete IS the write).
+        two = "\n\n".join(["a" * 800, "b" * 800])
+        await index_document(
+            document=_document(text=two),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text=two),
+        )
+        assert len(await store.get("kb-1", "doc-1")) == 2
 
         n = await index_document(
             document=_document(text=""),
@@ -222,12 +250,8 @@ class TestIndexDocument:
             content_store=_body_store(text=""),
         )
         assert n == 0
-        # The dim-mismatch probe registers the collection (dim=3) even for
-        # empty documents so a subsequent non-empty ingest gets the same
-        # registration path and a mismatch surfaces early.
-        assert store.created == ("kb-1", 3)
-        assert len(store.puts) == 0  # no chunks stored
-        assert ("kb-1", "doc-1") in store.deleted  # old chunks cleared
+        assert store.delete_calls == [("kb-1", "doc-1")]  # old chunks cleared
+        assert await store.get("kb-1", "doc-1") == []  # no chunks stored
 
 
 class _OrderedEmb:
@@ -330,10 +354,11 @@ class TestBatchEmbedEquivalence:
         assert len(emb.batch_sizes) == 4
 
 
-class _StatefulStore:
+class _StatefulStore(VectorStore):
     """Vector store that models real searchable state: delete removes rows,
     put upserts on (document_id, chunk_id). Lets us assert what survives a
-    failed re-index."""
+    failed re-index. A real VectorStore: the ABC's default replace_document
+    (the 3.11 ordering + retry) runs on it."""
 
     def __init__(self):
         self._rows: dict[tuple, object] = {}
@@ -352,8 +377,30 @@ class _StatefulStore:
     async def get(self, cid, did):
         return [r for k, r in sorted(self._rows.items()) if k[0] == cid and k[1] == did]
 
+    async def search(self, cid, vector, k):
+        raise NotImplementedError
+
+    async def count_documents(self, cid):
+        return len({key[1] for key in self._rows if key[0] == cid})
+
+    async def drop_collection(self, cid):
+        for key in [k for k in self._rows if k[0] == cid]:
+            del self._rows[key]
+
     async def search_by_meta(self, cid, *, meta):
         return [r for k, r in sorted(self._rows.items()) if k[0] == cid]
+
+
+class _RecordingStore(_StatefulStore):
+    """The stateful store with a delete-call log: 3.11 is about WHEN the destructive step runs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.delete_calls: list[tuple[str, str]] = []
+
+    async def delete(self, cid, did):
+        self.delete_calls.append((cid, did))
+        await super().delete(cid, did)
 
 
 class _RaisingEmb:
@@ -431,6 +478,89 @@ class TestReindexFailureKeepsOldChunks:
         final = await store.get("kb-1", "doc-1")
         assert len(final) == 1
         assert final[0].text == "just one short chunk"
+
+
+class TestReplacementOrdering:
+    """3.11: what runs when, in a chunk replacement. A failed write must never leave the document with zero chunks."""
+
+    @pytest.mark.asyncio
+    async def test_a_shrunk_document_survives_a_failed_put(self):
+        """Old: 2 chunks, new: 1. The higher-indexed chunk must go (delete runs), and when the put
+        blips the retry must still land the new chunks while the vectors are in hand."""
+
+        class _FlakyPut(_RecordingStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.flaky = False
+
+            async def put_many(self, records):
+                if self.flaky:
+                    self.flaky = False
+                    raise PrimerError("transient store failure")
+                for record in records:
+                    await self.put(record)
+
+        store = _FlakyPut()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        two = "\n\n".join(["a" * 800, "b" * 800])
+        await index_document(
+            document=_document(text=two),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text=two),
+        )
+        assert len(await store.get("kb-1", "doc-1")) == 2
+        store.flaky = True  # the re-index's put fails once
+
+        one = "just one short chunk"
+        await index_document(
+            document=_document(text=one),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text=one),
+        )
+        final = await store.get("kb-1", "doc-1")
+        assert len(final) == 1
+        assert final[0].text == one
+        assert store.delete_calls == [("kb-1", "doc-1")]  # the destructive step ran exactly once
+
+    @pytest.mark.asyncio
+    async def test_a_grown_document_is_replaced_without_a_delete(self):
+        """Old: 1 chunk, new: 3. A new set at least as long as the stored one overwrites every stored
+        chunk id, so the upsert alone replaces the document: no destructive step runs, and none may."""
+        store = _RecordingStore()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        one = "just one short chunk"
+        await index_document(
+            document=_document(text=one),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text=one),
+        )
+        assert len(await store.get("kb-1", "doc-1")) == 1
+
+        three = "\n\n".join(["a" * 800, "b" * 800, "c" * 800])
+        await index_document(
+            document=_document(text=three),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text=three),
+        )
+        final = await store.get("kb-1", "doc-1")
+        assert len(final) == 3
+        assert store.delete_calls == []
 
 
 class _DocStore:
@@ -868,3 +998,85 @@ class TestIndexDocuments:
             )
         assert store.puts == []
         assert store.deleted == []
+
+
+class _WeakRefStore(VectorStore):
+    """Vector store whose ``put_many`` keeps only primitive data plus one weakref per record: if the
+    pass still holds a flushed document's records, that document's refs stay alive (3.1)."""
+
+    def __init__(self) -> None:
+        self.refs: dict[str, list] = {}
+        self._registered: set[str] = set()
+
+    async def create_collection(self, cid, *, dimensions, distance="cosine"):
+        self._registered.add(cid)
+
+    async def search(self, cid, vector, k):
+        raise NotImplementedError
+
+    async def count_documents(self, cid):
+        return len(self.refs)
+
+    async def drop_collection(self, cid):
+        return
+
+    async def delete(self, cid, did):
+        return
+
+    async def get(self, cid, did):
+        return []
+
+    async def search_by_meta(self, cid, meta):
+        return []
+
+    async def put_many(self, records):
+        for record in records:
+            self.refs.setdefault(record.document_id, []).append(weakref.ref(record))
+
+    async def put(self, record):
+        await self.put_many([record])
+
+
+class TestBackfillMemory:
+    @pytest.mark.asyncio
+    async def test_flushed_documents_release_their_vectors(self, monkeypatch):
+        """3.1: a backfill must not hold the already-written vectors of every document until the pass
+        ends: a record is released the moment its document is flushed, not at the end of the pass."""
+        import gc
+
+        import primer.knowledge.indexing as indexing
+        from primer.knowledge.indexing import index_documents
+
+        # One chunk per embed call: every document completes (and flushes) after its own call.
+        monkeypatch.setattr(indexing, "_EMBED_BATCH_SIZE", 1)
+
+        store = _WeakRefStore()
+        emb = _CountingEmb()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        docs = [
+            Document(id=f"doc-{i}", collection_id="kb-1", slug=f"doc-{i}", path=f"doc-{i}")
+            for i in range(3)
+        ]
+        bodies = {d.id: f"body number {i}" for i, d in enumerate(docs)}
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return bodies[doc_id]
+
+        n = await index_documents(
+            documents=docs,
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_Bodies(),
+        )
+        assert n == 3
+        gc.collect()
+        alive = [
+            ref for doc in docs for ref in store.refs[doc.id] if ref() is not None
+        ]
+        assert not alive, f"flushed records still held in memory: {len(alive)}"

@@ -296,8 +296,28 @@
       result = await singleFetch(upper, url, body, opts);
     }
 
-    if (!result.ok) throw new ApiError(result.envelope);
+    if (!result.ok) {
+      if (result.envelope && result.envelope.status === 401) noticeUnauthorized(url);
+      throw new ApiError(result.envelope);
+    }
     return result.data;
+  }
+
+  // 8.1: a 401 from any route but /auth/* (a bad password is a 401 too) may mean the session ended (cookie expiry, an admin
+  // disabled the user, sign-out everywhere). Read /auth/status once, shared by every request that failed meanwhile; only when it
+  // says unauthenticated is the session over: primerApi.sessionExpired is set (useResource stops scheduling polls) and the
+  // "primer:session-expired" event tells AuthGate to drop the console for the sign-in screen. A 401 the status read does not
+  // confirm (a route relaying an upstream 401) is only that request's error.
+  let _probing = false;
+  function noticeUnauthorized(url) {
+    if (_probing || ns.sessionExpired || url.startsWith("/v1/auth/")) return;
+    _probing = true;
+    singleFetch("GET", "/v1/auth/status", null, {}).then((r) => {
+      if (r.ok && r.data && r.data.authenticated === false) {
+        ns.sessionExpired = true;
+        window.dispatchEvent(new CustomEvent("primer:session-expired"));
+      }
+    }).catch(() => {}).then(() => { _probing = false; });
   }
 
   const ns = (window.primerApi = window.primerApi || {});
@@ -372,7 +392,13 @@ function PR_pagedLoop(size, maxPages, idKey, signal, requestPage) {
     return requestPage(offset).then(function (body) {
       var rows = body && Array.isArray(body.items) ? body.items : [];
       if (body && typeof body.total === "number") serverTotal = body.total;
-      var signature = rows.length ? JSON.stringify(rows) : null;
+      // The page's identity for the "a server that ignores the offset repeats page one" check: its row ids when every row has one (a short string,
+      // where the whole rows were serialised, 10,000 of them on the Sessions page), else the rows themselves.
+      var signature = null;
+      if (rows.length) {
+        var ids = rows.map(function (row) { return row && row[idKey] != null ? String(row[idKey]) : null; });
+        signature = ids.indexOf(null) < 0 ? ids.join("\u0001") : JSON.stringify(rows);
+      }
       var added = 0;
       if (signature === null || signature !== lastPage) {
         rows.forEach(function (row) {
@@ -520,6 +546,56 @@ function PR_usePagedResource(key, fetcher, opts) {
   return res;
 }
 
+// Per-row reads for one page of a list (an agent's status, its session count): `read(row, signal)` answers one row. Only a row not read yet, or whose
+// content changed since it was read (its JSON), is read, at most four in flight, so a poll or an edit elsewhere that changes the list payload
+// re-reads the rows that changed, not all of them (review 8.3). The answers are kept per row id while the row is on the page. `forget()` drops them
+// all and reads again (the Refresh verb: what a row's answer depends on can change without the row changing). Returns {byId, forget}; a row whose
+// read threw has the value `read` returned from its own catch (the caller's choice), never a silent gap.
+function PR_useRowReads(items, read) {
+  var R = window.React;
+  var cacheRef = R.useRef({});
+  var readRef = R.useRef(read);
+  readRef.current = read;
+  var st = R.useState({ byId: {}, round: 0 });
+  var state = st[0];
+  var setState = st[1];
+  R.useEffect(function () {
+    var cache = cacheRef.current;
+    var live = {};
+    var todo = [];
+    items.forEach(function (row) {
+      var fp = JSON.stringify(row);
+      live[row.id] = true;
+      if (!cache[row.id] || cache[row.id].fp !== fp) todo.push({ row: row, fp: fp });
+    });
+    Object.keys(cache).forEach(function (id) { if (!live[id]) delete cache[id]; });
+    function publish() {
+      var byId = {};
+      Object.keys(cache).forEach(function (id) { byId[id] = cache[id].value; });
+      // The same answers keep the same state object, so a page that re-renders with a new (empty) items array cannot loop.
+      setState(function (prev) {
+        var keys = Object.keys(byId);
+        var same = keys.length === Object.keys(prev.byId).length && keys.every(function (id) { return prev.byId[id] === byId[id]; });
+        return same ? prev : { byId: byId, round: prev.round };
+      });
+    }
+    if (todo.length === 0) { publish(); return undefined; }
+    var ctrl = new AbortController();
+    PR_mapLimit(todo, 4, function (t) {
+      return Promise.resolve(readRef.current(t.row, ctrl.signal)).then(function (value) {
+        if (!ctrl.signal.aborted) cache[t.row.id] = { fp: t.fp, value: value };
+      });
+    }, ctrl.signal).then(function () { if (!ctrl.signal.aborted) publish(); });
+    return function () { ctrl.abort(); };
+  }, [items, state.round]);
+  var forget = R.useCallback(function () {
+    cacheRef.current = {};
+    setState(function (prev) { return { byId: prev.byId, round: prev.round + 1 }; });
+  }, []);
+  return { byId: state.byId, forget: forget };
+}
+
+window.PR_useRowReads = PR_useRowReads;
 window.PR_PAGE_SIZE = PR_PAGE_SIZE;
 window.PR_MAX_PAGES = PR_MAX_PAGES;
 window.PR_MAX_POLL_MS = PR_MAX_POLL_MS;

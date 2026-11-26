@@ -145,14 +145,23 @@ The entities:
 
 - `SemanticSearchProvider`: `id`, `provider` (`SemanticSearchProviderType`),
   `config`. `LanceConfig` exposes `path` (required, absolute; the directory is
-  created with mode `0o700` on first use), `hnsw_m` (16), `hnsw_ef_construction`
-  (64), `hnsw_ef_search` (100), and `index_min_rows` (1000). Migration 13
+  created with mode `0o700` on first use), `distance_metric` (default
+  `cosine`), `hnsw_m` (16), `hnsw_ef_construction` (64), `hnsw_ef_search`
+  (100), and `index_min_rows` (1000). Migration 13
   (`m013_hnsw_ef_search_default.py`) upgrades stored `SemanticSearchProvider`
   rows whose `config.hnsw_ef_search` is still the pre-#841 default of `40` to
   `100` while leaving custom values alone; an operator who deliberately chose
-  `40` can re-set it after upgrading. There is no
-  per-config distance field; `distance` is a per-collection argument on
-  `create_collection` and stored on the Lance catalogue row.
+  `40` can re-set it after upgrading. Every config family carries
+  `distance_metric` (`cosine`, `l2`, `ip`; default `cosine`): it is the metric
+  a NEW collection is created with - `VectorStore.create_collection` resolves
+  an omitted `distance` to the provider's configured metric - while an
+  EXISTING collection keeps the metric stored at creation time (the store
+  raises `ConflictError` naming both metrics on a drift, and the indexing
+  path, `primer/knowledge/indexing.py::_ensure_collection`, treats a pure
+  metric drift as "keep indexing under the stored metric"; only a dimension
+  drift is a `DimensionMismatchError`). Scores are normalised per metric to
+  "higher = more similar" (cosine/l2: `1 / (1 + d)`, ip: the inner product),
+  so consumers see cosine-like scores on every metric.
   The pgvector / pgvectorscale config family shares `_PgVectorBaseConfig`, which
   exposes `use_halfvec` (default `false`). When enabled, NEW collections are
   created with pgvector's `halfvec` column type (half precision, up to 4000
@@ -261,7 +270,7 @@ Vector data is physically persisted by the SSP backend:
   `meta` is a JSON string because Arrow has no open-ended struct type. `put()`
   upserts via `merge_insert` on `(document_id, chunk_id)` and lazily builds an ANN
   index (trying `HnswSq` -> `HnswPq` -> `IvfPq`) once row count crosses
-  `index_min_rows`. Every query names the collection's own metric (`distance_type`), so a `cosine` collection ranks and scores by exact cosine whatever the vectors' norm and whether or not the index exists, and `_similarity()` maps the returned distance (`1 - cos`, squared L2, `1 - <a, b>`) to a score that does not shift when the index is built (KN-11, D4: Lance scores moved from `1 - raw/2` of an L2 distance to true cosine). A table with no catalogue row (a crash between the create and the catalogue insert) is replaced by the next `create_collection` (KN-14). A `PgVectorStore` whose cached catalogue entry went stale (another process re-created the collection, perhaps at another width) evicts it and resolves once more instead of failing until restart (KN-18). Two callers creating the same new pgvector collection at once both succeed: the loser of the DDL or catalogue-insert race (`UniqueViolationError`, `DuplicateTableError`) reads the winner's row and uses it, and only a row of another dimension or distance is a `ConflictError` (GI-27). A search for more rows than `hnsw_ef_search` (a path-prefix search overfetches up to 500) runs `SET LOCAL hnsw.ef_search = min(k, 1000)` in its own transaction, as pgvector's HNSW scan returns at most that many; `initialize()` applies the GUC after `CREATE EXTENSION` and expires the pool's earlier connections, which had skipped it (GI-29; a DiskANN index keeps its own list size). `hnsw_m` (2 to 100), `hnsw_ef_construction` (4 to 1000 and at least `2 * hnsw_m`) and `hnsw_ef_search` (1 to 1000) are checked at the save door, REST `422 hnsw_out_of_range` and the system tools' `CrudGuards.validate` (`hnsw_bound_violation`, GI-22); rows saved before are still read. Whether pgvectorscale can build `diskann (vector halfvec_cosine_ops)` (GI-30) is not settled by the code: `tests/vector/test_pgvectorscale_diskann_halfvec_live.py` asks a database that has the extension (skipped without one) and fails with the reason if it cannot.
+  `index_min_rows`. Every query names the collection's own metric (`distance_type`), so a `cosine` collection ranks and scores by exact cosine whatever the vectors' norm and whether or not the index exists, and `_similarity()` maps the returned distance (`1 - cos`, squared L2, `1 - <a, b>`) to a score that does not shift when the index is built (KN-11, D4: Lance scores moved from `1 - raw/2` of an L2 distance to true cosine). A table with no catalogue row (a crash between the create and the catalogue insert) is replaced by the next `create_collection` (KN-14). A `PgVectorStore` whose cached catalogue entry went stale (another process re-created the collection, perhaps at another width) evicts it and resolves once more instead of failing until restart (KN-18). Two callers creating the same new pgvector collection at once both succeed: the loser of the DDL or catalogue-insert race (`UniqueViolationError`, `DuplicateTableError`) reads the winner's row and uses it, and only a row of another dimension or distance is a `ConflictError` (GI-27). A search for more rows than `hnsw_ef_search` (a path-prefix search overfetches up to 500) runs `SET LOCAL hnsw.ef_search = min(k, 1000)` in its own transaction, as pgvector's HNSW scan returns at most that many; the pool applies the GUC (`SET hnsw.ef_search`, or `diskann.query_search_list_size` for DiskANN) in its asyncpg `setup` hook, which runs on every acquire, because asyncpg's release `RESET ALL`s a used connection and a one-time `init` setting would be gone after the connection's first use, leaving every search at pgvector's stock 40 (GI-29, review 3.2); `initialize()` still expires the pool's earlier connections, which had skipped the vector codec. `hnsw_m` (2 to 100), `hnsw_ef_construction` (4 to 1000 and at least `2 * hnsw_m`) and `hnsw_ef_search` (1 to 1000) are checked at the save door, REST `422 hnsw_out_of_range` and the system tools' `CrudGuards.validate` (`hnsw_bound_violation`, GI-22); rows saved before are still read. Whether pgvectorscale can build `diskann (vector halfvec_cosine_ops)` (GI-30) is not settled by the code: `tests/vector/test_pgvectorscale_diskann_halfvec_live.py` asks a database that has the extension (skipped without one) and fails with the reason if it cannot.
 
 The provider rows, cross-encoder rows, and internal-collections singletons persist
 through the generic `Storage[T]` interface with no special semantics.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import zipfile
 
+from primer.int.vector_store import VectorStore
 from primer.model.collection import Collection
 
 
@@ -137,3 +138,103 @@ async def test_an_encrypted_entry_answers_400(client):
     raw[raw.rfind(b"PK\x01\x02") + 8] |= 1
     r = await client.post(f"/v1/collections/{cid}/import", files={"file": ("kb.zip", bytes(raw), "application/zip")})
     assert r.status_code == 400, r.text
+
+
+# ---- 3.9: the import's indexing is one batched pass, not one call per entry ----
+
+
+async def test_import_indexes_the_collection_in_one_batched_pass(client, app, fake_storage_provider):
+    """After the writes, the route runs the same batched index pass that enabling search runs:
+    one probe plus one embed call carrying every entry's chunks (the per-entry indexer made one
+    probe plus one embed per document)."""
+    from unittest.mock import AsyncMock
+
+    from primer.model.collection import (
+        CollectionEmbedder,
+        CollectionSearchConfig,
+    )
+
+    # A search-enabled collection written straight to storage, as enable-search rows look.
+    await fake_storage_provider.get_storage(Collection).create(Collection(
+        id="kb-import",
+        description="wiki",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="emb-1", model="m-1"),
+            vector_store_provider_id="ssp-1",
+        ),
+    ))
+
+    embed_calls: list[int] = []
+
+    class _Emb:
+        async def embed(self, *, model, inputs, config=None):
+            embed_calls.append(len(inputs))
+
+            class _R:
+                embeddings = [type("V", (), {"vector": [0.1, 0.2]})() for _ in inputs]
+
+            return _R()
+
+    class _Store(VectorStore):
+        async def create_collection(self, cid, *, dimensions, distance="cosine"):
+            return None
+
+        async def put_many(self, records):
+            return None
+
+        async def delete(self, cid, did):
+            return None
+
+        async def get(self, cid, did):
+            return []
+
+        async def search_by_meta(self, cid, meta):
+            return []
+
+        async def put(self, record):
+            return None
+
+        async def search(self, cid, vector, k):
+            return []
+
+        async def count_documents(self, cid):
+            return 0
+
+        async def drop_collection(self, cid):
+            return None
+
+    app.state.provider_registry.get_embedder = AsyncMock(return_value=_Emb())
+    app.state.semantic_search_registry.get_store = AsyncMock(return_value=_Store())
+
+    data = _zip({"a.md": b"A body", "b.md": b"B body", "c.md": b"C body"})
+    r = await client.post(
+        "/v1/collections/kb-import/import",
+        files={"file": ("kb.zip", data, "application/zip")},
+    )
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["created"]) == ["a", "b", "c"]
+    assert r.json()["index_failed"] is False
+    # One probe + one batched call carrying all three chunks; the per-entry
+    # indexer made four calls (the probe is cached, one embed per document).
+    assert embed_calls == [1, 3]
+
+
+async def test_a_failed_index_pass_sets_index_failed_on_the_report(client, monkeypatch):
+    """The index pass is best-effort (the rows stay written), but the caller must be able to
+    tell it failed: the report carries the flag instead of the failure staying in the log."""
+    from primer.knowledge import indexing
+
+    async def _boom(**kwargs):
+        raise RuntimeError("the indexer is down")
+
+    monkeypatch.setattr(indexing, "index_documents", _boom)
+
+    cid = await _mk_collection(client)
+    r = await client.post(
+        f"/v1/collections/{cid}/import",
+        files={"file": ("in.zip", _zip({"doc.txt": b"hello"}), "application/zip")},
+    )
+    assert r.status_code == 200, r.text
+    report = r.json()
+    assert report["created"] == ["doc"]
+    assert report["index_failed"] is True

@@ -94,7 +94,17 @@ def _error(code: str, node_id: str = "n") -> _GraphErrorEvent:
 
 def _services(child: _Child) -> GraphInvocationServices:
     async def resolve_graph(graph_id):
-        return {"id": graph_id}
+        # A real Graph without an input_schema: run_invoke_graph reads the
+        # resolved graph's Begin for its input_schema pre-check (review
+        # 2026-11-23, 7.1b), which stays inert without one.
+        from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
+
+        return Graph(
+            id=graph_id,
+            description="stub child graph",
+            nodes=[_BeginNode(id="begin"), _EndNode(id="exit")],
+            edges=[_StaticEdge(from_node="begin", to_node="exit")],
+        )
 
     async def build_child_executor(*, graph, gsid):
         return child

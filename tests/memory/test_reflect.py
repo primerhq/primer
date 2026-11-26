@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,9 @@ from primer.events.recorder import recorder_for
 from primer.knowledge.document_service import DocumentService
 from primer.memory.collection import memory_collection_id
 from primer.memory.jobs import MemoryDeps
-from primer.memory.reflect import DEFAULT_REFLECTION_PROMPT, reflect, used_entries
+import primer.memory.reflect as reflect_module
+from primer.memory.reflect import DEFAULT_REFLECTION_PROMPT, _lookups, plan_newest_window, reflect, used_entries
+from primer.memory.reflection_input import InputRefused
 from primer.memory.store import MemoryStore
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart
@@ -407,12 +409,12 @@ def test_used_entries_reads_search_and_read_document_calls_on_this_collection_on
     assert names == {"one", "two", "three", "four", "five", "six"} and trial == "five"
 
 
-@pytest.mark.parametrize("failure", ["too_large", "policy", "invalid_summary", "invalid_second_summary", "superseded", "disabled"])
+@pytest.mark.parametrize("failure", ["policy", "invalid_summary", "invalid_second_summary", "superseded", "disabled"])
 async def test_input_failure_preserves_watermark_and_entries(sp, llm, failure):
     from primer.model.chat import Done, TextDelta
     agent, mem, job = await _setup(sp)
     source = _transcript()
-    source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * (600000 if failure == "too_large" else 140000))])
+    source[0] = Message(role="user", parts=[TextPart(text="early correction " + "x" * 140000)])
     if failure == "policy":
         mem = await sp.get_storage(AgentMemory).update(mem.model_copy(update={"do_not_capture": ["x" * 150000]}))
     calls = []
@@ -428,14 +430,14 @@ async def test_input_failure_preserves_watermark_and_entries(sp, llm, failure):
     deps = _deps(sp, SummaryLLM(), source)
     before = json.dumps([m.model_dump(mode="json") for m in source])
     report = await reflect(deps, job, agent, mem)
-    expected = {"too_large": "input_compaction_limit", "policy": "input_policy_too_large",
+    expected = {"policy": "input_policy_too_large",
                 "invalid_summary": "compaction_invalid", "invalid_second_summary": "compaction_invalid",
                 "superseded": "input_superseded", "disabled": "input_superseded"}[failure]
     assert report.skipped_reason == expected
     assert await _entries(deps) == []
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 0
     assert json.dumps([m.model_dump(mode="json") for m in source]) == before
-    if failure in {"too_large", "policy"}:
+    if failure == "policy":
         assert calls == []
     else:
         assert len(calls) == (2 if failure == "invalid_second_summary" else 1)
@@ -672,3 +674,294 @@ async def test_chat_adapter_normal_stop_retains_final_verdict_policy(sp, provide
     assert report.skipped_reason == ("invalid_output" if malformed else None)
     assert create.call_count == 1 and await _entries(deps) == []
     assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2
+
+
+# --- 2.7: a range that outgrew the bounded input makes progress ---------------------------------------------------------------------------------
+
+
+def _huge(text: str) -> Message:
+    return Message(role="user", parts=[TextPart(text=text + " " + "x" * 600000)])
+
+
+async def test_an_oversized_range_reflects_on_its_newest_window(sp, llm):
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    source[0] = _huge("OLDEST_OVERSIZED_TURN")
+    llm.answers = [_run([_add_delta()])]
+    deps = _deps(sp, llm, source)
+    report = await reflect(deps, job, agent, mem)
+    assert report.written == 1 and report.skipped_reason is None
+    [call] = llm.calls
+    assert "try again later" in call["user_message"] and "OLDEST_OVERSIZED_TURN" not in call["user_message"]
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2
+    [entry] = await _entries(deps, "candidates")
+    assert entry.meta["sources"] == [{"session_id": "s1", "from_turn": 2, "to_turn": 2}]
+    completed = next(e for e in await _events(sp) if e.event_type == "memory.reflection.completed")
+    assert completed.payload["skipped_turns"] == 1 and completed.payload["source_turns"] == 2
+
+
+async def test_a_range_with_no_turn_that_fits_is_skipped_once_and_never_retried(sp, llm):
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    source[0], source[3] = _huge("FIRST"), _huge("SECOND")
+    deps = _deps(sp, llm, source)
+    report = await reflect(deps, job, agent, mem)
+    assert report.skipped_reason == "input_too_large_skipped" and llm.calls == [] and await _entries(deps) == []
+    stored = await sp.get_storage(MemoryJob).get(job.id)
+    assert stored.reflected_turn == 2, "the unreflectable range is given up, so the next attempt starts after it"
+    skipped = next(e for e in await _events(sp, "memory.reflection.skipped"))
+    assert "skipped" in skipped.payload["detail"] and skipped.payload["reason"] == "input_too_large_skipped"
+    again = await reflect(deps, stored, agent, mem)
+    assert again.skipped_reason == "no_new_turns"
+
+
+async def test_a_range_that_fits_is_not_windowed(sp, llm):
+    agent, mem, job = await _setup(sp)
+    llm.answers = [_run([_add_delta()])]
+    await reflect(_deps(sp, llm), job, agent, mem)
+    completed = next(e for e in await _events(sp) if e.event_type == "memory.reflection.completed")
+    assert completed.payload["skipped_turns"] == 0
+
+
+def test_the_window_search_refuses_the_oversized_tail_without_planning_it(monkeypatch):
+    """The backward walk of the window search refuses a turn that cannot fill the bounded summary chunks with a cheap
+    token count, not a full plan (review 2026-11-23 X2.2): the oversized newest tail costs its content, not one plan
+    per turn, and the window lands exactly where the old walk landed."""
+    from primer.memory import reflection_input as ri
+    calls = []
+    real = ri.plan_input
+
+    def counting(messages, first_turn, **kw):
+        calls.append(first_turn)
+        return real(messages, first_turn, **kw)
+
+    monkeypatch.setattr(reflect_module, "plan_input", counting)
+    big = "z" * 200_000  # about 50k estimated tokens: more than the four bounded summary chunks hold at a 16k window
+    source = [
+        Message(role="user", parts=[TextPart(text="first small")]),
+        Message(role="assistant", parts=[TextPart(text="a1")]),
+        Message(role="user", parts=[TextPart(text="second small")]),
+        Message(role="assistant", parts=[TextPart(text="a2")]),
+        Message(role="user", parts=[TextPart(text=big)]),
+        Message(role="assistant", parts=[TextPart(text="a3")]),
+        Message(role="user", parts=[TextPart(text=big)]),
+        Message(role="assistant", parts=[TextPart(text="a4")]),
+    ]
+    plan, first, last = plan_newest_window(source, 1, context="ctx", system="sys", schema={}, window=16384)
+    assert (first, last) == (0, 1)
+    assert plan.direct is not None and "second small" in plan.direct and big not in plan.direct
+    # The old walk planned the two oversized turns as well (five plans for the range, the tail, the window, the search).
+    assert len(calls) <= 4
+
+
+def test_the_prefilter_only_skips_turns_the_plan_would_refuse():
+    """The window search's cheap pre-filter never skips a turn ``plan_input`` would take (review 2026-11-23 X2.2 / M1):
+    it only skips a turn whose lines exceed the four bounded summary chunks (or whose one line exceeds a chunk), and
+    a turn like that is refused by ``plan_input`` with ``input_compaction_limit`` too - so the window found is the one
+    the old per-turn walk found. The thresholds sit exactly on the estimator's bounds: a join costs no more than the
+    two token counts (T(a+b) <= T(a) + T(b), no +1 at a join), a fitting chunk's joined lines hold T(joined) <= the
+    chunk capacity by monotonicity, the +1 per chunk (and per line) is deliberate slack, and each of the four chunk
+    joins adds at most one token (the newline separator), so the slack errs toward planning: a turn the pre-filter
+    lets through but ``plan_input`` still refuses costs exactly one plan and is then
+    skipped like any oversized turn. Each case below builds a single-user turn at a multiple of the four-chunk
+    content, and the bisect lands on the exact length ``plan_input`` still takes; the whole range (a huge newest turn
+    plus the case turn) is refused in every case, so the pre-filter engages on the case turn in all of them."""
+    from primer.memory import reflection_input as ri
+    from primer.memory.prompts import MEMORY_SUMMARY_PROMPT
+
+    kw = dict(context="ctx", system="sys", schema={})
+    huge = Message(role="user", parts=[TextPart(text="z" * 150_000)])
+    gap = Message(role="assistant", parts=[TextPart(text="a")])
+    checked = 0
+    for window in (8192, 16384, 32768, 131_072):
+        cap = ri.Budget.for_model(window, summary=True).input_tokens - ri.request_size(
+            MEMORY_SUMMARY_PROMPT, ri.summary_input([]), ri.EvidenceSummary.model_json_schema())
+        for factor in (0.75, 0.9, 1.0, 1.05, 1.1):
+            for char in ("a", "汉"):
+                tokens = int(ri.MAX_CHUNKS * cap * factor)
+                text = char * (tokens if char != "a" else tokens * 4)
+                turn = [Message(role="user", parts=[TextPart(text=text)])]
+                try:
+                    ri.plan_input(turn, 2, **kw, window=window)
+                    fits = True
+                except ri.InputRefused:
+                    fits = False
+                if not fits:
+                    continue
+                checked += 1
+                source = [huge, gap, *turn]
+                plan, first, last = plan_newest_window(source, 1, **kw, window=window)
+                assert (first, last) == (1, 1), f"the pre-filter skipped a turn the plan takes (window={window}, factor={factor})"
+                try:
+                    ri.plan_input(source, 1, **kw, window=window)
+                    pytest.fail(f"the whole range should have been refused (window={window}, factor={factor})")
+                except ri.InputRefused as exc:
+                    assert str(exc) == "input_compaction_limit"
+    assert checked >= 12, "the sweep must actually meet near-boundary turns the plan takes"
+    for window in (8192, 16384):
+        cap = ri.Budget.for_model(window, summary=True).input_tokens - ri.request_size(
+            MEMORY_SUMMARY_PROMPT, ri.summary_input([]), ri.EvidenceSummary.model_json_schema())
+        for char in ("a", "汉"):
+            def takes(n: int) -> bool:
+                try:
+                    ri.plan_input([Message(role="user", parts=[TextPart(text=char * n)])], 2, **kw, window=window)
+                    return True
+                except ri.InputRefused:
+                    return False
+            # a safe over-bound: the most content four full summary chunks hold (four chars per token for Latin)
+            hi = 5 * (4 * cap) if char == "a" else 5 * cap
+            lo, hi2 = 0, hi
+            while lo < hi2:
+                mid = (lo + hi2 + 1) // 2
+                if takes(mid):
+                    lo = mid
+                else:
+                    hi2 = mid - 1
+            assert lo > 0
+            source = [huge, gap, Message(role="user", parts=[TextPart(text=char * lo)])]
+            plan, first, last = plan_newest_window(source, 1, **kw, window=window)
+            assert (first, last) == (1, 1), f"the pre-filter skipped the exact-boundary turn (window={window}, char={char!r})"
+
+
+# --- 2.8: bounded lookups, and the log parsed off the event loop ----------------------------------------------------------------------------------
+
+
+async def test_lookups_of_other_sessions_of_the_same_agent_are_not_read(sp, llm) -> None:
+    """The scan is bounded by the session's own events (review 2026-11-23 X2.2 / M7): the same agent's lookups
+    of other sessions (the bulk of its 30 days of events) are never read, whatever their age."""
+    agent, mem, job = await _setup(sp)
+    deps = _deps(sp, llm)
+    await deps.store.approve(AGENT, (await _seed(deps, "Known")).name, actor="user:o")
+    await _lookup_event(sp, turn=1, paths=["active/known"], session_id="s9")
+    assert await _lookups(deps, agent, job) == []
+    await _lookup_event(sp, turn=2, paths=["active/known"])
+    assert [l["turn"] for l in await _lookups(deps, agent, job)] == [2]
+
+
+async def test_a_lookup_stamped_before_the_session_start_is_still_read(sp, llm) -> None:
+    """A lookup stamped a beat before the session's created_at (clock skew) is still the session's own event and
+    is read: the scan is bounded by the session's events, not by its start time (review 2026-11-23 X2.2 / M7)."""
+    agent, mem, job = await _setup(sp)
+    await sp.get_event_store().append(
+        event_type="memory.lookup", actor=f"memory:{AGENT}", entity_kind="agent", entity_id=AGENT,
+        session_id="s1", payload={"session_id": "s1", "turn": 1, "paths": [], "trial": None},
+        occurred_at=NOW - timedelta(seconds=5),
+    )
+    lookups = await _lookups(_deps(sp, llm), agent, job)
+    assert [l["turn"] for l in lookups] == [1]
+
+
+async def test_the_session_log_is_parsed_off_the_event_loop(sp, monkeypatch) -> None:
+    import threading
+
+    import primer.memory.reflect as reflect_mod
+
+    agent, mem, job = await _setup(sp)
+    threads: list[str] = []
+    for name in ("_checked_lines", "_without_compaction_markers"):
+        original = getattr(reflect_mod, name)
+
+        def spy(*args, _original=original, **kwargs):
+            threads.append(threading.current_thread().name)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(reflect_mod, name, spy)
+
+    async def read_log(workspace_id, slot):
+        return (json.dumps({"role": "user", "parts": [{"type": "text", "text": "hi"}]}) + "\n").encode()
+
+    messages = await reflect_mod.session_message_loader(sp, read_log)(job)
+    assert [m.role for m in messages] == ["user"]
+    assert len(threads) == 2 and threading.current_thread().name not in threads
+
+
+# --- review X2: context from the reflected turns, and refusals that advance ---------------------------------------------------------------------
+
+
+async def test_entries_used_in_older_reflected_turns_are_not_listed(sp, llm) -> None:
+    """The "entries used" context section covers the turns being reflected on only (review 2026-11-23 X2.2 /
+    M3): an entry the agent consulted in an already-reflected turn is not listed for the new range."""
+    agent, mem, job = await _setup(sp)
+    job = job.model_copy(update={"reflected_turn": 1})
+    await sp.get_storage(MemoryJob).update(job)
+    transcript = [
+        Message(role="user", parts=[TextPart(text="search the playbook")]),
+        Message(role="assistant", parts=[ToolCallPart(id="t1", name="collections__read_document",
+                                                      arguments={"collection": CID, "path": "entries/one"})]),
+        Message(role="tool", parts=[ToolResultPart(id="t1", output="the body")]),
+        Message(role="user", parts=[TextPart(text="do the thing")]),
+        Message(role="assistant", parts=[TextPart(text="all done")]),
+    ]
+    llm.answers = [_run([])]
+    await reflect(_deps(sp, llm, messages=transcript), job, agent, mem)
+    [call] = llm.calls
+    assert "# Entries used in the reflected turns" in call["user_message"]
+    # The entry the agent consulted in the already-reflected turn 1 is not listed for the reflected turn 2.
+    assert "# Entries used in the reflected turns\n(none)" in call["user_message"]
+
+
+async def test_a_refusal_of_the_final_input_budget_advances_the_watermark(sp, llm, monkeypatch) -> None:
+    """The final prepare_input budget check, like the window search's refusal, advances the watermark past the
+    range (review 2026-11-23 X2.2): retrying the same range could never succeed, so it is skipped for good."""
+    agent, mem, job = await _setup(sp)
+
+    async def _refuse(plan, **_kw):
+        raise InputRefused("input_compaction_limit")
+
+    monkeypatch.setattr(reflect_module, "prepare_input", _refuse)
+    llm.answers = [_run([])]
+    await reflect(_deps(sp, llm), job, agent, mem)
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == job.target_turn
+    skipped = next(e for e in await _events(sp) if e.event_type == "memory.reflection.skipped")
+    assert skipped.payload["reason"] == "input_too_large_skipped"
+
+
+async def test_a_budget_refusal_of_the_judge_call_advances_the_watermark(sp, llm, monkeypatch) -> None:
+    """The judge call's own budget check (the _judge_stream pre-call check) advances the same way."""
+    agent, mem, job = await _setup(sp)
+
+    async def _refuse(_llm, _model, **_kw):
+        raise InputRefused("input_compaction_limit")
+
+    monkeypatch.setattr(reflect_module, "bounded_judge", _refuse)
+    llm.answers = [_run([])]
+    await reflect(_deps(sp, llm), job, agent, mem)
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == job.target_turn
+    skipped = next(e for e in await _events(sp) if e.event_type == "memory.reflection.skipped")
+    assert skipped.payload["reason"] == "input_too_large_skipped"
+
+
+# --- review round 1 -----------------------------------------------------------------------------------------------------------------------------
+
+
+async def test_a_huge_newest_turn_does_not_drop_the_older_turns_that_fit(sp, llm):
+    agent, mem, job = await _setup(sp)
+    source = _transcript()
+    source[3] = _huge("NEWEST_OVERSIZED_TURN")
+    llm.answers = [_run([_add_delta()])]
+    deps = _deps(sp, llm, source)
+    report = await reflect(deps, job, agent, mem)
+    assert report.written == 1
+    [call] = llm.calls
+    assert "push the branch" in call["user_message"] and "NEWEST_OVERSIZED_TURN" not in call["user_message"]
+    assert (await sp.get_storage(MemoryJob).get(job.id)).reflected_turn == 2
+    [entry] = await _entries(deps, "candidates")
+    assert entry.meta["sources"] == [{"session_id": "s1", "from_turn": 1, "to_turn": 1}]
+    completed = next(e for e in await _events(sp) if e.event_type == "memory.reflection.completed")
+    assert completed.payload["skipped_turns"] == 1
+
+
+def test_a_chunk_count_that_starves_the_summary_output_is_a_range_refusal_not_a_policy_one():
+    from primer.memory.reflect import plan_newest_window
+    from primer.memory.reflection_input import InputRefused, plan_input
+    from primer.model.memory import ReflectionOutput
+
+    schema = ReflectionOutput.model_json_schema()
+    system = "s " * 42800  # a fixed policy that fits, but leaves too little room for three summaries
+    big = Message(role="user", parts=[TextPart(text="y" * 250000)])
+    small = Message(role="user", parts=[TextPart(text="short")])
+    kw = dict(context="", system=system, schema=schema, window=32768)
+    with pytest.raises(InputRefused, match="input_compaction_limit"):
+        plan_input([big], 1, **kw)
+    plan, first, last = plan_newest_window([big, Message(role="assistant", parts=[TextPart(text="ok")]), small], 1, **kw)
+    assert (first, last) == (1, 1) and plan.direct is not None

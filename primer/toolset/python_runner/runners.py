@@ -132,6 +132,30 @@ def warn_if_unconfined(level: IsolationLevel) -> None:
     )
 
 
+_seccomp_note_done = False
+
+
+def _note_seccomp_best_effort(level: IsolationLevel) -> None:
+    """One per process: without libseccomp the shim installs no syscall filter, so the network deny is best effort.
+
+    Per host type: on macOS there is nothing to warn about, because the
+    sandbox-exec profile already carries (deny network*), so the network
+    deny is enforced there without libseccomp. The note therefore only fires
+    on Linux levels where no other layer bounds egress (landlock and
+    rlimit-only)."""
+    global _seccomp_note_done
+    if _seccomp_note_done or level is IsolationLevel.SANDBOX_EXEC:
+        return
+    if ctypes.util.find_library("seccomp"):
+        return
+    _seccomp_note_done = True
+    logger.warning(
+        "no libseccomp on this host (isolation level %r): the python tool network deny is best effort, because the "
+        "shim installs no syscall filter; egress is bounded only by the platform's other confinement, if any. "
+        "Install libseccomp on Linux to enforce it.", level.value,
+    )
+
+
 def _timeout_error() -> ShimResponse:
     return ShimResponse(
         ok=False,
@@ -204,6 +228,9 @@ class Runner(ABC):
         self, request: dict[str, Any], *, timeout_seconds: float
     ) -> ShimResponse: ...
 
+    async def aclose(self) -> None:  # noqa: B027 - an optional hook: the default runner holds nothing to release
+        """Release the resources the runner holds (the provider's per-workspace cache calls it when it evicts a runner). The default holds none."""
+
 
 class LocalHardenedRunner(Runner):
     """Subprocess on the host, hardened as far as the platform allows."""
@@ -211,6 +238,7 @@ class LocalHardenedRunner(Runner):
     def __init__(self, env: dict[str, str] | None = None) -> None:
         self._env = dict(env or {})
         self._level = detect_local_isolation()
+        _note_seccomp_best_effort(self._level)
 
     @property
     def isolation_level(self) -> IsolationLevel:
@@ -294,6 +322,17 @@ class SandboxRunner(Runner):
     @property
     def isolation_level(self) -> IsolationLevel:
         return IsolationLevel.CONTAINER
+
+    @property
+    def gone(self) -> bool:
+        """The sandbox's self-eviction flag (``WSSandbox.gone``): once set, the handle is dead and the provider re-resolves the workspace's runner. Sandboxes without the flag never go stale here."""
+        return bool(getattr(self._sandbox, "gone", False))
+
+    async def aclose(self) -> None:
+        """Close the sandbox handle (the provider's LRU eviction calls it when a GONE runner is evicted and the handle would otherwise keep its aiohttp session for the process's life)."""
+        close = getattr(self._sandbox, "aclose", None)
+        if close is not None:
+            await close()
 
     async def run(
         self, request: dict[str, Any], *, timeout_seconds: float

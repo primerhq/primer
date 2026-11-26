@@ -17,13 +17,20 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from jsonschema import Draft202012Validator
-
+import jsonschema
+from primer.common.bounded_jsonschema import ValidationTimeout, validate_bounded_off_loop
+from primer.common.user_regex import UserRegexError, UserRegexTimeout
 from primer.model.service import ServiceFunctionSpec, ServiceVersion
 from primer.toolset.python_runner.protocol import PHASE_CALL, build_request
 from primer.toolset.python_runner.runners import LocalHardenedRunner, Runner
 
 _ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
+
+# The /svc function routes take the app-wide request-body cap (LimitsConfig.max_body_bytes,
+# 32 MiB; primer/api/middleware/body_limit.py), so the validator admits instances that cap:
+# a body the middleware accepted must not be refused here (anonymous callers are pre-capped
+# smaller by the same middleware).
+_ARGS_MAX_INSTANCE_BYTES = 32 * 1024 * 1024
 
 _runner: Runner | None = None
 
@@ -109,14 +116,44 @@ def find_spec(version: ServiceVersion, fn: str) -> ServiceFunctionSpec:
     )
 
 
-def validate_args(spec: ServiceFunctionSpec, args: dict[str, Any]) -> None:
-    validator = Draft202012Validator(spec.schema_)
-    errors = [
-        (f"{'/'.join(str(p) for p in e.path)}: " if e.path else "") + e.message
-        for e in validator.iter_errors(args)
-    ]
-    if errors:
-        raise ArgsInvalid(errors)
+def _format_validation_error(error: jsonschema.ValidationError) -> str:
+    """The pre-7.1b error string: "<path>: <message>", no prefix for a top-level error."""
+    prefix = f"{'/'.join(str(p) for p in error.path)}: " if error.path else ""
+    return prefix + error.message
+
+
+async def validate_args(spec: ServiceFunctionSpec, args: dict[str, Any]) -> None:
+    """Validate call arguments against the published schema, off the event loop.
+
+    Bounded (7.1b): the published schema is operator data, and the
+    jsonschema package on the loop could hang the loop (a backtracking
+    pattern, a uniqueItems explosion). The bounded validator runs in a
+    worker thread
+    with per-regex and whole-validation budgets, and a budget that expires
+    refuses the call instead of blocking it.
+    """
+    try:
+        await validate_bounded_off_loop(
+            args, spec.schema_,
+            label=f"service {spec.name} arguments schema",
+            max_instance_bytes=_ARGS_MAX_INSTANCE_BYTES,
+        )
+    except ValidationTimeout as exc:
+        # The whole-validation deadline expired: fail closed, and name the
+        # cause so a caller is not told their arguments are simply wrong.
+        raise ArgsInvalid([
+            f"the published arguments schema for {spec.name!r} exceeded its validation "
+            f"budget and the call was refused: {exc.message}"
+        ]) from exc
+    except (UserRegexTimeout, UserRegexError) as exc:
+        raise ArgsInvalid([
+            f"the published arguments schema for {spec.name!r} cannot be validated safely "
+            f"and the call was refused: {exc}"
+        ]) from exc
+    except jsonschema.ValidationError as exc:
+        # Ordinary invalid input keeps the pre-7.1b error string (one best-match
+        # entry where the old code listed every error; the 422 envelope is unchanged).
+        raise ArgsInvalid([_format_validation_error(exc)]) from exc
 
 
 async def call_function(
@@ -130,27 +167,32 @@ async def call_function(
 ) -> Any:
     """Execute one gateway function call and return its JSON value."""
     spec = find_spec(version, fn)
-    validate_args(spec, args)
-    request = build_request(
-        module=source,
-        fn=spec.name,
-        phase=PHASE_CALL,
-        args=args,
-        ctx={
-            "service_id": service_id,
-            "service_version": version.version,
-            # Deliberately no session/workspace/chat: a gateway call has
-            # none, and the shim treats ctx as opaque data.
-        },
-        cpu_seconds=int(spec.timeout_seconds) + 1,
-        address_space_bytes=_ADDRESS_SPACE_BYTES,
-    )
-    active = runner or _get_runner()
+    # Admit before validating: the argument check runs on a worker thread, so a
+    # burst admitted after it would queue validation work for every call before
+    # the cap refused any. Admission first refuses the burst at once, and the
+    # slot also bounds the validations in flight.
     _admit(service_id)
     try:
-        response = await active.run(request, timeout_seconds=spec.timeout_seconds)
-    except OSError as exc:
-        raise RunnerUnavailable(str(exc)) from exc
+        await validate_args(spec, args)
+        request = build_request(
+            module=source,
+            fn=spec.name,
+            phase=PHASE_CALL,
+            args=args,
+            ctx={
+                "service_id": service_id,
+                "service_version": version.version,
+                # Deliberately no session/workspace/chat: a gateway call has
+                # none, and the shim treats ctx as opaque data.
+            },
+            cpu_seconds=int(spec.timeout_seconds) + 1,
+            address_space_bytes=_ADDRESS_SPACE_BYTES,
+        )
+        active = runner or _get_runner()
+        try:
+            response = await active.run(request, timeout_seconds=spec.timeout_seconds)
+        except OSError as exc:
+            raise RunnerUnavailable(str(exc)) from exc
     finally:
         _release(service_id)
 

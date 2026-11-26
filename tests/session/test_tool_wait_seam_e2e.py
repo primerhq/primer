@@ -594,7 +594,9 @@ async def _dispatch_and_claim_batch(storage_provider, session_id: str):
 
     engine = InMemoryClaimEngine(adapters={
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage),
-        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
+            task_storage=task_storage, session_storage=session_storage,
+        ),
     })
 
     async def _wake_session_on_tool_wait_ready(signal) -> None:
@@ -764,7 +766,9 @@ async def test_two_sessions_with_identical_turn_zero_batches_do_not_share_rows_l
     task_storage = storage_provider.get_storage(ToolCallTask)
     engine = InMemoryClaimEngine(adapters={
         ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage),
-        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(task_storage=task_storage),
+        ClaimKind.TOOL_CALL: ToolCallClaimAdapter(
+            task_storage=task_storage, session_storage=session_storage,
+        ),
     })
 
     async def _wake(signal) -> None:

@@ -348,16 +348,27 @@ const AGM_REFLECTION_REASONS = {
   compaction_output_limit: "Learning skipped: model output reached a limit. Progress was kept.",
   compaction_incomplete: "Learning skipped: the model did not provide a complete verdict. Progress was kept.",
   input_context_rejected: "Learning skipped: the model rejected the context size. Progress was kept.",
-  input_superseded: "Learning skipped: the session, memory settings or job changed."
+  input_superseded: "Learning skipped: the session, memory settings or job changed.",
+  // Lane L carry: the newest turns WERE reflected (the watermark advanced past them);
+  // the skipped older stretch will not be retried, so no "Progress was kept" line.
+  input_too_large_skipped: "Learning skipped: this stretch of the session was too large to learn from and will not be retried."
 };
 function AGM_reflectionDetail(event) {
   const p = event.payload || {};
   if (event.type === "memory.reflection.skipped") return AGM_REFLECTION_REASONS[p.reason] || "";
-  if (event.type === "memory.reflection.completed" && p.input_mode === "compacted" &&
+  if (event.type !== "memory.reflection.completed") return "";
+  let detail = "";
+  if (p.input_mode === "compacted" &&
       Number.isInteger(p.summary_calls) && p.summary_calls >= 1 && p.summary_calls <= 4) {
-    return "Reviewed with " + p.summary_calls + " evidence summaries; original messages preserved.";
+    detail = "Reviewed with " + p.summary_calls + " evidence summaries; original messages preserved.";
   }
-  return "";
+  // Lane L carry: when the newest turns fit but the older stretch was too large,
+  // the completed entry says so (the activity API passes the payload through).
+  if (Number.isInteger(p.skipped_turns) && p.skipped_turns > 0) {
+    detail = (detail ? detail + " " : "")
+      + "Learned from the newest turns that fit; " + p.skipped_turns + " other turn(s) were too large and left out.";
+  }
+  return detail;
 }
 
 function AGM_Activity({ activity }) {

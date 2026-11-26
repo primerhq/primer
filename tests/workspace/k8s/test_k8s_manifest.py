@@ -178,6 +178,63 @@ def test_a_template_can_turn_the_shared_process_namespace_off() -> None:
     assert _pod_spec(pod_overrides={"shareProcessNamespace": False})["shareProcessNamespace"] is False
 
 
+# ---- security review 2026-11-23 (5.2): safe pod defaults, admin-adjustable -------------------------------------
+
+
+def test_the_pod_automounts_no_service_account_token_by_default() -> None:
+    """No service account is named, so the pod keeps the namespace default SA's token out (5.2)."""
+    spec = _pod_spec()
+    assert spec["automountServiceAccountToken"] is False
+    assert "serviceAccountName" not in spec
+
+
+def test_a_named_service_account_opt_back_in_to_token_automount() -> None:
+    """An admin-named service account (admin-only typed field) mounts its own token: no explicit automount flag, so the
+    kubelet default applies to that SA (5.2)."""
+    spec = _pod_spec(service_account_name="primer-runner")
+    assert spec["serviceAccountName"] == "primer-runner"
+    assert "automountServiceAccountToken" not in spec
+
+
+def test_the_container_ships_the_base_security_context() -> None:
+    container = _pod_spec()["containers"][0]
+    # The runtime image runs as root (its Dockerfile sets no USER), so runAsNonRoot is deliberately absent.
+    assert container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+
+
+def test_mutating_a_built_manifest_does_not_alter_the_defaults_of_the_next_one() -> None:
+    first = _pod_spec()["containers"][0]["securityContext"]
+    first["capabilities"]["drop"].append("X")
+    first["allowPrivilegeEscalation"] = True
+
+    second = _pod_spec()["containers"][0]["securityContext"]
+
+    assert second["capabilities"] == {"drop": ["ALL"]}
+    assert second["allowPrivilegeEscalation"] is False
+
+
+def test_admin_overrides_land_merged_over_the_safe_defaults() -> None:
+    spec = _pod_spec(
+        pod_overrides={"automountServiceAccountToken": True, "securityContext": {"runAsUser": 1000}},
+        container_security_context_overrides={
+            "readOnlyRootFilesystem": True,
+            "capabilities": {"add": ["NET_BIND_SERVICE"]},
+        },
+    )
+    assert spec["automountServiceAccountToken"] is True
+    assert spec["securityContext"]["runAsUser"] == 1000
+    container = spec["containers"][0]["securityContext"]
+    assert container["readOnlyRootFilesystem"] is True
+    # lists extend, base first: the drop stays, the add is appended; the scalar overlay wins
+    assert container["capabilities"] == {"drop": ["ALL"], "add": ["NET_BIND_SERVICE"]}
+    assert container["allowPrivilegeEscalation"] is False
+    assert container["seccompProfile"] == {"type": "RuntimeDefault"}
+
+
 def test_the_shared_process_namespace_does_not_widen_what_the_pod_may_share_with_the_host() -> None:
     """``hostPID`` (the NODE's process namespace) stays refused in ``pod_overrides``; ``shareProcessNamespace`` is the
     pod's own, and is not a way around it."""
@@ -231,6 +288,37 @@ def test_statefulset_env_omits_strict_flag_by_default() -> None:
     assert all(e["name"] != "PRIMER_STRICT_WRITE_LOCKING" for e in env)
 
 
+def test_statefulset_env_carries_the_subprocess_deadline_when_configured() -> None:
+    """The runtime's default exec deadline is the value of
+    PRIMER_SUBPROCESS_TIMEOUT_SECONDS; the backend injects the deployment's
+    configured deadline so a containerized exec matches the local backend's
+    (and the operator's config.yaml) bound, not just the 120 s default."""
+    cfg = _provider_cfg()
+    m = _build_statefulset_manifest(
+        sts_name="primer-ws-abc",
+        namespace="default",
+        workspace_id="abc",
+        template=_template(),
+        provider_cfg=cfg,
+        subprocess_timeout_seconds=30.0,
+    )
+    env = m["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert {"name": "PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "value": "30"} in env
+
+
+def test_statefulset_env_omits_the_subprocess_deadline_by_default() -> None:
+    cfg = _provider_cfg()
+    m = _build_statefulset_manifest(
+        sts_name="primer-ws-abc",
+        namespace="default",
+        workspace_id="abc",
+        template=_template(),
+        provider_cfg=cfg,
+    )
+    env = m["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert all(e["name"] != "PRIMER_SUBPROCESS_TIMEOUT_SECONDS" for e in env)
+
+
 def test_workspace_label_present() -> None:
     cfg = _provider_cfg()
     m = _build_statefulset_manifest(
@@ -264,12 +352,17 @@ def test_overrides_reject_host_network_in_pod_overrides() -> None:
         _validate_template_overrides(template)
 
 
-def test_overrides_reject_nested_run_as_user() -> None:
-    template = _template(
-        pod_overrides={"securityContext": {"runAsUser": 0}},
+def test_pod_security_context_is_allowlisted() -> None:
+    """security review 2026-11-23 (5.2): the pod securityContext is admin-adjustable through the allowlist, so the
+    manifest's safe defaults can be tuned, not only refused."""
+    _validate_template_overrides(
+        _template(pod_overrides={"securityContext": {"runAsUser": 1000, "runAsNonRoot": True}}),
     )
-    with pytest.raises(ConfigError, match="securityContext"):
-        _validate_template_overrides(template)
+
+
+def test_pod_security_context_refuses_keys_outside_the_v1_surface() -> None:
+    with pytest.raises(ConfigError, match="bogus"):
+        _validate_template_overrides(_template(pod_overrides={"securityContext": {"bogus": 1}}))
 
 
 def test_overrides_accept_benign_keys() -> None:
@@ -550,3 +643,117 @@ def test_the_placement_fields_and_pod_overrides_apply_together():
 def test_the_pull_policy_lands_on_the_container_not_the_pod():
     m = _m(_template(image_pull_policy="Never"))
     assert _c(m)["imagePullPolicy"] == "Never" and "imagePullPolicy" not in _pod(m)
+
+
+# ===========================================================================
+# Default-deny egress NetworkPolicy (lane D 2026-11-23, X3.2)
+# ===========================================================================
+
+
+from primer.workspace.k8s.network_policy import (
+    DEFAULT_DENY_EGRESS_POLICY_NAME,
+    build_default_deny_egress_policy_manifest,
+)
+
+
+def test_the_default_deny_egress_policy_manifest_selects_the_workspace_pods() -> None:
+    m = build_default_deny_egress_policy_manifest("ns")
+    assert m["apiVersion"] == "networking.k8s.io/v1"
+    assert m["kind"] == "NetworkPolicy"
+    assert m["metadata"]["name"] == DEFAULT_DENY_EGRESS_POLICY_NAME
+    assert m["metadata"]["namespace"] == "ns"
+    # Bound by the label every workspace pod carries, not namespace-wide:
+    # other workloads sharing the namespace are untouched.
+    assert m["spec"]["podSelector"] == {
+        "matchLabels": {"app.kubernetes.io/managed-by": "primer"}
+    }
+    assert m["spec"]["policyTypes"] == ["Egress"]
+    assert m["spec"]["egress"] == []  # an empty egress list denies all egress
+
+
+@pytest.mark.asyncio
+async def test_initialize_applies_the_default_deny_egress_policy_when_opted_in() -> None:
+    custom = MagicMock()
+    custom.create_namespaced_custom_object = AsyncMock()
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(default_deny_egress=True), core_v1=MagicMock(), apps_v1=MagicMock(),
+        custom_objects=custom,
+    )
+    await backend.initialize()
+    custom.create_namespaced_custom_object.assert_awaited_once()
+    kwargs = custom.create_namespaced_custom_object.await_args.kwargs
+    assert kwargs["group"] == "networking.k8s.io"
+    assert kwargs["version"] == "v1"
+    assert kwargs["namespace"] == "primer"
+    assert kwargs["plural"] == "networkpolicies"
+    assert kwargs["body"] == build_default_deny_egress_policy_manifest("primer")
+
+
+@pytest.mark.asyncio
+async def test_initialize_skips_the_default_deny_egress_policy_by_default() -> None:
+    custom = MagicMock()
+    custom.create_namespaced_custom_object = AsyncMock()
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(), core_v1=MagicMock(), apps_v1=MagicMock(),
+        custom_objects=custom,
+    )
+    await backend.initialize()
+    custom.create_namespaced_custom_object.assert_not_awaited()
+
+
+class _ApiError(Exception):
+    """A stand-in for the kubernetes client's ApiException: an int ``status`` plus the server's message text (the real client package is not imported by the unit tests, so the attribute is what the backend may read)."""
+
+    def __init__(self, status: int, text: str) -> None:
+        super().__init__(text)
+        self.status = status
+
+
+@pytest.mark.asyncio
+async def test_an_existing_default_deny_egress_policy_is_the_success_case() -> None:
+    """A 409 (second replica, a previous run, or the operator created it)
+    must not fail the backend start."""
+    custom = MagicMock()
+    custom.create_namespaced_custom_object = AsyncMock(
+        side_effect=_ApiError(409, "(409) Conflict: networkpolicies already exists")
+    )
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(default_deny_egress=True), core_v1=MagicMock(), apps_v1=MagicMock(),
+        custom_objects=custom,
+    )
+    await backend.initialize()  # must not raise
+    assert backend._initialised is True
+
+
+@pytest.mark.asyncio
+async def test_a_non_409_policy_failure_whose_text_mentions_409_is_not_swallowed() -> None:
+    """The success check is the exception's status code, not a text match: a
+    different failure whose message happens to carry "409" must propagate, not
+    leave the backend started with the egress hole open (X3 round 1, M2)."""
+    custom = MagicMock()
+    custom.create_namespaced_custom_object = AsyncMock(
+        side_effect=_ApiError(500, "(500) Internal Server Error: retried the 409 create and still failed")
+    )
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(default_deny_egress=True), core_v1=MagicMock(), apps_v1=MagicMock(),
+        custom_objects=custom,
+    )
+    with pytest.raises(_ApiError):
+        await backend.initialize()
+    assert backend._initialised is False
+
+
+@pytest.mark.asyncio
+async def test_a_non_409_policy_failure_propagates() -> None:
+    """The opt-in was asked for: starting with the egress hole open silently
+    would be worse than a startup that names the missing grant."""
+    custom = MagicMock()
+    custom.create_namespaced_custom_object = AsyncMock(
+        side_effect=Exception("(403) forbidden: cannot create networkpolicies")
+    )
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(default_deny_egress=True), core_v1=MagicMock(), apps_v1=MagicMock(),
+        custom_objects=custom,
+    )
+    with pytest.raises(Exception, match="403"):
+        await backend.initialize()

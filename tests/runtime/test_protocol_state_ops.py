@@ -16,16 +16,18 @@ def test_state_op_names_present_runtime():
     assert rt_protocol.OpName.STATE_HISTORY == "state_history"
 
 
-def test_protocol_version_is_1_7_in_both_copies_and_the_server():
-    # The PROTOCOL_VERSION constant must read "1.7" in both protocol copies AND in the server's own constant (the hello
+def test_protocol_version_is_1_8_in_both_copies_and_the_server():
+    # The PROTOCOL_VERSION constant must read "1.8" in both protocol copies AND in the server's own constant (the hello
     # response reports the server's: it is what a client's capability check, such as exec_cancel, reads). 1.4 added the
     # exec_cancel op; same major as 1.3, so a 1.3 peer stays compatible (a client only sends exec_cancel to a runtime
-    # that reported >= 1.4). 1.5 added the optional read_file offset; 1.6 adds state_show_commit and history file counts. 1.7 adds bounded directory publishing.
+    # that reported >= 1.4). 1.5 added the optional read_file offset; 1.6 adds state_show_commit and history file counts.
+    # 1.7 adds bounded directory publishing. 1.8 adds the bounded walk and search ops, the write_file_cas
+    # compare-and-swap and the read_file byte window (the sandbox glob/grep and CAS-edit bounds).
     from primer_runtime import server
 
-    assert PROTOCOL_VERSION == "1.7"
-    assert rt_protocol.PROTOCOL_VERSION == "1.7"
-    assert server.PROTOCOL_VERSION == "1.7"
+    assert PROTOCOL_VERSION == "1.8"
+    assert rt_protocol.PROTOCOL_VERSION == "1.8"
+    assert server.PROTOCOL_VERSION == "1.8"
 
 
 def test_exec_cancel_op_present_in_both_copies():

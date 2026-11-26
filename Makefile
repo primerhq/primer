@@ -36,7 +36,7 @@ lint: ## Lint with ruff (matches the CI lint job)
 fmt: ## Auto-fix lint findings and sort/format what ruff can fix safely
 	uv run ruff check --fix .
 
-cov: ## Run the unit sweep with coverage and enforce the 90% threshold
+cov: ## Run the unit sweep with coverage and enforce the 80% threshold (the CI gate)
 	uv run pytest tests/docs/ -q --tb=short \
 		--cov=primer \
 		--cov-report= \
@@ -46,7 +46,7 @@ cov: ## Run the unit sweep with coverage and enforce the 90% threshold
 		--cov=primer \
 		--cov-report=term-missing:skip-covered \
 		--cov-report=xml:coverage.xml \
-		--cov-fail-under=90 \
+		--cov-fail-under=80 \
 		--tb=short
 
 docs-hygiene: ## Run the docs hygiene suite (em-dash ban, links, frontmatter)

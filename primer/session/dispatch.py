@@ -780,6 +780,11 @@ async def run_one_session_turn(
     # Set where the stream falls through to the cancelled or the clean-completion exit below: those exits flip the turn back to idle
     # themselves, as the LAST write of their terminal block, so the finally leaves it to them (audit G7-03, see _clear_turn_running).
     terminal_block_clears_running = False
+    # A Cancel this turn does NOT land (a lost lease, or a drain timeout on a row that carries no user Cancel) re-raises out of the
+    # except below; the finally must not flip turn_status to idle on its way out: on a lost lease the row may already be a peer's, and
+    # this stale turn's idle write would stomp the new owner's own "running" stamp (review 2026-11-23, 1.9); on a drain cut the row must
+    # stay exactly as it is so the next claim re-runs the turn, as a crash leaves it (review 2026-11-23, 1.1).
+    unlanded_cancel = False
     try:
         async for event in turn_events:
             # agent_phase (01a04d91-a7a0): inspect the RAW event, before
@@ -1344,6 +1349,10 @@ async def run_one_session_turn(
         #   already ENDED and is left to the delete);
         # * a row that cannot be read decides nothing, and must not turn the cancellation into its own error.
         if preempt.args[:1] == (CANCEL_REASON_PREEMPTED,):
+            # A lost lease: the session may belong to another worker now. Mark
+            # the cancel unlanded so the finally does not write idle over the
+            # row on the way out (review 2026-11-23, 1.9), then re-raise as before.
+            unlanded_cancel = True
             raise preempt
         try:
             is_user_cancel = await _row_holds_a_cancel(session_storage, session_id)
@@ -1354,6 +1363,12 @@ async def run_one_session_turn(
             )
             is_user_cancel = False
         if not is_user_cancel:
+            # A non-user cancel (a drain timeout cut, or the row said no user
+            # Cancel): this turn does not land it. Mark it unlanded so the
+            # finally leaves turn_status alone on the way out - the row must
+            # stay exactly as a crash leaves it, re-runnable by the next claim
+            # (review 2026-11-23, 1.1/1.9) - then re-raise.
+            unlanded_cancel = True
             raise preempt
         # Make the streamed-but-unrecorded output durable in the cleanup below, then take the one exit after it. The cancellation is
         # consumed DELIBERATELY, down to what the task carried on entry, so that code which checks ``cancelling()`` afterwards
@@ -1409,7 +1424,10 @@ async def run_one_session_turn(
         # sees the row idle must find every record of the turn already on it (its last_seq, the cursor), or its USER_INPUT repeats a seq the
         # turn wrote and lands before the turn's terminal record (audit G7-03 (c)). _clear_turn_running no-ops if turn_status isn't
         # "running" (a wake that armed the next turn), so it can never stomp a fresh claim.
-        if not terminal_block_clears_running:
+        # Skipped entirely when the turn was cut by a non-user cancel (unlanded_cancel):
+        # on a lost lease the row may already be a peer's, and a drain cut must leave
+        # turn_status as a crash leaves it (review 2026-11-23, 1.1/1.9).
+        if not terminal_block_clears_running and not unlanded_cancel:
             async with session_lifecycle_lock().acquire(session_id):
                 await _clear_turn_running(session_storage, session_id)
 
@@ -1504,6 +1522,14 @@ async def run_one_session_turn(
                 deps, session, executor=executor, writer=writer, turn_log=turn_log,
                 started_at=_turn_started_at,
             ))
+    except asyncio.CancelledError:
+        # A cancel the exits did not handle - a lost lease, or a drain cut
+        # landing in the terminal block. This turn does not land it, so the
+        # unlanded-cancel rule applies here too: it must not write idle over
+        # a row a peer may now own (review 2026-11-23, 1.9). A user Cancel
+        # never reaches here: the cancelled exit absorbs it (_finish_despite_cancel)
+        # or the streaming except above lands it.
+        raise
     except BaseException:
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_turn_running(session_storage, session_id)
@@ -2090,38 +2116,58 @@ async def _end_cancelled_at_claim(deps: "SessionDispatchDeps", session_storage: 
     """A Cancel already on the row when the turn is claimed: the session ends cancelled without running a turn (AG-L1).
 
     The steps of the cancelled exit that apply to a turn that never ran, under the lifecycle lock and decided from a row read
-    inside it: the CANCELLED record at a seq reserved on the row, then ONE field-scoped ``patch_if`` fenced on the row not
-    being ENDED (an end another path committed since the top read keeps its own reason), then the drain cursor. This is also a
+    inside it: a seq reserved on the row, ONE field-scoped ``patch_if`` fenced on the row not being ENDED (an end another path
+    committed since the top read keeps its own reason), and only when that write landed the CANCELLED record at the reserved
+    seq, the drain cursor, the tick and the terminal announcement (so an end that lost a race to another worker announces
+    nothing and adds no second record). This is also a
     crash-recovery path (the flag carried over from a process that died mid-turn), so ``turn_status`` goes back to idle
     whatever it says. Then the tick, the terminal announcement (``session.ended`` and the ``:terminal`` key a webhook hold
     waits on) and the drain checkpoint. No ``completed_turn_no``: no turn ran.
     """
     seq = None
+    landed = False
     async with session_lifecycle_lock().acquire(session_id):
         row = await session_storage.get(session_id)
         if row is not None and row.status != SessionStatus.ENDED:
             reserved = await reserve_next_seq(session_storage, session_id)
-            if reserved is not None:
-                writer = WorkspaceMessageWriter(workspace_io=deps.workspace_io, session_id=session_id, start_seq=reserved - 1)
-                seq = await _write_cancelled_record(writer, session_id, _CANCEL_REASON)
             patch = to_jsonable_python({
                 "status": SessionStatus.ENDED, "ended_reason": "cancelled", "ended_at": _now(),
                 "turn_status": "idle", "turn_started_at": None,
             })
             try:
-                row = (
-                    await session_storage.patch_if(session_id, patch, where={"status": NON_ENDED_STATUSES()})
-                    or await session_storage.get(session_id)
-                )
+                written = await session_storage.patch_if(session_id, patch, where={"status": NON_ENDED_STATUSES()})
             except NotFoundError:
                 row = None
-            if row is not None:
+            else:
+                landed = written is not None
+                row = written or await session_storage.get(session_id)
+            # Everything that announces the end follows the fenced write and only when IT landed (review 2026-11-23
+            # round 1, minor 4): another worker may run this same exit for the same Cancel (the pool's lost-lease
+            # convergence against the new owner's claim-time exit), and the end that lost the race must neither add
+            # a second CANCELLED record nor announce a second end. The seq was reserved on the row first, so a wake
+            # that sees the row ENDED reopens after it whether or not the record is on the transcript yet.
+            if landed:
+                if reserved is not None:
+                    writer = WorkspaceMessageWriter(workspace_io=deps.workspace_io, session_id=session_id, start_seq=reserved - 1)
+                    try:
+                        seq = await _write_cancelled_record(writer, session_id, _CANCEL_REASON)
+                    except WorkspaceRefusedError:
+                        # The end has landed: a deployment that refuses the workspace cannot take the transcript record,
+                        # and the end must still be announced (the pool's refused-workspace fallback does the same).
+                        logger.warning(
+                            "session %s: the workspace is refused; the cancelled end is announced without its CANCELLED record",
+                            session_id,
+                        )
                 await _advance_drain_cursor(session_storage, session_id)
         if row is None:
             return _drop_vanished_row(session_id, "under the claim-time cancel")
     if seq is not None:
         await publish_tick(deps.event_bus, session_id, seq)
-    await _publish_terminal(deps, row, SessionStatus.ENDED, row.ended_reason)
+    # An end this write did not land is announced only when ANOTHER path made it (the reconciler's ``workspace_lost``, a
+    # force-delete: nothing else of this exit's announces it, as before round 1). A row already ENDED as "cancelled" was
+    # ended by this same exit on another worker, which announces its own end: announcing again would double it.
+    if landed or row.ended_reason != "cancelled":
+        await _publish_terminal(deps, row, SessionStatus.ENDED, row.ended_reason)
     await _apply_pending_switch_at_checkpoint(deps, row)
     await _realize_pending_at_checkpoint(deps, row)
     return ReleaseOutcome(success=True, drop_lease=True)

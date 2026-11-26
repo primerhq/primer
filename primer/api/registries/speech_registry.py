@@ -29,6 +29,7 @@ from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
 
 if TYPE_CHECKING:
     from primer.int.asr import ASR
+    from primer.int.coordinator import RateLimiter
     from primer.int.storage import Storage
     from primer.int.tts import TTS
 
@@ -50,6 +51,7 @@ class SpeechRegistry(BusInvalidated):
         self._retirement = AdapterRetirement(retire_idle_seconds)
         self._init_invalidation({"tts": InvalidationTopic.TEXT_TO_SPEECH_PROVIDER, "stt": InvalidationTopic.SPEECH_TO_TEXT_PROVIDER}.get(label))
         self._storage = storage
+        self._base_factory = factory          # kept unwrapped, so a rebind wraps the original rather than a wrapper
         self._factory = factory
         self._label = label
         self._instances: dict[str, Any] = {}
@@ -108,6 +110,12 @@ class SpeechRegistry(BusInvalidated):
         for inst in instances:
             self._retirement.retire(inst)
 
+    def bind_rate_limiter(self, rate_limiter: "RateLimiter") -> None:
+        """Wire the factory to a shared limiter (the coordinator's in distributed mode), so adapters built after this enforce the row's ``limits.max_concurrency`` globally.
+        Mirrors ``ProviderRegistry.bind_rate_limiter``. Rebinding takes the latest limiter."""
+        base = self._base_factory
+        self._factory = lambda row: base(row, rate_limiter=rate_limiter)
+
     async def aclose(self) -> None:
         """Unsubscribe, then drop and aclose every cached instance."""
         await self._unbind_invalidation_bus()
@@ -126,18 +134,22 @@ class SpeechRegistry(BusInvalidated):
         await self._retirement.close_all()
 
 
-def default_stt_factory(provider: SpeechToTextProvider) -> "ASR":
+def default_stt_factory(
+    provider: SpeechToTextProvider, *, rate_limiter: "RateLimiter | None" = None,
+) -> "ASR":
     """Construct the ASR adapter for a speech-to-text row."""
     from primer.speech.openai_asr import OpenAIASR
 
-    return OpenAIASR(provider)
+    return OpenAIASR(provider, rate_limiter=rate_limiter)
 
 
-def default_tts_factory(provider: TextToSpeechProvider) -> "TTS":
+def default_tts_factory(
+    provider: TextToSpeechProvider, *, rate_limiter: "RateLimiter | None" = None,
+) -> "TTS":
     """Construct the TTS adapter for a text-to-speech row."""
     from primer.speech.openai_tts import OpenAITTS
 
-    return OpenAITTS(provider)
+    return OpenAITTS(provider, rate_limiter=rate_limiter)
 
 
 __all__ = ["SpeechRegistry", "default_stt_factory", "default_tts_factory"]

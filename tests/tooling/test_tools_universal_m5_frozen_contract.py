@@ -1,10 +1,11 @@
 """M5 frozen contract: the reviewed Tools Universal universe, digested.
 
-The parked-session priority route adds one generated id and one operation. From the live
+Restamped twice since the publisher: the curated system__inspect_service_bundle descriptor (one tool id),
+and the parked-session priority route (one generated id and one operation). From the live
 production projection and the reviewed manifest:
 
 * 408 operation identities (operationId, method, path)
-* 492 scoped tool ids (exact set, from the reviewed tool catalogue)
+* 493 scoped tool ids (exact set, from the reviewed tool catalogue)
 * 265 generated declared ids
 * the 135 curated pairs (operation -> canonically sorted ids)
 * the 8 skips (method, path, skip_code), cross-checked against the manifest's
@@ -40,12 +41,14 @@ BASE_COMMIT = "fb18c24b92bec57131bc5e49959344a4d7d97960"
 PARKED_TOOL = "sessions__set_parked_session_priority"
 PARKED_OP = "set_parked_session_priority_v1_workspaces__workspace_id__sessions__session_id__priority_put"
 IDENTITIES_408_SHA256 = "24df669d34275864bd36cdef528915c306f6d7b6caf2ad6ee306a53c4874c9a3"
-TOOLS_492_SHA256 = "d89346aa99e7b2707e5009969e20000f5e1484333313dcae99671f105fd6cb1a"
+TOOLS_493_SHA256 = "e2259c2b01de2c2698acd4b8181ad7086639e233dde1f838d312c1e04f0453ba"
+PRE_INSPECT_TOOLS_492_SHA256 = "d89346aa99e7b2707e5009969e20000f5e1484333313dcae99671f105fd6cb1a"
 GENERATED_265_SHA256 = "e48ba071de262ffc3a6e9cb30c681592a361b366adb9b96aff7eb500e7d99bdd"
 
 # Frozen digests (sha256 over canonical JSON of the sorted values).
 IDENTITIES_407_SHA256 = "495473987d4a6db1d31f5fc7f4b08791ecbc8e3bd7b673cb02e5f6162916862b"
-TOOLS_491_SHA256 = "ef5c4ee79ee60787daaac54cebeebd3d27f8b6a1bee371f290c230c466ad2695"
+PRE_PARKED_TOOLS_492_SHA256 = "6a3a0e67b7dbadc2f6917f885435eaab5dd14d268b5a5e07df79343d4558d59b"
+PRE_INSPECT_TOOLS_491_SHA256 = "ef5c4ee79ee60787daaac54cebeebd3d27f8b6a1bee371f290c230c466ad2695"
 PRE_PUBLISHER_TOOLS_490_SHA256 = "92c82e578e8e345ebcfbbf3930e6425f96b1e51bd6e2f2b5597809ce7316e9f7"
 GENERATED_264_SHA256 = "1aa65d250b41f173af758dfb2a2b5f36c7d8d80d5dbaead5b15e219c0e081cac"
 CURATED_PAIRS_135_SHA256 = "c4e02bffd013b8b430467a2ac8c5a6132cd6fd86d4c70ac82861524f58172d7e"
@@ -93,12 +96,16 @@ def test_operation_identity_is_frozen(projection) -> None:
 
 def test_the_stable_tool_id_set_is_frozen(manifest, live_catalogue) -> None:
     ids = [tool.scoped_id for tool in live_catalogue]
-    assert len(ids) == len(set(ids)) == 492
+    assert len(ids) == len(set(ids)) == 493
     assert all(item.count("__") == 1 for item in ids)
-    assert _digest(ids) == TOOLS_492_SHA256
-    previous_ids = [item for item in ids if item != PARKED_TOOL]
-    assert _digest(previous_ids) == TOOLS_491_SHA256
-    assert "system__publish_service" in ids
+    assert _digest(ids) == TOOLS_493_SHA256
+    inspect = "system__inspect_service_bundle"
+    assert {PARKED_TOOL, inspect, "system__publish_service"} <= set(ids)
+    # Each addition is exactly one id: removing it reproduces the frozen set it was added to.
+    assert _digest([item for item in ids if item != inspect]) == PRE_INSPECT_TOOLS_492_SHA256
+    assert _digest([item for item in ids if item != PARKED_TOOL]) == PRE_PARKED_TOOLS_492_SHA256
+    previous_ids = [item for item in ids if item not in {PARKED_TOOL, inspect}]
+    assert _digest(previous_ids) == PRE_INSPECT_TOOLS_491_SHA256
     assert _digest([item for item in previous_ids if item != "system__publish_service"]) == PRE_PUBLISHER_TOOLS_490_SHA256
     assert set(ids) == {tool["scoped_id"] for tool in manifest["tool_catalogue"]}
     assert next(tool for tool in manifest["tool_catalogue"] if tool["scoped_id"] == "system__publish_service") == {
@@ -165,11 +172,11 @@ def test_the_manifest_baseline_is_frozen(manifest) -> None:
 
 
 def test_every_tool_has_exactly_one_reference_path(live_catalogue) -> None:
-    """Reference-path freeze: unique reference/tools/<toolset>/<tool> for all 492."""
+    """Reference-path freeze: unique reference/tools/<toolset>/<tool> for all 493."""
     paths = []
     for tool in live_catalogue:
         path = reference_path(tool.toolset_id, tool.bare_id)
         assert re.fullmatch(r"reference/tools/[^/]+/[^/]+", path)
         assert tool.scoped_id == f"{tool.toolset_id}__{tool.bare_id}"
         paths.append(path)
-    assert len(set(paths)) == 492
+    assert len(set(paths)) == 493

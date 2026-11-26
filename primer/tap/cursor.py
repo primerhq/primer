@@ -21,9 +21,16 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Collection
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict
+
+# A ``Last-Event-ID`` / ``?cursor=`` longer than this is not one the SSE stream issued (it keeps its token to a few KB, see ``encode(keep=...)``): the
+# SSE route passes it as ``decode(max_chars=...)`` and gets an empty cursor (a fresh, live-from-now connect) rather than parsing it. The MCP drain's
+# token is not capped either, but it is bounded: ``read_batch`` drops the ENDED sessions a complete drain fully drained, and the ``drained_as_of``
+# watermark it sets makes the drop cheap (a dropped session is skipped, not re-read from byte 0, until it is reopened).
+MAX_TOKEN_CHARS = 32 * 1024
 
 # Fixed epoch used as the ``known_as_of`` default for empty/undecodable cursors.
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -42,6 +49,18 @@ class TapCursor(BaseModel):
     performance hint: the drain path seeks to this offset to avoid re-reading
     already-consumed bytes, but ``seq > resume_seq`` remains the authoritative
     filter.  A missing entry (offset 0) is always safe.
+
+    ``drained_as_of`` is the MCP drain's watermark: the time of the newest
+    WORKSPACE-WIDE drain (no ``sessions`` predicate) that read every session
+    to the end (set by :func:`~primer.tap.reader.read_batch` from the caller's
+    clock, never derived from ``datetime.now()``).  A scoped drain never moves
+    it, so a later, broader drain cannot skip the sessions the scoped one
+    never read.  The ENDED sessions such a drain fully drained are dropped
+    from ``seqs``/``offsets`` (the token stays bounded), and a drain skips a
+    session that is absent, ENDED and ended at or before the watermark --
+    ENDED is terminal, so it holds nothing new; a reopen (``ENDED -> CREATED``)
+    clears ``ended_at`` and the status, so a reopened session is read again.
+    Tokens from before the field decode to the fixed epoch and skip nothing.
     """
 
     model_config = ConfigDict(
@@ -51,6 +70,7 @@ class TapCursor(BaseModel):
     seqs: dict[str, int]
     known_as_of: datetime
     offsets: dict[str, int] = {}
+    drained_as_of: datetime = _EPOCH
 
     # ------------------------------------------------------------------
     # Query helpers
@@ -115,38 +135,49 @@ class TapCursor(BaseModel):
     # Encode / decode
     # ------------------------------------------------------------------
 
-    def encode(self) -> str:
+    def encode(self, keep: Collection[str] | None = None) -> str:
         """Return a URL-safe, unpadded base64url token representing this cursor.
 
         The token is safe for SSE ``Last-Event-ID`` headers and query
         parameters (no ``+``, ``/``, ``=``, or whitespace characters).
 
-        The encoded payload includes ``offsets`` alongside ``seqs`` and
-        ``known_as_of``; older decoders that do not recognise ``offsets`` will
-        ignore the field and fall back to seq-only resume (harmless re-read).
+        The encoded payload includes ``offsets`` and ``drained_as_of`` alongside ``seqs`` and
+        ``known_as_of``; older decoders that do not recognise them will ignore the fields and fall
+        back to seq-only resume (harmless re-read; a watermark-less token skips nothing).
+
+        ``keep`` bounds the token: only those sessions' entries are written (the live SSE stream passes its most recently active sessions so a
+        long-lived stream's ``Last-Event-ID`` does not grow with every session it ever saw). A session left out is replayed from ``known_as_of``
+        by a client that reconnects with the token (at-least-once; the client dedupes by ``(session_id, seq)``). ``None`` writes every entry.
         """
+        seqs, offsets = self.seqs, self.offsets
+        if keep is not None:
+            # Iterate keep (the 64 newest), not the whole map (every session the caller has seen): the token
+            # is rebuilt per frame on a long-lived stream.
+            seqs = {k: seqs[k] for k in keep if k in seqs}
+            offsets = {k: offsets[k] for k in keep if k in offsets}
         payload = {
-            "seqs": self.seqs,
+            "seqs": seqs,
             "known_as_of": self.known_as_of.isoformat(),
-            "offsets": self.offsets,
+            "offsets": offsets,
+            "drained_as_of": self.drained_as_of.isoformat(),
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
 
     @classmethod
-    def decode(cls, token: str | None) -> TapCursor:
+    def decode(cls, token: str | None, *, max_chars: int | None = None) -> TapCursor:
         """Decode a cursor token produced by :meth:`encode`.
 
         Tolerant: ``None``, an empty string, or any undecodable / malformed
         input returns an empty cursor (``seqs={}``, ``offsets={}``) without
-        raising.  This allows callers to pass ``Last-Event-ID`` directly
+        raising; so does one longer than ``max_chars`` when that is given.  This allows callers to pass ``Last-Event-ID`` directly
         without pre-checking.
 
         Backward-compatible: a token that does not contain ``offsets`` (e.g.
         produced by an older encoder) decodes with ``offsets={}`` so the drain
         falls back to seq-only resume with a full re-read from byte 0.
         """
-        if not token or not token.strip():
+        if not token or not token.strip() or (max_chars is not None and len(token) > max_chars):
             return cls(seqs={}, known_as_of=_EPOCH)
         try:
             # Restore stripped padding before decoding.
@@ -157,11 +188,17 @@ class TapCursor(BaseModel):
                 str(k): int(v) for k, v in data["seqs"].items()
             }
             known_as_of = datetime.fromisoformat(data["known_as_of"])
-            # ``offsets`` is optional — older tokens omit it; default to {}.
+            # ``offsets`` and ``drained_as_of`` are optional -- older tokens omit them; default to {} / the epoch.
             raw_offsets = data.get("offsets", {})
             offsets: dict[str, int] = {
                 str(k): int(v) for k, v in raw_offsets.items()
             }
-            return cls(seqs=seqs, known_as_of=known_as_of, offsets=offsets)
+            raw_drained = data.get("drained_as_of")
+            drained_as_of = (
+                datetime.fromisoformat(raw_drained) if raw_drained is not None else _EPOCH
+            )
+            return cls(
+                seqs=seqs, known_as_of=known_as_of, offsets=offsets, drained_as_of=drained_as_of,
+            )
         except Exception:  # noqa: BLE001
             return cls(seqs={}, known_as_of=_EPOCH)

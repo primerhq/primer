@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.11",
     "watchfiles>=1.0",
     "pydantic>=2.13",
+    "regex>=2026.9.3",
 ]
 
 [project.scripts]

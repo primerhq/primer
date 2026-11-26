@@ -295,14 +295,34 @@ function NV_Rail_sessionCount(w, feedRows) {
 // and orders newest first and a workspace whose sessions are all older than the newest 200 of the install still lists them. 200 at most.
 var NV_RAIL_WS_SESSIONS_WINDOW = 200;
 
+// The rows an open workspace lists (review 8.11). The install-wide feed is the newest 200 sessions of the install, polled every 5 s for the rail:
+// when it is shorter than that it holds EVERY session, so an open workspace lists its rows from it and asks the server for nothing. When it is
+// full, a workspace may own sessions older than it: the FOCUSED workspace polls its own list (`read`, authoritative), and any other open workspace
+// reads its own once and shows the feed's fresh rows first, then the rows only its own read knows (older than the feed's oldest: a newer one that
+// is not in the feed was deleted since). `feedRows` are this workspace's rows of the feed, newest first; `cutoff` is the created_at of the
+// feed's oldest row.
+function NV_Rail_wsRows(feedRows, read, focused, feedFull, cutoff) {
+  if (!read) return feedRows;
+  if (focused) return read;
+  if (!feedFull) return feedRows;
+  var inFeed = {};
+  feedRows.forEach(function (r) { inFeed[r.session_id] = true; });
+  var older = read.filter(function (r) {
+    return !inFeed[r.session_id] && (!cutoff || !r.created_at || r.created_at <= cutoff);
+  });
+  return feedRows.concat(older);
+}
+
 // One open workspace's sessions (a hook-bearing leaf, so the rail keeps one per open row; nv-mobile-shell.jsx has its own copy, NV_Mobile_WsSessions,
 // on the same cache key). While the read is out the install-wide feed's rows stand in. `tick` changes when the rail changed a session (rename,
-// stop, delete): the list is read again at once. A workspace that holds more sessions than the window says so under them.
+// stop, delete): the list is read again at once. A workspace that holds more sessions than the window says so under them. Only the focused
+// workspace polls (NV_Rail_wsRows says why the others need no poll, and none at all while the feed is whole).
 function NV_Rail_WsSessions(props) {
+  var needsRead = props.focused || props.feedFull;
   var res = window.primerApi.useResource(
-    "nv-rail-ws-sessions:" + props.wid,
+    needsRead ? "nv-rail-ws-sessions:" + props.wid : null,
     function (signal) { return SH_api.allSessions(signal, props.wid); },
-    { pollMs: NV_RAIL_SESSIONS_POLL_MS, deps: [] }
+    { pollMs: props.focused ? NV_RAIL_SESSIONS_POLL_MS : 0, deps: [] }
   );
   var tickRef = React.useRef(props.tick);
   React.useEffect(function () {
@@ -311,7 +331,7 @@ function NV_Rail_WsSessions(props) {
     res.refetch();
   }, [props.tick]);
   var read = res.data && Array.isArray(res.data.items) ? res.data.items : null;
-  var rows = read || props.fallback || [];
+  var rows = NV_Rail_wsRows(props.fallback || [], read, !!props.focused, !!props.feedFull, props.cutoff);
   var cut = read && read.length >= NV_RAIL_WS_SESSIONS_WINDOW && typeof props.count === "number" && props.count > read.length;
   return (
     <>
@@ -462,6 +482,13 @@ function NV_Rail(props) {
 
   return (
     <div className="nv-rail-sections" data-testid="nv-rail-sections">
+      {/* Three failed reads in a row (degraded) of a list the rail still shows from an earlier answer: the lists below may be out of date (review 8.1;
+          a session that ended is handled once, globally, by AuthGate). The reads keep retrying with backoff and the note goes when one succeeds. */}
+      {(inboxRes.degraded || sessRes.degraded || wsRes.degraded) && (inboxRes.data || sessRes.data || wsRes.data) ? (
+        <div className="nv-rail-empty" role="status" data-testid="nv-rail-stale">
+          Can't reach the server. The Inbox and the sessions below may be out of date; retrying.
+        </div>
+      ) : null}
       <div className="nv-rail-inbox" data-testid="nv-rail-inbox">
         <div className="nv-rail-section-head">
           <span>Inbox — needs you</span>
@@ -583,6 +610,7 @@ function NV_Rail(props) {
                       </span>
                     </button>
                     {isOpen ? <NV_Rail_WsSessions key={"wss:" + w.id} wid={w.id} tick={sessTick} fallback={wsSessions} count={sessionCount}
+                      focused={isSelected} feedFull={sessions.length >= NV_RAIL_WS_SESSIONS_WINDOW} cutoff={sessions.length ? sessions[sessions.length - 1].created_at : null}
                       render={function (rows) { return rows.map(function (s) {
                       var sid = s.session_id;
                       var ident = NV_identity(s.binding);

@@ -225,7 +225,8 @@ The turn-log surface lives in `primer/observability/turn_log_writer.py`:
   class such as `NetworkError` or `ProviderError`) as one WARNING without a
   traceback, anything else (the bare `PrimerError` catch-all included) at ERROR with
   the traceback (no extra DEBUG traceback for mapped errors: `log_level` defaults to
-  `debug`, so it would bring the traceback back on every default deployment). String
+  `info`, so a DEBUG-level traceback would stay hidden on every default deployment; the
+  `error_id` on the WARNING is the handle for digging into an expected failure). String
   values in `problem_extensions` are redacted like `detail`. Rows written before this
   change still hold `extensions.traceback` on disk; `record_without_traceback`
   (`primer/model/problem_details.py`) strips it in every reader of those rows: the

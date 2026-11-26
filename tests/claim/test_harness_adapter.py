@@ -64,8 +64,11 @@ async def test_a_share_landing_during_the_release_is_not_overwritten(fake_storag
             await store.patch_if(entity_id, {"access": Access(owners=["u-a"], grants={"u-b": "read"}, rev=2).model_dump(mode="json")}, where={("access", "rev"): [1]})
             return row
 
-    await HarnessClaimAdapter(harness_storage=_Racing()).on_release(None, "h1", outcome=ReleaseOutcome(success=True))
+    # A FAILED release is the one that writes the operation's fields (a
+    # successful release that still sees a pending operation leaves the row
+    # alone: an operation enqueued in the gap, review 2026-11-23 finding 1.3).
+    await HarnessClaimAdapter(harness_storage=_Racing()).on_release(None, "h1", outcome=ReleaseOutcome(success=False))
 
     row = await store.get("h1")
-    assert row.pending_operation is None and row.status == HarnessStatus.READY
+    assert row.pending_operation is None and row.status == HarnessStatus.ERROR
     assert row.access.grants == {"u-b": "read"} and row.access.rev == 2

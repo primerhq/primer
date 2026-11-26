@@ -37,6 +37,8 @@ async def _create_webhook_trigger(client, *, slug: str, enabled: bool = True, hm
     cfg = {"kind": "webhook"}
     if hmac_secret:
         cfg["hmac_secret"] = hmac_secret
+        # The callers sign the body alone (the legacy scheme); a new trigger defaults to requiring the timestamp.
+        cfg["legacy_body_hmac"] = True
     body = {
         "slug": slug,
         "name": f"E2E Webhook {slug}",

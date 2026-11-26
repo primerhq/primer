@@ -375,14 +375,13 @@ class TestResponseFormat:
             schema, has_tools=False, has_tool_choice=False
         )
         assert out is not None
-        synthetic_tools, synthetic_tool_choice = out
-        assert synthetic_tools == [
-            {
-                "name": "structured_output",
-                "description": "Emit the response in the structured shape defined by input_schema.",
-                "input_schema": schema,
-            }
-        ]
+        synthetic_tool, synthetic_tool_choice = out
+        assert synthetic_tool == {
+            "name": "structured_output",
+            "description": "Emit the response in the structured shape defined by input_schema.",
+            "input_schema": schema,
+        }
+        # Without real tools the synthetic tool is the only one, so it is forced.
         assert synthetic_tool_choice == {
             "type": "tool",
             "name": "structured_output",
@@ -396,9 +395,9 @@ class TestResponseFormat:
             Answer, has_tools=False, has_tool_choice=False
         )
         assert out is not None
-        synthetic_tools, synthetic_tool_choice = out
-        assert synthetic_tools[0]["name"] == "structured_output"
-        assert "value" in synthetic_tools[0]["input_schema"]["properties"]
+        synthetic_tool, synthetic_tool_choice = out
+        assert synthetic_tool["name"] == "structured_output"
+        assert "value" in synthetic_tool["input_schema"]["properties"]
         assert synthetic_tool_choice == {
             "type": "tool",
             "name": "structured_output",
@@ -412,12 +411,20 @@ class TestResponseFormat:
                 has_tool_choice=False,
             )
 
-    def test_with_tools_raises_config_error(self) -> None:
+    def test_with_tools_offers_synthetic_alongside(self) -> None:
+        # Review 2026-11-23, 2.2 round 1: with real tools present the
+        # synthetic tool is OFFERED ALONGSIDE them (tool_choice auto), not
+        # refused -- every agent with a toolset lists tools, so the old
+        # ConfigError died every such turn with a response schema.
         schema = {"type": "object"}
-        with pytest.raises(ConfigError, match="cannot be combined with tools"):
-            _response_format_to_emulation(
-                schema, has_tools=True, has_tool_choice=False
-            )
+        out = _response_format_to_emulation(
+            schema, has_tools=True, has_tool_choice=False
+        )
+        assert out is not None
+        synthetic_tool, synthetic_tool_choice = out
+        assert synthetic_tool["name"] == "structured_output"
+        assert synthetic_tool["input_schema"] == schema
+        assert synthetic_tool_choice == {"type": "auto"}
 
     def test_with_tool_choice_raises_config_error(self) -> None:
         schema = {"type": "object"}
@@ -536,7 +543,11 @@ class TestStopReason:
             ("end_turn", True, "tool_use"),
             ("max_tokens", False, "max_tokens"),
             ("stop_sequence", False, "stop_sequence"),
-            ("tool_use", False, "tool_use"),
+            # A tool_use stop with no real tool block is the structured_output
+            # emulation (the forced synthetic choice; the answer streams as
+            # text): nothing queues a continuation, so the turn is a stop.
+            ("tool_use", False, "stop"),
+            ("tool_use", True, "tool_use"),
             ("pause_turn", False, "stop"),
             ("refusal", False, "content_filter"),
             ("something_unknown", False, "other"),

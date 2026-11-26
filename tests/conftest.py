@@ -24,7 +24,7 @@ from primer.storage._locking import (
     LockingTransaction, locking_context, current_transaction, model_operation, prepared_models, require_transaction,
 )
 from primer.model.common import Identifiable
-from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.except_ import BadRequestError, ConfigError, ConflictError, NotFoundError
 from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
@@ -294,7 +294,10 @@ class _InMemoryStorage(Generic[_T]):
 
     @model_operation
     @_fake_serialized
-    async def find(self, predicate, page, *, order_by=None):
+    async def find(self, predicate, page, *, order_by=None, conn=None):
+        # ``conn`` (the caller's open transaction connection) is accepted for the Storage
+        # protocol and ignored: the in-memory store reads its own dict, so an in-transaction
+        # re-read (DocumentTreeService's post-write child-set diff) already sees its own writes.
         if predicate is None:
             return await self.list(page, order_by=order_by)
         items = [e for e in self._data.values() if _eval_predicate(e, predicate)]
@@ -418,6 +421,12 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
                 return actual == expected
             if node.op == Op.NE:
                 return actual != expected
+            if isinstance(actual, datetime) and isinstance(expected, str):
+                # The ordering predicates the sweeps bind against the ISO
+                # text the backends hold (Z form for UTC); a chronological
+                # compare of the parsed bound is the same judgement for
+                # that uniform shape.
+                expected = datetime.fromisoformat(expected)
             if node.op == Op.GT:
                 return actual is not None and actual > expected
             if node.op == Op.LT:
@@ -517,18 +526,28 @@ class _FakeContentStore:
             )
         self._rows[document_id] = row.model_copy(update={"path": new_path})
 
-    async def list(self, collection_id, *, prefix=None):
+    async def list(
+        self, collection_id, *, prefix=None, limit=None, after_path=None
+    ):
+        if limit is not None and limit < 1:
+            raise BadRequestError("limit must be at least 1")
         from primer.int.document_content import ContentListEntry
 
         entries = [
             ContentListEntry(
-                document_id=r.document_id, path=r.path, size=len(r.content)
+                document_id=r.document_id,
+                path=r.path,
+                size=len(r.content.encode("utf-8")),
             )
             for r in self._rows.values()
             if r.collection_id == collection_id
             and (prefix is None or r.path.startswith(prefix))
+            and (after_path is None or r.path > after_path)
         ]
-        return sorted(entries, key=lambda e: e.path)
+        entries.sort(key=lambda e: e.path)
+        if limit is not None:
+            entries = entries[:limit]
+        return entries
 
 
 class _NoOpTransaction:
@@ -602,6 +621,7 @@ class _FakeStorageProvider:
         self._stores: dict[type, _InMemoryStorage[Any]] = {}
         self._guard_lock = asyncio.Lock()
         self._guard_task = None
+        self._migration_lock = asyncio.Lock()
         self._ordinary_transactions = {}
         self._content_store = _FakeContentStore()
         self._bootstrap_completed_at: datetime | None = None
@@ -761,7 +781,11 @@ class _FakeStorageProvider:
 
     @asynccontextmanager
     async def migration_lock(self):
-        yield
+        # Serialize like the real backends (Postgres advisory lock / SQLite
+        # sidecar flock): one holder at a time, so a concurrent first
+        # registration waits out the winner (review 4.8).
+        async with self._migration_lock:
+            yield
 
     async def set_schema_version(
         self, version: int, *, migrated_at: datetime | None = None,

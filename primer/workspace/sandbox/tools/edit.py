@@ -11,6 +11,8 @@ from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.edit import EditArgs
+from primer.workspace.runtime.protocol import ErrorCode
+from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeOpError
 from primer.workspace.sandbox.tools._common import resolve_sandbox_path
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 
@@ -77,13 +79,56 @@ class SandboxEdit(WorkspaceTool):
                 f"old_string is non-unique in {args.path!r} "
                 f"({count} occurrences); pass replace_all=true"
             )
+        updated = self._apply(original, args)
 
-        if args.replace_all:
-            updated = original.replace(args.old_string, args.new_string)
+        cas = getattr(self._sandbox, "write_file_cas", None)
+        if cas is None:
+            # Legacy Sandbox impl without CAS: the old read-modify-write.
+            await self._sandbox.write_file(
+                target, updated.encode("utf-8", errors="surrogateescape")
+            )
         else:
-            updated = original.replace(args.old_string, args.new_string, 1)
-
-        await self._sandbox.write_file(target, updated.encode("utf-8", errors="surrogateescape"))
+            # Compare-and-swap (protocol 1.8): the write lands only while the
+            # file still holds the bytes we read, so a concurrent edit fails
+            # with a clear error instead of silently clobbering ours (review
+            # 2026-11-23, 5.9). On a mismatch, retry ONCE against a fresh
+            # read; a second mismatch is a clear failure.
+            try:
+                applied = await cas(
+                    target,
+                    original.encode("utf-8", errors="surrogateescape"),
+                    updated.encode("utf-8", errors="surrogateescape"),
+                )
+            except RuntimeOpError as exc:
+                # A runtime below protocol 1.8 answers the op EUNSUPPORTED:
+                # the legacy read-modify-write, as on a Sandbox without the
+                # method (a WSSandbox over an older image has it).
+                if exc.code != ErrorCode.EUNSUPPORTED:
+                    raise
+                await self._sandbox.write_file(
+                    target, updated.encode("utf-8", errors="surrogateescape")
+                )
+            else:
+                if not applied:
+                    fresh = (await self._sandbox.read_file(target)).decode(
+                        "utf-8", errors="surrogateescape",
+                    )
+                    fresh_count = fresh.count(args.old_string)
+                    if fresh_count == 0 or (fresh_count > 1 and not args.replace_all):
+                        raise BadRequestError(
+                            "file changed during edit; re-read and retry"
+                        )
+                    original = fresh
+                    updated = self._apply(original, args)
+                    applied = await cas(
+                        target,
+                        original.encode("utf-8", errors="surrogateescape"),
+                        updated.encode("utf-8", errors="surrogateescape"),
+                    )
+                    if not applied:
+                        raise BadRequestError(
+                            "file changed during edit; re-read and retry"
+                        )
 
         diff_lines = list(
             difflib.unified_diff(
@@ -97,6 +142,13 @@ class SandboxEdit(WorkspaceTool):
         # The diff shows an undecodable byte as U+FFFD, as it did before the round-trip.
         output = "\n".join(diff_lines).encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
         return ToolResult(output=output)
+
+    @staticmethod
+    def _apply(original: str, args: EditArgs) -> str:
+        """The replacement applied to *original* (first occurrence, or all)."""
+        if args.replace_all:
+            return original.replace(args.old_string, args.new_string)
+        return original.replace(args.old_string, args.new_string, 1)
 
 
 __all__ = ["SandboxEdit"]

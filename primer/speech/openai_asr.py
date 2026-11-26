@@ -17,6 +17,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from primer.int.asr import ASR
+from primer.int.coordinator import RateLimiter
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
     SpeechToTextProvider,
@@ -39,7 +40,11 @@ _DEFAULT_READ_SECONDS = 300.0
 class OpenAIASR(ASR):
     """Transcription adapter for OpenAI-compatible audio endpoints."""
 
-    def __init__(self, provider: SpeechToTextProvider) -> None:
+    def __init__(
+        self,
+        provider: SpeechToTextProvider,
+        rate_limiter: "RateLimiter | None" = None,
+    ) -> None:
         if provider.provider != SpeechToTextProviderType.OPENAI:
             raise ConfigError(
                 f"OpenAIASR requires provider type openai; got {provider.provider}"
@@ -47,6 +52,12 @@ class OpenAIASR(ASR):
         self._provider = provider
         self._config = provider.config
         self._client: AsyncOpenAI | None = None
+        if rate_limiter is None:
+            from primer.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"stt:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
     def _get_client(self) -> AsyncOpenAI:
         """Construct the AsyncOpenAI client lazily on first use."""
@@ -88,35 +99,38 @@ class OpenAIASR(ASR):
             extra["language"] = language
         limits = self._provider.limits
         attempts = limits.max_retries + 1
-        for attempt in range(attempts):
-            try:
-                response = await self._get_client().audio.transcriptions.create(
-                    model=model,
-                    file=(filename, audio, mimetype),
-                    response_format="json",
-                    timeout=self._timeout(),
-                    **extra,
-                )
-            except Exception as exc:  # noqa: BLE001 -- error is a value here
-                replayable = attempt < attempts - 1 and is_replayable(exc)
-                logger.warning(
-                    "ASR transcription failed",
-                    extra={
-                        "provider_id": self._provider.id,
-                        "model": model,
-                        "exception": type(exc).__name__,
-                        "will_retry": replayable,
-                    },
-                )
-                if not replayable:
-                    return speech_error_from_exception(exc, self._provider)
-                await asyncio.sleep(backoff_delay(
-                    attempt + 1,
-                    base=limits.retry_backoff_seconds,
-                    cap=limits.retry_backoff_max_seconds,
-                ))
-                continue
-            return Transcription(text=getattr(response, "text", "") or "")
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
+            for attempt in range(attempts):
+                try:
+                    response = await self._get_client().audio.transcriptions.create(
+                        model=model,
+                        file=(filename, audio, mimetype),
+                        response_format="json",
+                        timeout=self._timeout(),
+                        **extra,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- error is a value here
+                    replayable = attempt < attempts - 1 and is_replayable(exc)
+                    logger.warning(
+                        "ASR transcription failed",
+                        extra={
+                            "provider_id": self._provider.id,
+                            "model": model,
+                            "exception": type(exc).__name__,
+                            "will_retry": replayable,
+                        },
+                    )
+                    if not replayable:
+                        return speech_error_from_exception(exc, self._provider)
+                    await asyncio.sleep(backoff_delay(
+                        attempt + 1,
+                        base=limits.retry_backoff_seconds,
+                        cap=limits.retry_backoff_max_seconds,
+                    ))
+                    continue
+                return Transcription(text=getattr(response, "text", "") or "")
 
     async def aclose(self) -> None:
         if self._client is not None:

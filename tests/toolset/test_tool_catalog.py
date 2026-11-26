@@ -24,7 +24,7 @@ from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.bootstrap.seed import ensure_crud_approval_policies
 from primer.model.chat import Tool
-from primer.model.except_ import AuthRequiredError, ConfigError, NotFoundError, ProviderError
+from primer.model.except_ import AuthRequiredError, NotFoundError, ProviderError
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.toolset import tool_catalog
 from primer.toolset.crud import CRUD_GATED_TOOL_NAMES, CRUD_TOOL_NAMES, CRUD_TWINS, build_crud_toolset
@@ -40,7 +40,7 @@ from primer.toolset.tool_catalog import (
     session_tool_descriptors,
 )
 from primer.workspace.local import tools as local_tools
-from tests.docs._live_toolsets import built_in_providers
+from tests.docs._live_toolsets import built_in_providers, live_providers
 from tests._support.storage_rows import all_storage_rows
 from tests.toolset._scripted_toolset import Registry, Scripted, scripted_tool
 
@@ -108,17 +108,13 @@ def test_the_crud_tools_and_their_twins_are_gated_by_default_and_nothing_else_is
 
 async def test_the_default_gate_is_what_the_seed_gates(fake_storage_provider):
     """``default_gate`` is a statement about ``ensure_crud_approval_policies``; this fails when either moves without the other."""
+    # Build the generated app first, in this process: it publishes the generated mutators into the seed's gate set and the generated providers the catalog
+    # lists, so the two sides compare the same universe whatever test ran before (the cached live build, as the boot builds it).
+    providers = {**built_in_providers(), **await asyncio.to_thread(live_providers)}  # off the loop: it runs its own asyncio.run
+
     await ensure_crud_approval_policies(fake_storage_provider)
     seeded = await all_storage_rows(fake_storage_provider.get_storage(ToolApprovalPolicy))
     assert {p.approval.type.value for p in seeded} == {"required", "policy"}
-
-    providers = dict(built_in_providers())
-    try:
-        from primer.api.route_tools import generated_route_toolset_providers
-
-        providers.update(generated_route_toolset_providers())
-    except ConfigError:  # no generated app was built in this focused process
-        pass
 
     entries = await collect_tool_entries(providers)
 

@@ -131,13 +131,12 @@ async def test_t0042_top_level_get_session_works_without_workspace_context(
                     assert ws.status_code == 201, ws.text
                     workspace_id = ws.json()["id"]
 
-                    refused = await client.post(
+                    priority = await client.post(
                         f"/v1/workspaces/{workspace_id}/sessions",
                         json={**_session_body(agent_id=agent_id), "priority": 1},
                     )
-                    assert refused.status_code == 503, refused.text
-                    assert refused.json()["type"] == "/errors/service-unavailable"
-                    assert "scheduling cutover" in refused.json()["detail"]
+                    assert priority.status_code == 201, priority.text
+                    assert priority.json()["priority"] == 1
 
                     sess = await client.post(
                         f"/v1/workspaces/{workspace_id}/sessions",

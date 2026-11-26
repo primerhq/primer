@@ -64,6 +64,59 @@ imports it. Annotations are mapped over the AST rather than evaluated, for the
 same reason. A module that raises at import time still registers cleanly, and
 there is a test asserting that.
 
+### Runner selection (per call)
+
+The runner is chosen PER CALL, keyed on the calling workspace, because the
+provider is built process-wide per toolset row with no workspace context.
+`PythonToolsetProvider` takes an optional `sandbox_runner_for` resolver
+(wired by the app lifespan through `_build_default_toolset_factory`'s
+`workspace_registry`): a call whose `ToolContext.workspace_id` resolves to
+a workspace with a live sandbox (container/k8s backends) runs in that
+sandbox via `SandboxRunner` (isolation `container`); every other call
+runs on the hardened local runner. A workspace that HAS a sandbox never
+falls back to the local one: if its sandbox cannot be resolved the call
+fails with a clear error, because running the tool on the host instead of
+its container would be a downgrade of the isolation the deployment
+configured.
+
+The resolved runner is cached per workspace on the provider; a
+`sandbox.gone` handle (the runtime client's self-eviction) is re-resolved
+on the next call, and a resolution that raised is not cached. The cache is
+a small LRU (`_SANDBOX_RUNNER_CACHE_MAX`, default 64): at the bound the
+least-recently-used entry is dropped, and a GONE (dead) runner is closed
+as it goes - a re-resolution that replaces a GONE entry closes the
+replaced handle at the swap, and the new entry takes the MRU spot - while
+a live one is only dropped - a closed runtime client
+cannot reconnect, and the backend still owns a live workspace - so a
+long-lived process does not keep one dead handle per distinct workspace
+id. The toolset
+env (secrets unwrapped) reaches the sandbox runner the same way it reaches
+the local one.
+
+A resume rides the runner the call parked on: `to_yielded` stamps
+`workspace_id` into every python-tool park's metadata, and
+`resume_tool` resolves the runner from it (a park from before the stamp,
+or one with no workspace, resolves to the local runner, as before).
+
+`PythonConfig.image` is the runner image the toolset REQUESTS. A call from
+a container workspace runs inside that workspace's own runtime container,
+whose image comes from the workspace template, so the field is
+informational: `GET /v1/toolsets/{id}/runtime` reports it beside
+`container_isolation` (whether the per-call sandbox resolver is wired in
+this deployment) and the local `isolation_level`. To pick the runner image
+for real, set it on the workspace template.
+
+### The source has a size cap
+
+`ast.parse` memory grows super-linearly in source size (a 4 MB source peaked
+near 2 GB RSS), so the registrar caps source at
+`MAX_PYTHON_TOOLSET_SOURCE_BYTES` (256 KiB of encoded bytes), enforced in
+`_parse_and_collect` -- the one funnel every parse path goes through -- right
+before `ast.parse` runs. Over the cap raises `SourceTooLargeError` (a kind of
+`RegistrationError`): the admin save path answers 422
+`invalid_python_toolset` naming the limit, and the dry-run `/validate` route
+answers 413 `/errors/payload-too-large` with `limit_bytes`.
+
 ### The management tools carry the toolset router's rules
 
 `create_python_toolset` and `update_python_toolset_source` (`primer/toolset/_python_tools.py`, on the `crud` toolset, admin-gated)

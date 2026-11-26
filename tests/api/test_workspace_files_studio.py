@@ -8,6 +8,8 @@ Covers three features added in the studio sprint:
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -99,7 +101,14 @@ class _SP:
         return SystemState()
 
     def __init__(self) -> None:
+        self._migration_lock = asyncio.Lock()
         self._stores: dict[type, _Storage] = {}
+
+    @asynccontextmanager
+    async def migration_lock(self):
+        # Serialize like the shared fake: /v1/auth/register takes this lock.
+        async with self._migration_lock:
+            yield
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())
@@ -381,6 +390,27 @@ class TestFileTree:
         # sub/b.txt must not appear at the top level
         assert "b.txt" not in names
         assert "sub/b.txt" not in names
+
+    @pytest.mark.asyncio
+    async def test_tree_caps_a_huge_directory_and_says_so(self, client, wsr, monkeypatch) -> None:
+        """Review 2026-11-23 8.4: a directory of tens of thousands of entries is capped (dirs first) with ``truncated`` and ``total``."""
+        import primer.api.routers.workspaces as ws_routes
+
+        monkeypatch.setattr(ws_routes, "_MAX_TREE_ITEMS", 5)
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add("zdir")
+        for i in range(8):
+            ws._files[f"f{i}.txt"] = b"x"
+        body = (await client.get(f"/v1/workspaces/{wid}/files/tree")).json()
+        assert body["truncated"] is True and body["total"] == 9
+        assert [i["name"] for i in body["items"]] == ["zdir", "f0.txt", "f1.txt", "f2.txt", "f3.txt"]
+
+    @pytest.mark.asyncio
+    async def test_tree_under_the_cap_is_not_truncated(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files["a.txt"] = b"x"
+        body = (await client.get(f"/v1/workspaces/{wid}/files/tree")).json()
+        assert body["truncated"] is False and body["total"] == len(body["items"]) == 1
 
     @pytest.mark.asyncio
     async def test_tree_state_hidden_by_default(self, client, wsr) -> None:
@@ -791,8 +821,9 @@ class TestWritePrecondition:
 
 
 async def _park_watch_session(app, *, wid: str, paths: list[str], event_key: str):
-    """Inject a watch_files-parked session into the app's in-memory
-    scheduler so a file write can wake it."""
+    """Seed a watch_files-parked session into the app's session storage
+    so a file write can wake it (parks live in session storage, where
+    production keeps them)."""
     from datetime import timedelta
 
     from primer.model.workspace_session import (
@@ -800,7 +831,6 @@ async def _park_watch_session(app, *, wid: str, paths: list[str], event_key: str
         SessionStatus,
         WorkspaceSession,
     )
-    from primer.scheduler.in_memory import _LeaseState
 
     now = datetime.now(timezone.utc)
     sid = event_key.split(":")[1]

@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from primer.int.document_content import ContentListEntry, DocumentContentStore
 from primer.int.storage import Storage
 from primer.model.collection import Document, _utcnow
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
@@ -49,6 +49,10 @@ Indexer = Callable[..., Awaitable[None]]
 Unindexer = Callable[..., Awaitable[None]]
 # Best-effort chunk path-metadata rewrite, called with ``document_id=``, ``collection_id=``, ``new_path=`` after a move commits.
 PathRewriter = Callable[..., Awaitable[None]]
+
+
+MAX_LIST_LIMIT = 1000
+"""Most entries one document listing answers in a page: the default page and the ceiling. An unbounded listing decompressed every body of the collection (review 3.8); a page is bounded, and the truncation signal below says when more rows exist."""
 
 
 class _TransactionalProvider(Protocol):
@@ -73,6 +77,18 @@ class ReadResult(BaseModel):
 
     document: Document
     content: str
+
+
+class ListResult(BaseModel):
+    """A page of content-store entries.
+
+    ``truncated`` is exact, not a full-page guess: the store is asked for
+    one row past the page, so ``truncated`` means more entries exist below
+    it. Pass the last entry's ``path`` as ``after_path`` for the next page.
+    """
+
+    entries: list[ContentListEntry]
+    truncated: bool
 
 
 def _leaf(path: str) -> str:
@@ -293,14 +309,38 @@ class DocumentService:
         return ReadResult(document=doc, content=row.content)
 
     async def list(
-        self, *, collection_id: str, prefix: str | None = None
-    ) -> list[ContentListEntry]:
+        self,
+        *,
+        collection_id: str,
+        prefix: str | None = None,
+        limit: int | None = None,
+        after_path: str | None = None,
+    ) -> ListResult:
         """List entries under an optional path prefix WITHOUT loading bodies.
 
         The content store is authoritative and sole (v2): entity rows with
         no content row are not documents and never appear here.
+
+        Entries come back in path order. ``limit`` (default and ceiling
+        :data:`MAX_LIST_LIMIT`; a value outside 1..MAX is a
+        :class:`BadRequestError`) pages by keyset on ``after_path`` (the
+        last path of the previous page); :attr:`ListResult.truncated` says
+        whether more entries remain below the page.
         """
-        return await self._content.list(collection_id, prefix=prefix)
+        if limit is None:
+            limit = MAX_LIST_LIMIT
+        if not 1 <= limit <= MAX_LIST_LIMIT:
+            raise BadRequestError(
+                f"limit must be between 1 and {MAX_LIST_LIMIT}"
+            )
+        entries = await self._content.list(
+            collection_id,
+            prefix=prefix,
+            limit=limit + 1,
+            after_path=after_path,
+        )
+        truncated = len(entries) > limit
+        return ListResult(entries=entries[:limit], truncated=truncated)
 
     async def delete(self, *, collection_id: str, path: str) -> None:
         """Delete the entity + body at ``(collection_id, path)`` atomically.

@@ -357,3 +357,52 @@ class TestDocumentRouter:
     async def test_delete_missing_document_404(self, client) -> None:
         resp = await client.delete("/v1/documents/nope")
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["path", "slug", "parent_id", "collection_id"])
+    async def test_update_rejects_place_field_changes(self, client, field: str) -> None:
+        """3.3: the place in the tree and the collection are immutable through the flat CRUD door;
+        only the move route rewrites them (the content row lives at the path)."""
+        await client.post("/v1/documents", json=_document(id="doc-place").model_dump(mode="json"))
+        body = _document(id="doc-place").model_dump(mode="json")
+        body[field] = "other-parent" if field == "parent_id" else f"new-{field}"
+        resp = await client.put("/v1/documents/doc-place", json=body)
+        assert resp.status_code == 400, resp.text
+        assert f"a document's {field} cannot be changed here" in resp.text
+        # The row is untouched: a later legal update still finds it.
+        legal = await client.get("/v1/documents/doc-place")
+        assert legal.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_update_still_edits_title_and_meta(self, client) -> None:
+        """A title/meta-only update through the flat door still works (3.3 refused only the place fields)."""
+        await client.post("/v1/documents", json=_document(id="doc-place").model_dump(mode="json"))
+        body = _document(id="doc-place").model_dump(mode="json")
+        body["title"] = "a new title"
+        body["meta"] = {"k": "v"}
+        resp = await client.put("/v1/documents/doc-place", json=body)
+        assert resp.status_code == 200, resp.text
+        got = await client.get("/v1/documents/doc-place")
+        assert got.json()["title"] == "a new title"
+        assert got.json()["meta"] == {"k": "v"}
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_the_content_row(self, client, fake_storage_provider) -> None:
+        """3.3: a delete must not leave the body row behind: a leftover row keeps its path taken
+        (409 on create, 404 on resolve) and still shows in listings and grep."""
+        await client.post("/v1/documents", json=_document(id="doc-body").model_dump(mode="json"))
+        store = fake_storage_provider.get_content_store()
+        await store.upsert(
+            document_id="doc-body", collection_id="kb-1", path="hello.txt", content="the body",
+        )
+        resp = await client.delete("/v1/documents/doc-body")
+        assert resp.status_code in (200, 204), resp.text
+        assert await store.get("doc-body") is None
+
+    @pytest.mark.asyncio
+    async def test_delete_without_a_content_row_still_succeeds(self, client, fake_storage_provider) -> None:
+        """The flat CRUD create writes no content row; deleting such a document must not fail (3.3)."""
+        await client.post("/v1/documents", json=_document(id="doc-nobody").model_dump(mode="json"))
+        resp = await client.delete("/v1/documents/doc-nobody")
+        assert resp.status_code in (200, 204), resp.text
+        assert (await client.get("/v1/documents/doc-nobody")).status_code == 404

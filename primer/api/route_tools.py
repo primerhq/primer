@@ -39,6 +39,7 @@ from primer.common.preview_paths import missing_paths
 from primer.common.shielded import run_in_background
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import ConfigError
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.toolset.internal import InternalToolsetProvider
@@ -54,6 +55,8 @@ _TRUST_SCOPE_KEY = "primer.route_tool_dispatch"
 _TRUST_PERSON_SCOPE_KEY = "primer.route_tool_person"
 _TRUST_SESSION_SCOPE_KEY = "primer.route_tool_session_id"
 _TRUST_TURN_SCOPE_KEY = "primer.route_tool_turn_no"
+_TRUST_ORIGIN_SCOPE_KEY = "primer.route_tool_originating_credential"
+_TRUST_ORIGIN_REF_SCOPE_KEY = "primer.route_tool_originating_ref"
 _TRUST_OBJECT = object()
 _DISPATCH_DEPTH: ContextVar[int] = ContextVar("primer_route_tool_dispatch_depth", default=0)
 _STREAM_CLEANUP_OWNERS: ContextVar[list[asyncio.Task[BaseException | None]] | None] = ContextVar(
@@ -537,11 +540,46 @@ def _scoped_id(
     return canonical_tool_id(metadata.resource_id), canonical_tool_id(metadata.tool_id)
 
 
-def _format_path(path: str, bindings: Sequence[_ArgumentBinding], arguments: Mapping[str, Any]) -> str:
+def _multi_segment_path_params(path: str) -> set[str]:
+    """Wire names whose route convertor is ``path`` (Starlette's convertor
+    that matches whole segments, written ``{param:path}`` in the route
+    template): their values may lawfully contain ``/`` -- e.g. the asset
+    path of ``/svc/{name}/{path:path}`` (review 4.1, round 2)."""
+    return {
+        name
+        for name, convertor in re.findall(r"\{(\w+)(?::(\w+))?\}", path)
+        if convertor == "path"
+    }
+
+
+def _format_path(
+    path: str,
+    bindings: Sequence[_ArgumentBinding],
+    arguments: Mapping[str, Any],
+    multi_segment: frozenset[str] = frozenset(),
+) -> str:
     rendered = path
     for binding in bindings:
         if binding.location == "path":
-            rendered = rendered.replace("{" + binding.wire_name + "}", quote(str(arguments[binding.argument]), safe=""))
+            value = str(arguments[binding.argument])
+            # quote(..., safe="") leaves ``.``/``..`` untouched and a request
+            # URL is normalized before routing, so such a value would run a
+            # DIFFERENT REST operation than the tool names (review 4.1).
+            # A ``{param:path}`` convertor takes whole segments, so its
+            # value may contain ``/`` (review 4.1, round 2) -- but every
+            # segment must still be non-empty and not ``.``/``..``; every
+            # other path parameter stays a single segment.
+            if binding.wire_name in multi_segment:
+                if any(seg in ("", ".", "..") for seg in value.split("/")):
+                    raise _InvalidPathArgument(
+                        f"path argument {binding.argument!r} may not contain "
+                        f"an empty, '.' or '..' segment"
+                    )
+            elif value in ("", ".", "..") or "/" in value:
+                raise _InvalidPathArgument(
+                    f"path argument {binding.argument!r} must be a single path segment"
+                )
+            rendered = rendered.replace("{" + binding.wire_name + "}", quote(value, safe=""))
     return rendered
 
 
@@ -641,11 +679,15 @@ def _body_kwargs(body: Mapping[str, Any]) -> dict[str, Any]:
 
 class _TrustedAsgiApp:
     def __init__(self, app: FastAPI, person: Person, *, session_id: str | None = None,
-                 turn_no: int | None = None) -> None:
+                 turn_no: int | None = None,
+                 originating_credential: str | None = None,
+                 originating_ref: PrincipalRef | None = None) -> None:
         self._app = app
         self._person = person
         self._session_id = session_id
         self._turn_no = turn_no
+        self._originating_credential = originating_credential
+        self._originating_ref = originating_ref
 
     async def __call__(self, scope, receive, send) -> None:
         trusted_scope = dict(scope)
@@ -653,6 +695,8 @@ class _TrustedAsgiApp:
         trusted_scope[_TRUST_PERSON_SCOPE_KEY] = self._person
         trusted_scope[_TRUST_SESSION_SCOPE_KEY] = self._session_id
         trusted_scope[_TRUST_TURN_SCOPE_KEY] = self._turn_no
+        trusted_scope[_TRUST_ORIGIN_SCOPE_KEY] = self._originating_credential
+        trusted_scope[_TRUST_ORIGIN_REF_SCOPE_KEY] = self._originating_ref
         await self._app(trusted_scope, receive, send)
 
 
@@ -677,6 +721,11 @@ class _RouteStreamFailed(Exception):
     def __init__(self, status_code: int | None) -> None:
         super().__init__("generated REST response stream failed")
         self.status_code = status_code
+
+
+class _InvalidPathArgument(Exception):
+    """A path argument that would change which REST route the request lands on:
+    empty, a ``.``/``..`` dot segment, or carrying a path separator."""
 
 
 async def _wait_cleanup_owner(task: asyncio.Task[Any]) -> asyncio.CancelledError | None:
@@ -951,6 +1000,57 @@ def trusted_route_tool_person(scope: Mapping[str, Any]) -> Person | None:
     return person if isinstance(person, Person) else None
 
 
+def trusted_route_tool_originating_credential(scope: Mapping[str, Any]) -> str | None:
+    """The initiating credential's kind for a trusted route-tool scope
+    (``"api_token"`` when the call was initiated by a bearer token, otherwise
+    the initiator's type, ``None`` when unknown). The cookie-only route rules
+    refuse a call originating from a bearer credential even though the
+    trusted request itself carries no token (review 4.3)."""
+
+    if not is_trusted_route_tool_scope(scope):
+        return None
+    return scope.get(_TRUST_ORIGIN_SCOPE_KEY)
+
+
+def trusted_route_tool_origin_ref(scope: Mapping[str, Any]) -> PrincipalRef | None:
+    """The originating :class:`PrincipalRef` (kind AND id) of a trusted
+    route-tool scope -- the run's persisted initiator, or the MCP caller's
+    live actor projected the same way a saved creator would be. The auth
+    middleware rebuilds ``state.actor`` from it, so a call that originated
+    from an api_token is an api_token actor everywhere and every row it
+    touches keeps that kind, exactly as a direct bearer REST call records
+    it (review 4.3, round 2: before the fix the actor was always typed
+    ``user``)."""
+
+    if not is_trusted_route_tool_scope(scope):
+        return None
+    ref = scope.get(_TRUST_ORIGIN_REF_SCOPE_KEY)
+    return ref if isinstance(ref, PrincipalRef) else None
+
+
+def _originating_principal_ref(ctx: "ToolContext | None") -> PrincipalRef | None:
+    """The originating :class:`PrincipalRef` of this tool call: the run's
+    persisted initiator when the call carries a context, else the MCP
+    request's live actor projected as a saved creator would project it;
+    ``None`` when neither names one (the call keeps today's unattributed
+    behaviour)."""
+    if ctx is not None and ctx.initiated_by is not None:
+        return ctx.initiated_by
+    from primer.mcp.server import current_actor  # lazy: the MCP server module is heavy and optional on this path
+
+    actor = current_actor.get()
+    return PrincipalRef.from_principal(actor) if actor is not None else None
+
+
+def _originating_credential_kind(ctx: "ToolContext | None") -> str | None:
+    """The kind of the credential that initiated this tool call: the run's
+    persisted initiator when the call carries a context, else the MCP
+    request's live actor; ``None`` when neither names one (the call keeps
+    today's unattributed behaviour)."""
+    ref = _originating_principal_ref(ctx)
+    return ref.type if ref is not None else None
+
+
 def calling_session_id(request: Request) -> str | None:
     """Read tool-context provenance, never a request-supplied target or parent.
 
@@ -1065,6 +1165,7 @@ class GeneratedRouteTool:
     metadata: RouteToolMetadata
     bindings: tuple[_ArgumentBinding, ...]
     tool: Tool
+    multi_segment_path_params: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1361,6 +1462,11 @@ class _GeneratedRouteToolBlueprint:
     read_only: bool
     preview_args: tuple[str, ...] | None
     preview_lead: tuple[str, ...] | None
+    # Wire names whose route convertor is "path" ({param:path}): their
+    # values may lawfully contain "/" (review 4.1, round 2). Derived from
+    # the raw Starlette template, because the OpenAPI spelling above
+    # drops the convertor.
+    multi_segment_path_params: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1855,6 +1961,7 @@ def _compile_route_tool_blueprints(
                 read_only=tool.read_only,
                 preview_args=tool.preview_args,
                 preview_lead=tool.preview_lead,
+                multi_segment_path_params=frozenset(_multi_segment_path_params(full_path)),
             )
             if _tool_from_blueprint(blueprint) != tool:
                 raise ConfigError(
@@ -2011,6 +2118,7 @@ def build_generated_route_toolsets(
                 metadata=blueprint.metadata,
                 bindings=blueprint.bindings,
                 tool=tool,
+                multi_segment_path_params=blueprint.multi_segment_path_params,
             )
             tool_id = tool.id
 
@@ -2032,12 +2140,22 @@ def build_generated_route_toolsets(
                         is_error=True,
                     )
                 person = person_for_tool(ctx)
+                # Review 4.3 round 2: carry the whole originating
+                # PrincipalRef (kind AND id), not just its kind, so the
+                # auth middleware can rebuild the exact actor a direct
+                # call would carry (a bearer-originated call is an
+                # api_token actor everywhere).
+                originating_ref = _originating_principal_ref(ctx)
+                originating_credential = originating_ref.type if originating_ref is not None else None
                 token = _DISPATCH_DEPTH.set(_DISPATCH_DEPTH.get() + 1)
                 started = time.monotonic()
                 status_code: int | None = None
                 outcome = "dispatch_failed"
                 try:
-                    path = _format_path(_descriptor.path, _descriptor.bindings, arguments)
+                    path = _format_path(
+                        _descriptor.path, _descriptor.bindings, arguments,
+                        multi_segment=_descriptor.multi_segment_path_params,
+                    )
                     query, headers, body = _request_parts(_descriptor.bindings, arguments)
                     kwargs = _body_kwargs(body)
                     merged_headers = {
@@ -2057,6 +2175,8 @@ def build_generated_route_toolsets(
                         app=_TrustedAsgiApp(
                             owning_app, person, session_id=ctx.session_id if ctx else None,
                             turn_no=ctx.turn_no if ctx else None,
+                            originating_credential=originating_credential,
+                            originating_ref=originating_ref,
                         ),
                         max_response_bytes=_MAX_RESPONSE_BYTES,
                     )
@@ -2090,6 +2210,15 @@ def build_generated_route_toolsets(
                         },
                     )
                     return result
+                except _InvalidPathArgument as exc:
+                    outcome = "invalid_path_argument"
+                    return ToolCallResult(
+                        output=json.dumps(
+                            {"type": "route-tool-invalid-path-argument", "message": str(exc)},
+                            separators=(",", ":"),
+                        ),
+                        is_error=True,
+                    )
                 except _ResponseEncodingRejected as exc:
                     status_code = exc.status_code
                     outcome = "response_encoding_rejected"

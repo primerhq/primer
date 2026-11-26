@@ -118,10 +118,14 @@ def _session(sid: str, *, parked_state: dict) -> WorkspaceSession:
 
 
 async def _handle_and_capture(inbox: ChannelInbox, env: ResponseEnvelope, bus):
+    # The durable emit also publishes the event-log hint; consume past it.
     sub = bus.subscribe()
     try:
         await inbox.handle_response(env)
-        return await asyncio.wait_for(anext(sub), timeout=1.0)
+        for _ in range(5):
+            event = await asyncio.wait_for(anext(sub), timeout=1.0)
+            if event.event_key != "events_appended":
+                return event
     finally:
         await sub.aclose()
 

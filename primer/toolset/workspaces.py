@@ -1967,7 +1967,6 @@ def build_workspaces_toolset(
             SessionFactoryDeps,
             start_workspace_session,
         )
-        from primer.workspace.work_priority import SessionPriorityUnavailable
 
         deps = SessionFactoryDeps(
             storage_provider=storage_provider,
@@ -2008,8 +2007,6 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="conflict")
         except AccessDeniedError as exc:
             return _err_from_primer(exc, error_type="forbidden")
-        except SessionPriorityUnavailable as exc:
-            return _err_from_primer(exc, error_type="unavailable")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
         return _ok(session)
@@ -3404,6 +3401,8 @@ def build_workspaces_toolset(
             # keeps ``next_cursor`` correct if a future ``read_batch`` ever
             # hands back a fresh cursor instead of mutating the argument.
             nonlocal cursor
+            # The drain's watermark moves on the caller's clock (read_batch never calls datetime.now): a complete
+            # drain drops the ENDED sessions it drained and bounds the token (I2-3).
             events, cursor = await read_batch(
                 sessions_storage,
                 workspace_io,
@@ -3411,6 +3410,7 @@ def build_workspaces_toolset(
                 selector=selector,
                 cursor=cursor,
                 limit=args.limit,
+                drained_at=datetime.now(timezone.utc),
             )
             return events
 
@@ -3457,7 +3457,12 @@ def build_workspaces_toolset(
             "drain by passing ``next_cursor`` back as ``cursor`` — the "
             "per-event ``cursor`` field is a placeholder, NOT the resume "
             "token. ``wait_seconds`` enables a bounded long-poll when the "
-            "drain would otherwise be empty."
+            "drain would otherwise be empty. A workspace-wide drain that "
+            "``limit`` does not cut stamps a watermark into ``next_cursor``; "
+            "a later drain skips ENDED sessions that ended at or before it, "
+            "because the drain that set the watermark read their logs to the "
+            "end. Scoped drains (a ``sessions`` filter) never set or rely on "
+            "it."
         ),
         (
             "Use when polling a workspace's activity from outside an agent "
