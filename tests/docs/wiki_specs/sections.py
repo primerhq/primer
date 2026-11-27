@@ -41,7 +41,10 @@ SPECS = (
     PageSpec("providers", "Providers",
              "Admin: register the LLM, embedding, cross-encoder, vector-store, storage and web providers that agents run on.",
              "section", 110,
-             audience="admin"),
+             audience="admin",
+             # the dense operations table: the PMS wave's get_llm_provider_model_settings row
+             # pushed the default 9000 cap, so the page carries its own (the constructor allows up to 14000).
+             max_chars=9500),
     PageSpec("approvals", "Approvals",
              "Admin: gate tool calls behind a person, a rule or a judge model with approval policies.",
              "section", 120,

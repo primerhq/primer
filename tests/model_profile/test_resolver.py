@@ -360,7 +360,8 @@ class TestResolveLlmAggregated:
 class TestAggregatedMembersApplyTheirOwnConfig:
     """End to end through resolve_llm: the member that serves a call of an
     aggregated profile sends ITS OWN profile's config, translated for its
-    own adapter; the aggregate's own config is not applied."""
+    own adapter; the aggregate carries no config of its own (the model's
+    kind field group refuses one)."""
 
     async def test_the_member_that_serves_brings_its_own_config(
         self, sp: StorageProvider,
@@ -383,7 +384,6 @@ class TestAggregatedMembersApplyTheirOwnConfig:
         await store.create(ModelProfile(
             id="agg-cfg", description="pool", kind="aggregated",
             members=["lf-a", "lf-b"],
-            config=ModelProfileConfig(reasoning=ReasoningLevel.LOW),
         ))
         adapters = {
             "prov-a": Member(connect_exc=RateLimitError("busy")),  # Ollama-kind

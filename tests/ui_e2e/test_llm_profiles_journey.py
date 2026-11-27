@@ -9,6 +9,8 @@ drive the real console against the real server:
   rebuilds the body from what it draws would reset it: master Review Focus 1);
 * set a single profile's reasoning to Off and its extended JSON, and read both back with every other field unchanged (Task 7: model calls apply a
   profile's ``config``, #756);
+* a vllm profile's typed settings: ``top_k`` through its control and a Custom reasoning value save to the row and come back into the controls
+  after a reload, and a key the wire does not name is refused on save with the refusal tosted (PMS Task 7);
 * duplicate a single profile into a variant with its reasoning off: the form starts from ``<id>-copy`` with the provider and model read-only, and the
   created row is a fresh unmanaged single profile for the same model while the original is left as it was (Task 8, design 20 Q3);
 * Cancel leaves the grid and the URL as they were;
@@ -192,6 +194,50 @@ def test_setting_reasoning_off_reaches_the_row(page: Page, base_url: str, consol
         assert {k: v for k, v in edited.items() if k != "config"} == {k: v for k, v in seeded.items() if k != "config"}, "every other field is unchanged"
     finally:
         _clean_up(base_url, provider_id, [], [tuned, a, b])
+
+
+def test_the_typed_settings_of_a_vllm_profile_save_and_refuse(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    """PMS Task 7's journey (runs once the settings route and the wire's refusal live on main): a vllm wire draws the provider's own settings as
+    typed controls; ``top_k`` through its control and a Custom reasoning value save to the row and come back into the controls after a reload;
+    a key the wire does not name is refused on save, and the refusal is tosted (it never reaches the row)."""
+    provider_id = f"llm-lpv-{unique_suffix}"
+    model = "vllm-model"
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = seed_llm_provider_with(c, {
+            "id": provider_id, "provider": "openchat", "config": {"url": "http://127.0.0.1:9999", "flavor": "vllm"},
+            "models": [{"name": model, "context_length": 32768}],
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code == 201, r.text
+    pid = profile_id_for(provider_id, model)
+    try:
+        _open_profiles_page(page, console_url)
+        _open_card(page, pid)
+        expect(page.get_by_test_id("mp-single-settings")).to_contain_text("MODEL SETTINGS", timeout=10_000)
+        top_k = page.get_by_test_id("mp-setting-top_k")
+        expect(top_k).to_be_visible(timeout=15_000)
+        top_k.fill("20")
+        page.get_by_test_id("mp-single-reasoning:custom").click()
+        page.get_by_test_id("mp-reasoning-custom").fill("high")
+        page.get_by_test_id("mp-single-submit").click()
+        expect(page.get_by_test_id("nv-toasts")).to_contain_text(f"Saved {pid}", timeout=15_000)
+        saved = _row_when(base_url, pid, lambda row: row["config"].get("reasoning") == {"custom": "high"})
+        assert saved["config"] == {"reasoning": {"custom": "high"}, "extended": {"top_k": 20}}, saved
+
+        page.reload()
+        _open_profiles_page(page, console_url)
+        _open_card(page, pid)
+        expect(page.get_by_test_id("mp-single-settings")).to_contain_text("MODEL SETTINGS", timeout=10_000)
+        expect(page.get_by_test_id("mp-reasoning-custom")).to_have_value("high", timeout=15_000)
+        expect(page.get_by_test_id("mp-setting-top_k")).to_have_value("20", timeout=15_000)
+
+        page.get_by_test_id("mp-single-extended").fill('{"topk": 5}')
+        page.get_by_test_id("mp-single-submit").click()
+        expect(page.get_by_test_id("nv-toasts")).to_contain_text("topk", timeout=15_000)
+        left = _row(base_url, pid)
+        assert left["config"] == saved["config"], "the refused save never reached the row"
+    finally:
+        _clean_up(base_url, provider_id, [], [pid])
 
 
 def test_duplicate_a_profile_with_reasoning_off(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:

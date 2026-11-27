@@ -8,11 +8,13 @@ from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 import logging
 from typing import Any
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 from pydantic import HttpUrl, SecretStr
 
 from primer.llm.openchat import OpenChatLLM, _POLICY_BY_FLAVOR, _FlavorPolicy
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
     Limits,
@@ -60,6 +62,9 @@ class TestFlavorPolicy:
     def test_vllm_policy_tolerates_no_key(self) -> None:
         assert _POLICY_BY_FLAVOR[OpenChatFlavor.VLLM].require_api_key is False
 
+    def test_strata_policy_tolerates_no_key(self) -> None:
+        assert _POLICY_BY_FLAVOR[OpenChatFlavor.STRATA].require_api_key is False
+
     def test_other_policy_tolerates_no_key(self) -> None:
         """OTHER is the catch-all for self-hosted OpenAI-compatible servers,
         which are commonly unauthenticated. Only OPENAI names an endpoint
@@ -104,6 +109,17 @@ class TestConstructor:
                 flavor=OpenChatFlavor.VLLM,
                 api_key=None,
                 url="http://localhost:8000/v1/",
+            )
+        )
+        assert llm._policy.require_api_key is False
+
+    def test_accepts_strata_with_no_key(self) -> None:
+        """Strata's server key is optional: it constructs with none."""
+        llm = OpenChatLLM(
+            _make_provider(
+                flavor=OpenChatFlavor.STRATA,
+                api_key=None,
+                url="http://127.0.0.1:8080/v1/",
             )
         )
         assert llm._policy.require_api_key is False
@@ -471,19 +487,73 @@ class TestExtendedKwargs:
         ],
     )
     def test_recognised_keys_passthrough(self, key: str, value: Any) -> None:
-        assert _extract_extended_kwargs({key: value}) == {key: value}
+        assert _extract_extended_kwargs(
+            {key: value},
+            catalogue=catalogue_for("openchat/openai"),
+            flavor=OpenChatFlavor.OPENAI,
+            provider_id="t2-shared",
+        ) == {key: value}
 
-    def test_unknown_keys_dropped_with_debug_log(
+    def test_unknown_keys_dropped_with_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm._openai_compat")
-        out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
-        assert out == {}
-        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(
-            "frobnicate" in r.message and "foobar" in r.message
-            for r in debug_records
+        caplog.set_level(logging.WARNING)
+        provider_id = f"t2-drop-{uuid4().hex}"
+        out = _extract_extended_kwargs(
+            {"frobnicate": True, "foobar": 42},
+            catalogue=catalogue_for("openchat/openai"),
+            flavor=OpenChatFlavor.OPENAI,
+            provider_id=provider_id,
         )
+        assert out == {}
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider_id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("frobnicate" in m for m in messages)
+        assert any("foobar" in m for m in messages)
+
+    def test_strata_body_keys_go_to_extra_body(self) -> None:
+        """Strata's own settings are not parameters of the SDK's create():
+        they travel in the request body (spec section 5, section 8)."""
+        out = _extract_extended_kwargs(
+            {
+                "reasoning_budget_tokens": 4096,
+                "top_k": 32,
+                "min_p": 0.5,
+                "repetition_penalty": 1.1,
+                "penalty_last_n": 2000,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "return_progress": True,
+            },
+            catalogue=catalogue_for("openchat/strata"),
+            flavor=OpenChatFlavor.STRATA,
+            provider_id="t6-strata-body",
+        )
+        assert out == {
+            "extra_body": {
+                "reasoning_budget_tokens": 4096,
+                "top_k": 32,
+                "min_p": 0.5,
+                "repetition_penalty": 1.1,
+                "penalty_last_n": 2000,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "return_progress": True,
+            }
+        }
+
+    def test_strata_sdk_keys_stay_top_level(self) -> None:
+        """reasoning_effort and the shared Chat Completions keys are SDK
+        parameters: they are forwarded as kwargs, not into extra_body."""
+        out = _extract_extended_kwargs(
+            {"reasoning_effort": "high", "seed": 7, "user": "u-1"},
+            catalogue=catalogue_for("openchat/strata"),
+            flavor=OpenChatFlavor.STRATA,
+            provider_id="t6-strata-sdk",
+        )
+        assert out == {"reasoning_effort": "high", "seed": 7, "user": "u-1"}
 
     def test_the_reasoning_knobs_this_wire_takes_are_forwarded(self) -> None:
         """A profile's reasoning level reaches this wire as
@@ -492,19 +562,34 @@ class TestExtendedKwargs:
         the openai SDK's ``create()``, so it travels in ``extra_body``. This
         test used to pin that ``reasoning_effort`` was dropped, which is why no
         profile reasoning setting ever took effect on this provider type."""
-        assert _extract_extended_kwargs({
-            "reasoning_effort": "high",
-            "chat_template_kwargs": {"enable_thinking": False},
-        }) == {
+        assert _extract_extended_kwargs(
+            {
+                "reasoning_effort": "high",
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            catalogue=catalogue_for("openchat/vllm"),
+            flavor=OpenChatFlavor.VLLM,
+            provider_id="t2-reasoning",
+        ) == {
             "reasoning_effort": "high",
             "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
         }
 
     def test_none_returns_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
+        assert _extract_extended_kwargs(
+            None,
+            catalogue=catalogue_for("openchat/vllm"),
+            flavor=OpenChatFlavor.VLLM,
+            provider_id="t2-none",
+        ) == {}
 
     def test_empty_dict_returns_empty(self) -> None:
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            {},
+            catalogue=catalogue_for("openchat/vllm"),
+            flavor=OpenChatFlavor.VLLM,
+            provider_id="t2-empty",
+        ) == {}
 
 
 class TestResponseFormat:
@@ -1008,6 +1093,74 @@ class TestStream:
         kinds = [type(e).__name__ for e in events]
         assert kinds == ["StreamStart", "TextDelta", "Usage", "Done"]
 
+    async def test_strata_reasoning_content_streams_as_thinking_events(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strata streams its thinking as ``delta.reasoning_content``; the
+        parser already reads it into thinking events (spec section 8)."""
+        llm = OpenChatLLM(
+            _make_provider(
+                flavor=OpenChatFlavor.STRATA,
+                api_key=None,
+                url="http://127.0.0.1:8080/v1/",
+            )
+        )
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(
+            [
+                NS(
+                    id="chatcmpl-s1",
+                    model="strata-model",
+                    choices=[
+                        NS(
+                            index=0,
+                            delta=NS(role="assistant", content=None, tool_calls=None),
+                            finish_reason=None,
+                        ),
+                    ],
+                    usage=None,
+                ),
+                NS(
+                    id="chatcmpl-s1",
+                    model="strata-model",
+                    choices=[
+                        NS(
+                            index=0,
+                            delta=NS(
+                                role=None, content=None, tool_calls=None,
+                                reasoning_content="thinking",
+                            ),
+                            finish_reason=None,
+                        ),
+                    ],
+                    usage=None,
+                ),
+                NS(
+                    id="chatcmpl-s1",
+                    model="strata-model",
+                    choices=[
+                        NS(
+                            index=0,
+                            delta=NS(role=None, content="answer", tool_calls=None),
+                            finish_reason="stop",
+                        ),
+                    ],
+                    usage=NS(prompt_tokens=4, completion_tokens=2),
+                ),
+            ]
+        )
+
+        events = [
+            ev
+            async for ev in llm.stream(
+                model="strata-model",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            )
+        ]
+        kinds = [type(e).__name__ for e in events]
+        assert kinds == ["StreamStart", "ReasoningDelta", "TextDelta", "Usage", "Done"]
+        assert events[1].text == "thinking"
+
     async def test_request_payload_sets_stream_and_include_usage(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1144,6 +1297,40 @@ class TestStream:
         assert kwargs["extra_body"] == {
             "chat_template_kwargs": {"enable_thinking": True}
         }
+
+    async def test_body_cannot_override_primer_fields(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An ``extended`` built here bypasses the validator: the reserved
+        ``body`` fields primer owns are dropped (named in a WARNING) and never
+        reach the request, which keeps primer's own ``model`` and ``stream``."""
+        caplog.set_level(logging.WARNING)
+        provider = _make_provider(flavor=OpenChatFlavor.VLLM)
+        llm = OpenChatLLM(provider)
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="primer-model",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            extended={"body": {"model": "evil", "stream": False}},
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "primer-model"
+        assert kwargs["stream"] is True
+        extra_body = kwargs.get("extra_body", {})
+        assert "model" not in extra_body
+        assert "stream" not in extra_body
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider.id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("body.model" in m for m in messages)
+        assert any("body.stream" in m for m in messages)
 
     @pytest.mark.parametrize("forced_choice", ["required", "search"])
     async def test_openai_reasoning_sends_a_forced_tool_choice_unchanged(

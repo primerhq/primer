@@ -17,7 +17,7 @@ from __future__ import annotations
 from enum import Enum, StrEnum
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, PositiveInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
 from primer.model.access import Grantable
 from primer.model.common import Describeable
@@ -63,6 +63,23 @@ class ReasoningLevel(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+class CustomReasoning(BaseModel):
+    """A hand-written reasoning value, instead of one of the :class:`ReasoningLevel` presets.
+
+    Sent verbatim to the wire's custom reasoning target (the catalogue's
+    ``custom_reasoning_key``), with no mapping or clamping (spec section 4):
+    presets clamp to values the tables have verified, and an operator who
+    wants an unverified value writes it here. A value the model refuses goes
+    through the refusal retry like any profile setting.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    custom: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,32}$")
 
 
 class ModelProfileConfig(BaseModel):
@@ -77,13 +94,15 @@ class ModelProfileConfig(BaseModel):
     bare ``(provider, model)`` pair did before profiles existed.
     """
 
-    reasoning: ReasoningLevel | None = Field(
+    reasoning: ReasoningLevel | CustomReasoning | None = Field(
         default=None,
         description=(
             "Reasoning effort for this profile. None defers to the vendor "
-            "default. Mapped onto the setting the provider and the model "
-            "take; a model with no such control gets none, and a call the "
-            "provider refuses for it is made again without it."
+            "default. A preset is mapped onto the setting the provider and "
+            "the model take; a model with no such control gets none, and a "
+            "call the provider refuses for it is made again without it. A "
+            "custom value ({\"custom\": \"...\"}) is written verbatim to "
+            "the wire's custom reasoning target instead."
         ),
     )
     extended: dict[str, Any] = Field(
@@ -182,9 +201,10 @@ class ModelProfile(Grantable, Describeable):
         default_factory=ModelProfileConfig,
         description=(
             "API-level tunables applied to every model call under this "
-            "profile, translated for its provider and model. Not applied "
-            "when kind=\"aggregated\": each member's own config applies to "
-            "the calls that member serves."
+            "profile, translated for its provider and model. Carried only "
+            "by single profiles: an aggregated profile must not set it "
+            "(the kind field group refuses a non-empty one); each "
+            "member's own config applies to the calls that member serves."
         ),
     )
     harness_id: str | None = Field(
@@ -224,6 +244,11 @@ class ModelProfile(Grantable, Describeable):
                     "kind='aggregated' must not set provider_id/model_name/"
                     "context_length"
                 )
+            if self.config.reasoning is not None or self.config.extended:
+                raise ValueError(
+                    "kind='aggregated' must not set config: each member "
+                    "profile carries its own settings"
+                )
         return self
 
 
@@ -251,6 +276,7 @@ class ModelProfileChoice(BaseModel):
 
 
 __all__ = [
+    "CustomReasoning",
     "FailoverClasses",
     "FailoverPoint",
     "ModelProfile",

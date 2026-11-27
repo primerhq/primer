@@ -35,18 +35,23 @@ from typing import Any
 
 from primer.model.chat import Error as ChatError
 from primer.model.except_ import BadRequestError
-from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
+from primer.llm.settings_catalogue import catalogue_for, wire_of
+from primer.model.model_profile import CustomReasoning, ModelProfileConfig, ReasoningLevel
 
 logger = logging.getLogger(__name__)
 
 
 # OpenAI, a model the table does not know: no true off, "minimal" the floor.
+# xhigh and max are not verified on this wire: both send what high sends
+# (spec section 4: presets clamp; a custom value is the unverified path).
 _OPENAI_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.OFF: "minimal",
     ReasoningLevel.MINIMAL: "minimal",
     ReasoningLevel.LOW: "low",
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
+    ReasoningLevel.XHIGH: "high",
+    ReasoningLevel.MAX: "high",
 }
 
 # OpenAI effort values are the model's: o-series and the codex models start
@@ -58,6 +63,7 @@ _LOW_FLOOR = {
     ReasoningLevel.OFF: "low", ReasoningLevel.MINIMAL: "low",
     ReasoningLevel.LOW: "low", ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
+    ReasoningLevel.XHIGH: "high", ReasoningLevel.MAX: "high",
 }
 _OPENAI_EFFORT_BY_FAMILY: dict[str, dict[ReasoningLevel, str]] = {
     "o-series": _LOW_FLOOR,
@@ -158,12 +164,16 @@ def _openai_effort(config: ModelProfileConfig, model: str | None) -> dict[str, A
     return _merge(config, {"reasoning_effort": efforts[level]})
 
 # Gemini 2.5 takes a token budget; 0 turns thinking off where the model allows.
+# xhigh and max ask for the model's top budget (the range clamp at the call
+# site gives each model its own top).
 _GEMINI_BUDGET: dict[ReasoningLevel, int] = {
     ReasoningLevel.OFF: 0,
     ReasoningLevel.MINIMAL: 512,
     ReasoningLevel.LOW: 2048,
     ReasoningLevel.MEDIUM: 8192,
     ReasoningLevel.HIGH: 24576,
+    ReasoningLevel.XHIGH: 32768,
+    ReasoningLevel.MAX: 32768,
 }
 
 # Gemini 2.5 budget range per model: (lowest budget, highest, can turn off).
@@ -183,6 +193,10 @@ _GEMINI_WANTED: dict[ReasoningLevel, str] = {
     ReasoningLevel.LOW: "low",
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
+    # xhigh and max ask for the model's top level; the clamp in
+    # _gemini_level gives each model its own top (its highest documented).
+    ReasoningLevel.XHIGH: "high",
+    ReasoningLevel.MAX: "high",
 }
 _ALL_LEVELS = frozenset(_GEMINI_LEVELS)
 _NO_MINIMAL = frozenset({"low", "medium", "high"})
@@ -205,12 +219,15 @@ _GEMINI_LEVEL_SETS: dict[str, frozenset[str]] = {
 _GEMINI_ID = re.compile(r"gemini-(\d+)(?:\.(\d+))?-([a-z0-9][a-z0-9.-]*)")
 
 # Anthropic, Claude 4.5 and earlier: a thinking block with a token budget.
+# xhigh and max ask for the high budget (the model's top).
 _ANTHROPIC_BUDGET: dict[ReasoningLevel, int | None] = {
     ReasoningLevel.OFF: None,
     ReasoningLevel.MINIMAL: 1024,
     ReasoningLevel.LOW: 4096,
     ReasoningLevel.MEDIUM: 16384,
     ReasoningLevel.HIGH: 32768,
+    ReasoningLevel.XHIGH: 32768,
+    ReasoningLevel.MAX: 32768,
 }
 
 # Anthropic, Claude 4.6 and later: adaptive thinking, its depth set by effort.
@@ -271,6 +288,35 @@ _CLAUDE_TABLE: dict[tuple[str, int, int], ClaudeTraits] = {
     ("opus", 5, 5): _ALWAYS_THINKING,
 }
 
+# The tops an adaptive model's output_config.effort records beyond high, per
+# model (spec section 4): opus 4.6 records max, opus 4.7 and later record
+# both, every other model records neither -- its xhigh and max both send
+# high, and a custom value is the unverified path.
+_CLAUDE_TOP_EFFORT: dict[tuple[str, int, int], frozenset[str]] = {
+    ("opus", 4, 6): frozenset({"max"}),
+    ("opus", 4, 7): frozenset({"xhigh", "max"}),
+    ("opus", 4, 8): frozenset({"xhigh", "max"}),
+    ("opus", 5, 0): frozenset({"xhigh", "max"}),
+    ("opus", 5, 5): frozenset({"xhigh", "max"}),
+}
+
+
+def _claude_key(model: str | None) -> tuple[str, int, int] | None:
+    """The (family, major, minor) a Claude model id names, or None."""
+    name = (model or "").lower()
+    match = _CLAUDE_ID.search(name)
+    if match:
+        return (match.group(1), int(match.group(2)), int(match.group(3) or 0))
+    old = _CLAUDE_OLD_ID.search(name)
+    if old:
+        return (old.group(3), int(old.group(1)), int(old.group(2) or 0))
+    return None
+
+
+def _claude_top_effort(model: str | None) -> frozenset[str]:
+    """The tops :data:`_CLAUDE_TOP_EFFORT` records for ``model`` (empty when it records none)."""
+    return _CLAUDE_TOP_EFFORT.get(_claude_key(model) or ("", 0, 0), frozenset())
+
 # claude-<family>-<major>[-<minor>] (a date or "@date" suffix may follow), and
 # the older claude-<major>[-<minor>]-<family>.
 _CLAUDE_ID = re.compile(r"claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?!\d)")
@@ -282,18 +328,30 @@ def claude_traits(model: str | None) -> ClaudeTraits | None:
     name = (model or "").lower()
     if "claude-fable" in name or "claude-mythos" in name:
         return _ALWAYS_THINKING
-    match = _CLAUDE_ID.search(name)
-    if match:
-        family, major, minor = match.group(1), int(match.group(2)), int(match.group(3) or 0)
-        return _CLAUDE_TABLE.get((family, major, minor))
+    key = _claude_key(model)
+    if key is None:
+        return None
+    if key in _CLAUDE_TABLE:
+        return _CLAUDE_TABLE[key]
+    # An older claude-<major>[-<minor>]-<family> id the table does not name:
+    # 3.x and earlier have no thinking control.
     old = _CLAUDE_OLD_ID.search(name)
-    if old:
-        major, minor, family = int(old.group(1)), int(old.group(2) or 0), old.group(3)
-        if (family, major, minor) in _CLAUDE_TABLE:
-            return _CLAUDE_TABLE[(family, major, minor)]
-        if major <= 3:
-            return _NO_THINKING
+    if old is not None and int(old.group(1)) <= 3:
+        return _NO_THINKING
     return None
+
+
+def _adaptive_effort(level: ReasoningLevel, model: str | None) -> str:
+    """The ``output_config.effort`` an adaptive model sends for a preset.
+
+    xhigh and max go to the model's recorded top (:data:`_CLAUDE_TOP_EFFORT`)
+    where the table records it, and to high where it does not (spec section 4).
+    """
+    if level is ReasoningLevel.XHIGH:
+        return "xhigh" if "xhigh" in _claude_top_effort(model) else "high"
+    if level is ReasoningLevel.MAX:
+        return "max" if "max" in _claude_top_effort(model) else "high"
+    return _ANTHROPIC_EFFORT[level]
 
 # OpenRouter normalises reasoning across its upstreams with one ``reasoning``
 # object; "none" is its documented off switch (a model whose reasoning is
@@ -304,20 +362,24 @@ _OPENROUTER_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.LOW: "low",
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
+    ReasoningLevel.XHIGH: "xhigh",
+    ReasoningLevel.MAX: "max",
 }
 
 # Keys :func:`debug_once` has logged in this process.
 _LOGGED_ONCE: set[tuple[str, ...]] = set()
 
 
-# The claude CLI's --effort takes low/medium/high; OFF, MINIMAL and LOW all
-# send "low" (the CLI has no off switch: low is its floor).
+# The claude CLI's --effort takes low/medium/high/xhigh/max; OFF, MINIMAL and
+# LOW all send "low" (the CLI has no off switch: low is its floor).
 _CLAUDE_CODE_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.OFF: "low",
     ReasoningLevel.MINIMAL: "low",
     ReasoningLevel.LOW: "low",
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
+    ReasoningLevel.XHIGH: "xhigh",
+    ReasoningLevel.MAX: "max",
 }
 
 
@@ -326,11 +388,13 @@ def claude_code_extended(config: ModelProfileConfig) -> dict[str, Any]:
 
     The adapter reads ``effort`` from ``extended`` and passes it to
     ``build_argv``; a profile without a reasoning level sends none, and the
-    CLI's default applies.
+    CLI's default applies. A custom value is sent verbatim.
     """
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
+    if isinstance(level, CustomReasoning):
+        return _custom_knobs(config, level, "claude_code")
     return _merge(config, {"effort": _CLAUDE_CODE_EFFORT[level]})
 
 
@@ -351,14 +415,51 @@ def debug_once(
     (log or logger).debug(message, *args)
 
 
-def _merge(config: ModelProfileConfig, mapped: dict[str, Any]) -> dict[str, Any]:
-    """Overlay the mapped reasoning knobs on the profile's passthrough.
+def _level_label(level: ReasoningLevel | CustomReasoning) -> str:
+    """What the DEBUG logs print for a level: ``custom:<value>`` for a custom one."""
+    return f"custom:{level.custom}" if isinstance(level, CustomReasoning) else level.value
 
-    The explicit ``reasoning`` level wins on a key collision: an operator
-    who set both meant the typed field, and the passthrough is the escape
-    hatch for things the typed field cannot say.
+
+def _at_path(dotted: str, value: Any) -> dict[str, Any]:
+    """``value`` at a dotted ``extended`` path: ``output_config.effort`` becomes
+    ``{"output_config": {"effort": value}}``."""
+    node: Any = value
+    for part in reversed(dotted.split(".")):
+        node = {part: node}
+    return node
+
+
+def _custom_knobs(config: ModelProfileConfig, custom: CustomReasoning, wire: str) -> dict[str, Any]:
+    """The mapped knobs for a custom value on ``wire``.
+
+    Its value at the wire's ``custom_reasoning_key`` (the catalogue is the
+    single source of the target), deep-merged over the passthrough.
     """
-    return {**(config.extended or {}), **mapped}
+    target = catalogue_for(wire).custom_reasoning_key
+    return _merge(config, _at_path(target, custom.custom))
+
+
+def _merge(config: ModelProfileConfig, mapped: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge the mapped reasoning knobs into the profile's passthrough.
+
+    The level wins only on the leaf it sets (``chat_template_kwargs.enable_
+    thinking``, ``reasoning.effort``, ``output_config.effort``,
+    ``thinking.type`` and ``thinking.budget_tokens``): sibling keys in the
+    same object stay, and a key the level sets that the passthrough also
+    sets goes out with the level's value.
+    """
+    return _merge_dicts(dict(config.extended or {}), mapped)
+
+
+def _merge_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """``overlay`` over ``base``; dicts merge one level down, everything else in ``overlay`` replaces."""
+    out = dict(base)
+    for key, value in overlay.items():
+        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
+            out[key] = _merge_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
 
 
 def openresponses_extended(
@@ -384,9 +485,19 @@ def openresponses_extended(
             "reasoning control is not supported on vLLM's Responses API; a "
             "profile's reasoning setting (%s) has no effect there. Use the "
             "'openchat' provider type for a vLLM server if you need it.",
-            level.value,
+            _level_label(level),
         )
         return dict(config.extended or {})
+    if isinstance(level, CustomReasoning):
+        return _custom_knobs(config, level, wire_of("openresponses", flavor))
+    if flavor == "strata":
+        # Strata's own levels (spec section 8): none is a true off, so the
+        # OpenAI effort table (no true off) does not apply to it. A custom
+        # value already went through the generic path above. The key is flat
+        # like every other openresponses path: this wire's extractor folds
+        # it into the catalogue's reasoning.effort wire path (a nested
+        # `reasoning` dict is not a setting of that wire and would be dropped).
+        return _merge(config, {"reasoning_effort": _STRATA_EFFORT[level]})
     return _openai_effort(config, model)
 
 
@@ -399,6 +510,22 @@ _OLLAMA_COMPAT_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.LOW: "low",
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
+    ReasoningLevel.XHIGH: "high",
+    ReasoningLevel.MAX: "high",
+}
+
+# Strata, a flavor of both OpenAI wires (spec section 8): its levels are the
+# ones its model was trained with (none, low, medium, high), none being a
+# true off. xhigh and max are not verified there: both send what high sends
+# (a custom value is the unverified path).
+_STRATA_EFFORT: dict[ReasoningLevel, str] = {
+    ReasoningLevel.OFF: "none",
+    ReasoningLevel.MINIMAL: "low",
+    ReasoningLevel.LOW: "low",
+    ReasoningLevel.MEDIUM: "medium",
+    ReasoningLevel.HIGH: "high",
+    ReasoningLevel.XHIGH: "high",
+    ReasoningLevel.MAX: "high",
 }
 
 
@@ -418,13 +545,21 @@ def openchat_extended(
 
     Real OpenAI on this wire takes ``reasoning_effort``, with the value the
     model takes, and none for a model that does not reason (see
-    :func:`_openai_effort`).
+    :func:`_openai_effort`). A custom value is sent verbatim as
+    ``reasoning_effort`` on every openchat flavor, template switch included.
     """
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
+    if isinstance(level, CustomReasoning):
+        return _custom_knobs(config, level, wire_of("openchat", flavor))
     if flavor == "ollama":
         return _merge(config, {"reasoning_effort": _OLLAMA_COMPAT_EFFORT[level]})
+    if flavor == "strata":
+        # Strata's own levels (spec section 8): none is a true off, so it
+        # does not fall through to the template switch or the OpenAI table.
+        # A custom value already went through the generic path above.
+        return _merge(config, {"reasoning_effort": _STRATA_EFFORT[level]})
     if flavor in ("vllm", "lmstudio", "other"):
         return _merge(config, {
             "chat_template_kwargs": {
@@ -441,20 +576,30 @@ def anthropic_extended(
 
     Claude 4.5 and earlier take a thinking budget (never ``effort``); Claude
     4.6 and later take adaptive thinking with ``output_config.effort``
-    (MINIMAL and LOW ask for low). OFF is whatever the model accepts:
-    nothing where thinking is off by default, ``disabled``, ``between_tools``
-    on Claude Sonnet 5.5, or, where thinking cannot be turned off (Claude
-    Opus 5.5, Fable, Mythos), no thinking parameter and low effort. A model
+    (MINIMAL and LOW ask for low; xhigh and max ask for the model's recorded
+    top, high where the table records none). OFF is whatever the model
+    accepts: nothing where thinking is off by default, ``disabled``,
+    ``between_tools`` on Claude Sonnet 5.5, or, where thinking cannot be
+    turned off (Claude Opus 5.5, Fable, Mythos), no thinking parameter and
+    low effort. A model
     the table does not know, or one with no thinking control, gets no
-    reasoning parameter at all, logged once at DEBUG. The adapter fits the
+    reasoning parameter at all, logged once at DEBUG, for a preset. A custom
+    value is written verbatim to ``output_config.effort`` and also carries
+    adaptive thinking on the models the table marks adaptive (a budget
+    thinking model gets the effort only). The adapter fits the
     rest of the request to what thinking allows (``_fit_thinking`` and
     ``_fit_sampling`` in :mod:`primer.llm.anthropic`).
     """
     level = config.reasoning
-    out = dict(config.extended or {})
     if level is None:
-        return out
+        return dict(config.extended or {})
     traits = claude_traits(model)
+    if isinstance(level, CustomReasoning):
+        mapped: dict[str, Any] = _at_path(catalogue_for("anthropic").custom_reasoning_key, level.custom)
+        if traits is not None and traits.thinking == "adaptive":
+            # the same models a preset sends adaptive thinking for
+            mapped["thinking"] = {"type": "adaptive"}
+        return _merge(config, mapped)
     if traits is None or traits.thinking == "none":
         debug_once(
             ("anthropic-no-reasoning", str(model)),
@@ -463,32 +608,27 @@ def anthropic_extended(
             "no thinking control" if traits is not None else "not in the model table",
             level.value,
         )
-        return out
+        return dict(config.extended or {})
     if traits.thinking == "budget":
         budget = _ANTHROPIC_BUDGET[level]
         if budget is None:
-            return {**out, "thinking": {"type": "disabled"}}
-        return {**out, "thinking": {"type": "enabled", "budget_tokens": budget}}
+            return _merge(config, {"thinking": {"type": "disabled"}})
+        return _merge(config, {"thinking": {"type": "enabled", "budget_tokens": budget}})
     if level is ReasoningLevel.OFF:
         if traits.off == "disabled":
-            return {**out, "thinking": {"type": "disabled"}}
+            return _merge(config, {"thinking": {"type": "disabled"}})
         if traits.off == "between_tools":
-            return {**out, "thinking": {"type": "between_tools"}}
-        out.pop("thinking", None)
+            return _merge(config, {"thinking": {"type": "between_tools"}})
         if traits.off == "low_effort":
-            out["output_config"] = {**_dict(out.get("output_config")), "effort": "low"}
+            out = _merge(config, {"output_config": {"effort": "low"}})
+        else:
+            out = dict(config.extended or {})
+        out.pop("thinking", None)
         return out
-    return {
-        **out,
+    return _merge(config, {
         "thinking": {"type": "adaptive"},
-        "output_config": {
-            **_dict(out.get("output_config")), "effort": _ANTHROPIC_EFFORT[level],
-        },
-    }
-
-
-def _dict(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+        "output_config": {"effort": _adaptive_effort(level, model)},
+    })
 
 
 def gemini_extended(
@@ -507,12 +647,17 @@ def gemini_extended(
     or high on Flash, high on Pro). A model with no thinking control (2.0
     and earlier) or an id the adapter cannot read gets no reasoning
     parameter, logged once; the stream-open guard covers anything else a
-    model refuses.
+    model refuses. A custom value is written verbatim to the wire's
+    ``thinking_level`` target, with no model clamping.
     """
     level = config.reasoning
-    out = dict(config.extended or {})
     if level is None:
-        return out
+        return dict(config.extended or {})
+    if isinstance(level, CustomReasoning):
+        return _merge(config, _at_path(
+            catalogue_for("gemini").custom_reasoning_key, level.custom,
+        ))
+    out = dict(config.extended or {})
     name = (model or "").lower()
     name = name[name.find("gemini-"):] if "gemini-" in name else name
     match = _GEMINI_ID.match(name)
@@ -597,10 +742,14 @@ def ollama_extended(config: ModelProfileConfig) -> dict[str, Any]:
     stream lazily, so that 400 arrives as the call's first event, and
     :func:`profile_stream` makes the call once more without ``think``, logs
     it once, and calls that model without it for the rest of the process.
+    A custom value is sent verbatim (the ``think`` setting is an open enum:
+    a boolean or a word the model takes).
     """
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
+    if isinstance(level, CustomReasoning):
+        return _custom_knobs(config, level, "ollama")
     return _merge(config, {"think": level is not ReasoningLevel.OFF})
 
 
@@ -614,11 +763,16 @@ def openrouter_extended(config: ModelProfileConfig) -> dict[str, Any]:
     OpenRouter's to say, not a list primer can keep: such a model refuses
     ``"none"`` with a 400 naming reasoning, and :func:`profile_stream` makes
     the call once more without the object, logs it once, and calls that
-    model without it for the rest of the process.
+    model without it for the rest of the process. A custom value is sent
+    verbatim as ``reasoning.effort``.
     """
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
+    if isinstance(level, CustomReasoning):
+        return _merge(config, _at_path(
+            catalogue_for("openrouter").custom_reasoning_key, level.custom,
+        ))
     return _merge(config, {"reasoning": {"effort": _OPENROUTER_EFFORT[level]}})
 
 
@@ -634,7 +788,7 @@ def passthrough_extended(config: ModelProfileConfig, *, adapter: str) -> dict[st
             ("no-reasoning-mapping", adapter),
             "%s has no reasoning mapping; a profile's reasoning level (%s) "
             "is not applied to its calls",
-            adapter, config.reasoning.value,
+            adapter, _level_label(config.reasoning),
         )
     return dict(config.extended or {})
 

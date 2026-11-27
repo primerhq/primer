@@ -144,7 +144,7 @@ const PC_KIND_LABELS = {
   artifact_storage: { db: "Database", filesystem: "Filesystem", s3: "S3" },
 };
 
-const PC_FLAVOR_LABELS = { openai: "OpenAI", lmstudio: "LM Studio", vllm: "vLLM", ollama: "Ollama", other: "Other" };
+const PC_FLAVOR_LABELS = { openai: "OpenAI", lmstudio: "LM Studio", vllm: "vLLM", ollama: "Ollama", strata: "Strata", other: "Other" };
 
 // `served` is the kind's own _types entry ({label, config_fields, ...}), when the caller has it.
 function PC_kindLabel(classKey, kind, served) {

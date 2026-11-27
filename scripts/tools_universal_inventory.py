@@ -25,8 +25,8 @@ from typing import Any
 
 HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put"})
 # W3 adds exactly two authenticated welcome writes to the M5 frozen surface.
-EXPECTED_OPERATION_COUNT = 408
-EXPECTED_PATH_COUNT = 277
+EXPECTED_OPERATION_COUNT = 409
+EXPECTED_PATH_COUNT = 278
 REVIEWED_SURFACE_REVISION = "parked-session-priority-v1"
 MANIFEST_SCHEMA_VERSION = 1
 BASE_COMMIT = "fb18c24b92bec57131bc5e49959344a4d7d97960"

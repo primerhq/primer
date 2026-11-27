@@ -9,6 +9,7 @@ import asyncio
 import base64
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -303,6 +304,7 @@ from primer.llm.anthropic import (
     _tool_choice_to_anthropic,
     _tools_to_anthropic,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import Tool
 
 
@@ -481,22 +483,34 @@ class TestSampling:
 
 class TestExtendedKwargs:
     def test_none_input_returns_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
+        assert _extract_extended_kwargs(
+            None, catalogue=catalogue_for("anthropic"), provider_id="t2-none"
+        ) == {}
 
     def test_empty_dict_returns_empty(self) -> None:
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            {}, catalogue=catalogue_for("anthropic"), provider_id="t2-empty"
+        ) == {}
 
-    def test_unknown_keys_dropped_with_debug_log(
+    def test_unknown_keys_dropped_with_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.anthropic")
-        out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
-        assert out == {}
-        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(
-            "frobnicate" in r.message and "foobar" in r.message
-            for r in debug_records
+        caplog.set_level(logging.WARNING)
+        provider_id = f"t2-drop-{uuid4().hex}"
+        out = _extract_extended_kwargs(
+            {"frobnicate": True, "foobar": 42},
+            catalogue=catalogue_for("anthropic"),
+            provider_id=provider_id,
         )
+        assert out == {}
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider_id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("frobnicate" in m for m in messages)
+        assert any("foobar" in m for m in messages)
 
     @pytest.mark.parametrize(
         "key, value",
@@ -509,7 +523,9 @@ class TestExtendedKwargs:
         ],
     )
     def test_recognised_keys_passthrough(self, key: str, value: Any) -> None:
-        out = _extract_extended_kwargs({key: value})
+        out = _extract_extended_kwargs(
+            {key: value}, catalogue=catalogue_for("anthropic"), provider_id="t2-shared"
+        )
         assert out == {key: value}
 
 

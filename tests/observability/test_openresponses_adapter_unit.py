@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel, HttpUrl, SecretStr
@@ -42,6 +43,7 @@ from primer.llm.openresponses import (
     _tool_to_openai,
     _translate_event,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     AudioPart,
     Citation,
@@ -340,22 +342,35 @@ class TestSamplingAndExtended:
     def test_extended_reasoning_and_passthrough(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.openresponses")
+        caplog.set_level(logging.WARNING)
+        provider_id = f"obs-openresponses-{uuid4().hex}"
         out = _extract_extended_kwargs(
             {
                 "reasoning_effort": "high",
                 "reasoning_summary": "auto",
                 "parallel_tool_calls": True,
                 "bogus": 1,
-            }
+            },
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id=provider_id,
         )
         assert out["reasoning"] == {"effort": "high", "summary": "auto"}
         assert out["parallel_tool_calls"] is True
-        assert any("dropped unknown" in r.message for r in caplog.records)
+        assert any(
+            "dropping extended key bogus" in r.getMessage() for r in caplog.records
+        )
 
     def test_extended_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            None,
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="obs-openresponses-empty",
+        ) == {}
+        assert _extract_extended_kwargs(
+            {},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="obs-openresponses-empty",
+        ) == {}
 
 
 class TestStopAndUsage:

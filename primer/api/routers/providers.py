@@ -818,6 +818,42 @@ async def get_llm_provider_models(
 
 
 @llm_provider_router.get(
+    "/llm_providers/{provider_id}/model_settings",
+    summary="List the model settings this provider's profiles may set",
+    responses=common_responses(404, 500),
+)
+@route_tool(scoped_id="llm_providers__get_llm_provider_model_settings")
+async def get_llm_provider_model_settings(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    providers=Depends(get_llm_provider_storage),
+) -> dict:
+    """Return the settings catalogue a profile on this provider may set.
+
+    The catalogue is a property of the provider's WIRE (its type, plus its
+    flavor where it has one), not of the row, so a provider with no profiles
+    yet answers the same object as one with many. The console's Provider
+    settings form reads it, and a profile saved with a key it does not name
+    is refused at the write door.
+    """
+    from primer.llm.settings_catalogue import catalogue_for, wire_of
+    from primer.model.except_ import NotFoundError
+    from primer.model.model_profile import ReasoningLevel
+
+    provider = await providers.get(provider_id)
+    if provider is None:
+        raise NotFoundError(f"LLMProvider {provider_id!r} does not exist")
+
+    flavor = getattr(provider.config, "flavor", None)
+    wire = wire_of(provider.provider.value, flavor.value if flavor is not None else None)
+    return {
+        "provider_type": provider.provider.value,
+        "flavor": flavor.value if flavor is not None else None,
+        "reasoning_levels": [level.value for level in ReasoningLevel],
+        **catalogue_for(wire).to_dict(),
+    }
+
+
+@llm_provider_router.get(
     "/llm_providers/{provider_id}/runtime_status",
     summary="Check the agent-runtime CLI on the host this worker runs on",
     responses=common_responses(404, 500),

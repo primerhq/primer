@@ -157,7 +157,7 @@ The `LLMProvider.config` union is `OpenResponsesConfig | OpenChatConfig | Google
 
 Across the HTTP-keyed configs `api_key` is `Optional[SecretStr]` defaulting to `None`, so operators can register endpoints fronted by an auth-injecting proxy; a real provider that needs the key surfaces a 401 at call time rather than the schema rejecting the row. `OpenRouterConfig.api_key` is the exception (required), since OpenRouter is always remote and authenticated. The `EmbeddingProvider.config` union is `OpenAIConfig | HuggingFaceConfig | GoogleConfig`; `GoogleConfig` backs both the Gemini LLM and the Gemini embedder.
 
-Flavor discriminators live on the config rather than the provider enum: `OpenResponsesFlavor` (OPENAI / LMSTUDIO / OTHER), `OpenChatFlavor` (OPENAI / LMSTUDIO / OLLAMA / VLLM / OTHER), `OpenAIEmbeddingFlavor` (OPENAI / LMSTUDIO / OTHER). The adapter resolves each flavor to a frozen `_FlavorPolicy`; only `require_api_key` is consulted at runtime today (the OpenResponses policy also carries `drop_encrypted_reasoning` and `expect_reasoning_under_store_true` as forward-compat scaffolding).
+Flavor discriminators live on the config rather than the provider enum: `OpenResponsesFlavor` (OPENAI / LMSTUDIO / VLLM / STRATA / OTHER), `OpenChatFlavor` (OPENAI / LMSTUDIO / OLLAMA / VLLM / STRATA / OTHER), `OpenAIEmbeddingFlavor` (OPENAI / LMSTUDIO / OTHER). The adapter resolves each flavor to a frozen `_FlavorPolicy`; only `require_api_key` is consulted at runtime today (the OpenResponses policy also carries `drop_encrypted_reasoning` and `expect_reasoning_under_store_true` as forward-compat scaffolding). STRATA is Strata (Niko1221/Strata), a local inference server that serves both OpenAI wires from one process; its `api_key` is optional, and on the Responses wire it keeps encrypted reasoning (it asks for reasoning items to be sent back so its prompt cache matches) with `expect_reasoning_under_store_true` false (the endpoint is stateless).
 
 `require_api_key` is `True` for the OPENAI flavor only. Every other flavor, including the OTHER catch-all, tolerates a missing key and lets the upstream 401 surface at call time, which is the same contract the schema-level `Optional[SecretStr]` expresses. OTHER is the flavor an operator lands on for any OpenAI-compatible server that is not explicitly modelled, and that population is dominated by self-hosted backends (vLLM, SGLang, llama.cpp, TGI, LiteLLM) which are commonly unauthenticated, so "unknown server" cannot be read as "authenticated server". This matters most on the Responses API, where OTHER is the only flavor available for a non-LM-Studio self-hosted endpoint.
 
@@ -321,7 +321,9 @@ create may override it per run.
 
 **Every call made under a profile applies its config.** A profile's
 `config` carries `reasoning` (a vendor-neutral level: `off`, `minimal`,
-`low`, `medium`, `high`, or null for the vendor default) and `extended`
+`low`, `medium`, `high`, `xhigh`, `max`, or null for the vendor default, or
+a custom value `{"custom": "<value>"}` sent verbatim to the wire's custom
+reasoning target with no mapping or clamping) and `extended`
 (provider-specific knobs, passed through). Every model call made under a
 profile sends it: each call of an agent turn (`primer/agent/loop.py`, which
 sessions, subagents and graph agent nodes all run) and each call of both
@@ -339,11 +341,36 @@ the model. The result goes out as `stream(extended=...)` through
 sends no `extended` at all, exactly as before. The adapter's whitelist then
 projects `extended` onto the SDK request and DEBUG-logs any key it does not
 know. On a key collision the typed `reasoning` level wins over the same key
-in `extended`. `RetryingLLM` forwards the translation to the adapter it
+in `extended`, deep-merged: the level wins only on the leaf it sets
+(`chat_template_kwargs.enable_thinking`, `reasoning.effort`,
+`output_config.effort`, `thinking.type` and `thinking.budget_tokens`), and
+sibling keys in the same object of `extended` stay. `RetryingLLM` forwards the translation to the adapter it
 wraps; an adapter with no mapping forwards `extended` and logs the level
 once at DEBUG as not applied. The approval gate's LLM judge is not a profile
 call (its policy names a provider and a model), so no profile config applies
 to it.
+
+**Settings are validated at the write door.** `primer/llm/settings_catalogue.py`
+names, per wire, the settings a `config.extended` may carry (type, accepted
+values, bounds; on a body-passthrough wire also the server body a profile
+may extend), and `validate_extended` checks a `config.extended` object
+against the wire's catalogue: an unknown key, a value outside a closed
+`enum` or its `min`/`max`, a wrong type, an inner key outside a closed
+object's `fields`, `body` on a wire without body passthrough, or a reserved
+`body` field (`RESERVED_BODY_FIELDS`) is a problem. Both write doors (the
+REST router and the system tools, which share `primer/model_profile/checks.py`)
+run `check_profile_settings` on create and on every update of a `single`
+profile: one refusal (code `invalid_model_setting`, field
+`config.extended.<path>`, the first problem's path and every problem's
+message in the text), an unknown key's message listing the wire's accepted
+keys. A provider change on a profile re-validates against the new wire,
+because the check runs on the whole profile; a provider edit does not
+re-validate its profiles (a provider save must not fail because of
+profiles). A key the wire no longer takes is dropped at call time with one
+WARNING per process per (provider, key) - `warn_dropped` never logs values
+- and the profile's next save names it. An aggregated profile carries no
+`config` at all (the model's kind field group refuses a non-empty one);
+each member's own settings apply to the calls it serves.
 
 **A setting never fails a call.** A model table can be wrong or behind, and
 a level can be set on a model that cannot honour it, so `profile_stream`
@@ -377,14 +404,14 @@ setting is used:
 
 | Adapter, model | Wire shape | OFF sends |
 | --- | --- | --- |
-| `anthropic`, Claude 4.5 and earlier (Sonnet 3.7, Opus 4 to 4.5, Sonnet 4 and 4.5, Haiku 4.5) | `thinking: {type: enabled, budget_tokens}` (MINIMAL 1024, LOW 4096, MEDIUM 16384, HIGH 32768), never `effort` | `thinking: {type: disabled}` |
-| `anthropic`, Claude Opus 4.6, Sonnet 4.6 | `thinking: {type: adaptive}` and `output_config.effort` (MINIMAL and LOW `low`, MEDIUM `medium`, HIGH `high`) | nothing (thinking is off when omitted) |
-| `anthropic`, Claude Opus 4.7, 4.8 and 5, Sonnet 5, Haiku 5.5 | adaptive and `output_config.effort` | `thinking: {type: disabled}` |
+| `anthropic`, Claude 4.5 and earlier (Sonnet 3.7, Opus 4 to 4.5, Sonnet 4 and 4.5, Haiku 4.5) | `thinking: {type: enabled, budget_tokens}` (MINIMAL 1024, LOW 4096, MEDIUM 16384, HIGH, XHIGH and MAX 32768), never `effort` | `thinking: {type: disabled}` |
+| `anthropic`, Claude Opus 4.6, Sonnet 4.6 | `thinking: {type: adaptive}` and `output_config.effort` (MINIMAL and LOW `low`, MEDIUM `medium`, HIGH `high`, XHIGH `high`; MAX `max` on Opus 4.6, `high` on Sonnet 4.6) | nothing (thinking is off when omitted) |
+| `anthropic`, Claude Opus 4.7, 4.8 and 5, Sonnet 5, Haiku 5.5 | adaptive and `output_config.effort` (XHIGH and MAX: `xhigh` and `max` on Opus, `high` on Sonnet 5 and Haiku 5.5) | `thinking: {type: disabled}` |
 | `anthropic`, Claude Sonnet 5.5 | adaptive and `output_config.effort` | `thinking: {type: between_tools}` (it refuses `disabled`) |
-| `anthropic`, Claude Opus 5.5, Fable, Mythos | adaptive and `output_config.effort` | no `thinking`, and `output_config.effort: low` (thinking cannot be turned off) |
+| `anthropic`, Claude Opus 5.5, Fable, Mythos | adaptive and `output_config.effort` (XHIGH and MAX: `xhigh` and `max` on Opus 5.5, `high` on Fable and Mythos) | no `thinking`, and `output_config.effort: low` (thinking cannot be turned off) |
 | `anthropic`, Claude 3.5 and earlier, or a model not in the table | nothing | nothing |
-| `gemini`, 2.5 | `thinking_config.thinking_budget` within the model's range (Pro 128 to 32768, Flash up to 24576, Flash-Lite 512 to 24576) | `0`; on 2.5 Pro, which cannot turn thinking off, its lowest budget `128` |
-| `gemini`, 3 and later | `thinking_config.thinking_level` (never a budget, never both), clamped to the levels the model documents: a level it lacks becomes the nearest it has, a tie going to the higher (3 Pro has only `low` and `high`, so MEDIUM sends `high`; 3.7 and 3.8 Flash and 4 Argon have no `minimal`; the 3.1 Flash-Lite image model has `minimal` and `high`, a Pro image model only `high`); a model not in the table is taken to have `low`, `medium` and `high`; each clamp is logged once at DEBUG | the model's lowest level: `minimal` where it has one (3 Flash, 3.5 Flash-Lite, 3.6 Flash), otherwise `low` (3 Pro, 3.1 Pro, 3.7 and 3.8 Flash, 4 Argon), `high` on a Pro image model |
+| `gemini`, 2.5 | `thinking_config.thinking_budget` within the model's range (Pro 128 to 32768, Flash up to 24576, Flash-Lite 512 to 24576; XHIGH and MAX ask for the model's top budget) | `0`; on 2.5 Pro, which cannot turn thinking off, its lowest budget `128` |
+| `gemini`, 3 and later | `thinking_config.thinking_level` (never a budget, never both; XHIGH and MAX ask for the model's top level), clamped to the levels the model documents: a level it lacks becomes the nearest it has, a tie going to the higher (3 Pro has only `low` and `high`, so MEDIUM sends `high`; 3.7 and 3.8 Flash and 4 Argon have no `minimal`; the 3.1 Flash-Lite image model has `minimal` and `high`, a Pro image model only `high`); a model not in the table is taken to have `low`, `medium` and `high`; each clamp is logged once at DEBUG | the model's lowest level: `minimal` where it has one (3 Flash, 3.5 Flash-Lite, 3.6 Flash), otherwise `low` (3 Pro, 3.1 Pro, 3.7 and 3.8 Flash, 4 Argon), `high` on a Pro image model |
 | `gemini`, 2.0 and earlier, or a model not in the table | nothing | nothing |
 | `openresponses`, `openchat` (openai): o-series and codex models | `reasoning_effort` (`reasoning.effort` on Responses), from `low` | `low` |
 | same, gpt-5 | from `minimal` | `minimal` |
@@ -394,10 +421,21 @@ setting is used:
 | same, a model that does not reason (gpt-4o, gpt-4.1) | nothing | nothing |
 | same, o1-mini and o1-preview (they reason, but predate the effort parameter) | nothing | nothing |
 | same, a model not in the table (a deployment name, a self-hosted model) | `reasoning_effort` from `minimal` | `minimal` |
-| `openchat` (vllm/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body) | `false` |
-| `openchat` (ollama) | `reasoning_effort` (`minimal` to `high`; Ollama's `/v1` reads it and ignores `chat_template_kwargs`) | `none` |
-| `ollama` | `think` | `false` |
-| `openrouter` | `reasoning.effort` (request body) | `none` |
+| `openchat` (vllm/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body; XHIGH and MAX `true`) | `false` |
+| `openchat` (ollama) | `reasoning_effort` (`minimal` to `high`; XHIGH and MAX `high`; Ollama's `/v1` reads it and ignores `chat_template_kwargs`) | `none` |
+| `ollama` | `think` (XHIGH and MAX `true`) | `false` |
+| `openrouter` | `reasoning.effort` (request body; XHIGH `xhigh`, MAX `max`) | `none` |
+
+On the OpenAI wires and `claude_code`, `xhigh` and `max` clamp to what the
+tables have verified: the OpenAI families and `openchat` (ollama) send what
+`high` sends (`high`), and the `claude_code` CLI takes `xhigh` and `max`.
+A custom value is written verbatim to the wire's custom reasoning target
+(the catalogue's `custom_reasoning_key`: `reasoning_effort`,
+`output_config.effort`, `thinking_level`, `think`, `reasoning.effort` or
+`effort`) with no mapping or clamping; on `anthropic` it also carries
+`thinking: {type: adaptive}` on the models the table marks adaptive (a
+budget thinking model gets the effort only), and a value the model refuses
+goes through the refusal retry like any profile setting.
 
 Models are matched by their ids: `claude-<family>-<major>[-<minor>]` with any
 date or `@date` suffix, the older `claude-3-x-<family>`, and Fable and Mythos

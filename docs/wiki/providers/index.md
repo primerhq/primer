@@ -28,6 +28,7 @@ The following operations belong to this feature family. The role shown is the mi
 | [`llm_providers__discover_saved_llm_models`](reference/tools/llm_providers/discover_saved_llm_models) | Live-probe a saved LLM provider for its upstream model list. | admin |
 | [`llm_providers__find`](reference/tools/llm_providers/find) | Find LLMProvider with predicate. | admin |
 | [`llm_providers__get_access`](reference/tools/llm_providers/get_access) | Who LLMProvider is shared with. | user |
+| [`llm_providers__get_llm_provider_model_settings`](reference/tools/llm_providers/get_llm_provider_model_settings) | List the model settings this provider's profiles may set. | admin |
 | [`llm_providers__get_llm_provider_models`](reference/tools/llm_providers/get_llm_provider_models) | List the model names registered on this provider. | admin |
 | [`llm_providers__invalidate_llm_provider`](reference/tools/llm_providers/invalidate_llm_provider) | Invalidate cached LLM adapter. | admin |
 | [`llm_providers__put_access`](reference/tools/llm_providers/put_access) | Change who LLMProvider is shared with (owners only). | user |

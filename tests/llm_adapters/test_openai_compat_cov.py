@@ -33,6 +33,7 @@ from primer.llm._openai_compat import (
     _tool_to_chat,
     _translate_chunk,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -348,11 +349,13 @@ class TestSampling:
 
 
 class TestExtendedKwargs:
+    KEYS = catalogue_for("openchat/openai").keys()
+
     def test_none(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
+        assert _extract_extended_kwargs(None, keys=self.KEYS) == {}
 
     def test_empty(self) -> None:
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs({}, keys=self.KEYS) == {}
 
     @pytest.mark.parametrize(
         "key, value",
@@ -367,21 +370,24 @@ class TestExtendedKwargs:
         ],
     )
     def test_recognised_pass_through(self, key: str, value: Any) -> None:
-        assert _extract_extended_kwargs({key: value}) == {key: value}
+        assert _extract_extended_kwargs({key: value}, keys=self.KEYS) == {key: value}
 
     def test_unknown_dropped(self) -> None:
-        assert _extract_extended_kwargs({"frobnicate": True, "foobar": 1}) == {}
+        assert _extract_extended_kwargs({"frobnicate": True, "foobar": 1}, keys=self.KEYS) == {}
 
-    def test_reasoning_keys_dropped(self) -> None:
-        assert (
-            _extract_extended_kwargs(
-                {"reasoning_effort": "high", "reasoning_summary": "brief"}
-            )
-            == {}
+    def test_body_keys_go_to_extra_body(self) -> None:
+        out = _extract_extended_kwargs(
+            {"reasoning_effort": "high", "chat_template_kwargs": {"x": 1}},
+            keys=catalogue_for("openchat/vllm").keys(),
+            body_keys=frozenset({"chat_template_kwargs"}),
         )
+        assert out == {
+            "reasoning_effort": "high",
+            "extra_body": {"chat_template_kwargs": {"x": 1}},
+        }
 
     def test_mixed_keeps_only_recognised(self) -> None:
-        assert _extract_extended_kwargs({"seed": 1, "junk": 2}) == {"seed": 1}
+        assert _extract_extended_kwargs({"seed": 1, "junk": 2}, keys=self.KEYS) == {"seed": 1}
 
 
 # --------------------------------------------------------------------------- #

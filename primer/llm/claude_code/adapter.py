@@ -35,6 +35,7 @@ from primer.llm.claude_code.history import plan_replay
 from primer.llm.claude_code.process import child_env, child_process, read_stderr_tail
 from primer.llm.claude_code.translate import StreamTranslator
 from primer.llm.claude_code.wire import build_argv, tail_lines
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, warn_dropped, wire_of
 from primer.model.chat import (
     Done,
     Error as ChatError,
@@ -116,6 +117,7 @@ class ClaudeCodeLLM(LLM):
 
         self._provider = provider
         self._config: ClaudeCodeConfig = provider.config
+        self._catalogue: Catalogue = catalogue_for(wire_of(provider.provider.value, None))
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
             rate_limiter = InMemoryRateLimiter()
@@ -198,6 +200,10 @@ class ClaudeCodeLLM(LLM):
                 "claude_code ignores %s: the CLI exposes no control for them",
                 ", ".join(ignored),
             )
+
+        unknown = [key for key in (extended or {}) if key not in self._catalogue.keys()]
+        if unknown:
+            warn_dropped("ClaudeCode", self._provider.id, unknown)
 
         effort: str | None = (extended or {}).get("effort")
         schema = response_format.model_json_schema() if isinstance(response_format, type) else response_format

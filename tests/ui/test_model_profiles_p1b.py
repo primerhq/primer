@@ -66,11 +66,12 @@ def test_modal_provider_is_a_select_of_the_llm_providers() -> None:
 
 def test_the_overlay_offers_reasoning_now_that_calls_apply_it() -> None:
     """Flips test_the_overlay_offers_no_reasoning_control_until_plan_03_task_7 (Plan 03 Task 7). Model calls apply a profile's ``config`` (#756), so
-    the single overlay edits ``config.reasoning`` (a PK_Segmented of the model's levels plus "Vendor default") and ``config.extended`` (JSON) again,
-    and still sends the stored row back with the edits laid over it (MP_editBody). The retired modal's segment does not come back."""
+    the single overlay edits ``config.reasoning`` and ``config.extended`` again (PMS Task 7 moved that section into the shared form
+    ``MPS_SettingsForm`` in model-profile-settings.jsx), and still sends the stored row back with the edits laid over it (MP_editBody).
+    The retired modal's segment does not come back."""
     modal = _modal_src()
-    assert 'testid="mp-single-reasoning"' in modal and "MP_REASONING_OPTIONS" in modal
-    assert 'data-testid="mp-single-extended"' in modal and "MP_parseExtended(" in modal
+    assert "MPS_SettingsForm" in modal, "the model settings section is the shared form from model-profile-settings.jsx"
+    assert "MP_editBody(" in modal, "an edit still sends the stored row with the edits laid over it"
     assert "profile-reasoning-segment" not in modal
 
 def test_modal_footnote_is_present() -> None:

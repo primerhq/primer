@@ -31,7 +31,9 @@ from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm._reasoning import openresponses_extended
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
 from primer.llm._openai_common import fit_openai_reasoning_request, parse_tool_arguments
+from primer.llm._openai_compat import _merge_body_passthrough
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, warn_dropped, wire_of
 from primer.model.except_ import (
     ConfigError,
     UnsupportedContentError,
@@ -365,47 +367,86 @@ def _build_sampling_params(
     )
 
 
-_RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
-    "parallel_tool_calls",
-    "prompt_cache_key",
-    "service_tier",
-    "metadata",
-    "max_tool_calls",
-    "top_logprobs",
-})
+# Keys the openai SDK's responses ``create()`` does not know on one wire:
+# they travel in the request body through ``extra_body`` (the SDK refuses a
+# keyword it does not know). The shared Responses keys and the folded
+# reasoning keys are SDK parameters; the self-hosted extras are body fields
+# (spec section 5, section 8, per flavor).
+_BODY_KEYS_BY_FLAVOR: dict[OpenResponsesFlavor, frozenset[str]] = {
+    OpenResponsesFlavor.OPENAI: frozenset(),
+    OpenResponsesFlavor.VLLM: frozenset(),
+    OpenResponsesFlavor.LMSTUDIO: frozenset(),
+    OpenResponsesFlavor.OTHER: frozenset(),
+    OpenResponsesFlavor.STRATA: frozenset(
+        {
+            "reasoning_budget_tokens",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "penalty_last_n",
+        }
+    ),
+}
 
 
-def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+def _extract_extended_kwargs(
+    extended: dict[str, Any] | None,
+    *,
+    catalogue: Catalogue,
+    provider_id: str,
+    flavor: OpenResponsesFlavor | None = None,
+) -> dict[str, Any]:
     """Project the universal ``extended`` dict onto OpenAI Responses kwargs.
 
-    Recognised keys are forwarded; unknown keys are dropped with a
-    single DEBUG log line listing them so users diagnosing a "my knob
-    isn't taking effect" issue can see the reason.
+    The wire's catalogue (Task 1) names the accepted keys. The reasoning keys
+    fold into one ``reasoning`` dict (``effort``, ``summary``, ``context``,
+    ``mode``); ``verbosity`` lands in the ``text`` dict the adapter builds for
+    structured output (the caller merges it, never replacing it). A ``body`` on
+    a wire with passthrough seeds ``extra_body`` (minus the reserved fields
+    primer sets itself). Dropped keys go through ``warn_dropped``.
     """
     if not extended:
         return {}
 
     out: dict[str, Any] = {}
     reasoning: dict[str, Any] = {}
+    body: dict[str, Any] = {}
     dropped: list[str] = []
+    _merge_body_passthrough(
+        extended,
+        body_passthrough=catalogue.body_passthrough,
+        body=body,
+        dropped=dropped,
+    )
+    keys = catalogue.keys()
+    body_keys = _BODY_KEYS_BY_FLAVOR[flavor] if flavor is not None else frozenset()
 
     for key, value in extended.items():
+        if key == "body":
+            continue
         if key == "reasoning_effort":
             reasoning["effort"] = value
         elif key == "reasoning_summary":
             reasoning["summary"] = value
-        elif key in _RECOGNISED_EXTENDED_PASSTHROUGH:
+        elif key == "reasoning_context":
+            reasoning["context"] = value
+        elif key == "reasoning_mode":
+            reasoning["mode"] = value
+        elif key == "verbosity":
+            out["text"] = {"verbosity": value}
+        elif key in body_keys:
+            body[key] = value
+        elif key in keys:
             out[key] = value
         else:
             dropped.append(key)
 
     if reasoning:
         out["reasoning"] = reasoning
+    if body:
+        out["extra_body"] = body
     if dropped:
-        logger.debug(
-            "OpenResponses adapter dropped unknown extended kwargs: %s",
-            ", ".join(sorted(dropped)),
-        )
+        warn_dropped("OpenResponses", provider_id, dropped)
     return out
 
 
@@ -816,6 +857,14 @@ _POLICY_BY_FLAVOR: dict[OpenResponsesFlavor, _FlavorPolicy] = {
         drop_encrypted_reasoning=True,
         expect_reasoning_under_store_true=False,
     ),
+    # Strata's server key is optional. It asks for reasoning items to be sent
+    # back so its prompt cache matches, so encrypted reasoning is kept; its
+    # Responses endpoint is stateless (spec section 8).
+    OpenResponsesFlavor.STRATA: _FlavorPolicy(
+        require_api_key=False,
+        drop_encrypted_reasoning=False,
+        expect_reasoning_under_store_true=False,
+    ),
     # OTHER is the catch-all for "an OpenAI-compatible server we have no
     # named flavor for". That population is dominated by self-hosted
     # servers (vLLM, SGLang, llama.cpp, TGI, LiteLLM) which are commonly
@@ -860,6 +909,9 @@ class OpenResponsesLLM(LLM):
         self._provider = provider
         self._config: OpenResponsesConfig = provider.config
         self._policy = _POLICY_BY_FLAVOR[provider.config.flavor]
+        self._catalogue = catalogue_for(
+            wire_of(provider.provider.value, provider.config.flavor.value)
+        )
 
         # The flavor policy decides whether a key is required up-front;
         # the Pydantic config allows api_key=None so unauthenticated
@@ -996,7 +1048,18 @@ class OpenResponsesLLM(LLM):
         text_param = _response_format_to_text_param(response_format)
         if text_param is not None:
             request["text"] = text_param
-        request.update(_extract_extended_kwargs(extended))
+        ext_kwargs = _extract_extended_kwargs(
+            extended,
+            catalogue=self._catalogue,
+            provider_id=self._provider.id,
+            flavor=self._config.flavor,
+        )
+        extra_text = ext_kwargs.pop("text", None)
+        request.update(ext_kwargs)
+        if extra_text:
+            # Merge into the text dict primer already builds; never replace it
+            # (the structured-output ``format`` stays, ``verbosity`` is added).
+            request["text"] = {**(request.get("text") or {}), **extra_text}
         fit_openai_reasoning_request(
             request,
             flavor=self._config.flavor.value,

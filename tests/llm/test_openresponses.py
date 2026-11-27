@@ -9,11 +9,13 @@ import asyncio
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic import HttpUrl, SecretStr
 
 from primer.llm.openresponses import OpenResponsesLLM, _POLICY_BY_FLAVOR, _FlavorPolicy
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
     Limits,
@@ -32,7 +34,7 @@ from primer.model.provider import (
 def _make_provider(
     *,
     flavor: OpenResponsesFlavor = OpenResponsesFlavor.OPENAI,
-    api_key: str = "sk-test",
+    api_key: str | None = "sk-test",
     models: list[str] | None = None,
     max_concurrency: int = 4,
 ) -> LLMProvider:
@@ -45,7 +47,7 @@ def _make_provider(
         ],
         config=OpenResponsesConfig(
             url=HttpUrl("https://api.openai.com/v1/"),
-            api_key=SecretStr(api_key),
+            api_key=SecretStr(api_key) if api_key is not None else None,
             flavor=flavor,
         ),
         limits=Limits(max_concurrency=max_concurrency),
@@ -68,6 +70,14 @@ class TestFlavorPolicy:
         policy = _POLICY_BY_FLAVOR[OpenResponsesFlavor.LMSTUDIO]
         assert policy.require_api_key is False
         assert policy.drop_encrypted_reasoning is True
+        assert policy.expect_reasoning_under_store_true is False
+
+    def test_strata_policy_keeps_encrypted_reasoning_and_no_store_true(self) -> None:
+        """Strata asks for reasoning items to be sent back (its prompt cache
+        matches on them), and its Responses endpoint is stateless."""
+        policy = _POLICY_BY_FLAVOR[OpenResponsesFlavor.STRATA]
+        assert policy.require_api_key is False
+        assert policy.drop_encrypted_reasoning is False
         assert policy.expect_reasoning_under_store_true is False
 
     def test_other_policy_tolerates_no_key(self) -> None:
@@ -101,6 +111,12 @@ class TestConstructor:
         provider = _make_provider(
             flavor=OpenResponsesFlavor.LMSTUDIO, api_key=""
         )
+        llm = OpenResponsesLLM(provider)
+        assert llm._policy.require_api_key is False
+
+    def test_accepts_strata_with_no_key(self) -> None:
+        """Strata's server key is optional: it constructs with none."""
+        provider = _make_provider(flavor=OpenResponsesFlavor.STRATA, api_key=None)
         llm = OpenResponsesLLM(provider)
         assert llm._policy.require_api_key is False
 
@@ -537,29 +553,47 @@ class TestSampling:
 
 
 class TestExtendedKwargs:
-    def test_unknown_keys_dropped_with_debug_log(
+    def test_unknown_keys_dropped_with_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.openresponses")
-        out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
-        assert out == {}
-        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(
-            "frobnicate" in r.message and "foobar" in r.message
-            for r in debug_records
+        caplog.set_level(logging.WARNING)
+        provider_id = f"t2-drop-{uuid4().hex}"
+        out = _extract_extended_kwargs(
+            {"frobnicate": True, "foobar": 42},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id=provider_id,
         )
+        assert out == {}
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider_id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("frobnicate" in m for m in messages)
+        assert any("foobar" in m for m in messages)
 
     def test_reasoning_effort_folds_into_reasoning_dict(self) -> None:
-        out = _extract_extended_kwargs({"reasoning_effort": "high"})
+        out = _extract_extended_kwargs(
+            {"reasoning_effort": "high"},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="t2-effort",
+        )
         assert out == {"reasoning": {"effort": "high"}}
 
     def test_reasoning_summary_folds_into_reasoning_dict(self) -> None:
-        out = _extract_extended_kwargs({"reasoning_summary": "concise"})
+        out = _extract_extended_kwargs(
+            {"reasoning_summary": "concise"},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="t2-summary",
+        )
         assert out == {"reasoning": {"summary": "concise"}}
 
     def test_reasoning_effort_and_summary_merge(self) -> None:
         out = _extract_extended_kwargs(
-            {"reasoning_effort": "low", "reasoning_summary": "auto"}
+            {"reasoning_effort": "low", "reasoning_summary": "auto"},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="t2-merge",
         )
         assert out == {"reasoning": {"effort": "low", "summary": "auto"}}
 
@@ -575,14 +609,72 @@ class TestExtendedKwargs:
         ],
     )
     def test_recognised_keys_passthrough(self, key: str, value: Any) -> None:
-        out = _extract_extended_kwargs({key: value})
+        out = _extract_extended_kwargs(
+            {key: value},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="t2-shared",
+        )
         assert out == {key: value}
 
     def test_none_input_returns_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
+        assert _extract_extended_kwargs(
+            None,
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="t2-none",
+        ) == {}
 
     def test_empty_dict_returns_empty(self) -> None:
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            {},
+            catalogue=catalogue_for("openresponses/openai"),
+            provider_id="t2-empty",
+        ) == {}
+
+    def test_strata_body_keys_go_to_extra_body(self) -> None:
+        """Strata's own settings are not parameters of the SDK's create():
+        they travel in the request body (spec section 5, section 8)."""
+        out = _extract_extended_kwargs(
+            {
+                "reasoning_budget_tokens": 4096,
+                "top_k": 32,
+                "min_p": 0.5,
+                "repetition_penalty": 1.1,
+                "penalty_last_n": 2000,
+            },
+            catalogue=catalogue_for("openresponses/strata"),
+            flavor=OpenResponsesFlavor.STRATA,
+            provider_id="t6-strata-body",
+        )
+        assert out == {
+            "extra_body": {
+                "reasoning_budget_tokens": 4096,
+                "top_k": 32,
+                "min_p": 0.5,
+                "repetition_penalty": 1.1,
+                "penalty_last_n": 2000,
+            }
+        }
+
+    def test_strata_sdk_keys_stay_top_level(self) -> None:
+        """reasoning_effort folds into reasoning.effort; the shared Responses
+        keys are SDK parameters, not extra_body."""
+        out = _extract_extended_kwargs(
+            {
+                "reasoning_effort": "high",
+                "parallel_tool_calls": True,
+                "max_tool_calls": 5,
+                "top_logprobs": 3,
+            },
+            catalogue=catalogue_for("openresponses/strata"),
+            flavor=OpenResponsesFlavor.STRATA,
+            provider_id="t6-strata-sdk",
+        )
+        assert out == {
+            "reasoning": {"effort": "high"},
+            "parallel_tool_calls": True,
+            "max_tool_calls": 5,
+            "top_logprobs": 3,
+        }
 
 
 from primer.llm.openresponses import (
@@ -1215,6 +1307,64 @@ class TestStream:
         assert kwargs["stream"] is True
         assert kwargs["model"] == "gpt-4o-mini"
         assert kwargs["input"][0]["role"] == "user"
+
+    async def test_strata_request_is_stateless(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strata's Responses endpoint refuses conversation state: the
+        request carries ``store: false`` and no ``previous_response_id``
+        (spec section 8)."""
+        provider = _make_provider(flavor=OpenResponsesFlavor.STRATA, api_key=None)
+        llm = OpenResponsesLLM(provider)
+        client = _patched_client(monkeypatch)
+        client.responses.create.return_value = _aiter(
+            [NS(type="response.completed", response=NS(usage=None))]
+        )
+        async for _ in llm.stream(
+            model="strata-model",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+        ):
+            pass
+        kwargs = client.responses.create.call_args.kwargs
+        assert kwargs["store"] is False
+        assert "previous_response_id" not in kwargs
+        assert "conversation" not in kwargs
+
+    async def test_strata_reasoning_item_streams_as_thinking_events(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``reasoning`` output item streams its text as thinking events
+        (spec section 8)."""
+        provider = _make_provider(flavor=OpenResponsesFlavor.STRATA, api_key=None)
+        llm = OpenResponsesLLM(provider)
+        client = _patched_client(monkeypatch)
+        client.responses.create.return_value = _aiter(
+            [
+                NS(type="response.created", response=NS(id="resp_1", model="strata-model")),
+                NS(type="response.output_item.added", item=NS(type="reasoning", id="r_1")),
+                NS(
+                    type="response.reasoning_text.delta",
+                    item_id="r_1",
+                    content_index=0,
+                    delta="raw thinking",
+                ),
+                NS(type="response.completed", response=NS(usage=None)),
+            ]
+        )
+
+        out = [
+            ev
+            async for ev in llm.stream(
+                model="strata-model",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            )
+        ]
+        thinking = [
+            e for e in out
+            if type(e).__name__ == "ExtendedEvent"
+            and type(e.extended).__name__ == "RawReasoningDelta"
+        ]
+        assert [e.extended.text for e in thinking] == ["raw thinking"]
 
     async def test_request_payload_includes_tools_when_present(
         self, monkeypatch: pytest.MonkeyPatch

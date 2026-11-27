@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import httpx
 import ollama
@@ -39,6 +40,7 @@ from primer.llm.ollama import (
     _tools_to_ollama,
     _translate_chunk,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -342,15 +344,19 @@ class TestResponseFormat:
 
 
 class TestOptions:
+    CAT = catalogue_for("ollama")
+
     def test_all_none(self) -> None:
         options, top = _build_options_and_kwargs(
-            temperature=None, top_p=None, max_output_tokens=None, stop=None, extended=None
+            temperature=None, top_p=None, max_output_tokens=None, stop=None,
+            extended=None, catalogue=self.CAT, provider_id="cov-ollama",
         )
         assert options == {} and top == {}
 
     def test_sampling_to_options(self) -> None:
         options, top = _build_options_and_kwargs(
-            temperature=0.7, top_p=0.9, max_output_tokens=128, stop=["END"], extended=None
+            temperature=0.7, top_p=0.9, max_output_tokens=128, stop=["END"],
+            extended=None, catalogue=self.CAT, provider_id="cov-ollama",
         )
         assert options == {"temperature": 0.7, "top_p": 0.9, "num_predict": 128, "stop": ["END"]}
         assert top == {}
@@ -358,28 +364,40 @@ class TestOptions:
     @pytest.mark.parametrize("key", sorted(_OPTIONS_KEYS))
     def test_options_keys_route(self, key: str) -> None:
         options, top = _build_options_and_kwargs(
-            temperature=None, top_p=None, max_output_tokens=None, stop=None, extended={key: 1}
+            temperature=None, top_p=None, max_output_tokens=None, stop=None,
+            extended={key: 1}, catalogue=self.CAT, provider_id="cov-ollama",
         )
         assert options == {key: 1} and top == {}
 
     @pytest.mark.parametrize("key", sorted(_TOP_LEVEL_KEYS))
     def test_top_level_keys_route(self, key: str) -> None:
         options, top = _build_options_and_kwargs(
-            temperature=None, top_p=None, max_output_tokens=None, stop=None, extended={key: "v"}
+            temperature=None, top_p=None, max_output_tokens=None, stop=None,
+            extended={key: "v"}, catalogue=self.CAT, provider_id="cov-ollama",
         )
         assert options == {} and top == {key: "v"}
 
     def test_unknown_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.ollama")
+        caplog.set_level(logging.WARNING)
+        provider_id = f"cov-ollama-{uuid4().hex}"
         options, top = _build_options_and_kwargs(
             temperature=None,
             top_p=None,
             max_output_tokens=None,
             stop=None,
             extended={"frobnicate": True, "wibble": 42},
+            catalogue=self.CAT,
+            provider_id=provider_id,
         )
         assert options == {} and top == {}
-        assert any("frobnicate" in r.message and "wibble" in r.message for r in caplog.records)
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider_id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("frobnicate" in m for m in messages)
+        assert any("wibble" in m for m in messages)
 
 
 # --------------------------------------------------------------------------- #

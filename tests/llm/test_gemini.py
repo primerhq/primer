@@ -8,6 +8,7 @@ from primer.model.model_profile import ModelProfileConfig
 import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
@@ -354,6 +355,7 @@ from primer.llm.gemini import (
     _tool_choice_to_gemini,
     _tools_to_gemini,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import Tool
 
 
@@ -477,10 +479,14 @@ class TestSampling:
 
 class TestExtendedKwargs:
     def test_none_returns_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
+        assert _extract_extended_kwargs(
+            None, catalogue=catalogue_for("gemini"), provider_id="t2-none"
+        ) == {}
 
     def test_empty_dict_returns_empty(self) -> None:
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            {}, catalogue=catalogue_for("gemini"), provider_id="t2-empty"
+        ) == {}
 
     @pytest.mark.parametrize(
         "key, value",
@@ -495,37 +501,57 @@ class TestExtendedKwargs:
         ],
     )
     def test_recognised_keys_passthrough(self, key: str, value) -> None:
-        out = _extract_extended_kwargs({key: value})
+        out = _extract_extended_kwargs(
+            {key: value}, catalogue=catalogue_for("gemini"), provider_id="t2-shared"
+        )
         assert out == {key: value}
 
     def test_thinking_budget_folds_into_thinking_config(self) -> None:
-        out = _extract_extended_kwargs({"thinking_budget": 2048})
+        out = _extract_extended_kwargs(
+            {"thinking_budget": 2048},
+            catalogue=catalogue_for("gemini"),
+            provider_id="t2-budget",
+        )
         assert "thinking_config" in out
         assert out["thinking_config"].thinking_budget == 2048
 
     def test_include_thoughts_folds_into_thinking_config(self) -> None:
-        out = _extract_extended_kwargs({"include_thoughts": True})
+        out = _extract_extended_kwargs(
+            {"include_thoughts": True},
+            catalogue=catalogue_for("gemini"),
+            provider_id="t2-thoughts",
+        )
         assert "thinking_config" in out
         assert out["thinking_config"].include_thoughts is True
 
     def test_thinking_budget_and_include_thoughts_merge(self) -> None:
         out = _extract_extended_kwargs(
-            {"thinking_budget": 1024, "include_thoughts": True}
+            {"thinking_budget": 1024, "include_thoughts": True},
+            catalogue=catalogue_for("gemini"),
+            provider_id="t2-merge",
         )
         assert out["thinking_config"].thinking_budget == 1024
         assert out["thinking_config"].include_thoughts is True
 
-    def test_unknown_keys_dropped_with_debug_log(
+    def test_unknown_keys_dropped_with_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.gemini")
-        out = _extract_extended_kwargs({"frobnicate": True, "foobar": 1})
-        assert out == {}
-        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(
-            "frobnicate" in r.message and "foobar" in r.message
-            for r in debug_records
+        caplog.set_level(logging.WARNING)
+        provider_id = f"t2-drop-{uuid4().hex}"
+        out = _extract_extended_kwargs(
+            {"frobnicate": True, "foobar": 1},
+            catalogue=catalogue_for("gemini"),
+            provider_id=provider_id,
         )
+        assert out == {}
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider_id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("frobnicate" in m for m in messages)
+        assert any("foobar" in m for m in messages)
 
 
 from primer.llm.gemini import (
