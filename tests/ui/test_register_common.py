@@ -180,7 +180,7 @@ def test_kind_labels_rename_the_served_kinds(ctx) -> None:
     assert js(ctx, "PC_KIND_LABELS.web_search") == {"tavily": "Tavily", "firecrawl": "Firecrawl", "exa": "Exa", "duckduckgo": "DuckDuckGo"}
     assert js(ctx, "PC_KIND_LABELS.web_fetch") == {"jina": "Jina", "firecrawl": "Firecrawl", "exa": "Exa", "local": "Local"}
     assert js(ctx, "PC_KIND_LABELS.artifact_storage") == {"db": "Database", "filesystem": "Filesystem", "s3": "S3"}
-    assert js(ctx, "PC_FLAVOR_LABELS") == {"openai": "OpenAI", "lmstudio": "LM Studio", "vllm": "vLLM", "ollama": "Ollama", "other": "Other"}
+    assert js(ctx, "PC_FLAVOR_LABELS") == {"openai": "OpenAI", "lmstudio": "LM Studio", "vllm": "vLLM", "ollama": "Ollama", "strata": "Strata", "other": "Other"}
     assert ctx.eval("PC_kindLabel('stt', 'openai')") == "OpenAI-compatible"
     assert ctx.eval("PC_kindLabel('ssp', 'lance')") == "LanceDB"
     # a kind the console has no name for: the served label, then the raw kind

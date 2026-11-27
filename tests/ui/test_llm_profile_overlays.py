@@ -3,7 +3,8 @@
 ``MP_ProfileModal`` is a hook-free dispatcher that ``NV_ProfileModalHost`` mounts; it hands the profile to ``MP_AggregateOverlay`` (create, or edit of a
 ``kind: "aggregated"`` row) or to ``MP_SingleProfileOverlay`` (anything else). Both are built from the platform kit, and both are driven here through the
 kit's own contract: the REAL ``shared.jsx`` (``Modal``, ``Btn``), ``shared/form-field.jsx``, ``shared/platform-kit.jsx``, ``foundation/api.js`` and
-``model-profiles.jsx``, transpiled the way the server bundles them, on the hook runtime of ``tests/ui/_mini_react.py``. The prelude stubs only what the
+``model-profiles.jsx`` with the settings form it wires (``model-profile-settings.jsx``), transpiled the way the server bundles them, on the hook
+runtime of ``tests/ui/_mini_react.py``. The prelude stubs only what the
 console around an overlay provides (the Escape stack, the focus trap, ``useResource``, ``apiFetch`` once ``api.js`` has loaded, ``toastPush``); no ``PK_``
 component is replaced, so a kit component reached with ``MR.findProp("testid", id)`` is the real one and its callbacks are the ones the overlay handed it.
 
@@ -119,7 +120,12 @@ function pressHost(testid) {
 }
 """
 
-FILES = (UI / "components" / "shared.jsx", UI / "components" / "shared" / "form-field.jsx", UI / "components" / "shared" / "platform-kit.jsx")
+FILES = (
+    UI / "components" / "shared.jsx",
+    UI / "components" / "shared" / "form-field.jsx",
+    UI / "components" / "shared" / "platform-kit.jsx",
+    UI / "components" / "model-profile-settings.jsx",
+)
 
 
 def js(ctx, expr: str):
@@ -193,6 +199,12 @@ def ticked(ctx) -> list[str]:
 
 def calls(ctx) -> list:
     return js(ctx, "CALLS")
+
+
+def writes(ctx) -> list:
+    """The write calls (a PUT or a POST): the single form's own catalogue read (PMS Task 7's GET on open and on a provider
+    change) is not one, so the pins on the body the form saves look at the writes."""
+    return [c for c in calls(ctx) if c[0] != "GET"]
 
 
 def toasts(ctx) -> list:
@@ -598,16 +610,16 @@ def test_an_aggregate_edit_keeps_every_field_the_form_does_not_show(ctx) -> None
     assert prop(ctx, "mp-aggregate-description", "value") == "my words"
     segment(ctx, "mp-aggregate-routing", "round_robin")
     click(ctx, "mp-aggregate-submit")
-    sent = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window")}
-    assert calls(ctx) == [["PUT", "/model_profiles/agg-1", {**sent, "strategy": "round_robin"}]]
+    sent = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window", "config")}
+    assert calls(ctx) == [["PUT", "/model_profiles/agg-1", {**sent, "strategy": "round_robin"}]], "config is dropped: an aggregate carries no settings"
     assert toasts(ctx) == [{"kind": "success", "text": "Saved agg-1"}]
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
 
 
 def test_an_edit_sends_the_members_in_the_order_shown_and_keeps_every_other_stored_field(ctx) -> None:
     """The edit's counterpart of the create test: the PUT carries the order on screen. p-c is ticked and moved to the front of [p-a, p-b], which makes [p-c, p-a, p-b]: not alphabetical
-    either way, and not the stored order with p-c on the end. One failover choice changes as well, and every other field of the stored row (config, harness_id, the null provider
-    fields, the description, the other failover choice) goes back as stored."""
+    either way, and not the stored order with p-c on the end. One failover choice changes as well, and every other field of the stored row (harness_id, the null provider
+    fields, the description, the other failover choice) goes back as stored, minus config (PMS Task 7: an aggregate carries no settings)."""
     mount(ctx, {"existing": FULL_AGG})
     toggle(ctx, "p-c")
     click(ctx, "mp-member-up:p-c")
@@ -618,7 +630,7 @@ def test_an_edit_sends_the_members_in_the_order_shown_and_keeps_every_other_stor
     open_advanced(ctx)
     segment(ctx, "mp-aggregate-failover-on", "transient_and_config")
     click(ctx, "mp-aggregate-submit")
-    stored = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window")}
+    stored = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window", "config")}
     assert calls(ctx) == [["PUT", "/model_profiles/agg-1", {**stored, "members": shown, "failover_on": "transient_and_config"}]]
 
 
@@ -875,7 +887,7 @@ def test_a_single_edit_keeps_every_field_the_form_does_not_show(ctx) -> None:
     type_(ctx, "mp-single-description", "new words")
     click(ctx, "mp-single-submit")
     sent = {k: v for k, v in FULL_SINGLE.items() if k not in ("agent_count", "graph_node_count")}
-    assert calls(ctx) == [["PUT", "/model_profiles/p-a", {**sent, "description": "new words"}]], "config (reasoning, extended) goes back whole"
+    assert writes(ctx) == [["PUT", "/model_profiles/p-a", {**sent, "description": "new words"}]], "config (reasoning, extended) goes back whole"
     assert toasts(ctx) == [{"kind": "success", "text": "Saved p-a"}]
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
 
@@ -887,7 +899,7 @@ def test_changing_the_model_and_the_window_changes_only_those(ctx) -> None:
     ctx.eval('MR.find("mp-single-provider").props.onChange({ target: { value: "other" } }); MR.rerender();')
     click(ctx, "mp-single-submit")
     sent = {k: v for k, v in FULL_SINGLE.items() if k not in ("agent_count", "graph_node_count")}
-    assert calls(ctx)[0][2] == {**sent, "model_name": "qwen-2", "context_length": 65536, "provider_id": "other"}
+    assert writes(ctx)[0][2] == {**sent, "model_name": "qwen-2", "context_length": 65536, "provider_id": "other"}
 
 
 def test_a_managed_single_profile_offers_no_save(ctx) -> None:
@@ -918,7 +930,7 @@ def test_an_unlisted_provider_is_kept(ctx) -> None:
     options = js(ctx, 'allUnder("mp-single-provider").filter(function (n) { return n.type === "option"; }).map(function (n) { return textOf(n); })')
     assert options == ["lp (openchat)", "other (anthropic)", "gone (not found)"]
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["provider_id"] == "gone"
+    assert writes(ctx)[0][2]["provider_id"] == "gone"
 
 
 def test_a_refused_save_names_the_field(ctx, envelopes) -> None:
@@ -961,7 +973,7 @@ def test_the_reasoning_control_is_drawn_and_an_untouched_config_goes_back_as_sto
     assert not present(ctx, "profile-reasoning-segment"), "the old segment of the retired modal is not back"
     assert not present(ctx, "profile-model-picker") and not present(ctx, "profile-provider-picker"), "the discovered-models picker and the provider row picker are gone"
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["config"] == FULL_SINGLE["config"], "a save sends config back as stored"
+    assert writes(ctx)[0][2]["config"] == FULL_SINGLE["config"], "a save sends config back as stored"
 
 def test_a_blank_field_is_named_once_it_has_been_typed_in(ctx) -> None:
     single(ctx, FULL_SINGLE)
@@ -980,7 +992,7 @@ def test_the_single_press_is_busy_while_the_request_is_out_and_sends_once(ctx) -
     assert js(ctx, 'MR.find("mp-single-submit").props.busy') is True
     assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is False, "the request is not folded into disabled"
     click(ctx, "mp-single-submit")
-    assert len(calls(ctx)) == 1
+    assert len(writes(ctx)) == 1
     ctx.eval("PENDING[0]({ id: 'p-a' })")
     settle(ctx)
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
@@ -1002,7 +1014,7 @@ def test_the_single_cancel_closes_without_a_request(ctx) -> None:
     single(ctx, FULL_SINGLE)
     type_(ctx, "mp-single-description", "draft")
     click(ctx, "mp-single-cancel")
-    assert closed_count(ctx) == 1 and calls(ctx) == []
+    assert closed_count(ctx) == 1 and writes(ctx) == [], "Cancel saves nothing (the form's own catalogue read is not a save)"
 
 
 def test_a_providers_list_that_changes_does_not_wipe_the_draft(ctx) -> None:
@@ -1038,11 +1050,11 @@ def test_the_settings_show_the_stored_reasoning_and_extended(ctx) -> None:
     single(ctx, FULL_SINGLE)
     seg = 'MR.findProp("testid", "mp-single-reasoning").props'
     assert js(ctx, f"{seg}.value") == "high" and js(ctx, f"{seg}.ariaLabel") == "Reasoning"
-    assert [o["label"] for o in js(ctx, f"{seg}.options")] == ["Vendor default", "Off", "Minimal", "Low", "Medium", "High"]
+    assert [o["label"] for o in js(ctx, f"{seg}.options")] == ["Vendor default", "Off", "Minimal", "Low", "Medium", "High", "XHigh", "Max", "Custom"]
     assert js(ctx, 'MR.findProp("label", "Reasoning").props.help') == "Mapped onto each vendor's own setting. Not every vendor has a true off."
     assert js(ctx, 'MR.findProp("testid", "mp-single-settings").props.title') == "MODEL SETTINGS"
     assert prop(ctx, "mp-single-extended", "value") == '{\n  "top_k": 20\n}'
-    assert js(ctx, 'MR.findProp("label", "Extended (JSON)").props.help') == "Passed to the provider as-is; keys the adapter does not know are ignored."
+    assert js(ctx, 'MR.findProp("label", "Extended (JSON)").props.help') == "The whole object, passed to the provider as-is; keys the wire does not name are refused on save."
     single(ctx, {**FULL_SINGLE, "config": {"reasoning": None, "extended": {}}})
     assert js(ctx, f"{seg}.value") == "", "no level is the vendor's default"
 
@@ -1052,7 +1064,7 @@ def test_setting_reasoning_keeps_extended(ctx) -> None:
     segment(ctx, "mp-single-reasoning", "off")
     click(ctx, "mp-single-submit")
     sent = {k: v for k, v in FULL_SINGLE.items() if k not in ("agent_count", "graph_node_count")}
-    assert calls(ctx) == [["PUT", "/model_profiles/p-a", {**sent, "config": {"reasoning": "off", "extended": {"top_k": 20}}}]]
+    assert writes(ctx) == [["PUT", "/model_profiles/p-a", {**sent, "config": {"reasoning": "off", "extended": {"top_k": 20}}}]]
     assert toasts(ctx) == [{"kind": "success", "text": "Saved p-a"}]
 
 
@@ -1060,14 +1072,14 @@ def test_vendor_default_sends_null_reasoning(ctx) -> None:
     single(ctx, FULL_SINGLE)
     segment(ctx, "mp-single-reasoning", "")
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["config"] == {"reasoning": None, "extended": {"top_k": 20}}
+    assert writes(ctx)[0][2]["config"] == {"reasoning": None, "extended": {"top_k": 20}}
 
 
 def test_editing_extended_sends_the_parsed_object_and_keeps_reasoning(ctx) -> None:
     single(ctx, FULL_SINGLE)
     type_extended(ctx, '{"top_k": 5, "seed": 7}')
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["config"] == {"reasoning": "high", "extended": {"top_k": 5, "seed": 7}}
+    assert writes(ctx)[0][2]["config"] == {"reasoning": "high", "extended": {"top_k": 5, "seed": 7}}
 
 
 def test_a_blank_extended_is_the_empty_object(ctx) -> None:
@@ -1075,7 +1087,7 @@ def test_a_blank_extended_is_the_empty_object(ctx) -> None:
     type_extended(ctx, "")
     assert field_error(ctx, "Extended (JSON)") is None
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["config"] == {"reasoning": "high", "extended": {}}
+    assert writes(ctx)[0][2]["config"] == {"reasoning": "high", "extended": {}}
 
 
 def test_bad_extended_json_blocks_save(ctx) -> None:
@@ -1085,7 +1097,7 @@ def test_bad_extended_json_blocks_save(ctx) -> None:
         assert field_error(ctx, "Extended (JSON)") == EXTENDED_RULE, bad
         assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True, bad
     click(ctx, "mp-single-submit")
-    assert calls(ctx) == [], "a press while the JSON is not an object sends nothing"
+    assert writes(ctx) == [], "a press while the JSON is not an object sends nothing"
     type_extended(ctx, '{"top_k": 1}')
     assert field_error(ctx, "Extended (JSON)") is None and js(ctx, 'MR.find("mp-single-submit").props.disabled') is False
 
@@ -1112,11 +1124,12 @@ def test_the_extended_fold_is_open_only_when_the_profile_has_extended_settings(c
     single(ctx, {k: v for k, v in FULL_SINGLE.items() if k != "config"})
     assert not present(ctx, "mp-single-extended"), "a row with no config has nothing set"
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["config"] == {"reasoning": None, "extended": {}}, "the model's defaults, which is what the server stores for no config"
+    assert writes(ctx)[0][2]["config"] == {"reasoning": None, "extended": {}}, "the model's defaults, which is what the server stores for no config"
 
 
 def test_a_settings_refusal_lands_above_the_footer(ctx, envelopes) -> None:
-    """The real router's 422 for a level the model does not have: the form maps no field for it, so it is the form-level line, and the draft stays."""
+    """The real router's 422 for a level the model does not have: the form maps no field for it, so it is the form-level line above the footer,
+    toasts the response's message on the form's error path (PMS Task 7), and the draft stays."""
     single(ctx, FULL_SINGLE)
     segment(ctx, "mp-single-reasoning", "off")
     reject_with(ctx, envelopes["bad_reasoning"])
@@ -1124,7 +1137,7 @@ def test_a_settings_refusal_lands_above_the_footer(ctx, envelopes) -> None:
     settle(ctx)
     expected = js(ctx, f"window.primerApi.readRefusal(new window.primerApi.ApiError({json.dumps(envelopes['bad_reasoning'])})).message")
     assert expected and text_at(ctx, "mp-single-error") == expected
-    assert closed_count(ctx) == 0 and toasts(ctx) == []
+    assert closed_count(ctx) == 0 and toasts(ctx) == [{"kind": "error", "title": "Not saved", "detail": expected}]
     assert js(ctx, 'MR.findProp("testid", "mp-single-reasoning").props.value') == "off", "the draft is kept"
 
 
@@ -1176,7 +1189,7 @@ def test_duplicate_posts_a_variant_and_leaves_the_original(ctx) -> None:
     segment(ctx, "mp-single-reasoning", "off")
     ctx.eval("ANSWER = function () { return Promise.resolve({ id: 'p-a-copy' }); };")
     click(ctx, "mp-single-submit")
-    assert calls(ctx) == [["POST", "/model_profiles", {
+    assert writes(ctx) == [["POST", "/model_profiles", {
         "id": "p-a-copy", "description": "old", "kind": "single", "provider_id": "lp", "model_name": "qwen",
         "context_length": 32768, "config": {"reasoning": "off", "extended": {"top_k": 20}},
     }]], "exactly one POST of the copy's body; the original is never PUT"
@@ -1192,7 +1205,7 @@ def test_the_duplicate_press_is_busy_while_the_request_is_out_and_sends_once(ctx
     assert js(ctx, 'MR.find("mp-single-submit").props.busy') is True
     assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is False, "the request is not folded into disabled"
     click(ctx, "mp-single-submit")
-    assert len(calls(ctx)) == 1
+    assert len(writes(ctx)) == 1
     ctx.eval("PENDING[0]({ id: 'p-a-copy' })")
     settle(ctx)
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
@@ -1206,7 +1219,7 @@ def test_duplicating_a_managed_profile_makes_an_unmanaged_copy(ctx) -> None:
     assert js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "fieldset"; }).length') == 0, "every control of the form is editable"
     ctx.eval("ANSWER = function () { return Promise.resolve({ id: 'p-a-copy' }); };")
     click(ctx, "mp-single-submit")
-    sent = calls(ctx)[0][2]
+    sent = writes(ctx)[0][2]
     assert sent["provider_id"] == "lp" and sent["model_name"] == "qwen" and sent["kind"] == "single"
     assert "harness_id" not in sent, "a copy of a managed profile is unmanaged"
 
@@ -1264,7 +1277,7 @@ def test_the_edit_bodies_keep_the_kind_they_started_with(ctx) -> None:
     """The body of a save carries the stored kind: the single form's always says single, the aggregate form's aggregated."""
     single(ctx, FULL_SINGLE)
     click(ctx, "mp-single-submit")
-    assert calls(ctx)[0][2]["kind"] == "single"
+    assert writes(ctx)[0][2]["kind"] == "single"
     mount(ctx, {"existing": FULL_AGG})
     click(ctx, "mp-aggregate-submit")
     assert calls(ctx)[-1][2]["kind"] == "aggregated"

@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -46,6 +47,7 @@ from primer.llm.anthropic import (
     _tools_to_anthropic,
     _translate_event,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     AudioPart,
     Citation,
@@ -348,16 +350,25 @@ class TestSamplingAndExtended:
     def test_extended_passthrough_and_dropped(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.anthropic")
+        caplog.set_level(logging.WARNING)
+        provider_id = f"obs-anthropic-{uuid4().hex}"
         out = _extract_extended_kwargs(
-            {"top_k": 5, "thinking": {"type": "enabled"}, "bogus": 1}
+            {"top_k": 5, "thinking": {"type": "enabled"}, "bogus": 1},
+            catalogue=catalogue_for("anthropic"),
+            provider_id=provider_id,
         )
         assert out == {"top_k": 5, "thinking": {"type": "enabled"}}
-        assert any("dropped unknown" in r.message for r in caplog.records)
+        assert any(
+            "dropping extended key bogus" in r.getMessage() for r in caplog.records
+        )
 
     def test_extended_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            None, catalogue=catalogue_for("anthropic"), provider_id="obs-anthropic-empty"
+        ) == {}
+        assert _extract_extended_kwargs(
+            {}, catalogue=catalogue_for("anthropic"), provider_id="obs-anthropic-empty"
+        ) == {}
 
 
 class TestStopReasonMapping:

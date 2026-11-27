@@ -25,6 +25,13 @@ additions:
 * Deleting a profile an Agent still references, OR that is named as a
   member of any aggregated profile, returns 409 rather than silently
   breaking that agent or that aggregate.
+* A single profile's ``config.extended`` is validated on create and
+  update against its provider's settings catalogue
+  (``primer/llm/settings_catalogue.py``): an unknown key, a value the
+  wire does not take, or a reserved ``body`` field is a 422
+  (``invalid_model_setting``) naming the key. A provider change
+  re-validates against the new wire. An aggregated profile carries no
+  config at all (the model's kind field group refuses a non-empty one).
 * The list route enriches each item with ``agent_count`` /
   ``graph_node_count`` (platform wave P2, #19) so a profile card can
   render "bound by N agents" from one fetch.
@@ -59,6 +66,7 @@ from primer.model.provider import LLMProvider
 from primer.model_profile.checks import (
     check_aggregation_valid,
     check_profile_on_update,
+    check_profile_settings,
     check_provider_exists,
 )
 from primer.model_profile.choices import list_model_profile_choices
@@ -198,9 +206,19 @@ async def _check_aggregation_valid(entity: ModelProfile, request: Request) -> No
         raise _as_rest_error(exc) from exc
 
 
+async def _check_profile_settings(entity: ModelProfile, request: Request) -> None:
+    """422 when a single profile's ``config.extended`` names a key or value its provider's wire does not take (no-op for aggregated profiles,
+    which carry no config)."""
+    try:
+        await check_profile_settings(entity, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
 async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
     await _check_provider_exists(entity, request)
     await _check_aggregation_valid(entity, request)
+    await _check_profile_settings(entity, request)
 
 
 async def _on_pre_update(

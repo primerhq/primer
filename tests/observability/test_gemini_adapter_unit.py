@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -47,6 +48,7 @@ from primer.llm.gemini import (
     _tool_choice_to_gemini,
     _tools_to_gemini,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     AudioPart,
     Citation,
@@ -316,18 +318,27 @@ class TestResponseFormatAndSampling:
     def test_extended_thinking_and_passthrough(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.gemini")
+        caplog.set_level(logging.WARNING)
+        provider_id = f"obs-gemini-{uuid4().hex}"
         out = _extract_extended_kwargs(
-            {"thinking_budget": 128, "include_thoughts": True, "seed": 3, "junk": 1}
+            {"thinking_budget": 128, "include_thoughts": True, "seed": 3, "junk": 1},
+            catalogue=catalogue_for("gemini"),
+            provider_id=provider_id,
         )
         assert out["seed"] == 3
         assert isinstance(out["thinking_config"], gtypes.ThinkingConfig)
         assert out["thinking_config"].thinking_budget == 128
-        assert any("dropped unknown" in r.message for r in caplog.records)
+        assert any(
+            "dropping extended key junk" in r.getMessage() for r in caplog.records
+        )
 
     def test_extended_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs(
+            None, catalogue=catalogue_for("gemini"), provider_id="obs-gemini-empty"
+        ) == {}
+        assert _extract_extended_kwargs(
+            {}, catalogue=catalogue_for("gemini"), provider_id="obs-gemini-empty"
+        ) == {}
 
 
 class TestFinishReasonAndUsage:

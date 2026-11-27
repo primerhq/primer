@@ -17,6 +17,7 @@ import pytest
 from primer.llm import _reasoning
 from primer.llm._reasoning import (
     anthropic_extended,
+    claude_code_extended,
     gemini_extended,
     ollama_extended,
     openchat_extended,
@@ -25,9 +26,12 @@ from primer.llm._reasoning import (
     profile_extended,
     profile_stream,
 )
+from primer.llm.openresponses import _extract_extended_kwargs
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import Done, Error, TextDelta
 from primer.model.except_ import BadRequestError
-from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
+from primer.model.model_profile import CustomReasoning, ModelProfileConfig, ReasoningLevel
+from primer.model.providers.llm import OpenResponsesFlavor
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +203,242 @@ class TestOpenRouter:
     def test_unrelated_passthrough_keys_survive(self) -> None:
         out = openrouter_extended(_cfg(ReasoningLevel.LOW, seed=5))
         assert out == {"seed": 5, "reasoning": {"effort": "low"}}
+
+
+# One id per row of the tables the mapping indexes, plus the no-control and
+# unknown rows (spec section 4, plan review focus 2).
+_EFFORT_MODELS = [
+    "o3", "gpt-5-codex", "gpt-5", "gpt-5.1", "gpt-6", "gpt-5-pro",
+    "gpt-4o", "o1-mini", "my-deployment",
+]
+_CLAUDE_MODELS = [
+    "claude-opus-4-0", "claude-sonnet-4-5", "claude-haiku-4-5",  # budget
+    "claude-opus-4-6", "claude-sonnet-4-6",                      # adaptive, 4.6
+    "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5",       # adaptive, 4.7 and later
+    "claude-sonnet-5", "claude-haiku-5-5", "claude-sonnet-5-5",  # adaptive, the rest
+    "claude-opus-5-5", "claude-fable-5-1",                       # adaptive, cannot turn off
+    "claude-3-5-haiku-20241022", "my-proxy-model",               # no control / unknown
+]
+_GEMINI_MODELS = [
+    "gemini-4-argon", "gemini-3.8-flash", "gemini-3.1-pro",
+    "gemini-3.1-flash-lite-image", "gemini-3-pro",
+    "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", None,
+]
+
+
+def _custom(value: str) -> ModelProfileConfig:
+    return ModelProfileConfig(reasoning=CustomReasoning(custom=value))
+
+
+class TestExhaustiveMapping:
+    """Every preset, including xhigh and max, reaches every wire and every table row: no KeyError anywhere."""
+
+    @pytest.mark.parametrize("level", list(ReasoningLevel))
+    @pytest.mark.parametrize("model", _EFFORT_MODELS)
+    @pytest.mark.parametrize("fn, flavor", [
+        (openresponses_extended, "openai"), (openresponses_extended, "lmstudio"),
+        (openresponses_extended, "other"), (openresponses_extended, "strata"),
+        (openchat_extended, "openai"), (openchat_extended, "ollama"),
+        (openchat_extended, "vllm"), (openchat_extended, "lmstudio"),
+        (openchat_extended, "other"), (openchat_extended, "strata"),
+    ])
+    def test_the_openai_wires(self, level, model, fn, flavor) -> None:
+        assert isinstance(fn(_cfg(level), flavor=flavor, model=model), dict)
+
+    @pytest.mark.parametrize("level", list(ReasoningLevel))
+    @pytest.mark.parametrize("model", _CLAUDE_MODELS)
+    def test_the_anthropic_wire(self, level, model) -> None:
+        assert isinstance(anthropic_extended(_cfg(level), model=model), dict)
+
+    @pytest.mark.parametrize("level", list(ReasoningLevel))
+    @pytest.mark.parametrize("model", _GEMINI_MODELS)
+    def test_the_gemini_wire(self, level, model) -> None:
+        assert isinstance(gemini_extended(_cfg(level), model=model), dict)
+
+    @pytest.mark.parametrize("level", list(ReasoningLevel))
+    @pytest.mark.parametrize("fn", [ollama_extended, openrouter_extended, claude_code_extended])
+    def test_the_modelless_wires(self, level, fn) -> None:
+        assert isinstance(fn(_cfg(level)), dict)
+
+
+class TestXHighAndMax:
+    """The two new presets: clamped to what the tables have verified (spec section 4)."""
+
+    @pytest.mark.parametrize("model", ["o3", "gpt-5-codex", "gpt-5", "gpt-5.1", "gpt-6", "gpt-5-pro", "my-deployment"])
+    def test_openai_families_send_what_high_sends(self, model) -> None:
+        for wire in (openresponses_extended, openchat_extended):
+            for level in (ReasoningLevel.XHIGH, ReasoningLevel.MAX):
+                assert wire(_cfg(level), model=model)["reasoning_effort"] == "high"
+
+    @pytest.mark.parametrize("level, effort", [
+        (ReasoningLevel.XHIGH, "high"),  # max but not xhigh is recorded
+        (ReasoningLevel.MAX, "max"),
+    ])
+    def test_anthropic_opus_4_6(self, level, effort) -> None:
+        out = anthropic_extended(_cfg(level), model="claude-opus-4-6")
+        assert out["output_config"]["effort"] == effort
+        assert out["thinking"] == {"type": "adaptive"}
+
+    @pytest.mark.parametrize("model", ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"])
+    def test_anthropic_opus_4_7_and_later_send_xhigh_and_max(self, model) -> None:
+        assert anthropic_extended(_cfg(ReasoningLevel.XHIGH), model=model)["output_config"]["effort"] == "xhigh"
+        assert anthropic_extended(_cfg(ReasoningLevel.MAX), model=model)["output_config"]["effort"] == "max"
+
+    @pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-sonnet-5", "claude-haiku-5-5", "claude-sonnet-5-5"])
+    def test_anthropic_the_other_adaptive_models_send_high_for_both(self, model) -> None:
+        for level in (ReasoningLevel.XHIGH, ReasoningLevel.MAX):
+            out = anthropic_extended(_cfg(level), model=model)
+            assert out["output_config"]["effort"] == "high"
+            assert out["thinking"] == {"type": "adaptive"}
+
+    @pytest.mark.parametrize("model", ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"])
+    def test_anthropic_budget_models_send_the_high_budget_for_both(self, model) -> None:
+        for level in (ReasoningLevel.XHIGH, ReasoningLevel.MAX):
+            assert anthropic_extended(_cfg(level), model=model) == {
+                "thinking": {"type": "enabled", "budget_tokens": 32768},
+            }
+
+    def test_openrouter_sends_xhigh_and_max(self) -> None:
+        assert openrouter_extended(_cfg(ReasoningLevel.XHIGH)) == {"reasoning": {"effort": "xhigh"}}
+        assert openrouter_extended(_cfg(ReasoningLevel.MAX)) == {"reasoning": {"effort": "max"}}
+
+    def test_gemini_sends_the_models_top_level_or_budget(self) -> None:
+        for level in (ReasoningLevel.XHIGH, ReasoningLevel.MAX):
+            # a 3+ model: its top level; a 2.5 model: its top budget
+            assert gemini_extended(_cfg(level), model="gemini-3-pro")["thinking_level"] == "high"
+            assert gemini_extended(_cfg(level), model="gemini-2.5-flash")["thinking_budget"] == 24576
+            assert gemini_extended(_cfg(level), model="gemini-2.5-pro")["thinking_budget"] == 32768
+
+    def test_ollama_thinks_for_both(self) -> None:
+        assert ollama_extended(_cfg(ReasoningLevel.XHIGH)) == {"think": True}
+        assert ollama_extended(_cfg(ReasoningLevel.MAX)) == {"think": True}
+
+    def test_openchat_ollama_sends_high_for_both(self) -> None:
+        for level in (ReasoningLevel.XHIGH, ReasoningLevel.MAX):
+            assert openchat_extended(_cfg(level), flavor="ollama") == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize("flavor", ["vllm", "lmstudio", "other"])
+    def test_openchat_template_flavors_enable_thinking_for_both(self, flavor) -> None:
+        for level in (ReasoningLevel.XHIGH, ReasoningLevel.MAX):
+            assert openchat_extended(_cfg(level), flavor=flavor) == {
+                "chat_template_kwargs": {"enable_thinking": True},
+            }
+
+    def test_claude_code_sends_xhigh_and_max(self) -> None:
+        assert claude_code_extended(_cfg(ReasoningLevel.XHIGH)) == {"effort": "xhigh"}
+        assert claude_code_extended(_cfg(ReasoningLevel.MAX)) == {"effort": "max"}
+
+
+class TestCustom:
+    """A hand-written value: sent verbatim to the wire's custom target, no mapping, no clamping."""
+
+    def test_an_openai_family_gets_the_value_verbatim(self) -> None:
+        """A family a preset would clamp for still gets the value as written."""
+        assert openresponses_extended(_custom("xhigh"), flavor="openai", model="o3") == {"reasoning_effort": "xhigh"}
+        assert openchat_extended(_custom("ultra"), flavor="openai", model="gpt-5.1") == {
+            "reasoning_effort": "ultra",
+        }
+
+    def test_openchat_vllm_gets_reasoning_effort_and_no_template_kwargs(self) -> None:
+        assert openchat_extended(_custom("high"), flavor="vllm") == {"reasoning_effort": "high"}
+
+    def test_openchat_ollama_gets_reasoning_effort(self) -> None:
+        assert openchat_extended(_custom("deep"), flavor="ollama") == {"reasoning_effort": "deep"}
+
+    def test_anthropic_adaptive_gets_the_effort_and_adaptive_thinking(self) -> None:
+        out = anthropic_extended(_custom("max"), model="claude-opus-5-5")
+        assert out["output_config"]["effort"] == "max"
+        assert out["thinking"] == {"type": "adaptive"}
+
+    def test_anthropic_budget_gets_only_the_effort(self) -> None:
+        assert anthropic_extended(_custom("max"), model="claude-haiku-4-5") == {
+            "output_config": {"effort": "max"},
+        }
+
+    def test_gemini_gets_the_level_verbatim(self) -> None:
+        assert gemini_extended(_custom("LOW"), model="gemini-3-pro") == {"thinking_level": "LOW"}
+
+    def test_openrouter_gets_the_effort(self) -> None:
+        assert openrouter_extended(_custom("xhigh")) == {"reasoning": {"effort": "xhigh"}}
+
+    def test_ollama_gets_the_value(self) -> None:
+        assert ollama_extended(_custom("high")) == {"think": "high"}
+
+    def test_claude_code_gets_the_effort(self) -> None:
+        assert claude_code_extended(_custom("xhigh")) == {"effort": "xhigh"}
+
+
+class TestStrata:
+    """Strata, a flavor of both OpenAI wires: its own levels, none a true off
+    (spec section 8). xhigh and max are not verified there: both send what
+    high sends."""
+
+    @pytest.mark.parametrize("level, expected", [
+        (ReasoningLevel.OFF, "none"),
+        (ReasoningLevel.MINIMAL, "low"),
+        (ReasoningLevel.LOW, "low"),
+        (ReasoningLevel.MEDIUM, "medium"),
+        (ReasoningLevel.HIGH, "high"),
+        (ReasoningLevel.XHIGH, "high"),
+        (ReasoningLevel.MAX, "high"),
+    ])
+    def test_presets_send_the_models_own_level(self, level, expected) -> None:
+        assert openchat_extended(_cfg(level), flavor="strata") == {
+            "reasoning_effort": expected,
+        }
+        assert openresponses_extended(_cfg(level), flavor="strata") == {
+            "reasoning_effort": expected,
+        }
+
+    @pytest.mark.parametrize("level, expected", [
+        (ReasoningLevel.OFF, "none"),
+        (ReasoningLevel.MINIMAL, "low"),
+        (ReasoningLevel.LOW, "low"),
+        (ReasoningLevel.MEDIUM, "medium"),
+        (ReasoningLevel.HIGH, "high"),
+        (ReasoningLevel.XHIGH, "high"),
+        (ReasoningLevel.MAX, "high"),
+    ])
+    def test_presets_survive_the_responses_extractor(self, caplog, level, expected) -> None:
+        """The mapping and the adapter's extractor agree (the layer boundary the nested shape broke): for
+        every preset the mapped dict, folded by the strata wire, is ``reasoning.effort`` with nothing
+        dropped and no warning. A unique provider id per preset keeps the once-per-provider dedupe from
+        hiding a later warning."""
+        with caplog.at_level(logging.WARNING, logger="primer.llm.settings_catalogue"):
+            out = _extract_extended_kwargs(
+                openresponses_extended(_cfg(level), flavor="strata"),
+                catalogue=catalogue_for("openresponses/strata"),
+                flavor=OpenResponsesFlavor.STRATA,
+                provider_id=f"t6-strata-{level.value}",
+            )
+        assert out == {"reasoning": {"effort": expected}}
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING], [r.message for r in caplog.records]
+
+    def test_a_custom_value_goes_to_the_same_field_verbatim(self) -> None:
+        assert openchat_extended(_custom("xhigh"), flavor="strata") == {
+            "reasoning_effort": "xhigh",
+        }
+        assert openresponses_extended(_custom("max"), flavor="strata") == {
+            "reasoning_effort": "max",
+        }
+
+
+class TestDeepMerge:
+    """The level wins only on the leaf it sets; sibling keys in the same object stay."""
+
+    def test_deep_merge_keeps_siblings(self) -> None:
+        cfg = _cfg(ReasoningLevel.HIGH, chat_template_kwargs={"enable_thinking": False, "foo": 1})
+        assert openchat_extended(cfg, flavor="vllm") == {
+            "chat_template_kwargs": {"enable_thinking": True, "foo": 1},
+        }
+        cfg = _cfg(ReasoningLevel.LOW, thinking={"display": "omitted"})
+        out = anthropic_extended(cfg, model="claude-opus-4-7")
+        assert out["thinking"] == {"type": "adaptive", "display": "omitted"}
+        assert out["output_config"] == {"effort": "low"}
+
+    def test_level_still_wins_on_its_leaf(self) -> None:
+        cfg = _cfg(ReasoningLevel.LOW, reasoning_effort="high")
+        assert openresponses_extended(cfg)["reasoning_effort"] == "low"
 
 
 class _Translating:

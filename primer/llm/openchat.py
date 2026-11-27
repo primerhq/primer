@@ -49,6 +49,7 @@ from primer.llm._openai_compat import (
     _translate_chunk,
 )
 from primer.llm._trace import _serialize_messages
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, wire_of
 from primer.model.chat import (
     Error as ChatError,
     Message,
@@ -70,19 +71,70 @@ from primer.observability import tracing as _tracing
 logger = logging.getLogger(__name__)
 
 
-# What primer.llm._reasoning.openchat_extended emits. ``reasoning_effort``
-# (OpenAI's reasoning models, and Ollama's /v1) is a parameter of the openai SDK's
-# ``create()``; ``chat_template_kwargs`` is not (vLLM and the other
-# self-hosted servers read ``enable_thinking`` from it in the chat
-# template), so it travels in the request body.
-_REASONING_SDK_KEYS: frozenset[str] = frozenset({"reasoning_effort"})
-_REASONING_BODY_KEYS: frozenset[str] = frozenset({"chat_template_kwargs"})
+# Keys the openai SDK's ``create()`` does not know on one wire: they travel in
+# the request body through ``extra_body`` (the SDK refuses a keyword it does
+# not know). The shared Chat Completions keys and ``reasoning_effort`` are SDK
+# parameters on every openchat wire; the self-hosted extras are body fields
+# (spec section 5, per flavor).
+_BODY_KEYS_BY_FLAVOR: dict[OpenChatFlavor, frozenset[str]] = {
+    OpenChatFlavor.OPENAI: frozenset(),
+    OpenChatFlavor.VLLM: frozenset(
+        {
+            "chat_template_kwargs",
+            "thinking_token_budget",
+            "include_reasoning",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "min_tokens",
+            "priority",
+        }
+    ),
+    OpenChatFlavor.LMSTUDIO: frozenset(
+        {
+            "chat_template_kwargs",
+            "reasoning_tokens",
+            "ttl",
+            "draft_model",
+            "top_k",
+            "min_p",
+            "repeat_penalty",
+        }
+    ),
+    OpenChatFlavor.OLLAMA: frozenset(),
+    # Strata's own settings are not parameters of the SDK's create(): they
+    # travel in the request body. reasoning_effort and the shared Chat
+    # Completions keys are SDK parameters (spec section 8).
+    OpenChatFlavor.STRATA: frozenset(
+        {
+            "reasoning_budget_tokens",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "penalty_last_n",
+            "chat_template_kwargs",
+            "return_progress",
+        }
+    ),
+    OpenChatFlavor.OTHER: frozenset({"chat_template_kwargs"}),
+}
 
 
-def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
-    """The shared Chat Completions whitelist plus the reasoning knobs this wire takes."""
+def _extract_extended_kwargs(
+    extended: dict[str, Any] | None,
+    *,
+    catalogue: Catalogue,
+    flavor: OpenChatFlavor,
+    provider_id: str,
+) -> dict[str, Any]:
+    """The wire's catalogue keys: SDK parameters as such, the rest in ``extra_body``."""
     return _extract_compat_kwargs(
-        extended, sdk_keys=_REASONING_SDK_KEYS, body_keys=_REASONING_BODY_KEYS,
+        extended,
+        keys=catalogue.keys(),
+        body_keys=_BODY_KEYS_BY_FLAVOR[flavor],
+        adapter="OpenChat",
+        provider_id=provider_id,
+        body_passthrough=catalogue.body_passthrough,
     )
 
 
@@ -105,6 +157,8 @@ _POLICY_BY_FLAVOR: dict[OpenChatFlavor, _FlavorPolicy] = {
     OpenChatFlavor.LMSTUDIO: _FlavorPolicy(require_api_key=False),
     OpenChatFlavor.OLLAMA: _FlavorPolicy(require_api_key=False),
     OpenChatFlavor.VLLM: _FlavorPolicy(require_api_key=False),
+    # Strata's server key is optional (spec section 8).
+    OpenChatFlavor.STRATA: _FlavorPolicy(require_api_key=False),
     # OTHER is the catch-all for self-hosted OpenAI-compatible servers,
     # which are commonly unauthenticated; a missing key surfaces as an
     # upstream 401 at call time rather than blocking registration.
@@ -135,6 +189,9 @@ class OpenChatLLM(LLM):
         self._provider = provider
         self._config: OpenChatConfig = provider.config
         self._policy = _POLICY_BY_FLAVOR[provider.config.flavor]
+        self._catalogue = catalogue_for(
+            wire_of(provider.provider.value, provider.config.flavor.value)
+        )
 
         key_present = (
             provider.config.api_key is not None
@@ -260,7 +317,14 @@ class OpenChatLLM(LLM):
         rf_param = _response_format_to_param(response_format)
         if rf_param is not None:
             request["response_format"] = rf_param
-        request.update(_extract_extended_kwargs(extended))
+        request.update(
+            _extract_extended_kwargs(
+                extended,
+                catalogue=self._catalogue,
+                flavor=self._config.flavor,
+                provider_id=self._provider.id,
+            )
+        )
         fit_openai_reasoning_request(
             request,
             flavor=self._config.flavor.value,

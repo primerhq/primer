@@ -1,4 +1,4 @@
-/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Section, PK_Fold, PK_Segmented, PK_CheckTable, PR_fetchAllPages, PR_PagedNote */
+/* global React, Btn, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Section, PK_Fold, PK_Segmented, PK_CheckTable, PR_fetchAllPages, PR_PagedNote, MPS_SettingsForm, MPS_initialDraft */
 // LLM profiles: a "single" profile is one (provider, model) pair plus its API-level config; an "aggregated" one (kind="aggregated", 01a067c4) is an
 // ORDERED chain of single profiles with a routing and failover policy, and has no provider of its own.
 //
@@ -256,7 +256,8 @@ function MP_providerOptions(providers, currentId) {
 }
 
 // A single profile's model settings, its `config` (plan 03 Task 7): every model call made under the profile applies them (#756), so the overlay edits them. The reasoning
-// levels are the model's (ReasoningLevel, primer/model/model_profile.py); the empty value is the vendor's default, which the model stores as null.
+// levels are the model's (ReasoningLevel, primer/model/model_profile.py); the empty value is the vendor's default, which the model stores as null. PMS Task 7 adds the
+// model's xhigh and max levels and Custom: a value the model takes that the presets do not name, written verbatim to the wire's custom reasoning target (spec section 4).
 var MP_REASONING_OPTIONS = [
   { value: "", label: "Vendor default" },
   { value: "off", label: "Off" },
@@ -264,9 +265,26 @@ var MP_REASONING_OPTIONS = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+  { value: "max", label: "Max" },
+  { value: "custom", label: "Custom" },
 ];
 var MP_REASONING_HELP = "Mapped onto each vendor's own setting. Not every vendor has a true off.";
-var MP_EXTENDED_HELP = "Passed to the provider as-is; keys the adapter does not know are ignored.";
+// The whole object, passed to the provider as-is. PMS Task 4 refuses a key the wire does not name on save, so the box says that instead of promising silence.
+var MP_EXTENDED_HELP = "The whole object, passed to the provider as-is; keys the wire does not name are refused on save.";
+
+// The value the reasoning field sends in the profile's `config` (PMS Task 7): a preset as itself, Custom as {custom: value}, the vendor's default as null.
+function MP_reasoningBody(choice, custom) {
+  if (choice === "custom") return { custom: custom == null ? "" : String(custom) };
+  return choice || null;
+}
+
+// A custom reasoning value (spec section 4): 1 to 32 characters from [A-Za-z0-9_.-], written verbatim to the wire, so the form holds the same rule the server does.
+var MP_CUSTOM_REASONING_RE = /^[A-Za-z0-9_.-]{1,32}$/;
+function MP_customReasoningError(value) {
+  var typed = value == null ? "" : String(value);
+  return MP_CUSTOM_REASONING_RE.test(typed) ? null : "Use 1 to 32 letters, digits, dots, underscores or dashes.";
+}
 
 // `config.extended` as the text of its box, and back. The model's `extended` is a JSON object (an empty one by default), so a blank box is the empty object and anything that is
 // not one object (a list, a number, null, text that does not parse) is refused before it is sent.
@@ -399,8 +417,9 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
   const [modelName, setModelName] = React.useState(() => existing.model_name || "");
   const [contextText, setContextText] = React.useState(() => (existing.context_length != null ? String(existing.context_length) : ""));
   const storedConfig = existing.config || {};
-  const [reasoning, setReasoning] = React.useState(() => storedConfig.reasoning || "");
-  const [extendedText, setExtendedText] = React.useState(() => MP_extendedText(storedConfig.extended));
+  // The model settings (PMS Task 7): the draft of the form in model-profile-settings.jsx (the wire's reasoning value, the extended object, the client-side errors).
+  // The form pushes it on every change; Save is gated on its errors and the body is built from it, so the form the person sees and the save the server gets agree.
+  const [settings, setSettings] = React.useState(() => MPS_initialDraft(storedConfig));
   const [touched, setTouched] = React.useState({});
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
@@ -420,11 +439,11 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
   const descriptionError = description.trim() ? null : "Enter a description.";
   const modelError = modelName.trim() ? null : "Enter the model name.";
   const contextError = MP_contextError(contextText);
-  const extended = MP_parseExtended(extendedText);
-  const formReady = !managed && !descriptionError && !!provider && !modelError && !contextError && !extended.error;
+  const settingsOk = !settings.errors.reasoning && !settings.errors.extended && !settings.errors.body;
+  const formReady = !managed && !descriptionError && !!provider && !modelError && !contextError && settingsOk;
   // The duplicate's id is the form's own (MP_nameError's rule), and a copy is never blocked by the original being managed: the copy is unmanaged.
   const idError = MP_nameError(dupId);
-  const dupReady = !!dupId.trim() && !idError && !descriptionError && !contextError && !extended.error;
+  const dupReady = !!dupId.trim() && !idError && !descriptionError && !contextError && settingsOk;
   // A blank field is not a mistake until it has been typed in; a complaint from the server is about what was in the field, so editing the field takes it away.
   const shown = (field, error) => (touched[field] ? error : null) || undefined;
   const forget = (field) => setRefused((r) => {
@@ -446,13 +465,17 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
     const api = window.primerApi;
     const draft = {
       description: description.trim(), provider_id: provider, model_name: modelName.trim(), context_length: Number(contextText),
-      config: Object.assign({}, existing.config || {}, { reasoning: reasoning || null, extended: extended.value }),
+      config: Object.assign({}, existing.config || {}, { reasoning: settings.reasoning, extended: settings.extended }),
     };
     let row;
     try {
       row = await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, draft));
     } catch (err) {
-      setRefused(MP_refusalErrors(err, { description: "description", provider_id: "provider", model_name: "model", context_length: "context" }));
+      const refusal = MP_refusalErrors(err, { description: "description", provider_id: "provider", model_name: "model", context_length: "context" });
+      setRefused(refusal);
+      // A refusal that is not about one of the form's fields (a 422 the settings check answers, for example) toasts the response's message on the form's
+      // existing error path, the way the aggregate's Public switch does, and the line above the footer says it too.
+      if (refusal.form) api.toastPush({ kind: "error", title: "Not saved", detail: refusal.form });
       setSaving(false);
       return;
     }
@@ -483,12 +506,14 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
         id: dupId,
         description: description.trim(),
         context_length: Number(contextText),
-        reasoning: reasoning,
-        extended: extended.value,
+        reasoning: settings.reasoning,
+        extended: settings.extended,
       }));
     } catch (err) {
       // The form has an id, so a 409 (a taken copy id) lands under it: `id` is in the map, the way it is on the aggregate's create.
-      setRefused(MP_refusalErrors(err, { id: "id", description: "description", context_length: "context" }));
+      const refusal = MP_refusalErrors(err, { id: "id", description: "description", context_length: "context" });
+      setRefused(refusal);
+      if (refusal.form) api.toastPush({ kind: "error", title: "Not saved", detail: refusal.form });
       setSaving(false);
       return;
     }
@@ -523,20 +548,8 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
         error={shown("context", contextError) || refused.fields.context}>
         <input type="number" min={1} step={1} value={contextText} data-testid="mp-single-context" onChange={typed("context", setContextText)} />
       </PK_Field>
-      <PK_Section title="MODEL SETTINGS" testid="mp-single-settings" cols={1}>
-        <PK_Field label="Reasoning" help={MP_REASONING_HELP}>
-          <PK_Segmented testid="mp-single-reasoning" ariaLabel="Reasoning" options={MP_REASONING_OPTIONS} value={reasoning}
-            onChange={(v) => setReasoning(v)} />
-        </PK_Field>
-        {/* A folded box hides its error, so the fold's label says the JSON is not an object (Save is off until it is). */}
-        <PK_Fold label={extended.error ? "Extended settings (not a JSON object)" : "Extended settings"} testid="mp-single-extended-fold"
-          open={managed || Object.keys(storedConfig.extended || {}).length > 0}>
-          <PK_Field label="Extended (JSON)" help={MP_EXTENDED_HELP} error={extended.error || undefined}>
-            <textarea value={extendedText} rows={6} spellCheck={false} className="mono" data-testid="mp-single-extended"
-              onChange={(e) => setExtendedText(e.target.value)} />
-          </PK_Field>
-        </PK_Fold>
-      </PK_Section>
+      {/* The model settings (PMS Task 7): the shared form from model-profile-settings.jsx, which owns the reasoning pick, the catalogue's typed controls, the body box and the Extended fold, and pushes the draft this Save gates on and sends. */}
+      <MPS_SettingsForm provider={provider} initial={settings} managed={managed} sectionTestid="mp-single-settings" onDraft={setSettings} />
     </>
   );
 
@@ -566,19 +579,8 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
         error={shown("context", contextError) || refused.fields.context}>
         <input type="number" min={1} step={1} value={contextText} data-testid="mp-single-context" onChange={typed("context", setContextText)} />
       </PK_Field>
-      <PK_Section title="MODEL SETTINGS" testid="mp-single-settings" cols={1}>
-        <PK_Field label="Reasoning" help={MP_REASONING_HELP}>
-          <PK_Segmented testid="mp-single-reasoning" ariaLabel="Reasoning" options={MP_REASONING_OPTIONS} value={reasoning}
-            onChange={(v) => setReasoning(v)} />
-        </PK_Field>
-        <PK_Fold label={extended.error ? "Extended settings (not a JSON object)" : "Extended settings"} testid="mp-single-extended-fold"
-          open={Object.keys(storedConfig.extended || {}).length > 0}>
-          <PK_Field label="Extended (JSON)" help={MP_EXTENDED_HELP} error={extended.error || undefined}>
-            <textarea value={extendedText} rows={6} spellCheck={false} className="mono" data-testid="mp-single-extended"
-              onChange={(e) => setExtendedText(e.target.value)} />
-          </PK_Field>
-        </PK_Fold>
-      </PK_Section>
+      {/* The same model settings form as the edit, starting from the edit's current draft (initial is the draft, not the stored row), so the variant differs only in what the copy asks for. */}
+      <MPS_SettingsForm provider={provider} initial={settings} managed={false} sectionTestid="mp-single-settings" onDraft={setSettings} />
     </>
   );
 
@@ -625,8 +627,8 @@ function MP_SingleProfileOverlay({ existing, providers, providersList, onClose, 
 // The aggregated profile's overlay (design 7.2): create with no `existing`, view and edit with one. Name, the members table with the order (the failover chain), the routing
 // switch, the Advanced choices and the smallest context window of the picked members. The Advanced fold is folded on a create and starts open on an edit that holds a choice
 // that is not the model's default (MP_advancedIsSet) or on a harness-managed row. The model requires a description the design has no field for: a create writes
-// "Aggregate of <ids>", an edit shows the stored one. `existing` is the row the page listed; an edit sends it back whole with the form's fields laid over it (MP_editBody),
-// because PUT is a full replace and the row holds fields this form does not draw (`config`).
+// "Aggregate of <ids>", an edit shows the stored one. `existing` is the row the page listed; an edit sends it back with the form's fields laid over it (MP_editBody),
+// because PUT is a full replace, minus `config`: an aggregated profile carries no settings of its own and the model's kind now refuses one on such a row.
 function MP_AggregateOverlay({ existing, providers, onClose, onSaved }) {
   const isEdit = existing != null;
   const managed = MP_isManaged(existing);
@@ -682,10 +684,13 @@ function MP_AggregateOverlay({ existing, providers, onClose, onSaved }) {
     setRefused({ fields: {}, form: null });
     const api = window.primerApi;
     const routing = { strategy, failover_point: failoverPoint, failover_on: failoverOn };
+    // An aggregated profile carries no settings (its members' own apply), and the model's kind now refuses a config on one: an edit drops the stored row's config rather than send it back.
+    const stored = Object.assign({}, existing);
+    delete stored.config;
     let row;
     try {
       row = isEdit
-        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, Object.assign({ description: description.trim(), members }, routing)))
+        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(stored, Object.assign({ description: description.trim(), members }, routing)))
         : await api.apiFetch("POST", "/model_profiles", MP_aggregateBody(Object.assign({ name, members }, routing)));
     } catch (err) {
       setRefused(MP_refusalErrors(err, isEdit ? { members: "members", description: "description" } : { id: "name", members: "members" }));

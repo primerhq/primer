@@ -233,7 +233,7 @@ def test_flavor_shows_for_the_openai_kinds_with_the_served_options(ctx) -> None:
     assert js(ctx, "options('pc-field:flavor')") == openchat
     assert ctx.eval("value('pc-field:flavor')") == "other"
     labels = js(ctx, "ALL('pc-field:flavor').filter(function (n) { return n.type === 'option'; }).map(function (n) { return textOf(n); })")
-    assert labels == ["OpenAI", "LM Studio", "Ollama", "vLLM", "Other"]
+    assert labels == ["OpenAI", "LM Studio", "Ollama", "vLLM", "Strata", "Other"]
     _type(ctx, "pc-field:type", "openresponses")
     assert js(ctx, "options('pc-field:flavor')") == openresponses
     assert ctx.eval("value('pc-field:flavor')") == "other"

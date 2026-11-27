@@ -32,6 +32,7 @@ from primer.llm._failure import describe_failure
 from primer.llm._reasoning import gemini_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_lazy_with_connect_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini_detailed
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, warn_dropped, wire_of
 from primer.model.except_ import (
     ConfigError,
     UnsupportedContentError,
@@ -497,26 +498,21 @@ def _build_sampling_kwargs(
     return out
 
 
-_RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
-    "top_k",
-    "seed",
-    "frequency_penalty",
-    "presence_penalty",
-    "safety_settings",
-    "response_logprobs",
-    "logprobs",
-})
-
-
-def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+def _extract_extended_kwargs(
+    extended: dict[str, Any] | None,
+    *,
+    catalogue: Catalogue,
+    provider_id: str,
+) -> dict[str, Any]:
     """Project the universal ``extended`` dict onto Gemini config kwargs.
 
-    Recognised keys are forwarded; ``thinking_budget`` (Gemini 2.5),
-    ``thinking_level`` (Gemini 3 and later) and ``include_thoughts`` fold
-    into a single ``thinking_config`` dict. A model takes a budget or a
-    level, never both: with both present the level is kept and the budget
-    dropped. Unknown keys are dropped with a single DEBUG log line listing
-    them.
+    The wire's catalogue (Task 1) names the accepted keys. ``thinking_budget``
+    (Gemini 2.5), ``thinking_level`` (Gemini 3 and later) and
+    ``include_thoughts`` fold into a single ``thinking_config`` dict; the rest
+    reach ``GenerateContentConfig`` directly (including ``media_resolution``
+    and ``service_tier``). A model takes a budget or a level, never both: with
+    both present the level is kept and the budget dropped. Dropped keys go
+    through ``warn_dropped``.
     """
     if not extended:
         return {}
@@ -524,6 +520,7 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     thinking_kwargs: dict[str, Any] = {}
     dropped: list[str] = []
+    keys = catalogue.keys()
 
     for key, value in extended.items():
         if key == "thinking_budget":
@@ -535,7 +532,7 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
             thinking_kwargs["thinking_level"] = value
         elif key == "include_thoughts":
             thinking_kwargs["include_thoughts"] = value
-        elif key in _RECOGNISED_EXTENDED_PASSTHROUGH:
+        elif key in keys:
             out[key] = value
         else:
             dropped.append(key)
@@ -543,10 +540,7 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
     if thinking_kwargs:
         out["thinking_config"] = gtypes.ThinkingConfig(**thinking_kwargs)
     if dropped:
-        logger.debug(
-            "Gemini adapter dropped unknown extended kwargs: %s",
-            ", ".join(sorted(dropped)),
-        )
+        warn_dropped("Gemini", provider_id, dropped)
     return out
 
 
@@ -877,6 +871,7 @@ class GeminiLLM(LLM):
 
         self._provider = provider
         self._config: GoogleConfig = provider.config
+        self._catalogue = catalogue_for(wire_of(provider.provider.value, None))
         self._client: genai.Client | None = None
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
@@ -984,7 +979,9 @@ class GeminiLLM(LLM):
             stop=stop,
         )
         format_kwargs = _response_format_to_gemini(response_format)
-        ext_kwargs = _extract_extended_kwargs(extended)
+        ext_kwargs = _extract_extended_kwargs(
+            extended, catalogue=self._catalogue, provider_id=self._provider.id
+        )
 
         config_kwargs: dict[str, Any] = {}
         if system_instruction is not None:

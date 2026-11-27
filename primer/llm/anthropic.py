@@ -31,6 +31,7 @@ from primer.llm._timeout import (
     _open_with_connect_timeout, _protect_sdk_response_close,
 )
 from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, warn_dropped, wire_of
 from primer.model.chat import (
     AudioPart,
     Citation,
@@ -298,33 +299,36 @@ def _build_sampling_kwargs(
     return out
 
 
-_RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
-    "top_k",
-    "metadata",
-    "service_tier",
-    "cache_control",
-    "thinking",
-    # ``effort`` lives here on Claude 4.6 and later (and structured outputs'
-    # ``format``); primer.llm._reasoning.anthropic_extended sets the effort.
-    "output_config",
-})
+_FAST_MODE_BETA = "fast-mode-2026-02-01"
 
 
-def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+def _extract_extended_kwargs(
+    extended: dict[str, Any] | None,
+    *,
+    catalogue: Catalogue,
+    provider_id: str,
+) -> dict[str, Any]:
+    """Project the wire's catalogue (Task 1) onto Anthropic messages kwargs.
+
+    ``speed`` adds the fast-mode beta header whenever it is set (spec section
+    12); dropped keys go through ``warn_dropped``. (``top_k`` rides here too:
+    stream() moves it into ``extra_body`` because the locked SDK's
+    ``create()`` omits it from its signature.)
+    """
     if not extended:
         return {}
     out: dict[str, Any] = {}
     dropped: list[str] = []
+    keys = catalogue.keys()
     for key, value in extended.items():
-        if key in _RECOGNISED_EXTENDED_PASSTHROUGH:
+        if key in keys:
             out[key] = value
         else:
             dropped.append(key)
+    if out.get("speed") is not None:
+        out["extra_headers"] = {"anthropic-beta": _FAST_MODE_BETA}
     if dropped:
-        logger.debug(
-            "Anthropic adapter dropped unknown extended kwargs: %s",
-            ", ".join(sorted(dropped)),
-        )
+        warn_dropped("Anthropic", provider_id, dropped)
     return out
 
 
@@ -775,6 +779,7 @@ class AnthropicLLM(LLM):
 
         self._provider = provider
         self._config: AnthropicConfig = provider.config
+        self._catalogue = catalogue_for(wire_of(provider.provider.value, None))
         self._client: AsyncAnthropic | None = None
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
@@ -922,7 +927,11 @@ class AnthropicLLM(LLM):
             if choice_value is not None:
                 request["tool_choice"] = choice_value
 
-        request.update(_extract_extended_kwargs(extended))
+        request.update(
+            _extract_extended_kwargs(
+                extended, catalogue=self._catalogue, provider_id=self._provider.id
+            )
+        )
         _fit_thinking(request, messages=messages, provider_id=self._provider.id)
         _fit_sampling(request, model=model, provider_id=self._provider.id)
         # Locked Anthropic 2.3.0 omits these SDK keyword parameters. Preserve the

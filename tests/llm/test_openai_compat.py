@@ -28,6 +28,7 @@ from primer.llm._openai_compat import (
     _tool_to_chat,
     _translate_chunk,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     Done,
     ImagePart,
@@ -550,11 +551,13 @@ class TestBuildSamplingParams:
 
 
 class TestExtractExtendedKwargs:
+    KEYS = catalogue_for("openchat/openai").keys()
+
     def test_none_returns_empty(self) -> None:
-        assert _extract_extended_kwargs(None) == {}
+        assert _extract_extended_kwargs(None, keys=self.KEYS) == {}
 
     def test_empty_dict_returns_empty(self) -> None:
-        assert _extract_extended_kwargs({}) == {}
+        assert _extract_extended_kwargs({}, keys=self.KEYS) == {}
 
     @pytest.mark.parametrize(
         "key, value",
@@ -566,16 +569,20 @@ class TestExtractExtendedKwargs:
         ],
     )
     def test_recognised_keys_pass_through(self, key: str, value: Any) -> None:
-        assert _extract_extended_kwargs({key: value}) == {key: value}
+        assert _extract_extended_kwargs({key: value}, keys=self.KEYS) == {key: value}
 
     def test_unknown_keys_dropped(self) -> None:
-        assert _extract_extended_kwargs({"frobnicate": True, "foobar": 1}) == {}
+        assert _extract_extended_kwargs({"frobnicate": True, "foobar": 1}, keys=self.KEYS) == {}
 
-    def test_reasoning_keys_dropped_on_chat_completions(self) -> None:
-        # The shared whitelist carries no reasoning key: each adapter adds
-        # the ones its own wire takes (primer.llm.openchat forwards
-        # reasoning_effort and chat_template_kwargs, primer.llm.openrouter
-        # its reasoning object).
-        assert _extract_extended_kwargs(
-            {"reasoning_effort": "high", "reasoning_summary": "concise"}
-        ) == {}
+    def test_body_keys_land_in_extra_body(self) -> None:
+        # Keys the caller marks as body fields are not parameters of the
+        # openai SDK's create(): they travel in extra_body.
+        out = _extract_extended_kwargs(
+            {"reasoning_effort": "high", "chat_template_kwargs": {"enable_thinking": False}},
+            keys=catalogue_for("openchat/vllm").keys(),
+            body_keys=frozenset({"chat_template_kwargs"}),
+        )
+        assert out == {
+            "reasoning_effort": "high",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }

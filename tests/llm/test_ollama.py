@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace as NS
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import httpx
 import ollama
@@ -34,6 +35,7 @@ from primer.llm.ollama import (
     _tools_to_ollama,
     _translate_chunk,
 )
+from primer.llm.settings_catalogue import catalogue_for
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -511,6 +513,8 @@ class TestOptionsAndKwargs:
             max_output_tokens=None,
             stop=None,
             extended=None,
+            catalogue=catalogue_for("ollama"),
+            provider_id="t2-ollama",
         )
         assert options == {}
         assert top == {}
@@ -522,6 +526,8 @@ class TestOptionsAndKwargs:
             max_output_tokens=128,
             stop=["END"],
             extended=None,
+            catalogue=catalogue_for("ollama"),
+            provider_id="t2-ollama",
         )
         assert options == {
             "temperature": 0.7,
@@ -538,6 +544,8 @@ class TestOptionsAndKwargs:
             max_output_tokens=64,
             stop=None,
             extended=None,
+            catalogue=catalogue_for("ollama"),
+            provider_id="t2-ollama",
         )
         assert options == {"num_predict": 64}
 
@@ -566,6 +574,8 @@ class TestOptionsAndKwargs:
             max_output_tokens=None,
             stop=None,
             extended={key: value},
+            catalogue=catalogue_for("ollama"),
+            provider_id="t2-ollama",
         )
         assert options == {key: value}
         assert top == {}
@@ -584,28 +594,36 @@ class TestOptionsAndKwargs:
             max_output_tokens=None,
             stop=None,
             extended={key: value},
+            catalogue=catalogue_for("ollama"),
+            provider_id="t2-ollama",
         )
         assert options == {}
         assert top == {key: value}
 
-    def test_unknown_keys_dropped_with_debug(
+    def test_unknown_keys_dropped_with_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.ollama")
+        caplog.set_level(logging.WARNING)
+        provider_id = f"t2-drop-{uuid4().hex}"
         options, top = _build_options_and_kwargs(
             temperature=None,
             top_p=None,
             max_output_tokens=None,
             stop=None,
             extended={"frobnicate": True, "wibble": 42},
+            catalogue=catalogue_for("ollama"),
+            provider_id=provider_id,
         )
         assert options == {}
         assert top == {}
-        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(
-            "frobnicate" in r.message and "wibble" in r.message
-            for r in debug_records
-        )
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and provider_id in r.getMessage()
+        ]
+        assert len(messages) == 2
+        assert any("frobnicate" in m for m in messages)
+        assert any("wibble" in m for m in messages)
 
     def test_options_keys_frozenset(self) -> None:
         assert isinstance(_OPTIONS_KEYS, frozenset)

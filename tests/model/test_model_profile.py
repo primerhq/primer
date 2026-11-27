@@ -27,7 +27,7 @@ def _profile(**overrides: object) -> ModelProfile:
 class TestReasoningLevel:
     def test_values(self) -> None:
         assert [level.value for level in ReasoningLevel] == [
-            "off", "minimal", "low", "medium", "high",
+            "off", "minimal", "low", "medium", "high", "xhigh", "max",
         ]
 
     def test_is_str_enum_so_it_serialises_as_its_value(self) -> None:

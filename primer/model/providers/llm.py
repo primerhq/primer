@@ -70,6 +70,9 @@ class OpenResponsesFlavor(str, Enum):
     OPENAI = "openai"
     LMSTUDIO = "lmstudio"
     VLLM = "vllm"
+    # Strata (Niko1221/Strata), a local inference server that serves both
+    # OpenAI wires from one server; its API key is optional.
+    STRATA = "strata"
     OTHER = "other"
 
 
@@ -90,6 +93,9 @@ class OpenChatFlavor(str, Enum):
     LMSTUDIO = "lmstudio"
     OLLAMA = "ollama"
     VLLM = "vllm"
+    # Strata (Niko1221/Strata), a local inference server; its API key is
+    # optional.
+    STRATA = "strata"
     OTHER = "other"
 
 

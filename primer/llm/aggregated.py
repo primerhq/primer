@@ -26,8 +26,8 @@ Two failover channels, mirroring the real adapters:
 Profile config: each member's call carries THAT member's own profile config
 (reasoning, extended), translated for the member's own adapter, so a pool
 of differently-configured members keeps each one's settings. The
-aggregated profile's own ``config`` is not applied: it has no single wire
-to be translated for (see :meth:`AggregatedLLM.profile_extended`).
+aggregated profile carries no config at all (the model's kind field group
+refuses a non-empty one), so nothing of its own is ever translated.
 
 Ownership: downstream LLMs are owned/cached by the ProviderRegistry.
 ``AggregatedLLM.aclose`` is a no-op.
@@ -45,7 +45,7 @@ from pydantic import BaseModel
 
 from primer.common.context_overflow import is_context_overflow, is_context_overflow_error
 from primer.int.llm import LLM
-from primer.llm._reasoning import debug_once, profile_extended, profile_stream
+from primer.llm._reasoning import profile_extended, profile_stream
 from primer.llm.counting import REJECTED_ERRORS, TRANSIENT_ERRORS
 from primer.model.chat import Error as ChatError
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
@@ -65,7 +65,6 @@ from primer.model.model_profile import (
     FailoverClasses,
     FailoverPoint,
     ModelProfile,
-    ModelProfileConfig,
     RoutingStrategy,
 )
 from primer.model.token_count import TokenCount
@@ -228,28 +227,6 @@ class AggregatedLLM(LLM):
             start = self._cursor
             self._cursor = (self._cursor + 1) % n
         return [members[(start + i) % n] for i in range(n)]
-
-    def profile_extended(
-        self, config: ModelProfileConfig, *, model: str | None = None,
-    ) -> dict[str, Any]:
-        """Nothing: each member applies its own profile's config to the calls it serves.
-
-        The aggregated profile's own ``config`` has no single wire to be
-        translated for (its members may be different kinds of provider), so
-        it is not applied; a non-empty one is logged once at DEBUG. Each
-        member's call carries that member's config instead, translated for
-        the member's adapter and model, under the caller's per-call
-        ``extended`` (which wins on a key collision), through
-        :func:`primer.llm._reasoning.profile_stream`.
-        """
-        if config.reasoning is not None or config.extended:
-            debug_once(
-                ("aggregated-own-config", self._profile.id),
-                "aggregated model profile %s: its own config is not applied; "
-                "each member's own config applies to the calls it serves",
-                self._profile.id,
-            )
-        return {}
 
     def _log_failover(self, member_id: str, reason: str) -> None:
         logger.info(

@@ -388,15 +388,17 @@ def test_the_card_builder_does_not_change_its_row(ctx) -> None:
 EXTENDED_RULE = 'Enter a JSON object, for example {"top_k": 20}.'
 
 
-def test_reasoning_options_are_the_backend_levels(ctx) -> None:
-    """The levels are the model's (``ReasoningLevel``); the empty value is "Vendor default", which the overlay sends as null (the model's own default)."""
+def test_reasoning_options_are_the_backend_levels_plus_custom(ctx) -> None:
+    """The levels are the model's (``ReasoningLevel``, xhigh and max included); the empty value is "Vendor default", which the overlay sends as
+    null (the model's own default); PMS Task 7 adds the console's ``custom`` choice, which is not a backend level (it opens the value field)."""
     from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 
     options = js(ctx, "MP_REASONING_OPTIONS")
-    assert {o["value"] for o in options} - {""} == {e.value for e in ReasoningLevel}
+    assert {o["value"] for o in options} - {""} == {e.value for e in ReasoningLevel} | {"custom"}
     assert options == [
         {"value": "", "label": "Vendor default"}, {"value": "off", "label": "Off"}, {"value": "minimal", "label": "Minimal"},
         {"value": "low", "label": "Low"}, {"value": "medium", "label": "Medium"}, {"value": "high", "label": "High"},
+        {"value": "xhigh", "label": "XHigh"}, {"value": "max", "label": "Max"}, {"value": "custom", "label": "Custom"},
     ]
     assert ModelProfileConfig.model_fields["reasoning"].default is None, "Vendor default is the model's default"
 

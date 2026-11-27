@@ -52,6 +52,7 @@ from primer.llm._openai_compat import (
     _translate_chunk,
 )
 from primer.llm._trace import _serialize_messages
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, wire_of
 from primer.model.chat import (
     Error as ChatError,
     Message,
@@ -76,14 +77,35 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # What primer.llm._reasoning.openrouter_extended emits: OpenRouter's
 # ``reasoning`` object, which is not a parameter of the openai SDK's chat
-# ``create()``, so it travels in the request body.
-_REASONING_BODY_KEYS: frozenset[str] = frozenset({"reasoning"})
+# ``create()``, so it travels in the request body. The wire's catalogue (Task 1)
+# names every accepted key; the shared Chat Completions keys are SDK parameters,
+# the extras below travel in ``extra_body``.
+_BODY_KEYS: frozenset[str] = frozenset(
+    {
+        "reasoning",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "top_a",
+        "provider",
+    }
+)
 
 
-def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
-    """The shared Chat Completions whitelist plus OpenRouter's reasoning object."""
+def _extract_extended_kwargs(
+    extended: dict[str, Any] | None,
+    *,
+    catalogue: Catalogue,
+    provider_id: str,
+) -> dict[str, Any]:
+    """The wire's catalogue keys: SDK parameters as such, the rest in ``extra_body``."""
     return _extract_compat_kwargs(
-        extended, body_keys=_REASONING_BODY_KEYS, adapter="OpenRouter",
+        extended,
+        keys=catalogue.keys(),
+        body_keys=_BODY_KEYS,
+        adapter="OpenRouter",
+        provider_id=provider_id,
+        body_passthrough=catalogue.body_passthrough,
     )
 
 
@@ -124,6 +146,7 @@ class OpenRouterLLM(LLM):
 
         self._provider = provider
         self._config: OpenRouterConfig = provider.config
+        self._catalogue = catalogue_for(wire_of(provider.provider.value, None))
         self._client: AsyncOpenAI | None = None
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
@@ -232,7 +255,11 @@ class OpenRouterLLM(LLM):
         rf_param = _response_format_to_param(response_format)
         if rf_param is not None:
             request["response_format"] = rf_param
-        request.update(_extract_extended_kwargs(extended))
+        request.update(
+            _extract_extended_kwargs(
+                extended, catalogue=self._catalogue, provider_id=self._provider.id
+            )
+        )
 
         logger.info(
             "OpenRouter stream starting",

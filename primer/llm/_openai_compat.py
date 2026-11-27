@@ -24,6 +24,7 @@ from primer.llm._openai_common import (
     build_sampling_params as _build_sampling_params_impl,
     parse_tool_arguments,
 )
+from primer.llm.settings_catalogue import RESERVED_BODY_FIELDS, warn_dropped
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -78,33 +79,53 @@ def _build_sampling_params(
     )
 
 
-_RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
-    "parallel_tool_calls",
-    "presence_penalty",
-    "frequency_penalty",
-    "logprobs",
-    "top_logprobs",
-    "seed",
-    "user",
-})
+def _merge_body_passthrough(
+    extended: dict[str, Any],
+    *,
+    body_passthrough: bool,
+    body: dict[str, Any],
+    dropped: list[str],
+) -> None:
+    """Seed ``body`` from ``extended['body']`` minus RESERVED_BODY_FIELDS.
+
+    A ``body`` on a wire without passthrough, or a non-object one, is dropped
+    like any unknown key; reserved fields primer sets itself are named
+    ``body.<field>`` in ``dropped`` so the drop log names them.
+    """
+    if "body" not in extended:
+        return
+    if not body_passthrough:
+        dropped.append("body")
+        return
+    raw = extended["body"]
+    if not isinstance(raw, dict):
+        dropped.append("body")
+        return
+    for inner, inner_value in raw.items():
+        if inner in RESERVED_BODY_FIELDS:
+            dropped.append(f"body.{inner}")
+        else:
+            body[inner] = inner_value
 
 
 def _extract_extended_kwargs(
     extended: dict[str, Any] | None,
     *,
-    sdk_keys: frozenset[str] = frozenset(),
+    keys: frozenset[str],
     body_keys: frozenset[str] = frozenset(),
     adapter: str = "OpenChat",
+    provider_id: str = "",
+    body_passthrough: bool = False,
 ) -> dict[str, Any]:
     """Project the universal ``extended`` dict onto Chat Completions kwargs.
 
-    Recognised keys are forwarded; unknown keys are dropped with a
-    single DEBUG log line listing them. The shared whitelist carries no
-    reasoning key: each adapter names the ones its own wire takes.
-    ``sdk_keys`` are parameters of the openai SDK's ``create()`` and are
-    forwarded as such. ``body_keys`` are not (the SDK refuses a keyword it
-    does not know), so they travel in the request body through
-    ``extra_body``.
+    ``keys`` is the wire's catalogue (Task 1): parameters of the openai SDK's
+    ``create()`` are forwarded as such, the rest are not (the SDK refuses a
+    keyword it does not know) and travel in the request body through
+    ``extra_body``. On a wire with body passthrough the body starts from
+    ``extended['body']`` minus the reserved fields primer sets itself, with
+    the catalogue's body keys on top. Dropped keys go through
+    ``warn_dropped``.
     """
     if not extended:
         return {}
@@ -112,22 +133,25 @@ def _extract_extended_kwargs(
     out: dict[str, Any] = {}
     body: dict[str, Any] = {}
     dropped: list[str] = []
+    _merge_body_passthrough(
+        extended, body_passthrough=body_passthrough, body=body, dropped=dropped
+    )
 
     for key, value in extended.items():
-        if key in _RECOGNISED_EXTENDED_PASSTHROUGH or key in sdk_keys:
-            out[key] = value
-        elif key in body_keys:
-            body[key] = value
+        if key == "body":
+            continue
+        if key in keys:
+            if key in body_keys:
+                body[key] = value
+            else:
+                out[key] = value
         else:
             dropped.append(key)
 
     if body:
         out["extra_body"] = body
     if dropped:
-        logger.debug(
-            "%s adapter dropped unknown extended kwargs: %s",
-            adapter, ", ".join(sorted(dropped)),
-        )
+        warn_dropped(adapter, provider_id, dropped)
     return out
 
 

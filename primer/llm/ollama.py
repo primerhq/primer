@@ -30,6 +30,7 @@ from primer.llm._reasoning import ollama_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_lazy_with_connect_timeout
 from primer.llm._tokenizer._executor import run_counter
 from primer.llm._tokenizer.hf import count_tokens_hf_detailed
+from primer.llm.settings_catalogue import Catalogue, catalogue_for, warn_dropped, wire_of
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -262,6 +263,7 @@ _OPTIONS_KEYS: frozenset[str] = frozenset({
     "top_k", "seed", "repeat_penalty", "frequency_penalty",
     "presence_penalty", "mirostat", "mirostat_tau", "mirostat_eta",
     "tfs_z", "typical_p", "num_ctx", "num_batch", "num_gpu",
+    "min_p", "repeat_last_n",
 })
 
 _TOP_LEVEL_KEYS: frozenset[str] = frozenset({"keep_alive", "think"})
@@ -274,8 +276,16 @@ def _build_options_and_kwargs(
     max_output_tokens: int | None,
     stop: list[str] | None,
     extended: dict[str, Any] | None,
+    catalogue: Catalogue,
+    provider_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Build (options_dict, top_level_kwargs) for Ollama's chat()."""
+    """Build (options_dict, top_level_kwargs) for Ollama's chat().
+
+    The wire's catalogue (Task 1) names the accepted extended keys: the
+    options keys land in Ollama's ``options`` dict, the top-level ones
+    (``keep_alive``, ``think``) in the request itself. Dropped keys go
+    through ``warn_dropped``.
+    """
     options: dict[str, Any] = {}
     if temperature is not None:
         options["temperature"] = temperature
@@ -289,18 +299,16 @@ def _build_options_and_kwargs(
     top_level: dict[str, Any] = {}
     dropped: list[str] = []
     if extended:
+        keys = catalogue.keys()
         for key, value in extended.items():
-            if key in _OPTIONS_KEYS:
+            if key in _OPTIONS_KEYS and key in keys:
                 options[key] = value
-            elif key in _TOP_LEVEL_KEYS:
+            elif key in _TOP_LEVEL_KEYS and key in keys:
                 top_level[key] = value
             else:
                 dropped.append(key)
     if dropped:
-        logger.debug(
-            "Ollama adapter dropped unknown extended kwargs: %s",
-            ", ".join(sorted(dropped)),
-        )
+        warn_dropped("Ollama", provider_id, dropped)
     return options, top_level
 
 
@@ -432,6 +440,7 @@ class OllamaLLM(LLM):
 
         self._provider = provider
         self._config: OllamaConfig = provider.config
+        self._catalogue = catalogue_for(wire_of(provider.provider.value, None))
         self._client: ollama.AsyncClient | None = None
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
@@ -535,6 +544,8 @@ class OllamaLLM(LLM):
             max_output_tokens=max_output_tokens,
             stop=stop,
             extended=extended,
+            catalogue=self._catalogue,
+            provider_id=self._provider.id,
         )
 
         request: dict[str, Any] = {

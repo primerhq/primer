@@ -25,7 +25,7 @@ from primer.llm.openchat import OpenChatLLM
 from primer.llm.openresponses import OpenResponsesLLM
 from primer.llm.openrouter import OpenRouterLLM
 from primer.llm.retrying import RetryingLLM
-from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
+from primer.model.model_profile import CustomReasoning, ModelProfileConfig, ReasoningLevel
 from primer.model.provider import (
     AnthropicConfig,
     GoogleConfig,
@@ -623,7 +623,11 @@ class TestEveryKindAcceptsItsTranslation:
         from primer.llm.openresponses import _extract_extended_kwargs
 
         llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
-        assert _extract_extended_kwargs(llm.profile_extended(_cfg(level), model=model)) == {
+        assert _extract_extended_kwargs(
+            llm.profile_extended(_cfg(level), model=model),
+            catalogue=llm._catalogue,
+            provider_id="wiring-openresponses",
+        ) == {
             "reasoning": {"effort": effort},
         }
 
@@ -637,14 +641,16 @@ class TestEveryKindAcceptsItsTranslation:
 
         llm = AnthropicLLM(_anthropic())
         knobs = llm.profile_extended(_cfg(ReasoningLevel.LOW), model=model)
-        assert _extract_extended_kwargs(knobs) == expected
+        assert _extract_extended_kwargs(
+            knobs, catalogue=llm._catalogue, provider_id="wiring-anthropic"
+        ) == expected
 
     def test_gemini_folds_the_budget_into_thinking_config(self) -> None:
         from primer.llm.gemini import _extract_extended_kwargs
 
         llm = GeminiLLM(_gemini())
         knobs = llm.profile_extended(_cfg(ReasoningLevel.OFF), model="gemini-2.5-flash")
-        out = _extract_extended_kwargs(knobs)
+        out = _extract_extended_kwargs(knobs, catalogue=llm._catalogue, provider_id="wiring-gemini")
         assert out["thinking_config"].thinking_budget == 0
         assert out["thinking_config"].thinking_level is None
 
@@ -653,15 +659,20 @@ class TestEveryKindAcceptsItsTranslation:
 
         llm = GeminiLLM(_gemini())
         knobs = llm.profile_extended(_cfg(ReasoningLevel.LOW), model="gemini-3-pro-preview")
-        config = _extract_extended_kwargs(knobs)["thinking_config"]
+        config = _extract_extended_kwargs(
+            knobs, catalogue=llm._catalogue, provider_id="wiring-gemini"
+        )["thinking_config"]
         assert config.thinking_level.value == "LOW"
         assert config.thinking_budget is None
 
     def test_gemini_with_both_knobs_keeps_the_level(self) -> None:
         from primer.llm.gemini import _extract_extended_kwargs
+        from primer.llm.settings_catalogue import catalogue_for
 
         config = _extract_extended_kwargs(
             {"thinking_budget": 512, "thinking_level": "high"},
+            catalogue=catalogue_for("gemini"),
+            provider_id="wiring-gemini",
         )["thinking_config"]
         assert config.thinking_level.value == "HIGH" and config.thinking_budget is None
 
@@ -723,6 +734,7 @@ class TestEveryKindAcceptsItsTranslation:
         _options, top_level = _build_options_and_kwargs(
             temperature=None, top_p=None, max_output_tokens=None, stop=None,
             extended=llm.profile_extended(_cfg(ReasoningLevel.OFF)),
+            catalogue=llm._catalogue, provider_id="wiring-ollama",
         )
         assert top_level == {"think": False}
 
@@ -957,10 +969,10 @@ class Member(LLM):
         return 1
 
 
-def _aggregate(members: list[tuple[str, Member, ModelProfileConfig]], *, own: ModelProfileConfig | None = None):
+def _aggregate(members: list[tuple[str, Member, ModelProfileConfig]]):
     profile = ModelProfile(
         id="agg-cfg", description="pool", kind="aggregated",
-        members=[m[0] for m in members], config=own or ModelProfileConfig(),
+        members=[m[0] for m in members],
     )
     table = {mid: (llm, cfg) for mid, llm, cfg in members}
 
@@ -994,13 +1006,6 @@ class TestAnAggregatedProfile:
         assert b.calls[0]["extended"] == {"thinking": {"type": "disabled"}}
         assert b.calls[0]["model"] == "model-m-b"
 
-    async def test_the_aggregate_own_config_is_not_sent_to_a_member(self) -> None:
-        b = Member()
-        llm = _aggregate([("m-b", b, _cfg(ReasoningLevel.OFF))], own=_cfg(ReasoningLevel.HIGH))
-        knobs = profile_extended(llm, llm._profile.config, model="virtual")
-        await _drain_agg(llm, **({"extended": knobs} if knobs else {}))
-        assert b.calls[0]["extended"] == {"think": False}
-
     async def test_a_member_with_no_config_is_called_exactly_as_before(self) -> None:
         b = Member()
         llm = _aggregate([("m-b", b, ModelProfileConfig())])
@@ -1013,13 +1018,15 @@ class TestAnAggregatedProfile:
         await _drain_agg(llm, extended={"seed": 9})
         assert b.calls[0]["extended"] == {"seed": 9, "think": True}
 
-    def test_its_own_config_translates_to_nothing_and_is_logged_once(self, caplog) -> None:
+    def test_the_aggregate_translates_nothing_of_its_own(self, caplog) -> None:
+        # An aggregated profile carries no config (the model's kind field group
+        # refuses a non-empty one), so there is nothing of its own to translate
+        # and no once-only DEBUG bookkeeping of it any more.
         caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
         llm = _aggregate([("m-b", Member(), ModelProfileConfig())])
         for _ in range(2):
-            assert llm.profile_extended(_cfg(ReasoningLevel.LOW, seed=2)) == {}
-        hits = [r for r in caplog.records if "agg-cfg" in r.getMessage()]
-        assert len(hits) == 1
+            assert llm.profile_extended(ModelProfileConfig()) == {}
+        assert not [r for r in caplog.records if "agg-cfg" in r.getMessage()]
 
 
 # --------------------------------------------------------------------------- #
@@ -1183,3 +1190,46 @@ class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
         cfg = _cfg(None, reasoning_effort="none")
         body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, "my-deployment", monkeypatch)
         assert body == _chat_body("my-deployment", max_tokens=4096, reasoning_effort="none", **_SAMPLING)
+
+
+class TestXHighMaxAndCustomThroughTheAdapters:
+    """The new presets and the hand-written custom value, through ``LLM.profile_extended``."""
+
+    def test_anthropic_opus_4_6_records_max_but_not_xhigh(self) -> None:
+        llm = AnthropicLLM(_anthropic())
+        assert llm.profile_extended(_cfg(ReasoningLevel.MAX), model="claude-opus-4-6")[
+            "output_config"
+        ]["effort"] == "max"
+        assert llm.profile_extended(_cfg(ReasoningLevel.XHIGH), model="claude-opus-4-6")[
+            "output_config"
+        ]["effort"] == "high"
+
+    def test_anthropic_custom_on_an_adaptive_model_gets_adaptive_thinking(self) -> None:
+        llm = AnthropicLLM(_anthropic())
+        assert llm.profile_extended(
+            ModelProfileConfig(reasoning=CustomReasoning(custom="max")), model="claude-opus-5",
+        ) == {"thinking": {"type": "adaptive"}, "output_config": {"effort": "max"}}
+
+    def test_anthropic_custom_on_a_budget_model_gets_only_the_effort(self) -> None:
+        llm = AnthropicLLM(_anthropic())
+        assert llm.profile_extended(
+            ModelProfileConfig(reasoning=CustomReasoning(custom="max")), model="claude-haiku-4-5",
+        ) == {"output_config": {"effort": "max"}}
+
+    def test_openchat_vllm_custom_is_reasoning_effort_not_the_template_switch(self) -> None:
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.VLLM))
+        assert llm.profile_extended(
+            ModelProfileConfig(reasoning=CustomReasoning(custom="high")),
+        ) == {"reasoning_effort": "high"}
+
+    def test_openresponses_xhigh_clamps_to_high(self) -> None:
+        llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
+        assert llm.profile_extended(_cfg(ReasoningLevel.XHIGH), model="gpt-5.1") == {
+            "reasoning_effort": "high",
+        }
+
+    def test_deep_merge_keeps_siblings_through_the_adapter(self) -> None:
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.VLLM))
+        assert llm.profile_extended(
+            _cfg(ReasoningLevel.HIGH, chat_template_kwargs={"enable_thinking": False, "foo": 1}),
+        ) == {"chat_template_kwargs": {"enable_thinking": True, "foo": 1}}

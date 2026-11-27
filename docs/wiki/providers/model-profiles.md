@@ -12,7 +12,7 @@ A `ModelProfile` row is the registry of what an LLM provider serves: one row per
 ## Concepts
 - A `single` profile (the default `kind`) carries `provider_id`, `model_name` (the provider-side wire name) and `context_length`. Several profiles may share a model name: that is how one model is offered with different settings, such as reasoning on and off.
 - `context_length` is the maximum tokens the model accepts in a request; compaction reads it to decide when to summarise.
-- `config` is applied to every call made under the profile: each call of an agent turn, each compaction call, and graph agent nodes that run on it. It holds `reasoning` (`off`, `minimal`, `low`, `medium` or `high`; absent keeps the vendor default) and `extended`, provider-specific knobs forwarded as-is. A refused setting never fails the call: the call is made once more without it, and the model runs without it from then on.
+- `config` is applied to every call made under the profile: each call of an agent turn, each compaction call, and graph agent nodes that run on it. It holds `reasoning` (a preset: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; absent keeps the vendor default) or a custom value (`{"custom": "<value>"}`: 1 to 32 characters from `[A-Za-z0-9_.-]`, sent verbatim to the wire's custom reasoning target with no mapping or clamping) and `extended`, provider-specific knobs forwarded as-is. A level or custom value wins only on the leaf it sets; sibling keys in the same object of `extended` stay. A refused setting never fails the call: the call is made once more without it, and the model runs without it from then on.
 - An `aggregated` profile pools at least two single profiles. Its `kind` is `aggregated`, its `members` is the ordered list of member profile ids (the order is the failover chain), and its `provider_id`, `model_name` and `context_length` are null. Its settings: `strategy` (`sequential`, the default, or `round_robin`), `failover_point` (`before_first_token`, the default, or `mid_stream`) and `failover_on` (`transient_and_config`, the default, or `transient`). Its context window is the smallest member's, so a caller never overpromises.
 - Each member's own config applies to the calls that member serves; the aggregate's own config is not applied. Failover is clean only before the first event: the default never re-emits tokens, and `mid_stream` may duplicate tokens already shown.
 - Ids follow `<provider id>--<model name>` by convention only (`anthropic-1--claude-sonnet-4-6`); nothing enforces the shape.
@@ -89,11 +89,22 @@ Reference: [`system__delete_model_profile`](reference/tools/system/delete_model_
 
 Reference: [`system__list_model_profiles`](reference/tools/system/list_model_profiles)
 
+### See what a provider takes
+`llm_providers__get_llm_provider_model_settings` returns the settings catalogue of a provider's wire: the wire string, each setting with its type and accepted values, whether the wire passes the server body through, and the custom reasoning target. A profile saved with a key the catalogue does not name is refused on write, so read this before filling in a profile's `config.extended`.
+
+```json
+{"toolset_id": "llm_providers", "tool_name": "get_llm_provider_model_settings", "arguments": {"provider_id": "anthropic-1"}}
+```
+
+Reference: [`llm_providers__get_llm_provider_model_settings`](reference/tools/llm_providers/get_llm_provider_model_settings)
+
 ## Gotchas
 - Every tool on this page needs an admin; a run below the floor is a `forbidden`.
 - A single profile whose `provider_id` names no stored provider is refused on create and on update (`provider_not_found`): create the provider first.
 - Aggregated writes are checked at write time: at least two members, every member stored, every member single (nested aggregation is refused), no self-reference, no duplicate member. An update that turns a member of another aggregate into an aggregate itself is refused.
 - Deleting a profile an agent uses, or that an aggregate names as a member, returns a 409; free the agent or remove the membership first.
+- A single profile's `config.extended` is checked on save against its provider's settings catalogue: an unknown key, a value the wire does not take, or a reserved `body` field is a 422 (`invalid_model_setting`) naming the key (an unknown key lists the wire's accepted keys). Saving a profile after changing its provider re-checks the settings against the new wire.
+- Aggregated profiles carry no `config` (a 422 on save if set): each member's own settings apply to the calls that member serves.
 - `reasoning` maps per provider and per model. A model with no such control gets none, and a refused level is retried once without the profile's settings.
 
 ## Related

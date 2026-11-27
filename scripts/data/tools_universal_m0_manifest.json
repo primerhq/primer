@@ -1,7 +1,7 @@
 {
   "base_commit": "fb18c24b92bec57131bc5e49959344a4d7d97960",
-  "expected_operation_count": 408,
-  "expected_path_count": 277,
+  "expected_operation_count": 409,
+  "expected_path_count": 278,
   "reviewed_gap_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
   "reviewed_skip_sha256": "1db0ea6f6f63eb30bd781f84e212dd9c3829fe48af05fbecde59ad80f288ffe1",
   "reviewed_surface_revision": "parked-session-priority-v1",
@@ -5270,6 +5270,27 @@
     },
     {
       "aggregation_id": null,
+      "declared_generated_tool_id": "llm_providers__get_llm_provider_model_settings",
+      "method": "GET",
+      "mount_auth": "admin",
+      "operation_id": "get_llm_provider_model_settings_v1_llm_providers__provider_id__model_settings_get",
+      "path": "/v1/llm_providers/{provider_id}/model_settings",
+      "rbac_class": "administrator",
+      "reason": "generated from immutable route metadata and dispatched through the REST operation",
+      "resource": "llm-providers",
+      "route_source": "primer.api.routers.providers:get_llm_provider_model_settings",
+      "skip_code": null,
+      "source": "PLAN.md#M1-route-metadata-generator-catalogue-join-and-trusted-ASGI-dispatch",
+      "state": "generated",
+      "tags": [
+        "llm-providers"
+      ],
+      "tool_ids": [
+        "llm_providers__get_llm_provider_model_settings"
+      ]
+    },
+    {
+      "aggregation_id": null,
       "declared_generated_tool_id": "llm_providers__get_llm_provider_models",
       "method": "GET",
       "mount_auth": "admin",
@@ -9676,6 +9697,14 @@
       "exposure_reason": null,
       "required_role": "user",
       "scoped_id": "llm_providers__get_access",
+      "toolset_id": "llm_providers"
+    },
+    {
+      "bare_id": "get_llm_provider_model_settings",
+      "exposable": true,
+      "exposure_reason": null,
+      "required_role": "admin",
+      "scoped_id": "llm_providers__get_llm_provider_model_settings",
       "toolset_id": "llm_providers"
     },
     {

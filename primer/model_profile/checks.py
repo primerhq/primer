@@ -10,6 +10,7 @@ The checks (see the router's module docstring for the aggregation directive):
 
 * a single profile's ``provider_id`` names a stored LLMProvider;
 * an aggregated profile names two or more distinct, existing, single members, and not itself;
+* a single profile's ``config.extended`` names only settings its provider's wire takes: an unknown key, a value the wire refuses, or a reserved ``body`` field is refused (``invalid_model_setting``);
 * on an update, the profile's kind is unchanged (GX-16: single and aggregated are not interconvertible, which is also why a listed member can
   never become an aggregate).
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.common.entity_checks import EntityCheckError
+from primer.llm.settings_catalogue import validate_extended, wire_of
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
 
@@ -105,10 +107,32 @@ def check_kind_unchanged(entity: ModelProfile, existing: ModelProfile) -> None:
         )
 
 
+async def check_profile_settings(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
+    """A single profile's ``config.extended`` must name only settings its provider's wire takes: one refusal per save, the first path named, all messages in the text.
+
+    No-op for ``kind="aggregated"`` (an aggregated profile carries no config) and when the provider is missing (``check_provider_exists``, which runs first, already refuses). A provider change re-validates against the new wire, because the check runs on the whole profile.
+    """
+    if entity.kind != "single":
+        return
+    provider = await storage_provider.get_storage(LLMProvider).get(entity.provider_id)
+    if provider is None:
+        return
+    flavor = getattr(provider.config, "flavor", None)
+    wire = wire_of(provider.provider.value, flavor.value if flavor is not None else None)
+    problems = validate_extended(wire, entity.config.extended)
+    if problems:
+        raise _refuse(
+            "invalid_model_setting",
+            f"config.extended.{problems[0].path}",
+            "; ".join(p.message for p in problems),
+        )
+
+
 async def check_profile_on_create(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
     """Every create-time check, in the router's order."""
     await check_provider_exists(entity, storage_provider=storage_provider)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
+    await check_profile_settings(entity, storage_provider=storage_provider)
 
 
 async def check_profile_on_update(entity: ModelProfile, existing: ModelProfile, *, storage_provider: "StorageProvider") -> None:
@@ -117,6 +141,7 @@ async def check_profile_on_update(entity: ModelProfile, existing: ModelProfile, 
     check_kind_unchanged(entity, existing)
     await check_provider_exists(entity, storage_provider=storage_provider)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
+    await check_profile_settings(entity, storage_provider=storage_provider)
 
 
 __all__ = [
@@ -124,5 +149,6 @@ __all__ = [
     "check_kind_unchanged",
     "check_profile_on_create",
     "check_profile_on_update",
+    "check_profile_settings",
     "check_provider_exists",
 ]
