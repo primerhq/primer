@@ -306,6 +306,10 @@ more tool id: 408 operations, 277 paths, 493 tool ids and 265 generated mappings
 Removing either addition reproduces the frozen 492-ID digest of the other, and
 removing both reproduces the 491-ID digest.
 
+The model-settings revision adds `GET /v1/llm_providers/{provider_id}/model_settings`
+and `llm_providers__get_llm_provider_model_settings`: 409 operations, 278 paths,
+494 tool ids and 266 generated mappings. Removing it reproduces the 493-ID set above.
+
 The existing built-in item list remains unfiltered by role for picker
 compatibility. New operation mappings for admin REST operations are omitted
 from non-admin items. `admin_operation_keys(app)` derives that visibility
