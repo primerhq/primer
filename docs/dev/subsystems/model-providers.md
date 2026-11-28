@@ -805,16 +805,74 @@ Integration smokes live under `tests/integration/test_<provider>_smoke.py`, each
 - **The cross-encoder reranker family landed after the shared-architecture spec and is held to the same no-local-semaphore invariant.** Why: rerankers are a third model family that reuses the adapter contract (validate, lazy load, shared `RateLimiter`, classify) and the source-level pin keeps new adapters on the post-spec design. Spec: docs/superpowers/specs/2026-05-27-backend-architecture-audit.md.
 - **A fresh `claude` process runs per model step rather than one warm process per conversation.** Why: a Claude Code process holds exactly one conversation and sits at about 200 MB resident between turns, so a worker serving many active sessions (and every agent node of a running graph) would hold one process apiece and run out of memory; the warm-process approach was rejected in favour of the per-step cost of about 2.2 s from spawn to first result and older history reaching the model as rendered text. Spec: docs/superpowers/specs/2026-11-14-claude-code-llm-provider-design.md (section 5, approach A over B).
 
-## Codex / ChatGPT plan foundation (not registered)
+## Codex model broker
 
-`primer/llm/codex/` contains an executor-free, offline-tested model bridge
-foundation. It is not a selectable provider and has no live authentication
-acceptance. The unregistered `broker/` candidate implements protected credential
-storage, signed policy intersection, dedicated SIWC authentication/refresh and
-peer-checked model IPC, with synthetic offline evidence only. Genuine policy
-provenance and OS isolation remain deployment gates. Its integration uses the public
-Sign-in-with-ChatGPT Responses flow, not a stock Codex app-server with disabled
-tool flags. Primer still owns replay and tool execution; a separately reviewed
-broker must own credentials and enforce policy before activation. See the
-[boundary contract](../../../primer/llm/codex/README.md) and
-[broker candidate and remaining gates](../../../primer/llm/codex/broker/README.md).
+The provider factory builds `CodexFoundationLLM` for a `codex` row whose ID has
+an operator-configured broker binding. Each step uses a new peer-verified Unix
+socket. The broker checks the selected model against the account and signed
+policy before using the Responses endpoint. Primer owns tool execution and
+limits concurrent steps with the provider's shared rate limiter.
+
+Terminal events are held until the model stream completes, then independently
+readmitted at the broker on each consumer advancement using a short-lived receipt
+bound to the original request, event and signed policy/credential generation.
+Pausing a consumer does not preserve its earlier authorization after revocation.
+The same-host client also checks receipt expiry after authorization I/O and
+cleanup. Broker and client must support this protocol together; there is no
+fallback that releases calls without fresh admission.
+
+Use the [host binding instructions](../../../primer/llm/codex/broker/HOST.md)
+to configure the manifest pin on the API and each worker that runs this
+provider. This path requires a separately provisioned broker and dedicated
+credentials. The inspected stock CLI 0.171.0 lacks a qualified entry point
+that both excludes native tools before initialization and returns structured
+calls to Primer. An installed-CLI session therefore still requires a compatible
+transport and its own end-to-end verification.
+
+Saved-provider discovery (`GET /v1/llm_providers/{id}/discovered_models` and
+`system__fetch_llm_provider_models`) uses `ProviderRegistry.discover_codex_models`
+with the same exact provider-ID host binding as inference. The bounded
+`models/list` IPC operation returns only the account-visible models intersected
+with current signed policy. Primer maps supplied `slug` to `name` and retains
+`display_name`; no context limit, tool capability, price or model-name default
+is fabricated. The response identifies `account_policy_filtered_broker` and
+`model_only_responses` provenance. This is an account discovery result, not
+live inference acceptance or an attestation about the stock CLI.
+
+Single-profile create and update, including system tools, repeat this discovery
+and refuse absent authority (`codex_discovery_unavailable`) or a model absent
+from the current list (`codex_model_unavailable`). Saving a profile is not an
+authorization lease: inference still performs its independent current-policy
+checks. Draft discovery cannot select an account from config and refuses until
+the provider has a saved ID and operator binding. Setup's saved-provider check
+uses the same registry path. After broker I/O, the probe locks the saved
+provider row and compares its kind, complete config and limits before writing
+the three probe fields. Concurrent edits to the environment list and timeouts
+are included in that comparison.
+
+The Codex `_types` entry has no editable CLI config fields and advertises
+`saved_discovery_only: true`. The registration wizard therefore offers
+**Register provider** immediately, submitting `config: {}`, instead of requiring
+a failing draft probe before registration. Its help explains the operator-bound
+provider ID and the saved row's **Import more models** action. The latter uses
+the existing model checklist and requires an explicit context length when
+discovery supplies none. Other providers retain their existing draft probe flow;
+existing nondefault Codex config values are preserved on edit and remain refused
+by the broker, rather than silently reset by hidden fields.
+The first-run setup wizard can also resume a saved broker row. Its model step
+uses a reported positive context length when present and otherwise requires the
+operator to enter one. Switching models resets that field from the selected
+model's evidence; Codex never receives a guessed 32000-token fallback. Other
+providers retain the setup wizard's legacy reported-value-or-32000 behavior.
+
+The retained `codex.models` catalogue reader describes only operator-provided
+compatibility hints. It opens once with nonblocking/no-follow/close-on-exec
+flags, validates regular-file type with `fstat`, and reads at most 4 MiB + 1
+through that descriptor, including growth after validation. Final-component
+symlinks, malformed/ambiguous entries and ordinary I/O failures refuse. Ancestor
+directories follow host path resolution and require operator control; regular
+filesystem I/O has no hard deadline. `SOURCE_REFERENCE=rust-v0.169.0` labels the
+original proposal's source inspection, not a supported minimum or live-tested
+version. No hardcoded model is admitted. The broker does not consume these hints
+and rejects catalogue overrides. A future qualified CLI consumer needs its own
+authenticated account discovery and native-effect admission before using them.

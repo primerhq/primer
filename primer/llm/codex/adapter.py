@@ -1,29 +1,35 @@
-"""Unregistered LLM foundation over an admitted executor-free bridge."""
+"""LLM adapter over an admitted model-only step."""
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
-from primer.llm.codex.bridge import ModelOnlyBridge
-from primer.llm.codex.request import prepare_request
+from primer.llm._reasoning import openresponses_extended
+from primer.llm.settings_catalogue import validate_extended
+from primer.model.model_profile import ModelProfileConfig
+from primer.llm.codex.request import ModelRequest, prepare_request
 from primer.llm.codex.lifecycle import OwnedStream
 from primer.llm.codex.boundary import BoundaryError
 from primer.model.chat import Error, Message, StreamEvent, Tool, ToolChoice
 from primer.model.except_ import TokenCounterUnavailable, UnsupportedContentError
 
 
-class CodexFoundationLLM(LLM):
-    """Not a configurable provider until the live boundary is independently qualified.
+class ModelStepBridge(Protocol):
+    """Implemented by ModelOnlyBridge and its authenticated broker client."""
 
-    Receiving a bridge is trusted dependency injection, not an authorization
-    claim. No registry, enum, UI or credential-config entry enables this class.
-    """
-    def __init__(self, bridge: ModelOnlyBridge, *, provider_id: str,
+    def stream(self, request: ModelRequest) -> OwnedStream: ...
+    async def aclose(self) -> None: ...
+
+
+class CodexFoundationLLM(LLM):
+    """Run model-only steps under the provider's concurrency limiter."""
+
+    def __init__(self, bridge: ModelStepBridge, *, provider_id: str,
                  rate_limiter: RateLimiter, max_concurrency: int = 1):
         if type(max_concurrency) is not int or max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
@@ -33,6 +39,9 @@ class CodexFoundationLLM(LLM):
         self._concurrency = max_concurrency
         self._active: set[OwnedStream] = set()
         self._closed = False
+
+    def profile_extended(self, config: ModelProfileConfig, *, model: str | None = None) -> dict[str, Any]:
+        return openresponses_extended(config, flavor="openai", model=model)
 
     def stream(self, *, model: str, messages: list[Message],
                      temperature: float | None = None, top_p: float | None = None,
@@ -56,11 +65,16 @@ class CodexFoundationLLM(LLM):
                      response_format: type[BaseModel] | dict[str, Any] | None = None,
                      tools: list[Tool] | None = None, tool_choice: ToolChoice | None = None,
                      extended: dict[str, Any] | None = None) -> AsyncIterator[StreamEvent]:
-        if temperature is not None or top_p is not None or stop or extended:
-            raise UnsupportedContentError("Codex foundation does not yet support sampling or extended overrides")
+        if temperature is not None or top_p is not None or stop:
+            raise UnsupportedContentError("Codex does not support sampling or stop overrides")
+        settings = extended or {}
+        problems = validate_extended("codex", settings)
+        if problems:
+            raise UnsupportedContentError(problems[0].message)
         schema = response_format.model_json_schema() if isinstance(response_format, type) else response_format
         request = prepare_request(model, messages, tools, tool_choice=tool_choice,
-                                  max_output_tokens=max_output_tokens, response_schema=schema)
+                                  max_output_tokens=max_output_tokens, response_schema=schema,
+                                  reasoning_effort=settings.get("reasoning_effort"))
         async with await self._limiter.acquire(self._key, max_concurrency=self._concurrency):
             stream = self._bridge.stream(request)
             try:

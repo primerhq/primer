@@ -9,6 +9,8 @@ system ``create_`` / ``update_model_profile`` tools answer ``validation-error``.
 The checks (see the router's module docstring for the aggregation directive):
 
 * a single profile's ``provider_id`` names a stored LLMProvider;
+* a single profile on a ``codex`` provider names a model currently offered by its trusted,
+  account-bound model-only broker, on create and update; files and model-name guesses grant no authority;
 * an aggregated profile names two or more distinct, existing, single members, and not itself;
 * a single profile's ``config.extended`` names only settings its provider's wire takes: an unknown key, a value the wire refuses, or a reserved ``body`` field is refused (``invalid_model_setting``);
 * on an update, the profile's kind is unchanged (GX-16: single and aggregated are not interconvertible, which is also why a listed member can
@@ -22,7 +24,7 @@ from typing import TYPE_CHECKING
 from primer.common.entity_checks import EntityCheckError
 from primer.llm.settings_catalogue import validate_extended, wire_of
 from primer.model.model_profile import ModelProfile
-from primer.model.provider import LLMProvider
+from primer.model.provider import LLMProvider, LLMProviderType
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
@@ -44,6 +46,36 @@ async def check_provider_exists(entity: ModelProfile, *, storage_provider: "Stor
             f"LLMProvider {entity.provider_id!r} does not exist; "
             "create the provider before registering a profile on it",
         )
+
+
+async def check_codex_direct_model(entity: ModelProfile, *, storage_provider: "StorageProvider", provider_registry=None) -> None:
+    """Require current account availability through the trusted model-only broker.
+
+    Retains the former check's name for callers. Direct function dispatch is
+    a property of this closed transport, not a model slug or catalogue tag.
+    Profile validation is not a lasting permission: inference reauthorizes.
+    """
+    if entity.kind != "single":
+        return
+    storage = storage_provider.get_storage(LLMProvider)
+    provider = await storage.get(entity.provider_id)
+    if provider is None or provider.provider != LLMProviderType.CODEX:
+        return
+    try:
+        if provider_registry is None:
+            raise ValueError("No trusted discovery dependency")
+        models = await provider_registry.discover_codex_models(provider)
+    except Exception:
+        # No raw transport/host/config errors in profile validation results.
+        raise _refuse("codex_discovery_unavailable", "model_name",
+                      "Codex account model discovery is unavailable; configure the provider's trusted model broker") from None
+    if any(model["name"] == entity.model_name for model in models):
+        return
+    raise _refuse(
+        "codex_model_unavailable",
+        "model_name",
+        "The model is not available through this provider's authorized Codex account",
+    )
 
 
 async def check_aggregation_valid(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
@@ -128,24 +160,27 @@ async def check_profile_settings(entity: ModelProfile, *, storage_provider: "Sto
         )
 
 
-async def check_profile_on_create(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
+async def check_profile_on_create(entity: ModelProfile, *, storage_provider: "StorageProvider", provider_registry=None) -> None:
     """Every create-time check, in the router's order."""
     await check_provider_exists(entity, storage_provider=storage_provider)
+    await check_codex_direct_model(entity, storage_provider=storage_provider, provider_registry=provider_registry)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
     await check_profile_settings(entity, storage_provider=storage_provider)
 
 
-async def check_profile_on_update(entity: ModelProfile, existing: ModelProfile, *, storage_provider: "StorageProvider") -> None:
+async def check_profile_on_update(entity: ModelProfile, existing: ModelProfile, *, storage_provider: "StorageProvider", provider_registry=None) -> None:
     """Every update-time check, in order: the kind is unchanged, then the incoming shape is valid. Both write doors (the REST router and the
     system tools) run exactly this."""
     check_kind_unchanged(entity, existing)
     await check_provider_exists(entity, storage_provider=storage_provider)
+    await check_codex_direct_model(entity, storage_provider=storage_provider, provider_registry=provider_registry)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
     await check_profile_settings(entity, storage_provider=storage_provider)
 
 
 __all__ = [
     "check_aggregation_valid",
+    "check_codex_direct_model",
     "check_kind_unchanged",
     "check_profile_on_create",
     "check_profile_on_update",

@@ -17,7 +17,6 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
-    get_llm_provider_storage,
     get_provider_registry,
     get_semantic_search_registry,
     get_storage_provider,
@@ -256,7 +255,7 @@ _LIVE_CHECK_FALLBACK_ROWS = 3
 _LIVE_CHECK_FALLBACK_SECONDS = 30.0
 
 
-async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
+async def _live_llm_provider_check(storage_provider, provider_registry=None) -> tuple[bool, str | None]:
     """Probe the provider the DEFAULT profile names for a live response.
 
     Reuses ``discover_saved_llm_models`` (the same live list-models probe
@@ -291,8 +290,7 @@ async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
         for row in candidates:
             try:
                 await discover_saved_llm_models(
-                    provider_id=row.id,
-                    providers=get_llm_provider_storage(storage_provider),
+                    provider_id=row.id, storage_provider=storage_provider, registry=provider_registry,
                 )
             except BadRequestError as exc:
                 if "live model discovery is not supported" in str(exc):
@@ -365,7 +363,7 @@ async def get_setup_state(request: Request) -> SetupStateResponse:
             if key in presence_missing:
                 ok, detail, live = False, "no LLM provider configured", False
             else:
-                ok, detail = await _live_llm_provider_check(storage_provider)
+                ok, detail = await _live_llm_provider_check(storage_provider, get_provider_registry(request))
                 live = True
         elif key == MISSING_DEFAULT_WORKSPACE:
             if key in presence_missing:

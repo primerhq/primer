@@ -1,9 +1,8 @@
-# Host trust boundary candidate (not activated)
+# Host trust for the Codex model broker
 
-This slice supplies `HostTrust`, `PolicyLedger`, `host_broker` and a peer-checked
-model-socket connection. It keeps the approved broker unregistered. It is an
-executor-free Sign-in-with-ChatGPT Responses adapter, not the Codex app-server.
-No service, user, key, credential, socket or configuration is provisioned here.
+Primer connects a bound Codex provider to a separately provisioned Linux broker.
+The broker performs Sign-in-with-ChatGPT Responses inference. The host operator
+provisions the service, dedicated identities, credentials, policy and socket.
 
 ## Trust contract
 
@@ -51,6 +50,59 @@ opposite peer UID. Same-UID code remains trusted. This is not executable identit
 attestation: compromised broker-UID code can impersonate the broker. A separately
 reviewed supervisor must pin the code/package, dependency environment and service
 identity before deployment. No arbitrary command or executable path is accepted.
+
+## Binding a Primer provider to the broker
+
+Give the API process that handles discovery and every worker that runs model
+steps the same provider-ID binding. For a provider row with ID
+`codex-team`, the YAML supplied to `primer api --config` or `primer worker --config`
+has this shape (replace the placeholder with
+the provisioned ledger's 64-character lowercase hex identity):
+
+```yaml
+codex_brokers:
+  codex-team:
+    trust_directory: /etc/primer/codex/team
+    manifest_sha256: "<canonical manifest identity from the provisioned ledger>"
+```
+
+The separate `PRIMER_CONFIG_PATH` environment setting selects a TOML file via
+`AppConfig`; it is not the CLI `--config` YAML argument. CLI YAML values override
+environment values, which override that TOML source.
+
+Use the versioned `manifest_identity(host.json)` described below. Hashing the
+file bytes produces a different digest. The row uses `provider = "codex"`
+and an empty `config` object. A missing binding, manifest mismatch or wrong
+Primer UID refuses adapter construction. CLI, home, environment and catalogue
+overrides in the provider row also refuse construction. The client repeats the
+host check and authenticates the socket peer before sending each `step/start`.
+
+In **Providers > Agent runtimes**, register **Codex** with the bound ID
+and `config: {}`. Reopen the saved row and choose **Import more models**.
+The console calls `GET /v1/llm_providers/{id}/discovered_models` to list the
+bound account's visible models allowed by signed policy. Discovery requires
+a saved provider. Select a returned model and enter its supported context length
+in tokens. The broker catalogue supplies names and display names only.
+Creating or updating a single-model profile checks that the model is still
+on that account's list. Each inference step checks current access again.
+
+The broker returns normalized events with ephemeral terminal receipts. The client
+buffers terminal calls until `done`, clean EOF and socket cleanup. Each subsequent
+caller advancement performs a new peer-verified `step/authorize` operation before
+yielding one terminal event, even after the model connection has closed. The
+broker compares the original signed policy and credential generation with the
+current registration, then admits that account/model. A receipt binds a fresh
+client step nonce, the exact request, aliases and event, expires within the original step deadline, and is
+invalid after broker restart. It is not a credential or an offline grant. No
+per-step server session remains when a consumer abandons a receipt.
+
+Authorization linearizes at the broker's fresh check during that advancement;
+it does not promise retroactive recall of an event already authorized/delivered.
+The client cannot fall back to an older broker that omits receipts. A refusal,
+changed policy, stale registration or truncated batch fails the step. Primer
+still owns execution-time tool authorization. The broker must
+already be running under its provisioned identity. This transport does not
+launch the installed Codex CLI.
 
 ## Rollback and uncertain persistence
 
@@ -141,12 +193,11 @@ requires separate account registrations and protected token storage. Refreshed
 not an OpenAI-admin-policy API or OpenAI attestation. Original sign-in, token and
 Responses endpoint citations remain in README.md. There is no API-key fallback.
 
-Remaining: real administrator provisioning and authenticated inventory, distinct
-OS users and supervised immutable package identity, loopback consent/management
-UX, dedicated live sign-in and entitlement/model evidence, full model IPC client
-translation/replay and configuration/UI integration, hosted regression gates and
-reviewed activation. Production registry, public tools/UI, live E2E and deployment
-are deliberately absent from this internal security slice, not declared complete.
+Deployment verification requires real administrator provisioning and authenticated
+policy inventory, distinct OS users, supervised package identity, and a managed
+loopback consent flow. Verify dedicated sign-in, model access, and a complete
+Primer tool call and result replay on that deployment. The stock CLI has a
+separate [transport qualification and end-to-end requirement](../README.md#installed-cli-qualification-for-01710).
 
 Disposal revokes descriptor fields before calling the OS. A late close error
 cannot leave authority live or cause a retry against a recycled descriptor number.

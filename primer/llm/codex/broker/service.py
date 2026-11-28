@@ -16,6 +16,7 @@ from primer.llm.codex.bridge import ModelOnlyBridge, _validate_request
 from primer.llm.codex.lifecycle import drain
 from primer.llm.codex.request import ModelRequest, compact, decode
 from .auth import SignIn
+from .delivery import DeliveryReceipts, step_digest
 from .http import MODELS, FixedHTTP
 from .security import require, text
 
@@ -37,6 +38,7 @@ class Broker:
         self._closed = False
         self._bridges = set()
         self.config = BridgeConfig(max_active_steps=1)
+        self._delivery = DeliveryReceipts()
 
     async def models(self, account: str) -> list[dict]:
         require(not self._closed)
@@ -58,8 +60,17 @@ class Broker:
                 models.append({"slug": slug, "display_name": text(item.get("display_name"), 256)})
         return models
 
-    async def step(self, account: str, request: ModelRequest) -> AsyncIterator[dict]:
+    def authorize_delivery(self, account: str, receipt: str, request: str, event: str) -> dict[str, float]:
+        # snapshot checks live registration, disposal fences, signed policy,
+        # credential generation and expiry. No refresh/model network I/O.
+        require(not self._closed)
+        return self._delivery.authorize(receipt, account=account, request=request,
+                                        event=event, current=self._auth.snapshot())
+
+    async def step(self, account: str, request: ModelRequest, *, delivery_nonce: str | None = None) -> AsyncIterator[dict]:
+        deadline = time.monotonic() + self.config.deadline_seconds
         wire = _validate_request(request, self.config)  # Before network or construction.
+        request_id = step_digest(request, delivery_nonce) if delivery_nonce is not None else None
         require(not self._closed)
         models = await self.models(account)
         require(wire["model"] in {m["slug"] for m in models})
@@ -80,7 +91,16 @@ class Broker:
         stream = bridge.stream(request)
         try:
             async for event in stream:
-                yield event.model_dump(mode="json")
+                data = event.model_dump(mode="json")
+                if request_id is None:
+                    yield data
+                elif event.type in {"text_delta", "reasoning_delta"}:
+                    yield {"event": data}
+                else:
+                    yield {"event": data, "delivery": self._delivery.seal(
+                        account=account, model=wire["model"], policy=expected,
+                        request=request_id, event=data, deadline=deadline,
+                    )}
         finally:
             try:
                 await bridge.aclose()
@@ -127,7 +147,8 @@ class BrokerServer:
                         and type(message["params"]) is dict)
                 method, params = message["method"], message["params"]
                 require((method == "models/list" and not params) or
-                        (method == "step/start" and set(params) == {"request", "aliases"}))
+                        (method == "step/start" and set(params) == {"request", "aliases", "delivery_nonce"}) or
+                        (method == "step/authorize" and set(params) == {"receipt", "request", "event"}))
 
                 async def emit(value):
                     encoded = compact(value).encode() + b"\n"
@@ -138,13 +159,20 @@ class BrokerServer:
                 async def operation():
                     if method == "models/list":
                         await emit({"models": await self._broker.models(self._account)})
+                    elif method == "step/authorize":
+                        validity = self._broker.authorize_delivery(self._account, params["receipt"],
+                                                                   params["request"], params["event"])
+                        await emit({"authorized": True, **validity})
                     else:
                         require(type(params["aliases"]) is list and all(type(p) is list and len(p) == 2 for p in params["aliases"]))
                         request = ModelRequest(compact(params["request"]), tuple(tuple(p) for p in params["aliases"]))
-                        events = self._broker.step(self._account, request)
+                        # Validate before dispatch; null cannot request the
+                        # trusted in-process compatibility path without receipts.
+                        step_digest(request, params["delivery_nonce"])
+                        events = self._broker.step(self._account, request, delivery_nonce=params["delivery_nonce"])
                         try:
                             async for event in events:
-                                await emit({"event": event})
+                                await emit(event)
                         finally:
                             await events.aclose()
 

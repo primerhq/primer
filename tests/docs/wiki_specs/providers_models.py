@@ -1,8 +1,8 @@
 """The providers pages for the model families (pivot P4, task 13).
 
 Five admin feature pages: ``llm`` (the provider rows agents talk
-through), ``agent-runtimes`` (the ``claude_code`` rows that drive the
-operator's logged-in CLI on the worker hosts), ``model-profiles`` (the
+through), ``agent-runtimes`` (Claude Code CLI providers and Codex
+model brokers), ``model-profiles`` (the
 registry of what a provider serves, single and aggregated),
 ``embedding`` (the embedders) and ``cross-encoder`` (the rerankers).
 The embedding and cross-encoder pages list the probe tools as
@@ -19,7 +19,7 @@ SPECS = (
              tools=scoped("system", "list_llm_providers get_llm_provider create_llm_provider update_llm_provider delete_llm_provider find_llm_providers fetch_llm_provider_models"),
              related=("providers/model-profiles", "agents/create-and-edit")),
     PageSpec("providers/agent-runtimes", "Agent runtimes",
-             "Admin: run agents on a Claude subscription through the Claude Code CLI installed and logged in on the worker hosts.",
+             "Admin: configure Claude Code runtime providers or operator-provisioned Codex model brokers.",
              "feature", 8,
              audience="admin",
              tools=scoped("system", "create_llm_provider fetch_llm_provider_models") + scoped("llm_providers", "get_llm_provider_runtime_status"),

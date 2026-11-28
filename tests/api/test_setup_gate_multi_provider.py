@@ -39,7 +39,7 @@ def _fake_probe(healthy_ids: set[str]):
     """The module-level stand-in for discover_saved_llm_models: it answers
     for the named rows and fails (like the real probe's refusals) for the rest."""
 
-    async def fake_discover(provider_id: str, providers=None) -> dict:
+    async def fake_discover(*, provider_id: str, storage_provider, registry) -> dict:
         if provider_id in healthy_ids:
             return {"models": [{"name": "m1"}]}
         raise BadRequestError(f"{provider_id} probe failed: 401 unauthorized")

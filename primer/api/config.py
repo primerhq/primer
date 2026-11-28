@@ -198,6 +198,13 @@ class LocalWorkspacesConfig(BaseModel):
     )
 
 
+class CodexBrokerBinding(BaseModel):
+    """Operator binding of one provider ID to a provisioned root manifest."""
+
+    trust_directory: Path
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class AppConfig(BaseSettings):
     """Lightweight app-level configuration."""
 
@@ -205,6 +212,11 @@ class AppConfig(BaseSettings):
         env_prefix="PRIMER_",
         env_nested_delimiter="__",
         extra="ignore",
+    )
+
+    codex_brokers: dict[str, CodexBrokerBinding] = Field(
+        default_factory=dict,
+        description="Trusted model brokers keyed by exact Codex provider ID.",
     )
 
     # --- Storage ---------------------------------------------------------

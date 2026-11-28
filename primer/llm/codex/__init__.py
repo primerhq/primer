@@ -1,5 +1,11 @@
-"""Executor-free Codex integration foundation; deliberately not registered.
+"""Codex model selection and executor-free integration primitives."""
 
-No production authentication/policy transport is approved yet. Importing this
-package never starts a Codex CLI, reads credentials, or enables a provider.
-"""
+from primer.llm.codex.models import (
+    SOURCE_REFERENCE,
+    is_direct_model,
+)
+
+__all__ = [
+    "SOURCE_REFERENCE",
+    "is_direct_model",
+]

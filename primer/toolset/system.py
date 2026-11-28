@@ -533,10 +533,10 @@ def build_system_toolset(
     _toolset_pre_update.takes_person = True  # type: ignore[attr-defined]
 
     async def _profile_pre_create(entity: ModelProfile) -> None:
-        await check_profile_on_create(entity, storage_provider=storage_provider)
+        await check_profile_on_create(entity, storage_provider=storage_provider, provider_registry=provider_registry)
 
     async def _profile_pre_update(entity: ModelProfile, existing: ModelProfile) -> None:
-        await check_profile_on_update(entity, existing, storage_provider=storage_provider)
+        await check_profile_on_update(entity, existing, storage_provider=storage_provider, provider_registry=provider_registry)
 
     async def _channel_pre_create(entity: Channel, *, person: Any = None) -> None:
         await check_channel_on_create(entity, storage_provider=storage_provider, person=person)
@@ -1311,7 +1311,8 @@ def build_system_toolset(
 
         return await discover_saved_llm_models(
             provider_id=provider_id,
-            providers=storage_provider.get_storage(LLMProvider),
+            storage_provider=storage_provider,
+            registry=provider_registry,
         )
 
     name, entry = _fetch_models_tool(

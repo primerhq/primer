@@ -206,18 +206,22 @@ def _chat_template_kwargs() -> Setting:
     )
 
 
+def _responses_effort() -> Setting:
+    return _s(
+        "reasoning_effort",
+        "enum",
+        "Reasoning effort on the OpenAI scale; any value the model takes passes.",
+        values=_EFFORT_OPENAI,
+        wire_path="reasoning.effort",
+        open_=True,
+        set_by_reasoning=True,
+    )
+
+
 def _openresponses_set() -> tuple[Setting, ...]:
     """The openresponses/openai set; lmstudio, vllm and other carry the same keys."""
     return (
-        _s(
-            "reasoning_effort",
-            "enum",
-            "Reasoning effort on the OpenAI scale; any value the model takes passes.",
-            values=_EFFORT_OPENAI,
-            wire_path="reasoning.effort",
-            open_=True,
-            set_by_reasoning=True,
-        ),
+        _responses_effort(),
         _s(
             "reasoning_summary",
             "enum",
@@ -584,6 +588,10 @@ _CATALOGUES: dict[str, Catalogue] = {
         ),
         body_passthrough=True,
         custom_reasoning_key="reasoning.effort",
+    ),
+    "codex": Catalogue(
+        wire="codex", settings=(_responses_effort(),), body_passthrough=False,
+        custom_reasoning_key="reasoning_effort",
     ),
     "claude_code": Catalogue(
         wire="claude_code",

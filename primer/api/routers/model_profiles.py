@@ -5,7 +5,7 @@ A profile names one ``(provider, model)`` pair plus its API-level config
 other profiles (``kind="aggregated"``, no provider/model of its own) --
 see :class:`primer.model.model_profile.ModelProfile`. The profile id is
 what an :class:`~primer.model.agent.Agent` references either way.
-Standard CRUD + Find from :mod:`primer.api.routers._crud`, plus four
+Standard CRUD + Find from :mod:`primer.api.routers._crud`, plus five
 additions:
 
 * ``provider_id`` must resolve to an existing :class:`LLMProvider`,
@@ -22,6 +22,12 @@ additions:
   resolve/stream time), no self-reference, and no duplicate member ids
   (order is the routing/failover chain, so silently deduping would
   silently change semantics -- reject instead of guessing).
+* A single profile on a ``codex`` provider must name a currently authorized
+  account model reported by the provider's trusted model-only broker. Refused
+  on create AND update with a 422 that names the rule; the check is
+  shared with the system tools (``primer/model_profile/checks.py``). An
+  aggregated profile needs no check of its own: every member is a single
+  profile, checked at its own write.
 * Deleting a profile an Agent still references, OR that is named as a
   member of any aggregated profile, returns 409 rather than silently
   breaking that agent or that aggregate.
@@ -65,6 +71,7 @@ from primer.model.model_profile import ModelProfile, ModelProfileChoice
 from primer.model.provider import LLMProvider
 from primer.model_profile.checks import (
     check_aggregation_valid,
+    check_codex_direct_model,
     check_profile_on_update,
     check_profile_settings,
     check_provider_exists,
@@ -197,6 +204,18 @@ async def _check_provider_exists(entity: ModelProfile, request: Request) -> None
         raise _as_rest_error(exc) from exc
 
 
+async def _check_codex_direct_model(entity: ModelProfile, request: Request) -> None:
+    """422 when trusted account discovery fails or does not offer the model.
+    Shared with the system tools via ``check_profile_on_create`` /
+    ``check_profile_on_update``; no-op for aggregated profiles: every member is
+    itself a single profile, checked when it is created or updated."""
+    try:
+        await check_codex_direct_model(entity, storage_provider=request.app.state.storage_provider,
+                                       provider_registry=getattr(request.app.state, "provider_registry", None))
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
 async def _check_aggregation_valid(entity: ModelProfile, request: Request) -> None:
     """422 when an aggregated profile's ``members`` violate the aggregation invariants (see the module docstring's second bullet
     for the full list). No-op for ``kind="single"``."""
@@ -217,6 +236,7 @@ async def _check_profile_settings(entity: ModelProfile, request: Request) -> Non
 
 async def _on_pre_create(entity: ModelProfile, request: Request) -> None:
     await _check_provider_exists(entity, request)
+    await _check_codex_direct_model(entity, request)
     await _check_aggregation_valid(entity, request)
     await _check_profile_settings(entity, request)
 
@@ -225,7 +245,8 @@ async def _on_pre_update(
     entity: ModelProfile, existing: ModelProfile, request: Request
 ) -> None:
     try:
-        await check_profile_on_update(entity, existing, storage_provider=request.app.state.storage_provider)
+        await check_profile_on_update(entity, existing, storage_provider=request.app.state.storage_provider,
+                                      provider_registry=getattr(request.app.state, "provider_registry", None))
     except EntityCheckError as exc:
         raise _as_rest_error(exc) from exc
 

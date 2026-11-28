@@ -124,7 +124,7 @@ function SW_loadResume(apiFetch) {
       function (probe) {
         var models = (probe && probe.models) || [];
         if (plan.step === 2) {
-          if (models.length) return { step: 2, providerId: id, models: models };
+          if (models.length) return { step: 2, providerId: id, providerType: row.provider, models: models };
           return { step: 1, prefill: prefill, notice: "The saved provider " + id + " answered but listed no models." + edit };
         }
         return plan;
@@ -276,6 +276,15 @@ function SW_probeFailure(err, type, apiKey) {
 }
 // ---- end of the resume helpers
 
+function SW_reportedContext(model) {
+  const n = model && model.context_length;
+  return Number.isSafeInteger(n) && n > 0 ? String(n) : "";
+}
+
+function SW_validContext(value) {
+  return /^\d+$/.test(String(value)) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
+}
+
 function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   // initialStep exists for the docs harness, which captures each step as
   // its own image and cannot click through a wizard to reach the second
@@ -293,6 +302,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   const [picked, setPicked] = React.useState(
     (initialModels && initialModels[0] && initialModels[0].name) || ""
   );
+  const [contextLength, setContextLength] = React.useState(SW_reportedContext(initialModels && initialModels[0]));
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
   // A problem with one input, shown under it: { url: "...", apiKey: "..." } (admin review ADM-02, ADM-05).
@@ -308,8 +318,10 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
       if (cancelled) return;
       if (plan.step === 2) {
         setProviderId(plan.providerId);
+        setType(plan.providerType);
         setDiscovered(plan.models);
         setPicked(plan.models[0].name);
+        setContextLength(SW_reportedContext(plan.models[0]));
         setStep(2);
         setResumed(true);
       } else if (plan.prefill) {
@@ -379,6 +391,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
       setProviderId(id);
       setDiscovered(models);
       setPicked(models[0].name);
+      setContextLength(SW_reportedContext(models[0]));
       setStep(2);
     } finally {
       setBusy(false);
@@ -389,6 +402,10 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
   const submitProfile = async (e) => {
     e.preventDefault();
     setErr(null);
+    if (type === "codex" && !SW_validContext(contextLength)) {
+      setErr({ title: "Enter the model's context length", detail: "Use a whole number of tokens from supported model information." });
+      return;
+    }
     setBusy(true);
     try {
       const model = discovered.find((m) => m.name === picked) || { name: picked };
@@ -402,7 +419,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
         description: "Default profile created by first-run setup.",
         provider_id: providerId,
         model_name: model.name,
-        context_length: model.context_length || 32000,
+        context_length: type === "codex" ? Number(contextLength) : (model.context_length || 32000),
       };
       if (id) profileBody.id = id;
       await SW_saveProfile(window.primerApi.apiFetch, profileBody);
@@ -495,7 +512,10 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
               id="setup-model"
               className="mono"
               value={picked}
-              onChange={(e) => setPicked(e.target.value)}
+              onChange={(e) => {
+                setPicked(e.target.value);
+                setContextLength(SW_reportedContext(discovered.find((m) => m.name === e.target.value)));
+              }}
               autoFocus
             >
               {discovered.map((m) => (
@@ -503,10 +523,19 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
               ))}
             </select>
           </div>
+          {type === "codex" ? <div className="auth-field">
+            <label htmlFor="setup-context-length">Context length (tokens)</label>
+            <input id="setup-context-length" type="text" inputMode="numeric" required
+              value={contextLength} onChange={(e) => setContextLength(e.target.value)}
+              aria-describedby="setup-context-help" />
+            <div id="setup-context-help" className="field-help">
+              {"Uses the provider's reported value when available. Otherwise enter the model's supported context length; no default is guessed."}
+            </div>
+          </div> : null}
           <button
             type="submit"
             className="auth-submit touch-target"
-            disabled={busy || !picked}
+            disabled={busy || !picked || (type === "codex" && !SW_validContext(contextLength))}
           >
             {busy ? (<><span className="spinner" /><span>Finishing…</span></>) : <span>Finish setup</span>}
           </button>
@@ -516,7 +545,10 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
             type="button"
             className="sh-verb"
             data-testid="setup-change-provider"
-            onClick={() => { setStep(1); setErr(null); setFieldErr({}); }}
+            onClick={() => {
+              if (!SETUP_PROVIDER_TYPES.some((t) => t.id === type)) setType("openchat");
+              setStep(1); setErr(null); setFieldErr({});
+            }}
           >
             Change provider
           </button>

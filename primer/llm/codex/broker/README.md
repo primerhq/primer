@@ -1,10 +1,8 @@
-# Credential broker candidate (unregistered)
+# Codex credential broker
 
-This package implements broker-side code, exercised with synthetic OAuth
-receipts and real cryptographic signatures. It does not provide a deployed
-broker, authenticated account, login UI, or selectable Primer provider. There
-is no CLI that silently logs in, loads personal Codex auth, or starts a service.
-The approved bridge in the parent commit is retained unchanged.
+Primer's provider factory sends model steps to this broker over a peer-checked
+Unix socket. Operators provision the broker and its dedicated registration
+separately. See [host configuration](HOST.md) for the per-provider binding.
 
 ## Concrete boundary
 
@@ -99,8 +97,11 @@ are admitted and complete tool calls remain passive outputs for Primer to run.
 
 `BrokerServer` accepts a host-provisioned Unix listening socket. Each connection
 uses Linux SO_PEERCRED and a pinned peer UID/account. Its closed protocol has
-only `models/list` and `step/start`; one request per connection, eight active
-operations, bounded input/output and deadlines. Disconnect or extra input
+three operations. `models/list` discovers models for the bound account,
+`step/start` streams a model step, and `step/authorize` rechecks a terminal
+event receipt before delivery. Each connection accepts one request. The
+server admits up to eight active operations and bounds I/O and deadlines.
+Disconnect or extra input
 cancels the operation and closes its bridge/channel. It returns normalized model
 events and generic errors, never credentials, arbitrary HTTP, auth, raw RPC,
 reload, executor, hook, patch or MCP methods. Host code must provision the socket
@@ -109,8 +110,8 @@ access denied to Primer. A UID check alone does not isolate same-UID processes.
 Tests use temporary same-UID sockets and a deliberately mismatched UID refusal;
 they do not claim a production cross-user deployment.
 
-No production registry, executable selection, environment activation flag or
-provider configuration was added. Python/dependencies remain trusted, and
+The factory uses the operator's manifest pin for this provider ID. Python and
+its dependencies remain trusted, and
 in-process timeouts are cooperative. Host process supervision, OS isolation,
 hard termination, whole-operation OAuth/refresh management deadlines, authority
 provisioning and executable/package pinning are still required before calling this an operational security boundary.
@@ -139,12 +140,12 @@ packet. No external auth or model calls were made.
 ## Remaining delivery
 
 The explicit host trust loader and peer-checked socket connection are described
-in [HOST.md](HOST.md). They remain unregistered and require independent review.
-A supervised launcher, full model client and management UI remain open. It must establish real administrator
+in [HOST.md](HOST.md). A supervised broker launcher and credential-management
+UI remain open. Primer's provider console already supports registration,
+saved-account discovery and model-profile import.
+Deployment must establish real administrator
 key/inventory provenance, OS-user/socket isolation, package/dependency identity,
 loopback listener ownership and consent UX. Then genuine dedicated sign-in,
 workspace/plan entitlement, model discovery and Responses tool/replay evidence
-can be gathered. Config/registry/UI/MCP integration, broader response fidelity
-and hosted delivery checks remain open. No existing personal credentials may
-be copied to close these gates. There is no active broker to deploy or register
-merely because offline tests pass.
+can be gathered. Broader response fidelity and hosted verification are separate
+delivery gates. Use the deployment's dedicated registration for live verification.

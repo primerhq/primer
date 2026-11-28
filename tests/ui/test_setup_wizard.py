@@ -261,6 +261,7 @@ def test_the_resume_plan_comes_from_the_saved_provider_and_its_live_model_list()
     )
     plan = _run(ctx, "SW_loadResume(api)")["ok"]
     assert plan["step"] == 2 and plan["providerId"] == "llm-openchat"
+    assert plan["providerType"] == "openchat"
     assert plan["models"] == [{"name": "m1", "context_length": 8000}]
     # the saved row's secret is redacted on the wire, so the live probe must be the SAVED-provider route, not a replay of the row
     assert not any("_discover_models" in c for c in json.loads(ctx.eval("JSON.stringify(calls)")))
@@ -407,3 +408,11 @@ def test_a_whitespace_only_key_counts_as_blank_and_carries_the_stored_mask() -> 
     ctx, out = _save_with_a_stored_row('{url: "http://right", api_key: "   "}', stored)
     assert "ok" in out, out
     assert ctx.eval("put.config.api_key") == "**********1234"
+
+
+def test_context_length_requires_reported_or_explicit_positive_integer() -> None:
+    ctx = _helpers()
+    source = _src()
+    ctx.eval(source[source.index("function SW_reportedContext("):source.index("function SetupWizardSteps(")])
+    assert _run(ctx, "[SW_reportedContext({name:'account-model'}), SW_reportedContext({context_length:8192}), SW_reportedContext({context_length:-1})]") == {"ok": ["", "8192", ""]}
+    assert _run(ctx, "['', '0', '1.5', 'NaN', '9007199254740992', '16384'].map(SW_validContext)") == {"ok": [False, False, False, False, False, True]}

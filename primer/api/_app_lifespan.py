@@ -284,6 +284,7 @@ def _make_lifespan(config: AppConfig):
                 # call runs on the local hardened runner.
                 workspace_registry=workspace_registry,
             ),
+            codex_brokers=config.codex_brokers,
             trace_llm_io=config.observability.trace_llm_io,
         )
         system_toolset = build_system_toolset(

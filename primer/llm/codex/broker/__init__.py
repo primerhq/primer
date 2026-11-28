@@ -1,1 +1,1 @@
-"""Unregistered broker building blocks; no automatic login or service startup."""
+"""Peer-verified model IPC and the separately provisioned credential broker."""

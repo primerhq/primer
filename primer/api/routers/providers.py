@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.access.person import person_from_request
 from primer.access.policy import catalogue_predicate, level_of, require, visible_predicate
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
+from primer.int.storage_provider import StorageProvider
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
 from primer.llm.claude_code.process import child_env
@@ -507,6 +508,15 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
             "row_fields": [],
             "discoverable": True,
         },
+        LLMProviderType.CODEX.value: {
+            "label": "Codex",
+            # The implemented transport uses an operator-provisioned broker.
+            # Do not offer CLI settings that that transport must refuse.
+            "config_fields": [],
+            "row_fields": [],
+            "discoverable": False,
+            "saved_discovery_only": True,
+        },
     })
 
 
@@ -905,9 +915,9 @@ async def discover_llm_models(
     authenticate a probe.
 
     ``ollama``, ``openresponses``, ``openchat``, ``openrouter``,
-    ``anthropic``, and ``gemini`` expose a live list-models API. Any
-    other provider type returns 400; the console then offers to register
-    the provider without models.
+    ``anthropic``, and ``gemini`` expose a live list-models API. Claude Code
+    checks its runtime. Codex requires a saved provider's operator-bound
+    account and refuses this draft-config endpoint.
     """
     return await _probe_llm_models(body.provider, body.config)
 
@@ -920,7 +930,8 @@ async def discover_llm_models(
 @route_tool(scoped_id="llm_providers__discover_saved_llm_models")
 async def discover_saved_llm_models(
     provider_id: str = Path(..., description="LLMProvider id"),
-    providers=Depends(get_llm_provider_storage),
+    storage_provider: StorageProvider = Depends(get_storage_provider),
+    registry: ProviderRegistry = Depends(get_provider_registry),
 ) -> dict:
     """Live-probe a provider that already exists, using its stored config.
 
@@ -938,6 +949,10 @@ async def discover_saved_llm_models(
     into :class:`ModelProfile` rows -- discovery lists what the upstream
     offers; a profile is what this deployment chooses to register.
 
+    Codex additionally reports broker provenance. Its exact saved ID selects
+    the operator's trusted account binding; only account-visible, policy-allowed
+    names/display names are returned, with no guessed context lengths.
+
     Platform wave P2 (#4/#5): this is the one place a REAL, stored
     provider is actually probed (the draft-config sibling above has no
     persisted row to stamp), so success/failure here is stamped onto
@@ -947,7 +962,7 @@ async def discover_saved_llm_models(
     """
     from primer.model.except_ import NotFoundError
 
-    row = await providers.get(provider_id)
+    row = await storage_provider.get_storage(LLMProvider).get(provider_id)
     if row is None:
         raise NotFoundError(f"LLMProvider {provider_id!r} does not exist")
     # mode="json" would re-mask every SecretStr to "**********" -- the exact
@@ -956,20 +971,30 @@ async def discover_saved_llm_models(
     config = _unwrap_secrets(row.config.model_dump(mode="python"))
     now = datetime.now(UTC)
     try:
-        result = await _probe_llm_models(
-            str(getattr(row.provider, "value", row.provider)), config,
-        )
+        if row.provider == LLMProviderType.CODEX:
+            try:
+                models = await registry.discover_codex_models(row)
+            except Exception:
+                raise _probe_failure("Codex account model discovery is unavailable through the trusted broker") from None
+            result = {"models": models, "source": "account_policy_filtered_broker",
+                      "transport": "model_only_responses"}
+        else:
+            result = await _probe_llm_models(
+                str(getattr(row.provider, "value", row.provider)), config,
+            )
     except BadRequestError as exc:
-        await _stamp_saved_probe(providers, row, at=now, ok=False, error=str(exc))
+        await _stamp_saved_probe(storage_provider, row, at=now, ok=False, error=str(exc))
         raise
-    await _stamp_saved_probe(providers, row, at=now, ok=True, error=None)
+    await _stamp_saved_probe(storage_provider, row, at=now, ok=True, error=None)
     return result
 
 
 _PROBE_STAMP_FIELDS = frozenset({"last_probe_at", "last_probe_ok", "last_error"})
 
 
-async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool, error: str | None) -> None:
+async def _stamp_saved_probe(
+    storage_provider: StorageProvider, row: LLMProvider, *, at: datetime, ok: bool, error: str | None,
+) -> None:
     """Write ONLY the probe stamp (``last_probe_at``, ``last_probe_ok``, ``last_error``) onto the stored row (audit G2-10).
 
     The probe can run for seconds (Ollama asks ``/api/show`` once per model), and the stamp used to write back the whole row
@@ -987,7 +1012,18 @@ async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool
     stamp = row.model_copy(update={"last_probe_at": at, "last_probe_ok": ok, "last_error": error}).model_dump(
         mode="json", include=set(_PROBE_STAMP_FIELDS),
     )
+    providers = storage_provider.get_storage(LLMProvider)
     where: dict[Any, list[Any]] = {"provider": [raw_generation(row, "provider")]}
+    if row.provider == LLMProviderType.CODEX:
+        # The complete config (including the pass_env list) cannot be compared
+        # with scalar patch guards. Lock only after the broker I/O finishes.
+        async with storage_provider.locking_transaction(models=(LLMProvider,)) as conn:
+            current = await providers.get_for_update(row.id, conn=conn)
+            if (current is None or current.provider != row.provider
+                    or current.config != row.config or current.limits != row.limits):
+                return
+            await patch_if_checked(providers, row.id, stamp, where=where, conn=conn)
+        return
     config = raw_generation(row, "config")
     if isinstance(config, dict) and "url" in config:
         where[("config", "url")] = [config["url"]]
@@ -1098,6 +1134,9 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
         result = {"models": catalogue}
     elif provider == "gemini":
         result = await _probe_gemini_models(config, method="generateContent")
+    elif provider == "codex":
+        raise _probe_failure("Codex discovery requires a saved provider with an operator-bound model broker; "
+                             "use its discovered_models endpoint")
     elif provider == "claude_code":
         # Agent-runtime provider: nothing to list upstream. The check IS the
         # probe -- the CLI on THIS worker host must exist, be new enough and

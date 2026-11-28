@@ -35,6 +35,7 @@ from primer.model.provider import (
 
 
 if TYPE_CHECKING:
+    from primer.api.config import CodexBrokerBinding
     from primer.int.storage_provider import StorageProvider
     from primer.llm.aggregated import AggregatedLLM
     from primer.toolset.oauth.service import ToolsetOAuthService
@@ -71,6 +72,7 @@ def _build_default_llm_factory(
     *,
     rate_limiter: "RateLimiter | None" = None,
     trace_llm_io: bool = False,
+    codex_brokers: Mapping[str, CodexBrokerBinding] | None = None,
 ) -> Callable[[LLMProvider], LLM]:
     """Build the default ``llm_factory`` closure.
 
@@ -110,6 +112,26 @@ def _build_default_llm_factory(
                 from primer.llm.openrouter import OpenRouterLLM
                 return OpenRouterLLM(
                     provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
+            case LLMProviderType.CODEX:
+                binding = (codex_brokers or {}).get(provider.id)
+                if binding is None:
+                    raise ConfigError("No trusted Codex broker configured for this provider")
+                from primer.model.providers.llm import CodexConfig
+
+                if not isinstance(provider.config, CodexConfig) or provider.config != CodexConfig():
+                    raise ConfigError("The Codex broker cannot use CLI, home, environment or catalogue overrides")
+                from primer.llm.codex.adapter import CodexFoundationLLM
+                from primer.llm.codex.broker.client import BrokerClient
+
+                limiter = rate_limiter
+                if limiter is None:
+                    from primer.coordinator.in_memory import InMemoryRateLimiter
+                    limiter = InMemoryRateLimiter()
+                return CodexFoundationLLM(
+                    BrokerClient(binding.trust_directory, binding.manifest_sha256, provider.limits),
+                    provider_id=provider.id, rate_limiter=limiter,
+                    max_concurrency=provider.limits.max_concurrency,
                 )
             case LLMProviderType.CLAUDE_CODE:
                 from primer.llm.claude_code import ClaudeCodeLLM
@@ -482,14 +504,17 @@ class ProviderRegistry:
         generated_api_toolset_providers: Mapping[str, ToolsetProvider] | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
+        codex_brokers: Mapping[str, CodexBrokerBinding] | None = None,
         retire_idle_seconds: float = RETIRE_IDLE_SECONDS,
     ) -> None:
         self._sp = storage_provider
         self._rate_limiter: RateLimiter | None = rate_limiter
         self._trace_llm_io = trace_llm_io
+        self._codex_brokers = dict(codex_brokers or {})
         self._llm_factory = llm_factory or _build_default_llm_factory(
             rate_limiter=rate_limiter,
             trace_llm_io=trace_llm_io,
+            codex_brokers=self._codex_brokers,
         )
         self._embedder_factory = embedder_factory or _build_default_embedder_factory(
             rate_limiter=rate_limiter,
@@ -944,12 +969,34 @@ class ProviderRegistry:
 
     # ---- Bus wiring -------------------------------------------------------
 
+    async def discover_codex_models(self, provider: LLMProvider) -> list[dict[str, str]]:
+        """Query the exact row's trusted model-only broker, never a CLI home.
+
+        This short-lived probe uses the same binding and config restrictions
+        as inference. Account/policy admission belongs to Broker.models;
+        the returned names are not a stock CLI native-effect attestation.
+        """
+        from primer.llm.codex.broker.client import BrokerClient
+        from primer.model.providers.llm import CodexConfig
+
+        binding = self._codex_brokers.get(provider.id)
+        if provider.provider != LLMProviderType.CODEX or binding is None:
+            raise ConfigError("No trusted Codex broker configured for this provider")
+        if not isinstance(provider.config, CodexConfig) or provider.config != CodexConfig():
+            raise ConfigError("The Codex broker cannot use CLI, home, environment or catalogue overrides")
+        client = BrokerClient(binding.trust_directory, binding.manifest_sha256, provider.limits)
+        try:
+            return await client.models()
+        finally:
+            await client.aclose()
+
     async def bind_rate_limiter(self, rate_limiter: RateLimiter) -> None:
         """Wire the registry's adapter construction to the rate limiter.
         Idempotent."""
         self._rate_limiter = rate_limiter
         self._llm_factory = _build_default_llm_factory(
             rate_limiter=rate_limiter, trace_llm_io=self._trace_llm_io,
+            codex_brokers=self._codex_brokers,
         )
         self._embedder_factory = _build_default_embedder_factory(rate_limiter=rate_limiter)
         self._cross_encoder_factory = _build_default_cross_encoder_factory(rate_limiter=rate_limiter)

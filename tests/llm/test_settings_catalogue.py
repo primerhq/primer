@@ -178,6 +178,7 @@ WIRE_KEYS: dict[str, frozenset[str]] = {
         {"reasoning", "verbosity", "provider", "top_k", "min_p", "top_a", "repetition_penalty"}
         | SHARED_CHAT_COMPLETIONS
     ),
+    "codex": frozenset({"reasoning_effort"}),
     "claude_code": frozenset({"effort"}),
 }
 
@@ -197,6 +198,7 @@ CUSTOM_KEYS: dict[str, str] = {
     "gemini": "thinking_level",
     "ollama": "think",
     "openrouter": "reasoning.effort",
+    "codex": "reasoning_effort",
     "claude_code": "effort",
 }
 

@@ -57,3 +57,40 @@ full detail) — this is just an index.
 - **run_mock_llm.py** — the same mock-LLM app as a standalone process
   (rather than in-process), for manual/live diagnostics or reaching it
   from a container network namespace. See its own docstring.
+
+## Real-account Codex workspace journeys
+
+Run these two cases serially on an authorized, dedicated E2E deployment. The
+API and worker must already have the same provider-ID binding to a provisioned
+Responses broker with a dedicated signed-in account. Choose an existing single
+model profile whose model that account is allowed to use. An existing Primer
+administrator must be able to discover the saved provider, create an agent, and
+create a fresh workspace from the built-in `local-default` template. The worker
+must share that workspace's storage with the API.
+
+Set `PRIMER_E2E_BASE_URL` to that deployment's API origin, and set
+`PRIMER_E2E_CODEX_PROVIDER_ID` and `PRIMER_E2E_CODEX_PROFILE_ID` to the two
+saved IDs. Inject the administrator's existing **Primer API token** as the masked
+secret `PRIMER_E2E_CODEX_OPERATOR_TOKEN`. Keep the token out of URLs and command
+lines. The broker's model credentials stay on its host.
+
+Use an HTTPS origin with a trusted certificate. Plain HTTP is accepted only for
+a literal loopback IP such as `http://127.0.0.1:8765`. The client connects directly,
+with redirects disabled. Before discovery, it checks that Primer has an existing
+user and that the supplied bearer authenticates as an administrator. A fresh
+server or one running with authentication disabled fails this check.
+
+From a checkout with the test dependencies installed:
+
+```sh
+PRIMER_RUN_E2E=1 PRIMER_E2E_REAL_CODEX_BROKER=1 \
+    uv run --no-sync python -m pytest -n0 tests/e2e/test_codex_broker_real_workspace.py
+```
+
+One session copies a fresh random receipt. The other reads the repository's
+`AGENTS.md` and `scripts/e2e/teardown.sh` as text and writes a fact-checked
+operator note. Each case checks the saved file, correlated tool results, final
+answer and committed turn. Running them consumes account quota and updates the
+provider's discovery timestamp. The test calls the deployment through REST.
+The operator supplies the real upstream account. Installed Codex CLI acceptance
+requires its own qualified transport and run.

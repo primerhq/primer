@@ -38,14 +38,17 @@ class LLMProviderType(str, Enum):
     OLLAMA = "ollama"
     OPENROUTER = "openrouter"
     CLAUDE_CODE = "claude_code"
+    CODEX = "codex"
 
 
 # Provider types that run an external, logged-in agent CLI as the model
-# backend (the claude_code plan, task 1). The child runs with the
-# operator's own CLI login, so a profile resolving to one of these must
-# stay private: publishing it would let any session spend the operator's
-# own credentials. bootstrap/seed.py checks this before publishing.
-AGENT_RUNTIME_TYPES: frozenset[LLMProviderType] = frozenset({LLMProviderType.CLAUDE_CODE})
+# backend (the claude_code plan, task 1; codex, the codex plan). The child
+# runs with the operator's own CLI login, so a profile resolving to one of
+# these must stay private: publishing it would let any session spend the
+# operator's own credentials. Agent runtimes are otherwise used like any
+# other provider: nothing refuses or special-cases their profiles or their
+# seeding.
+AGENT_RUNTIME_TYPES: frozenset[LLMProviderType] = frozenset({LLMProviderType.CLAUDE_CODE, LLMProviderType.CODEX})
 
 
 class OpenResponsesFlavor(str, Enum):
@@ -309,6 +312,59 @@ class ClaudeCodeConfig(BaseModel):
         return value
 
 
+class CodexConfig(BaseModel):
+    """Stored CLI settings retained for compatibility with existing provider rows.
+
+    The model broker accepts the defaults. Its connection and account binding
+    come from the operator's application configuration and host manifest.
+    """
+
+    binary_path: str = Field(
+        default="codex",
+        description="CLI executable setting. Leave at its default for the broker transport.",
+    )
+    codex_home: str | None = Field(
+        default=None,
+        description="CLI home override. The broker transport requires this field to be unset.",
+    )
+    pass_env: list[str] = Field(
+        default_factory=list,
+        description=(
+            "CLI environment allowlist. The broker transport requires an empty list. A name that starts "
+            "with PRIMER_ or contains KEY, TOKEN, SECRET, PASSWORD or "
+            "DATABASE (case-insensitive) is refused."
+        ),
+    )
+    model_catalog_path: str | None = Field(
+        default=None,
+        description=(
+            "Optional CLI model catalogue compatibility hints, not account authorization. "
+            "Final-component symlinks are refused. "
+            "The broker transport requires this field to be unset."
+        ),
+    )
+
+    @field_validator("pass_env", mode="before")
+    @classmethod
+    def _split_and_screen_pass_env(cls, value: object) -> object:
+        """Split the form's comma-separated string and refuse denied names.
+
+        The error names the offending variable so the operator knows which
+        entry to fix.
+        """
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, (list, tuple)):
+            for name in value:
+                if isinstance(name, str) and _denied_pass_env_name(name):
+                    raise ValueError(
+                        f"pass_env name {name!r} is refused: a name must not "
+                        "start with PRIMER_ or contain KEY, TOKEN, SECRET, "
+                        "PASSWORD or DATABASE (case-insensitive)"
+                    )
+        return value
+
+
 class LLMProvider(Grantable, Identifiable):
     """A configured LLM provider entry.
 
@@ -339,6 +395,7 @@ class LLMProvider(Grantable, Identifiable):
         | OllamaConfig
         | OpenRouterConfig
         | ClaudeCodeConfig
+        | CodexConfig
     ) = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
@@ -425,6 +482,7 @@ class LLMProvider(Grantable, Identifiable):
             LLMProviderType.OLLAMA: OllamaConfig,
             LLMProviderType.OPENROUTER: OpenRouterConfig,
             LLMProviderType.CLAUDE_CODE: ClaudeCodeConfig,
+            LLMProviderType.CODEX: CodexConfig,
         }.get(provider_enum)
         if config_cls is None:
             return data

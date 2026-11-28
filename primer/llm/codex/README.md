@@ -1,20 +1,17 @@
 # ChatGPT plan model bridge foundation
 
-Status: offline implementation for independent review. This package is not a
-registered provider, a working Codex CLI integration, or an authenticated model
-backend. No API, UI, environment variable, or runtime capability flag activates
-it. The original harness replays explicit synthetic data. A separate unregistered
-[broker candidate](broker/README.md) now implements OAuth, signed policy,
-fixed-origin HTTP and peer-checked IPC; it has only offline test evidence.
+The provider registry routes an explicitly bound `codex` row to a provisioned
+model broker. The broker owns credential handling and signed-policy admission.
+The offline harness replays synthetic data. A live session through the installed
+Codex CLI remains a separate verification requirement.
+See the [host binding and deployment prerequisites](broker/HOST.md).
 
 ## Architecture decision
 
-Use an executor-free **Sign-in-with-ChatGPT Responses adapter** as the next
-integration direction. Do not run the stock Codex agent harness and then filter
-its emitted tool events. The original product goal remains: eligible ChatGPT
-plan inference, Primer-owned history and tool execution, and credentials kept
-outside Primer. The CLI/process/thread implementation in the original proposal
-is replaced, not claimed implemented by this package.
+The provider uses an executor-free **Sign-in-with-ChatGPT Responses adapter**.
+The broker holds the dedicated account's credentials. Primer supplies the
+conversation history, executes authorized tool calls, and returns their results
+on the next model step.
 
 Official documentation fetched on 2026-11-21:
 
@@ -42,8 +39,8 @@ Official documentation fetched on 2026-11-21:
 
 These are documentation facts, not executed account/entitlement proofs. The
 endpoint is not a ChatGPT `backend-api` URL. No API-key fallback is implemented.
-The separate credential-owning broker candidate implements this flow for review;
-Primer's adapter must never receive its tokens or read its credential files.
+The separate credential-owning broker implements this flow. Primer's adapter
+receives model data through the peer-verified socket.
 Its deployment and genuine authentication gates remain open.
 
 The current released Codex source was also inspected at tag `rust-v0.171.0`,
@@ -54,6 +51,51 @@ commit `ccf9be8cc458bd6b8336fe84d68d8893f2691a5e`. In
 accepts an already-constructed handler. This is a source observation, not proof
 that that constructor executes a patch. It means the stock registry filter is
 not a literal pre-constructor ceiling. No production binary is approved here.
+
+### Installed CLI qualification for 0.171.0
+
+The inspected Linux x86_64 musl executable reported `codex-cli 0.171.0`
+and had SHA-256 `b76a027d6b210f9a8da7aaf321dd235c700f0ef7a794d4a5314b9af6c134f0f0`.
+This fingerprint identifies the sampled bytes. The source references below
+use the matching release tag. The inspection used empty private home and
+configuration directories for CLI help and schema generation.
+
+- **App-server threads.** `thread/start.dynamicTools` adds caller tools.
+  Sandbox, approval and config settings are independent of the tool allowlist
+  supplied through the host's `ExtensionDataInit`. Ordinary threads default to
+  normal tool selection. Startup also constructs hooks and installs the MCP
+  runtime. Even the built-in Guardian reviewer permits native command and image
+  handlers. A successful dynamic call alone cannot establish exclusive tool
+  ownership through startup and refresh.
+  [Tool policy](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/ext/extension-api/src/tool_policy.rs#L6-L29)
+  · [Session startup](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/session/session.rs#L1682-L1702)
+  · [Dynamic registration](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/tools/spec_plan.rs#L1658-L1671)
+  · [Reviewer policy](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/ext/guardian-reviewer/src/settings.rs#L44-L55)
+- **Thread sampling.** `thread/sample` requires `threadId`, `expectedTurnId`
+  and `prompt`. Its `disableMcp` option applies only to inherited incremental
+  tools on Responses Lite. A tool attempt produces null `text`. The response
+  omits the tool name, arguments and call ID needed for dispatch.
+- **Discovery.** `model/list` and `modelProvider/capabilities/read` return
+  metadata. Neither accepts a conversation and tool definitions for inference.
+- **Internal Responses proxy.** `responses-api-proxy` forwards a Responses
+  HTTP POST. Its credential inputs are an API key on stdin or GitHub workload
+  identity. It provides no Codex plan-login lifecycle or app-server dynamic-tool
+  protocol.
+  [Command dispatch](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/cli/src/main.rs#L1943-L1951)
+  · [Authentication](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/responses-api-proxy/src/lib.rs#L92-L107)
+
+To check the protocol surface on this release, run
+`codex app-server generate-json-schema --experimental --out <scratch-dir>`
+with an empty private `HOME` and `CODEX_HOME`. Inspect the 189 methods in
+`ClientRequest.json` and the request and response schemas under `v2/`.
+This operation requires no sign-in or running server.
+
+A CLI transport still needs an identifiable build or entry point that enforces
+the Primer-only tool set before native initialization and across configuration
+refresh, accepts the dedicated account's managed policy, and returns structured
+tool calls to Primer. Verify it with a full result-replay turn through the
+normal Primer factory, including refusal on policy loss. This release inspection
+did not establish such an entry point or an end-to-end Primer session.
 
 ## What executes
 
@@ -112,8 +154,9 @@ advance; owners must explicitly close abandoned idle streams. No timeout context
 spans an async-generator yield. Timeouts rely on cooperative
 Python transport/authority implementations: this is not an OS sandbox, does
 not preempt a blocking Python constructor, and cannot kill an implementation
-that swallows cancellation forever. A future broker must add process ownership,
-OS isolation, bounded IPC, and forced reaping before relying on hard deadlines.
+that swallows cancellation forever. The broker bounds IPC. Hard process
+deadlines still require an OS-isolated service with a supervisor that can
+terminate and reap it.
 `CodexFoundationLLM` supplies the Primer stream shape and rate-limit ownership;
 error classification is deliberately generic and sanitized for this first slice.
 
@@ -150,10 +193,10 @@ transcript/input data, writes only protocol output, and owns no child process.
 1. Independently review this actual source and tests. Pin the accepted package
    and dependency identity; a hash or a runtime's own capability flag alone is
    not an authority grant.
-2. Independently review the separate credential/policy broker candidate and
+2. Independently review the credential/policy broker and
    its offline OAuth, storage, policy, HTTP and peer-identity tests. Then wire
    trusted host supervision, genuine authority inventory, separate OS identity,
-   callback listener ownership and management UI before registration. Honor
+   callback listener ownership and credential management before deployment. Honor
    every applicable administrator requirement; incompatible mandatory native
    actions refuse. Passing signature tests does not establish who the real
    administrators are or authorize disabling host policy.
@@ -161,10 +204,11 @@ transcript/input data, writes only protocol output, and owns no child process.
    entitlement are external facts. No such identity was read or used here.
    Obtain genuine model/tool/usage/error/refresh/cleanup evidence; never borrow
    personal auth. Missing login does not block the offline implementation work.
-4. After the safe foundation/broker review, add persisted config and factory,
-   discovery/profile validation, console status/import, wiki and E2E journey.
-   Full response fidelity and error/retry semantics remain required. The
-   original seven-stage plan is not marked complete by these tests.
+4. Verify the provider factory, saved-provider discovery, profile validation
+   and console import with hosted CI. The [host guide](broker/HOST.md) covers
+   the binding and registration steps. An installed-CLI session still requires
+   a qualified transport and its own end-to-end tool replay. Full response
+   fidelity and error/retry semantics also remain open.
 
 Original semantic mapping: ephemeral app-server threads become fresh stateless
 Responses steps; raw response completion becomes `response.completed`; held

@@ -294,6 +294,13 @@ function PC_LlmSettings({ s }) {
           {"Claude Code adds its own identity line, the account email and an environment block to every request, and uses the login on each worker host."}
         </div>
       ) : null}
+      {s.savedDiscoveryOnly ? (
+        <div className="field-help" data-testid="pc-saved-discovery-help">
+          {"Use the provider ID assigned by your operator to the dedicated model broker. " +
+            "No CLI or login settings are needed here. Register the provider, then reopen it and choose Import more models " +
+            "to fetch the models allowed for that account. Registration alone does not verify the broker or model access."}
+        </div>
+      ) : null}
       {s.loadingShape ? (
         <div className="muted text-sm" role="status" data-testid="pc-register-loading">Loading the fields for this kind…</div>
       ) : null}
@@ -453,6 +460,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
   // ---- the draft, as it is shown and as it is sent
   const kind = draft.provider || kinds[0] || "";
   const shape = typeMap[kind] || null;
+  const savedDiscoveryOnly = !!(shape && shape.saved_discovery_only);
   const configFields = shape ? (shape.config_fields || []).map(window.PC_normalizeField) : [];
   const hasUrl = configFields.some((f) => f.key === "url");
   const limitFields = window.PC_limitFieldsFor(klass.key, kind);
@@ -535,7 +543,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
     setHandoff((h) => ({ n: h.n + 1, to: "head" }));
   };
   const goNext = async () => {
-    if (editing || !formOk || !discoverBody) return;
+    if (editing || savedDiscoveryOnly || !formOk || !discoverBody) return;
     const key = JSON.stringify(discoverBody);
     // The same connection as the list already on page 2 (the operator went Back and changed something else): the list, and what was ticked in it, are kept.
     if (found.current === key && rows.length) {
@@ -745,7 +753,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
   // another request of the page's own is out: this button is held off for it, and says nothing about a request that is not its own
   const elsewhere = (what) => out !== null && out !== what;
   const view = {
-    editing, classKey: klass.key, eff, kind, kinds, typeMap, shape, configFields, hasUrl, types: ty, typesFailed, loadingShape, kindNotServed,
+    editing, savedDiscoveryOnly, classKey: klass.key, eff, kind, kinds, typeMap, shape, configFields, hasUrl, types: ty, typesFailed, loadingShape, kindNotServed,
     idProblem, idTyped, limitFields, limitProblems, dirty, helpId, setField, setKind, retryTypes, handoff, rootRef,
     providerId, listed, already, rows, uid, summary, frozen, toggle, toggleAll, setContext,
     plural: klass.plural, pub: pub, setPub: setPub, runtime,
@@ -806,15 +814,20 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
     footerLeft: cancel,
     footerRight: (
       <React.Fragment key="connection">
-        {failedOnce ? (
+        {failedOnce && !savedDiscoveryOnly ? (
           <Btn kind="ghost" data-testid="pc-register-without-models" onClick={registerWithout} busy={out === "register"}
             blocked={held || elsewhere("register")} disabled={!formOk}>
             Register without models
           </Btn>
         ) : null}
-        <Btn kind="primary" data-testid="pc-register-next" onClick={goNext} busy={out === "discover"} blocked={held || elsewhere("discover")} disabled={!formOk}>
-          Next ›
-        </Btn>
+        {savedDiscoveryOnly ? (
+          <Btn kind="primary" data-testid="pc-register-submit" onClick={registerWithout} busy={out === "register"}
+            blocked={held || elsewhere("register")} disabled={!formOk}>Register provider</Btn>
+        ) : (
+          <Btn kind="primary" data-testid="pc-register-next" onClick={goNext} busy={out === "discover"} blocked={held || elsewhere("discover")} disabled={!formOk}>
+            Next ›
+          </Btn>
+        )}
       </React.Fragment>
     ),
     error,
