@@ -139,3 +139,49 @@ def test_setup_resumes_saved_broker_without_inventing_context_length(page, conso
         assert api.profiles[0]["model_name"] == "account-model"
         assert "POST /llm_providers" not in api.calls
         assert "POST /llm_providers/_discover_models" not in api.calls
+
+
+@pytest.mark.ui_e2e
+@pytest.mark.parametrize("entry", ["new", "saved", "change_from_codex"])
+@pytest.mark.parametrize("selected,expected_context", [("legacy-model", 32000), ("reported-model", 8192)])
+def test_non_codex_setup_retains_legacy_context_behavior(page, console_url, monkeypatch, entry, selected, expected_context):
+    from tests.ui_e2e import test_setup_wizard_resume_journey as setup
+
+    monkeypatch.setattr(setup, "_MODELS", [
+        {"name": "legacy-model"}, {"name": "reported-model", "context_length": 8192},
+    ])
+    providers = [] if entry == "new" else [{
+        "id": "cx-context" if entry == "change_from_codex" else "llm-openchat",
+        "provider": "codex" if entry == "change_from_codex" else "openchat",
+        "config": {} if entry == "change_from_codex" else {"url": "http://llm.example/v1"},
+        "limits": {"max_concurrency": 1},
+    }]
+    api = setup._FakeSetupApi(providers=providers)
+    with draining_page_routes(page):
+        setup._open_wizard(page, console_url, api)
+        if entry == "change_from_codex":
+            expect(page.locator("#setup-context-length")).to_have_value("")
+            expect(page.get_by_role("button", name="Finish setup")).to_be_disabled()
+            page.get_by_test_id("setup-change-provider").click()
+        if entry != "saved":
+            setup._connect_step_one(page)
+        expect(page.locator("#setup-model")).to_be_visible()
+        expect(page.locator("#setup-context-length")).to_have_count(0)
+        # Exercise switching in both directions; the selected model owns the value.
+        page.locator("#setup-model").select_option("reported-model")
+        page.locator("#setup-model").select_option("legacy-model")
+        page.locator("#setup-model").select_option(selected)
+        finish = page.get_by_role("button", name="Finish setup")
+        expect(finish).to_be_enabled()
+        finish.click()
+        expect(page.get_by_test_id("setup-gate-enter")).to_be_visible()
+        assert len(api.profiles) == 1
+        assert api.profiles[0]["provider_id"] == "llm-openchat"
+        assert api.profiles[0]["model_name"] == selected
+        assert api.profiles[0]["context_length"] == expected_context
+        if entry == "saved":
+            assert "POST /llm_providers" not in api.calls
+            assert "POST /llm_providers/_discover_models" not in api.calls
+        else:
+            assert api.calls.count("POST /llm_providers") == 1
+            assert api.calls.count("POST /llm_providers/_discover_models") == 1

@@ -261,6 +261,7 @@ def test_the_resume_plan_comes_from_the_saved_provider_and_its_live_model_list()
     )
     plan = _run(ctx, "SW_loadResume(api)")["ok"]
     assert plan["step"] == 2 and plan["providerId"] == "llm-openchat"
+    assert plan["providerType"] == "openchat"
     assert plan["models"] == [{"name": "m1", "context_length": 8000}]
     # the saved row's secret is redacted on the wire, so the live probe must be the SAVED-provider route, not a replay of the row
     assert not any("_discover_models" in c for c in json.loads(ctx.eval("JSON.stringify(calls)")))

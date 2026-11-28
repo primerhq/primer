@@ -859,7 +859,8 @@ by the broker, rather than silently reset by hidden fields.
 The first-run setup wizard can also resume a saved broker row. Its model step
 uses a reported positive context length when present and otherwise requires the
 operator to enter one. Switching models resets that field from the selected
-model's evidence; it never supplies the former guessed 32000-token fallback.
+model's evidence; Codex never receives a guessed 32000-token fallback. Other
+providers retain the setup wizard's legacy reported-value-or-32000 behavior.
 
 The retained `codex.models` catalogue reader describes only operator-provided
 compatibility hints. It opens once with nonblocking/no-follow/close-on-exec
