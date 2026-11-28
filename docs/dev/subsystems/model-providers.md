@@ -817,3 +817,34 @@ Use the [host binding instructions](../../../primer/llm/codex/broker/HOST.md)
 to configure the worker's manifest pin. This path requires a separately
 provisioned broker and dedicated credentials. The installed-CLI journey still
 requires its own end-to-end verification.
+
+Saved-provider discovery (`GET /v1/llm_providers/{id}/discovered_models` and
+`system__fetch_llm_provider_models`) uses `ProviderRegistry.discover_codex_models`
+with the same exact provider-ID host binding as inference. The bounded
+`models/list` IPC operation returns only the account-visible models intersected
+with current signed policy. Primer maps supplied `slug` to `name` and retains
+`display_name`; no context limit, tool capability, price or model-name default
+is fabricated. The response identifies `account_policy_filtered_broker` and
+`model_only_responses` provenance. This is an account discovery result, not
+live inference acceptance or an attestation about the stock CLI.
+
+Single-profile create and update, including system tools, repeat this discovery
+and refuse absent authority (`codex_discovery_unavailable`) or a model absent
+from the current list (`codex_model_unavailable`). Saving a profile is not an
+authorization lease: inference still performs its independent current-policy
+checks. Draft discovery cannot select an account from config and refuses until
+the provider has a saved ID and operator binding. Setup's saved-provider check
+uses the same registry path. A probe stamp compares the complete Codex config
+to avoid stamping a concurrent config change with old results.
+
+The retained `codex.models` catalogue reader describes only operator-provided
+compatibility hints. It opens once with nonblocking/no-follow/close-on-exec
+flags, validates regular-file type with `fstat`, and reads at most 4 MiB + 1
+through that descriptor, including growth after validation. Final-component
+symlinks, malformed/ambiguous entries and ordinary I/O failures refuse. Ancestor
+directories follow host path resolution and require operator control; regular
+filesystem I/O has no hard deadline. `SOURCE_REFERENCE=rust-v0.169.0` labels the
+original proposal's source inspection, not a supported minimum or live-tested
+version. No hardcoded model is admitted. The broker does not consume these hints
+and rejects catalogue overrides. A future qualified CLI consumer needs its own
+authenticated account discovery and native-effect admission before using them.

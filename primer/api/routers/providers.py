@@ -535,7 +535,8 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
                     "text",
                     help_=(
                         "Path of the operator's model catalog (Codex's model_catalog_json); "
-                        'a model whose entry is marked "tool_mode": "direct" is usable'
+                        "compatibility hints only, not account availability or execution permission; "
+                        "final symlinks are refused"
                     ),
                 ),
             ],
@@ -940,9 +941,9 @@ async def discover_llm_models(
     authenticate a probe.
 
     ``ollama``, ``openresponses``, ``openchat``, ``openrouter``,
-    ``anthropic``, and ``gemini`` expose a live list-models API. Any
-    other provider type returns 400; the console then offers to register
-    the provider without models.
+    ``anthropic``, and ``gemini`` expose a live list-models API. Claude Code
+    checks its runtime. Codex requires a saved provider's operator-bound
+    account and refuses this draft-config endpoint.
     """
     return await _probe_llm_models(body.provider, body.config)
 
@@ -956,6 +957,7 @@ async def discover_llm_models(
 async def discover_saved_llm_models(
     provider_id: str = Path(..., description="LLMProvider id"),
     providers=Depends(get_llm_provider_storage),
+    registry: ProviderRegistry = Depends(get_provider_registry),
 ) -> dict:
     """Live-probe a provider that already exists, using its stored config.
 
@@ -972,6 +974,10 @@ async def discover_saved_llm_models(
     Returns the same ``{"models": [...]}`` shape, which the console turns
     into :class:`ModelProfile` rows -- discovery lists what the upstream
     offers; a profile is what this deployment chooses to register.
+
+    Codex additionally reports broker provenance. Its exact saved ID selects
+    the operator's trusted account binding; only account-visible, policy-allowed
+    names/display names are returned, with no guessed context lengths.
 
     Platform wave P2 (#4/#5): this is the one place a REAL, stored
     provider is actually probed (the draft-config sibling above has no
@@ -991,9 +997,17 @@ async def discover_saved_llm_models(
     config = _unwrap_secrets(row.config.model_dump(mode="python"))
     now = datetime.now(UTC)
     try:
-        result = await _probe_llm_models(
-            str(getattr(row.provider, "value", row.provider)), config,
-        )
+        if row.provider == LLMProviderType.CODEX:
+            try:
+                models = await registry.discover_codex_models(row)
+            except Exception:
+                raise _probe_failure("Codex account model discovery is unavailable through the trusted broker") from None
+            result = {"models": models, "source": "account_policy_filtered_broker",
+                      "transport": "model_only_responses"}
+        else:
+            result = await _probe_llm_models(
+                str(getattr(row.provider, "value", row.provider)), config,
+            )
     except BadRequestError as exc:
         await _stamp_saved_probe(providers, row, at=now, ok=False, error=str(exc))
         raise
@@ -1026,6 +1040,10 @@ async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool
     config = raw_generation(row, "config")
     if isinstance(config, dict) and "url" in config:
         where[("config", "url")] = [config["url"]]
+    if row.provider == LLMProviderType.CODEX:
+        # No URL: changing CLI/home/catalogue config must not retain a probe
+        # stamp made for the old broker-compatible configuration.
+        where["config"] = [config]
     try:
         written = await patch_if_checked(providers, row.id, stamp, where=where)
     except NotFoundError:
@@ -1133,6 +1151,9 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
         result = {"models": catalogue}
     elif provider == "gemini":
         result = await _probe_gemini_models(config, method="generateContent")
+    elif provider == "codex":
+        raise _probe_failure("Codex discovery requires a saved provider with an operator-bound model broker; "
+                             "use its discovered_models endpoint")
     elif provider == "claude_code":
         # Agent-runtime provider: nothing to list upstream. The check IS the
         # probe -- the CLI on THIS worker host must exist, be new enough and

@@ -69,5 +69,15 @@ model permissions. If a step reports a missing or mismatched broker binding,
 ask the operator to check that worker's configuration. This transport uses
 the broker's Responses connection. Installed-CLI operation is still unverified.
 
+For a saved Codex provider, `system__fetch_llm_provider_models` returns the
+account-visible model names allowed by the operator's current signed policy.
+Profile creation and update check the same list. No particular model name is
+automatically allowed, and an operator catalogue file does not grant account
+access. Discovery supplies no guessed context length: fill that required profile
+field from supported model information. A successful discovery or profile save
+does not prove inference works; every inference step still checks authorization.
+Draft discovery has no saved account binding and refuses. Configure the saved
+provider's trusted broker first.
+
 ## Related
 [LLM providers](providers/llm), [model profiles](providers/model-profiles).

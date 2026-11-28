@@ -969,6 +969,27 @@ class ProviderRegistry:
 
     # ---- Bus wiring -------------------------------------------------------
 
+    async def discover_codex_models(self, provider: LLMProvider) -> list[dict[str, str]]:
+        """Query the exact row's trusted model-only broker, never a CLI home.
+
+        This short-lived probe uses the same binding and config restrictions
+        as inference. Account/policy admission belongs to Broker.models;
+        the returned names are not a stock CLI native-effect attestation.
+        """
+        from primer.llm.codex.broker.client import BrokerClient
+        from primer.model.providers.llm import CodexConfig
+
+        binding = self._codex_brokers.get(provider.id)
+        if provider.provider != LLMProviderType.CODEX or binding is None:
+            raise ConfigError("No trusted Codex broker configured for this provider")
+        if not isinstance(provider.config, CodexConfig) or provider.config != CodexConfig():
+            raise ConfigError("The Codex broker cannot use CLI, home, environment or catalogue overrides")
+        client = BrokerClient(binding.trust_directory, binding.manifest_sha256, provider.limits)
+        try:
+            return await client.models()
+        finally:
+            await client.aclose()
+
     async def bind_rate_limiter(self, rate_limiter: RateLimiter) -> None:
         """Wire the registry's adapter construction to the rate limiter.
         Idempotent."""

@@ -22,9 +22,8 @@ additions:
   resolve/stream time), no self-reference, and no duplicate member ids
   (order is the routing/failover chain, so silently deduping would
   silently change semantics -- reject instead of guessing).
-* A single profile on a ``codex`` provider must name a direct-tool model
-  (the codex plan, spec section 6.6): only ``gpt-5.5`` or a model the
-  operator's model catalog file marks ``"tool_mode": "direct"``. Refused
+* A single profile on a ``codex`` provider must name a currently authorized
+  account model reported by the provider's trusted model-only broker. Refused
   on create AND update with a 422 that names the rule; the check is
   shared with the system tools (``primer/model_profile/checks.py``). An
   aggregated profile needs no check of its own: every member is a single
@@ -206,14 +205,13 @@ async def _check_provider_exists(entity: ModelProfile, request: Request) -> None
 
 
 async def _check_codex_direct_model(entity: ModelProfile, request: Request) -> None:
-    """422 when a single profile on a ``codex`` provider names a model that is not
-    direct-tool (the codex plan, spec section 6.6): only ``gpt-5.5`` or a model
-    the operator's model catalog file marks ``"tool_mode": "direct"`` may be used.
+    """422 when trusted account discovery fails or does not offer the model.
     Shared with the system tools via ``check_profile_on_create`` /
     ``check_profile_on_update``; no-op for aggregated profiles: every member is
     itself a single profile, checked when it is created or updated."""
     try:
-        await check_codex_direct_model(entity, storage_provider=request.app.state.storage_provider)
+        await check_codex_direct_model(entity, storage_provider=request.app.state.storage_provider,
+                                       provider_registry=getattr(request.app.state, "provider_registry", None))
     except EntityCheckError as exc:
         raise _as_rest_error(exc) from exc
 
@@ -247,7 +245,8 @@ async def _on_pre_update(
     entity: ModelProfile, existing: ModelProfile, request: Request
 ) -> None:
     try:
-        await check_profile_on_update(entity, existing, storage_provider=request.app.state.storage_provider)
+        await check_profile_on_update(entity, existing, storage_provider=request.app.state.storage_provider,
+                                      provider_registry=getattr(request.app.state, "provider_registry", None))
     except EntityCheckError as exc:
         raise _as_rest_error(exc) from exc
 

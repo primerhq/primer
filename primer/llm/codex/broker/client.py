@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import sys
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import closing, contextmanager, suppress
 from pathlib import Path
@@ -32,6 +33,7 @@ class BrokerClient:
         self._identity = manifest_sha256
         self._limits = limits
         self._active: set[OwnedStream] = set()
+        self._discoveries: set[asyncio.Task] = set()
         self._closed = False
         # Fail during executor construction, before receiving a prompt. Keep
         # only the operator's pins in the registry, never an idle descriptor.
@@ -86,6 +88,73 @@ class BrokerClient:
         stream = OwnedStream(self._events(request), timeout=deadline, on_close=self._active.discard)
         self._active.add(stream)
         return stream
+
+    async def models(self) -> list[dict[str, str]]:
+        """Account/policy-filtered broker models, with no inferred capabilities.
+
+        The host manifest chooses the account; neither the caller nor a
+        catalogue file can select it. Require one complete bounded frame
+        followed by EOF before exposing any results.
+        """
+        task = asyncio.current_task()
+        if self._closed or task in self._discoveries:
+            raise BoundaryError("Codex broker client is closed or reentered")
+        self._discoveries.add(task)
+        writer = None
+        try:
+            deadline = min(30.0, self._limits.total_timeout_seconds or 30.0)
+            async with asyncio.timeout(deadline):
+                async with asyncio.timeout(self._limits.connect_timeout_seconds):
+                    sock = await self._connected_socket()
+                    try:
+                        reader, writer = await asyncio.open_unix_connection(sock=sock, limit=_BOUNDS.max_frame_bytes)
+                    except BaseException:
+                        sock.close()
+                        raise
+                    writer.write(b'{"method":"models/list","params":{}}\n')
+                    await writer.drain()
+                    line = await reader.readline()
+                if not line.endswith(b"\n") or len(line) > _BOUNDS.max_frame_bytes:
+                    raise BoundaryError("Invalid Codex model catalogue frame")
+                frame = decode(line)
+                if type(frame) is not dict or set(frame) != {"models"} or type(frame["models"]) is not list:
+                    raise BoundaryError("Codex model discovery refused")
+                if len(frame["models"]) > 4096:
+                    raise BoundaryError("Codex model catalogue exceeds limit")
+                models, seen = [], set()
+                for item in frame["models"]:
+                    if (type(item) is not dict or set(item) != {"slug", "display_name"}
+                            or any(type(item[key]) is not str or not item[key] or len(item[key]) > 256
+                                   for key in ("slug", "display_name")) or item["slug"] in seen):
+                        raise BoundaryError("Invalid Codex model catalogue entry")
+                    seen.add(item["slug"])
+                    models.append({"name": item["slug"], "display_name": item["display_name"]})
+                async with asyncio.timeout(self._limits.request_timeout_seconds):
+                    if await reader.read(1):
+                        raise BoundaryError("Unexpected trailing Codex catalogue data")
+                if self._closed:
+                    raise BoundaryError("Codex broker client closed during discovery")
+                return models
+        finally:
+            failure = sys.exception()
+            try:
+                if writer is not None:
+                    async def close():
+                        writer.close()
+                        try:
+                            async with asyncio.timeout(_BOUNDS.cleanup_seconds):
+                                await writer.wait_closed()
+                        except BaseException:
+                            writer.transport.abort()
+                            raise
+                    try:
+                        await drain(asyncio.create_task(close()))
+                    except BaseException:
+                        if not isinstance(failure, asyncio.CancelledError):
+                            raise
+                        failure.add_note("Codex discovery cleanup failed during cancellation")
+            finally:
+                self._discoveries.discard(task)
 
     async def _events(self, request: ModelRequest) -> AsyncGenerator[StreamEvent, None]:
         payload = compact({"method": "step/start", "params": {
@@ -151,7 +220,14 @@ class BrokerClient:
             yield event
 
     async def aclose(self) -> None:
+        if asyncio.current_task() in self._discoveries:
+            raise BoundaryError("Codex discovery cannot close its own client")
         self._closed = True
+        discoveries = tuple(self._discoveries)
+        for task in discoveries:
+            task.cancel()
+        if discoveries:
+            await asyncio.gather(*discoveries, return_exceptions=True)
         streams = tuple(self._active)
         for stream in streams:
             stream.ensure_can_close()

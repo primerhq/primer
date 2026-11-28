@@ -338,8 +338,8 @@ class CodexConfig(BaseModel):
     model_catalog_path: str | None = Field(
         default=None,
         description=(
-            "Optional CLI model catalog used during profile validation. "
-            'An entry with "tool_mode": "direct" qualifies for a direct-tool profile. '
+            "Optional CLI model catalogue compatibility hints, not account authorization. "
+            "Final-component symlinks are refused. "
             "The broker transport requires this field to be unset."
         ),
     )

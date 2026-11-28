@@ -256,7 +256,7 @@ _LIVE_CHECK_FALLBACK_ROWS = 3
 _LIVE_CHECK_FALLBACK_SECONDS = 30.0
 
 
-async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
+async def _live_llm_provider_check(storage_provider, provider_registry=None) -> tuple[bool, str | None]:
     """Probe the provider the DEFAULT profile names for a live response.
 
     Reuses ``discover_saved_llm_models`` (the same live list-models probe
@@ -290,9 +290,11 @@ async def _live_llm_provider_check(storage_provider) -> tuple[bool, str | None]:
         detail = None
         for row in candidates:
             try:
+                extra = {"registry": provider_registry} if row.provider.value == "codex" else {}
                 await discover_saved_llm_models(
                     provider_id=row.id,
                     providers=get_llm_provider_storage(storage_provider),
+                    **extra,
                 )
             except BadRequestError as exc:
                 if "live model discovery is not supported" in str(exc):
@@ -365,7 +367,7 @@ async def get_setup_state(request: Request) -> SetupStateResponse:
             if key in presence_missing:
                 ok, detail, live = False, "no LLM provider configured", False
             else:
-                ok, detail = await _live_llm_provider_check(storage_provider)
+                ok, detail = await _live_llm_provider_check(storage_provider, get_provider_registry(request))
                 live = True
         elif key == MISSING_DEFAULT_WORKSPACE:
             if key in presence_missing:
