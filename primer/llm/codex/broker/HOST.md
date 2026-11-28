@@ -55,14 +55,21 @@ identity before deployment. No arbitrary command or executable path is accepted.
 
 Use the same application configuration on each Primer process that constructs
 the provider, including standalone workers. For a provider row with ID
-`codex-team`, the operator TOML has this shape (replace the placeholder with
+`codex-team`, the YAML supplied to `primer api --config` or `primer worker --config`
+has this shape (replace the placeholder with
 the provisioned ledger's 64-character lowercase hex identity):
 
-```toml
-[codex_brokers."codex-team"]
-trust_directory = "/etc/primer/codex/team"
-manifest_sha256 = "<canonical manifest identity from the provisioned ledger>"
+```yaml
+codex_brokers:
+  codex-team:
+    trust_directory: /etc/primer/codex/team
+    manifest_sha256: "<canonical manifest identity from the provisioned ledger>"
 ```
+
+The separate `PRIMER_CONFIG_PATH` environment setting selects a TOML file via
+`AppConfig`; it is not the CLI `--config` YAML argument. CLI YAML values override
+environment values, which override that TOML source. Configure the binding on
+every worker that may construct the provider.
 
 Use the versioned `manifest_identity(host.json)` described below. Hashing the
 file bytes produces a different digest. The row uses `provider = "codex"`
@@ -74,9 +81,21 @@ The requested model goes to the broker verbatim. The broker checks signed policy
 and account entitlement before inference. The existing direct-model check still
 applies to profile writes, independently of broker admission.
 
-The broker returns normalized events. The client releases a terminal tool-call
-batch after receiving `done`, clean EOF and completing socket cleanup. A refusal
-or truncated batch fails the step. Primer owns tool execution. The broker must
+The broker returns normalized events with ephemeral terminal receipts. The client
+buffers terminal calls until `done`, clean EOF and socket cleanup. Each subsequent
+caller advancement performs a new peer-verified `step/authorize` operation before
+yielding one terminal event, even after the model connection has closed. The
+broker compares the original signed policy and credential generation with the
+current registration, then admits that account/model. A receipt binds a fresh
+client step nonce, the exact request, aliases and event, expires within the original step deadline, and is
+invalid after broker restart. It is not a credential or an offline grant. No
+per-step server session remains when a consumer abandons a receipt.
+
+Authorization linearizes at the broker's fresh check during that advancement;
+it does not promise retroactive recall of an event already authorized/delivered.
+The client cannot fall back to an older broker that omits receipts. A refusal,
+changed policy, stale registration or truncated batch fails the step. Primer
+still owns execution-time tool authorization. The broker must
 already be running under its provisioned identity. This transport does not
 launch the installed Codex CLI.
 

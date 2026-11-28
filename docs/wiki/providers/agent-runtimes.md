@@ -68,6 +68,9 @@ empty provider config. The operator provisions dedicated sign-in and signed
 model permissions. If a step reports a missing or mismatched broker binding,
 ask the operator to check that worker's configuration. This transport uses
 the broker's Responses connection. Installed-CLI operation is still unverified.
+Terminal tool calls and completion events are readmitted against the original broker policy after a
+paused consumer resumes. A policy change or expired registration fails the step;
+start a new admitted step rather than replaying buffered tool actions.
 
 For a saved Codex provider, `system__fetch_llm_provider_models` returns the
 account-visible model names allowed by the operator's current signed policy.

@@ -813,6 +813,14 @@ socket. The broker checks the selected model against the account and signed
 policy before using the Responses endpoint. Primer owns tool execution and
 limits concurrent steps with the provider's shared rate limiter.
 
+Terminal events are held until the model stream completes, then independently
+readmitted at the broker on each consumer advancement using a short-lived receipt
+bound to the original request, event and signed policy/credential generation.
+Pausing a consumer does not preserve its earlier authorization after revocation.
+The same-host client also checks receipt expiry after authorization I/O and
+cleanup. Broker and client must support this protocol together; there is no
+fallback that releases calls without fresh admission.
+
 Use the [host binding instructions](../../../primer/llm/codex/broker/HOST.md)
 to configure the worker's manifest pin. This path requires a separately
 provisioned broker and dedicated credentials. The installed-CLI journey still

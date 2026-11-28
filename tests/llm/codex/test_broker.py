@@ -297,7 +297,7 @@ def test_private_store_permissions_symlink_and_single_writer(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["auth/login", "auth/token", "config/reload", "command/exec", "mcp/call", "models/list"])
+@pytest.mark.parametrize("method", ["auth/login", "auth/token", "config/reload", "command/exec", "mcp/call", "models/list", "step/authorize"])
 async def test_actual_unix_peer_protocol_has_no_auth_or_raw_escape(world, tmp_path, method):
     await world.login()
     path = str(tmp_path / "ipc.sock")
@@ -415,7 +415,9 @@ async def test_peer_disconnect_cancels_and_drains_actual_model_channel(world, tm
     try:
         reader, writer = await asyncio.open_unix_connection(path)
         request = prepare_request("model", [message()])
-        writer.write((compact({"method": "step/start", "params": {"request": request.wire(), "aliases": []}}) + "\n").encode())
+        writer.write((compact({"method": "step/start", "params": {
+            "request": request.wire(), "aliases": [], "delivery_nonce": "a" * 64,
+        }}) + "\n").encode())
         await writer.drain()
         await asyncio.wait_for(entered.wait(), 1)
         writer.close()

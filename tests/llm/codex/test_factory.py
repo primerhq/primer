@@ -145,7 +145,7 @@ async def test_cancel_during_connect_disposes_late_socket(local_peer, binding, m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("end", ["first_frame_stall", "event_stall", "truncated", "refused", "consumer_close"])
+@pytest.mark.parametrize("end", ["first_frame_stall", "event_stall", "truncated", "refused", "missing_receipt", "consumer_close"])
 async def test_incomplete_step_closes_peer_without_releasing_calls(local_peer, binding, end):
     loop = asyncio.get_running_loop()
     received = loop.create_future()
@@ -155,9 +155,12 @@ async def test_incomplete_step_closes_peer_without_releasing_calls(local_peer, b
             request = json.loads(await reader.readline())
             if end in {"event_stall", "consumer_close"}:
                 writer.write(b'{"event":{"type":"text_delta","text":"hello","index":0}}\n')
-            elif end in {"truncated", "refused"}:
+            elif end == "missing_receipt":
                 writer.write(b'{"event":{"type":"tool_call_start","id":"c","name":"files/read","index":0}}\n')
-                writer.write(b'{"event":{"type":"tool_call_end","id":"c","arguments":{},"index":0}}\n')
+                writer.write_eof()
+            elif end in {"truncated", "refused"}:
+                writer.write(b'{"event":{"type":"tool_call_start","id":"c","name":"files/read","index":0},"delivery":"unredeemed"}\n')
+                writer.write(b'{"event":{"type":"tool_call_end","id":"c","arguments":{},"index":0},"delivery":"unredeemed"}\n')
                 if end == "truncated":
                     writer.write(b'{"event":{"type":"done"')
                 else:

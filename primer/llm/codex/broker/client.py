@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
+import secrets
 import socket
 import sys
+import time
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import closing, contextmanager, suppress
 from pathlib import Path
@@ -16,6 +19,7 @@ from primer.model.chat import Done, ReasoningDelta, StreamEvent, TextDelta, Tool
 from primer.model.providers._shared import Limits
 
 from .host import HostTrust
+from .delivery import digest, step_digest
 
 _EVENTS = {
     "text_delta": TextDelta, "reasoning_delta": ReasoningDelta,
@@ -157,12 +161,14 @@ class BrokerClient:
                 self._discoveries.discard(task)
 
     async def _events(self, request: ModelRequest) -> AsyncGenerator[StreamEvent, None]:
+        nonce = secrets.token_hex(32)
+        request_id = step_digest(request, nonce)
         payload = compact({"method": "step/start", "params": {
-            "request": request.wire(), "aliases": request.aliases,
+            "request": request.wire(), "aliases": request.aliases, "delivery_nonce": nonce,
         }}).encode() + b"\n"
         if len(payload) > _BOUNDS.max_frame_bytes:
             raise BoundaryError("Codex broker request exceeds frame limit")
-        terminal: list[StreamEvent] = []
+        terminal: list[tuple[StreamEvent, str, str]] = []
         total = 0
         done = False
         writer = None
@@ -185,7 +191,7 @@ class BrokerClient:
                         or total > _BOUNDS.max_output_bytes):
                     raise BoundaryError("Invalid Codex broker stream")
                 frame = decode(line)
-                if not isinstance(frame, dict) or set(frame) != {"event"} or not isinstance(frame["event"], dict):
+                if not isinstance(frame, dict) or not isinstance(frame.get("event"), dict):
                     raise BoundaryError("Codex broker step refused")
                 data = frame["event"]
                 cls = _EVENTS.get(data.get("type"))
@@ -193,15 +199,18 @@ class BrokerClient:
                     raise BoundaryError("Unknown Codex broker event")
                 event = cls.model_validate(data, strict=True)
                 if isinstance(event, (TextDelta, ReasoningDelta)):
-                    if terminal:
+                    if terminal or set(frame) != {"event"}:
                         raise BoundaryError("Unexpected delta in terminal Codex events")
                     yield event
                 else:
-                    # Propagate tool calls only after the broker confirms the
-                    # entire terminal batch, including its signed-policy checks.
+                    # Receipts are not authorization. Complete the model stream
+                    # first, then ask the broker afresh on each consumer advance.
+                    if (set(frame) != {"event", "delivery"} or type(frame["delivery"]) is not str
+                            or not 0 < len(frame["delivery"]) <= 8192):
+                        raise BoundaryError("Missing Codex delivery receipt")
                     if len(terminal) >= 2 * _BOUNDS.max_calls + 2:
                         raise BoundaryError("Codex terminal batch exceeds limit")
-                    terminal.append(event)
+                    terminal.append((event, frame["delivery"], digest(data)))
                     done = isinstance(event, Done)
                 async with asyncio.timeout(self._limits.request_timeout_seconds):
                     line = await reader.readline()
@@ -216,8 +225,55 @@ class BrokerClient:
                 except BaseException:
                     writer.transport.abort()
                     raise
-        for event in terminal:
+        for event, receipt, event_id in terminal:
+            await self._authorize_delivery(receipt, request_id, event_id)
+            if self._closed:
+                raise BoundaryError("Codex broker client closed before delivery")
             yield event
+
+    async def _authorize_delivery(self, receipt: str, request: str, event: str) -> None:
+        """One fresh, peer-verified admission per caller-visible terminal event.
+
+        The broker checks the original snapshot during this advancement; no
+        previously buffered authorization reply is reused after a yield.
+        """
+        writer = None
+        try:
+            async with asyncio.timeout(self._limits.connect_timeout_seconds):
+                sock = await self._connected_socket()
+                try:
+                    reader, writer = await asyncio.open_unix_connection(sock=sock, limit=1024)
+                except BaseException:
+                    sock.close()
+                    raise
+                writer.write(compact({"method": "step/authorize", "params": {
+                    "receipt": receipt, "request": request, "event": event,
+                }}).encode() + b"\n")
+                await writer.drain()
+                line = await reader.readline()
+            async with asyncio.timeout(self._limits.request_timeout_seconds):
+                if await reader.read(1):
+                    raise BoundaryError("Unexpected Codex delivery authorization data")
+            reply = decode(line)
+            if (not line.endswith(b"\n") or len(line) > 1024 or type(reply) is not dict
+                    or set(reply) != {"authorized", "expires_at", "deadline"}
+                    or reply["authorized"] is not True
+                    or any(type(reply[key]) not in {int, float} or not math.isfinite(reply[key])
+                           for key in ("expires_at", "deadline"))):
+                raise BoundaryError("Codex terminal delivery refused")
+        finally:
+            if writer is not None:
+                writer.close()
+                try:
+                    async with asyncio.timeout(_BOUNDS.cleanup_seconds):
+                        await writer.wait_closed()
+                except BaseException:
+                    writer.transport.abort()
+                    raise
+        # Same-host Unix IPC shares the monotonic clock. Network/cleanup delay
+        # cannot stretch the original step deadline or signed grant expiry.
+        if self._closed or time.time() >= reply["expires_at"] or time.monotonic() >= reply["deadline"]:
+            raise BoundaryError("Codex delivery authorization expired before delivery")
 
     async def aclose(self) -> None:
         if asyncio.current_task() in self._discoveries:
