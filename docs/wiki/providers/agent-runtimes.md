@@ -1,15 +1,16 @@
 ---
 title: "Agent runtimes"
-summary: "Admin: run agents on a Claude subscription through the Claude Code CLI installed and logged in on the worker hosts."
+summary: "Admin: configure Claude Code runtime providers or operator-provisioned Codex model brokers."
 audience: admin
 order: 8
 tools: [system__create_llm_provider, system__fetch_llm_provider_models, llm_providers__get_llm_provider_runtime_status]
 related: [providers/llm, providers/model-profiles]
 ---
 ## What it is
-An agent runtime is an LLM provider that runs on a locally installed CLI instead of a model server. `claude_code` drives the operator's own logged-in `claude` CLI (Claude Code) on each worker host as the model backend: primer keeps the system prompt, the conversation, the tool catalogue and the execution of every tool call, and Claude Code contributes the model call and nothing else. The row is an ordinary [LLM provider](providers/llm): create it, check the host, register [model profiles](providers/model-profiles) for the models you will use, and point agents at the profiles.
+The console's Agent runtimes group includes CLI-backed providers and the Codex model broker. `claude_code` drives the operator's own logged-in `claude` CLI (Claude Code) on each worker host as the model backend: primer keeps the system prompt, the conversation, the tool catalogue and the execution of every tool call, and Claude Code contributes the model call and nothing else. Codex uses the dedicated broker described below. Each row is an ordinary [LLM provider](providers/llm): create it, check the host, register [model profiles](providers/model-profiles) for the models you will use, and point agents at the profiles.
 
 ## Concepts
+- Codex uses a separately provisioned model broker with dedicated credentials and signed permissions. It is grouped under Agent runtimes in the console, but its implemented transport is not the stock CLI. See the Codex model broker instructions below.
 - `provider` is `claude_code`. `config` has two fields and no credential: `binary_path` (default `claude`, resolved on the worker's `PATH`) and `pass_env` (names of extra worker variables copied to the child, for example `HTTPS_PROXY` on hosts behind a proxy). A `pass_env` name that starts with `PRIMER_` or contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `DATABASE` is refused, so primer's own secrets cannot reach the child.
 - Install `claude` on every host that runs a worker, and log in once, under the user that runs primer. The CLI's own login on the worker host is the credential; primer never stores, reads or forwards it. A worker that lacks the CLI fails the step with an error that names the binary and the host; a CLI that is logged out fails the step with an authentication error.
 - Model discovery answers with the CLI's aliases `sonnet`, `opus` and `haiku` (a profile's model name may use an alias or a full model id). Set the context length on the [model profile](providers/model-profiles).
@@ -81,6 +82,19 @@ field from supported model information. A successful discovery or profile save
 does not prove inference works; every inference step still checks authorization.
 Draft discovery has no saved account binding and refuses. Configure the saved
 provider's trusted broker first.
+
+In the console, choose **Providers > Agent runtimes > Register**, select
+**Codex**, and enter the exact provider ID supplied by the operator. Leave
+the broker connection and credentials to the operator; the form exposes no CLI
+or login fields and registers an empty config. Choose **Register provider**.
+Reopen that saved provider and choose **Import more models**. Select an offered
+model, enter its context length from supported model information, and import it.
+Then choose the new profile on the agent. If discovery fails, resolve the broker
+binding or account/policy error before importing; there is no draft or model-name
+fallback. Existing rows with CLI overrides need the operator to reset their
+config to the broker defaults before they can discover or run models.
+If first-run setup resumes the saved broker, its model step likewise requires
+you to enter the model's supported context length when discovery supplies none.
 
 ## Related
 [LLM providers](providers/llm), [model profiles](providers/model-profiles).

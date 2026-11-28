@@ -1441,3 +1441,58 @@ def test_index_loads_the_llm_page_after_the_overlay_and_before_the_catalog() -> 
     assert html.index(tag) > html.index('src="components/providers/register-overlay.jsx"')
     assert html.index(tag) > html.index('src="components/providers/register-common.jsx"')
     assert html.index(tag) < html.index('src="components/provider-catalog.jsx"')
+
+
+def test_codex_broker_registers_empty_config_without_a_draft_probe_then_imports_saved_models(ctx) -> None:
+    shape = types_of("llm_providers")["codex"]
+    assert shape["config_fields"] == []
+    assert shape["discoverable"] is False and shape["saved_discovery_only"] is True
+    _open(ctx, initialClass="agent_runtime")
+    _type(ctx, "pc-field:type", "codex")
+    _type(ctx, "pc-field:id", "cx-broker")
+    assert ctx.eval("MR.find('pc-register-next') === null") is True
+    assert ctx.eval("MR.find('pc-field:binary_path') === null") is True
+    assert ctx.eval("MR.find('pc-field:codex_home') === null") is True
+    assert ctx.eval("MR.find('pc-field:model_catalog_path') === null") is True
+    assert "Import more models" in ctx.eval("text('pc-saved-discovery-help')")
+    assert _press(ctx, "pc-register-submit") == "fulfilled"
+    assert _requests(ctx) == [("POST", "/llm_providers")]
+    created = _calls(ctx)[0]["body"]
+    assert created["id"] == "cx-broker" and created["provider"] == "codex" and created["config"] == {}
+    assert ctx.eval("CLOSED") == 1
+    assert js(ctx, "SAVED") == [created]
+
+    _route(ctx, {
+        "GET /llm_providers/cx-broker": {"answer": created},
+        "GET /llm_providers/cx-broker/models": {"answer": {"models": []}},
+        "GET /llm_providers/cx-broker/discovered_models": {
+            "answer": {"models": [{"name": "account-model", "display_name": "Account model"}],
+                       "source": "account_policy_filtered_broker", "transport": "model_only_responses"}},
+    })
+    _open(ctx, initialClass="agent_runtime", editRow=created)
+    assert _press(ctx, "pc-register-import-more") == "fulfilled"
+    assert ctx.eval("value('pc-import-context:account-model')") == ""
+    _tick(ctx, "account-model")
+    assert ctx.eval("disabled('pc-register-submit')") is True
+    _type(ctx, "pc-import-context:account-model", "8192")
+    assert _press(ctx, "pc-register-submit") == "fulfilled"
+    assert len(_calls(ctx, "POST", "/llm_providers")) == 1
+    assert _calls(ctx, "POST", "/llm_providers/_discover_models") == []
+    (profile,) = _calls(ctx, "POST", "/model_profiles")
+    assert profile["body"]["provider_id"] == "cx-broker"
+    assert profile["body"]["model_name"] == "account-model"
+    assert profile["body"]["context_length"] == 8192
+
+
+def test_codex_broker_saved_discovery_failure_does_not_fall_back_to_draft(ctx, envelopes) -> None:
+    row = {"id": "cx-missing", "provider": "codex", "config": {}, "limits": {"max_concurrency": 1}}
+    _route(ctx, {
+        "GET /llm_providers/cx-missing": {"answer": row},
+        "GET /llm_providers/cx-missing/models": {"answer": {"models": []}},
+        "GET /llm_providers/cx-missing/discovered_models": {"refuse": envelopes["probe_failed"]},
+    })
+    _open(ctx, initialClass="agent_runtime", editRow=row)
+    assert _press(ctx, "pc-register-import-more") == "fulfilled"
+    assert _error(ctx)
+    assert _calls(ctx, "POST") == []
+    assert ctx.eval("MR.find('pc-llm-models') === null") is True

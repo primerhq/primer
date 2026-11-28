@@ -845,6 +845,20 @@ the provider has a saved ID and operator binding. Setup's saved-provider check
 uses the same registry path. A probe stamp compares the complete Codex config
 to avoid stamping a concurrent config change with old results.
 
+The Codex `_types` entry has no editable CLI config fields and advertises
+`saved_discovery_only: true`. The registration wizard therefore offers
+**Register provider** immediately, submitting `config: {}`, instead of requiring
+a failing draft probe before registration. Its help explains the operator-bound
+provider ID and the saved row's **Import more models** action. The latter uses
+the existing model checklist and requires an explicit context length when
+discovery supplies none. Other providers retain their existing draft probe flow;
+existing nondefault Codex config values are preserved on edit and remain refused
+by the broker, rather than silently reset by hidden fields.
+The first-run setup wizard can also resume a saved broker row. Its model step
+uses a reported positive context length when present and otherwise requires the
+operator to enter one. Switching models resets that field from the selected
+model's evidence; it never supplies the former guessed 32000-token fallback.
+
 The retained `codex.models` catalogue reader describes only operator-provided
 compatibility hints. It opens once with nonblocking/no-follow/close-on-exec
 flags, validates regular-file type with `fstat`, and reads at most 4 MiB + 1
