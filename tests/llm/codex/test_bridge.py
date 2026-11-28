@@ -266,6 +266,26 @@ async def test_foundation_adapter_error_sanitization_and_slot_release():
         _ = [e async for e in adapter.stream(model="model", messages=[message()], extended={"config": {}})]
 
 
+@pytest.mark.asyncio
+async def test_adapter_sends_only_the_selected_reasoning_effort():
+    requests = []
+
+    def record(body):
+        requests.append(body)
+        return RecordedChannel(frames())
+
+    instance, _ = bridge(factory=record)
+    adapter = CodexFoundationLLM(instance, provider_id="test", rate_limiter=InMemoryRateLimiter())
+    try:
+        events = [event async for event in adapter.stream(
+            model="model", messages=[message()], extended={"reasoning_effort": "low"},
+        )]
+        assert events[-1].type == "done"
+        assert requests[0]["reasoning"] == {"effort": "low"}
+    finally:
+        await adapter.aclose()
+
+
 def test_actual_executable_harness_without_credentials_or_native_process(tmp_path):
     transcript = tmp_path / "synthetic.json"
     transcript.write_text(json.dumps(frames(["files/read"])))

@@ -46,7 +46,7 @@ class ModelRequest:
 
 def prepare_request(model: str, messages: list[Message], tools: list[Tool] | None = None,
                     *, tool_choice: str | None = None, max_output_tokens: int | None = None,
-                    response_schema: dict | None = None) -> ModelRequest:
+                    response_schema: dict | None = None, reasoning_effort: str | None = None) -> ModelRequest:
     if not isinstance(model, str) or not model.strip():
         raise BoundaryError("A model must be selected")
     names = [t.id for t in tools or []]
@@ -87,6 +87,8 @@ def prepare_request(model: str, messages: list[Message], tools: list[Tool] | Non
     declarations = [{"type": "function", "name": alias(t.id),
                      "description": t.description or "", "parameters": t.args_schema} for t in tools or []]
     wire: dict = {"model": model, "input": items, "tools": ([{"type": "namespace", "name": "primer", "tools": declarations}] if declarations else []), "store": False, "stream": True}
+    if reasoning_effort is not None:
+        wire["reasoning"] = {"effort": reasoning_effort}
     choice = tool_choice or "auto"
     if choice in {"auto", "none", "required"}:
         if choice == "required" and not names:

@@ -38,14 +38,17 @@ class LLMProviderType(str, Enum):
     OLLAMA = "ollama"
     OPENROUTER = "openrouter"
     CLAUDE_CODE = "claude_code"
+    CODEX = "codex"
 
 
 # Provider types that run an external, logged-in agent CLI as the model
-# backend (the claude_code plan, task 1). The child runs with the
-# operator's own CLI login, so a profile resolving to one of these must
-# stay private: publishing it would let any session spend the operator's
-# own credentials. bootstrap/seed.py checks this before publishing.
-AGENT_RUNTIME_TYPES: frozenset[LLMProviderType] = frozenset({LLMProviderType.CLAUDE_CODE})
+# backend (the claude_code plan, task 1; codex, the codex plan). The child
+# runs with the operator's own CLI login, so a profile resolving to one of
+# these must stay private: publishing it would let any session spend the
+# operator's own credentials. Agent runtimes are otherwise used like any
+# other provider: nothing refuses or special-cases their profiles or their
+# seeding.
+AGENT_RUNTIME_TYPES: frozenset[LLMProviderType] = frozenset({LLMProviderType.CLAUDE_CODE, LLMProviderType.CODEX})
 
 
 class OpenResponsesFlavor(str, Enum):
@@ -309,6 +312,66 @@ class ClaudeCodeConfig(BaseModel):
         return value
 
 
+class CodexConfig(BaseModel):
+    """Connection settings for the ``codex`` LLM provider.
+
+    Drives the operator's Codex CLI (``codex app-server``) installed on each
+    worker host as a model backend, so the row carries no credential of its
+    own: just where the CLI lives, its home directory, which environment
+    variables the adapter may pass through to the child, and the operator's
+    model catalog file (section 6.6). ``pass_env`` arrives from the console
+    form as a comma-separated string; the before-validator splits it and
+    refuses a name that looks like a credential or primer-internal plumbing,
+    the same screen as ``ClaudeCodeConfig``.
+    """
+
+    binary_path: str = Field(
+        default="codex",
+        description="Path or name of the codex CLI on every worker host.",
+    )
+    codex_home: str | None = Field(
+        default=None,
+        description="Optional Codex home directory; defaults to the CLI's own.",
+    )
+    pass_env: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra environment variable names the adapter passes through "
+            "to the child, only when set in the worker. A name that starts "
+            "with PRIMER_ or contains KEY, TOKEN, SECRET, PASSWORD or "
+            "DATABASE (case-insensitive) is refused."
+        ),
+    )
+    model_catalog_path: str | None = Field(
+        default=None,
+        description=(
+            "Optional path of the operator's model catalog file (Codex's "
+            "model_catalog_json): a model whose entry is marked "
+            '"tool_mode": "direct" is a direct-tool model (section 6.6).'
+        ),
+    )
+
+    @field_validator("pass_env", mode="before")
+    @classmethod
+    def _split_and_screen_pass_env(cls, value: object) -> object:
+        """Split the form's comma-separated string and refuse denied names.
+
+        The error names the offending variable so the operator knows which
+        entry to fix.
+        """
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, (list, tuple)):
+            for name in value:
+                if isinstance(name, str) and _denied_pass_env_name(name):
+                    raise ValueError(
+                        f"pass_env name {name!r} is refused: a name must not "
+                        "start with PRIMER_ or contain KEY, TOKEN, SECRET, "
+                        "PASSWORD or DATABASE (case-insensitive)"
+                    )
+        return value
+
+
 class LLMProvider(Grantable, Identifiable):
     """A configured LLM provider entry.
 
@@ -339,6 +402,7 @@ class LLMProvider(Grantable, Identifiable):
         | OllamaConfig
         | OpenRouterConfig
         | ClaudeCodeConfig
+        | CodexConfig
     ) = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
@@ -425,6 +489,7 @@ class LLMProvider(Grantable, Identifiable):
             LLMProviderType.OLLAMA: OllamaConfig,
             LLMProviderType.OPENROUTER: OpenRouterConfig,
             LLMProviderType.CLAUDE_CODE: ClaudeCodeConfig,
+            LLMProviderType.CODEX: CodexConfig,
         }.get(provider_enum)
         if config_cls is None:
             return data

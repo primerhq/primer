@@ -113,19 +113,20 @@ def test_class_by_key(ctx) -> None:
 
 
 def test_agent_runtime_class_shape(ctx) -> None:
-    """Agent runtimes are a class of the LLM plural (task 8 of the claude_code plan): the wizard form, the LLM rows, the claude_code kind only."""
+    """Agent runtimes are a class of the LLM plural (task 8 of the claude_code plan; codex, the codex plan): the wizard form, the LLM rows, the
+    claude_code and codex kinds only."""
     cls = js(ctx, "PC_classByKey('agent_runtime')")
     assert cls is not None, "the agent runtimes class is registered"
     assert cls["label"] == "Agent runtimes" and cls["noun"] == "Agent runtime"
-    assert cls["kinds"] == ["claude_code"]
+    assert cls["kinds"] == ["claude_code", "codex"]
     assert cls["plural"] == "llm_providers"
     assert cls["form"] == "wizard" and cls["nav"] is True
     assert cls["invalidate"] is True and cls["profiles"] is True
 
 
 def test_llm_class_excludes_agent_runtimes(ctx) -> None:
-    """A claude_code row is the agent runtimes class's, not the LLM class's: the LLM entry names the kind in excludeKinds, and no other class has one."""
-    assert js(ctx, "PC_classByKey('llm').excludeKinds") == ["claude_code"]
+    """A claude_code or codex row is the agent runtimes class's, not the LLM class's: the LLM entry names the kinds in excludeKinds, and no other class has one."""
+    assert js(ctx, "PC_classByKey('llm').excludeKinds") == ["claude_code", "codex"]
     for key, exclude in js(ctx, "PC_CLASSES.map(function (c) { return [c.key, c.excludeKinds || null]; })"):
         if key != "llm":
             assert exclude is None, (key, exclude)
@@ -140,6 +141,16 @@ def test_class_accepts_filters_rows(ctx) -> None:
     assert js(ctx, f"PC_classAccepts({llm}, {{ provider: 'anthropic' }})") is True
     assert js(ctx, f"PC_classAccepts({agent_rt}, {{ provider: 'anthropic' }})") is False, "the agent runtimes class draws no other kind"
     assert js(ctx, f"PC_classAccepts({llm}, {{ id: 'x' }})") is True, "a row without a known kind is the class's to draw"
+
+
+def test_codex_row_draws_only_under_agent_runtimes(ctx) -> None:
+    """A codex LLM provider row is drawn under the Agent runtimes class, not under the LLM class (the codex plan, task 4b): the same classification
+    claude_code rows get."""
+    agent_rt = "PC_classByKey('agent_runtime')"
+    llm = "PC_classByKey('llm')"
+    assert js(ctx, "PC_classOf('llm_providers', { provider: 'codex' })") == "agent_runtime", "a codex row is an agent runtime"
+    assert js(ctx, f"PC_classAccepts({agent_rt}, {{ provider: 'codex' }})") is True
+    assert js(ctx, f"PC_classAccepts({llm}, {{ provider: 'codex' }})") is False, "the LLM class draws no codex row"
 
 
 def test_every_class_has_a_distinct_icon_path(ctx) -> None:
@@ -171,10 +182,10 @@ def test_built_in_and_read_only_rows(ctx) -> None:
 
 
 def test_kind_labels_rename_the_served_kinds(ctx) -> None:
-    assert js(ctx, "Object.keys(PC_KIND_LABELS.llm)") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code"]
+    assert js(ctx, "Object.keys(PC_KIND_LABELS.llm)") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code", "codex"]
     assert js(ctx, "PC_KIND_LABELS.llm") == {
         "openchat": "OpenAI (completions)", "openresponses": "OpenAI (responses)", "anthropic": "Anthropic",
-        "gemini": "Gemini", "ollama": "Ollama", "openrouter": "OpenRouter", "claude_code": "Claude Code",
+        "gemini": "Gemini", "ollama": "Ollama", "openrouter": "OpenRouter", "claude_code": "Claude Code", "codex": "Codex",
     }
     assert js(ctx, "PC_KIND_LABELS.embedding") == {"openai": "OpenAI", "gemini": "Gemini", "huggingface": "Hugging Face"}
     assert js(ctx, "PC_KIND_LABELS.web_search") == {"tavily": "Tavily", "firecrawl": "Firecrawl", "exa": "Exa", "duckduckgo": "DuckDuckGo"}
@@ -198,7 +209,7 @@ def test_every_kind_the_server_serves_has_a_console_name() -> None:
         "artifact_storage_providers": "artifact_storage",
     }
     named = {
-        "llm": {"openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code"},
+        "llm": {"openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code", "codex"},
         "embedding": {"openai", "gemini", "huggingface"}, "cross_encoder": {"huggingface"}, "stt": {"openai"}, "tts": {"openai"},
         "web_search": {"tavily", "firecrawl", "exa", "duckduckgo"}, "web_fetch": {"jina", "firecrawl", "exa", "local"},
         "ssp": {"pgvector", "pgvectorscale", "lance"}, "artifact_storage": {"db", "filesystem", "s3"},
@@ -470,7 +481,7 @@ def test_served_kinds_drop_built_ins_and_follow_label_order(ctx) -> None:
     assert js(ctx, f"PC_servedKinds('web_fetch', {web_fetch}, ['local'])") == ["jina", "firecrawl", "exa"]
     assert js(ctx, f"PC_servedKinds('web_fetch', {web_fetch})") == ["jina", "firecrawl", "exa"], "local is built in whether or not it is excluded"
     assert js(ctx, f"PC_servedKinds('web_fetch', {web_fetch}, ['exa'])") == ["jina", "firecrawl"]
-    assert js(ctx, f"PC_servedKinds('llm', {llm})") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code"]
+    assert js(ctx, f"PC_servedKinds('llm', {llm})") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter", "claude_code", "codex"]
     # a kind the console has no name for is still offered (the server says what exists), after the named ones
     assert js(ctx, "PC_servedKinds('llm', { brandnew: {}, anthropic: {}, openchat: {} })") == ["openchat", "anthropic", "brandnew"]
     # a named kind the server does not serve is never offered
@@ -479,14 +490,16 @@ def test_served_kinds_drop_built_ins_and_follow_label_order(ctx) -> None:
 
 
 def test_the_wizards_offer_their_class_kinds(ctx) -> None:
-    """The register wizard hands the class's own kinds and excludeKinds to PC_servedKinds (task 8): the LLM wizard never offers claude_code, the
-    agent runtimes wizard offers exactly claude_code, under the console's name."""
+    """The register wizard hands the class's own kinds and excludeKinds to PC_servedKinds (task 8): the LLM wizard never offers claude_code or codex, the
+    agent runtimes wizard offers exactly its own kinds, under the console's names."""
     llm_types = json.dumps(types_of("llm_providers"))
     assert "claude_code" not in js(ctx, f"PC_servedKinds('llm', {llm_types}, PC_classByKey('llm').excludeKinds)"), \
         "the LLM class excludes the agent runtime kind"
+    assert "codex" not in js(ctx, f"PC_servedKinds('llm', {llm_types}, PC_classByKey('llm').excludeKinds)"), \
+        "the LLM class excludes the agent runtime kind"
     assert js(ctx, f"PC_servedKinds('agent_runtime', {llm_types}, PC_classByKey('agent_runtime').excludeKinds, PC_classByKey('agent_runtime').kinds)") \
-        == ["claude_code"], "the agent runtimes class offers only its own kind"
-    assert js(ctx, "PC_KIND_LABELS.agent_runtime") == {"claude_code": "Claude Code"}
+        == ["claude_code", "codex"], "the agent runtimes class offers only its own kinds"
+    assert js(ctx, "PC_KIND_LABELS.agent_runtime") == {"claude_code": "Claude Code", "codex": "Codex"}
 
 
 def test_embed_first_sorts_and_ticks(ctx) -> None:

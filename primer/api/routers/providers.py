@@ -507,6 +507,41 @@ async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
             "row_fields": [],
             "discoverable": True,
         },
+        LLMProviderType.CODEX.value: {
+            "label": "Codex",
+            "config_fields": [
+                _form_field(
+                    "binary_path",
+                    "CLI path",
+                    "text",
+                    placeholder="codex",
+                    help_="Path or name of the codex CLI on every worker host",
+                ),
+                _form_field(
+                    "codex_home",
+                    "Codex home (optional)",
+                    "text",
+                    help_="Override the Codex home directory; defaults to the CLI's own",
+                ),
+                _form_field(
+                    "pass_env",
+                    "Pass-through variables",
+                    "text",
+                    help_="Comma-separated environment variable names, for example HTTPS_PROXY",
+                ),
+                _form_field(
+                    "model_catalog_path",
+                    "Model catalog file (optional)",
+                    "text",
+                    help_=(
+                        "Path of the operator's model catalog (Codex's model_catalog_json); "
+                        'a model whose entry is marked "tool_mode": "direct" is usable'
+                    ),
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": False,
+        },
     })
 
 

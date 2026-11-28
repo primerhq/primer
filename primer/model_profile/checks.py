@@ -9,6 +9,8 @@ system ``create_`` / ``update_model_profile`` tools answer ``validation-error``.
 The checks (see the router's module docstring for the aggregation directive):
 
 * a single profile's ``provider_id`` names a stored LLMProvider;
+* a single profile on a ``codex`` provider names a direct-tool model (the codex plan, spec section 6.6): only ``gpt-5.5`` or a model the
+  operator's model catalog file marks ``"tool_mode": "direct"`` - on create and on update;
 * an aggregated profile names two or more distinct, existing, single members, and not itself;
 * a single profile's ``config.extended`` names only settings its provider's wire takes: an unknown key, a value the wire refuses, or a reserved ``body`` field is refused (``invalid_model_setting``);
 * on an update, the profile's kind is unchanged (GX-16: single and aggregated are not interconvertible, which is also why a listed member can
@@ -20,9 +22,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.common.entity_checks import EntityCheckError
+from primer.llm.codex.models import is_direct_model
 from primer.llm.settings_catalogue import validate_extended, wire_of
 from primer.model.model_profile import ModelProfile
-from primer.model.provider import LLMProvider
+from primer.model.provider import LLMProvider, LLMProviderType
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
@@ -44,6 +47,28 @@ async def check_provider_exists(entity: ModelProfile, *, storage_provider: "Stor
             f"LLMProvider {entity.provider_id!r} does not exist; "
             "create the provider before registering a profile on it",
         )
+
+
+async def check_codex_direct_model(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
+    """A single profile on a ``codex`` provider must name a direct-tool model (the codex plan, spec section 6.6).
+
+    Only ``gpt-5.5`` or a model the operator's model catalog file marks ``"tool_mode": "direct"`` may be used, so Codex's JavaScript
+    ``exec``/``wait`` tools are never registered. No-op for aggregated profiles: every member is a single profile, checked when it is
+    created or updated."""
+    if entity.kind != "single":
+        return
+    storage = storage_provider.get_storage(LLMProvider)
+    provider = await storage.get(entity.provider_id)
+    if provider is None or provider.provider != LLMProviderType.CODEX:
+        return
+    if is_direct_model(entity.model_name, catalog_path=getattr(provider.config, "model_catalog_path", None)):
+        return
+    raise _refuse(
+        "codex_model_not_direct",
+        "model_name",
+        "codex profiles need a direct-tool model: gpt-5.5, or a model the "
+        'provider\'s model catalog file marks "tool_mode": "direct"',
+    )
 
 
 async def check_aggregation_valid(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
@@ -131,6 +156,7 @@ async def check_profile_settings(entity: ModelProfile, *, storage_provider: "Sto
 async def check_profile_on_create(entity: ModelProfile, *, storage_provider: "StorageProvider") -> None:
     """Every create-time check, in the router's order."""
     await check_provider_exists(entity, storage_provider=storage_provider)
+    await check_codex_direct_model(entity, storage_provider=storage_provider)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
     await check_profile_settings(entity, storage_provider=storage_provider)
 
@@ -140,12 +166,14 @@ async def check_profile_on_update(entity: ModelProfile, existing: ModelProfile, 
     system tools) run exactly this."""
     check_kind_unchanged(entity, existing)
     await check_provider_exists(entity, storage_provider=storage_provider)
+    await check_codex_direct_model(entity, storage_provider=storage_provider)
     await check_aggregation_valid(entity, storage_provider=storage_provider)
     await check_profile_settings(entity, storage_provider=storage_provider)
 
 
 __all__ = [
     "check_aggregation_valid",
+    "check_codex_direct_model",
     "check_kind_unchanged",
     "check_profile_on_create",
     "check_profile_on_update",

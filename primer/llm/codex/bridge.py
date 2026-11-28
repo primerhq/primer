@@ -33,7 +33,7 @@ def _validate_request(request: ModelRequest, config: BridgeConfig) -> dict:
         raise BoundaryError("Codex request exceeds size limit")
     try:
         wire = request.wire()
-        allowed = {"model", "input", "tools", "store", "stream", "tool_choice", "text"}
+        allowed = {"model", "input", "tools", "store", "stream", "tool_choice", "text", "reasoning"}
         if type(wire) is not dict or set(wire) - allowed or wire.get("store") is not False or wire.get("stream") is not True:
             raise ValueError
         if type(wire["model"]) is not str or not wire["model"]:
@@ -71,6 +71,11 @@ def _validate_request(request: ModelRequest, config: BridgeConfig) -> dict:
                 raise ValueError
         else:
             raise ValueError
+        if "reasoning" in wire:
+            reasoning = wire["reasoning"]
+            if (type(reasoning) is not dict or set(reasoning) != {"effort"}
+                    or type(reasoning["effort"]) is not str or not reasoning["effort"].strip()):
+                raise ValueError
         if "text" in wire:
             text = wire["text"]
             fmt = text["format"]

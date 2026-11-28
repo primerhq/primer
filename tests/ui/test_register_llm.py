@@ -214,9 +214,12 @@ def test_page_one_shows_url_only_for_kinds_that_have_one(ctx, kind: str, has_url
 
 
 def test_the_type_select_lists_the_llm_kinds_in_the_designs_order_and_never_claude_code(ctx) -> None:
-    """claude_code is the agent runtimes class's kind, not the LLM class's (the claude_code plan, task 8): the LLM wizard excludes it."""
+    """claude_code and codex are the agent runtimes class's kinds, not the LLM class's (the claude_code plan, task 8; codex, the codex plan): the LLM
+    wizard excludes them."""
     _open(ctx)
-    assert js(ctx, "options('pc-field:type')") == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter"]
+    options = js(ctx, "options('pc-field:type')")
+    assert options == ["openchat", "openresponses", "anthropic", "gemini", "ollama", "openrouter"]
+    assert "claude_code" not in options and "codex" not in options, "the LLM select never offers an agent runtime kind"
     assert ctx.eval("value('pc-field:type')") == "openchat"
     labels = js(ctx, "ALL('pc-field:type').filter(function (n) { return n.type === 'option'; }).map(function (n) { return textOf(n); })")
     assert labels == ["OpenAI (completions)", "OpenAI (responses)", "Anthropic", "Gemini", "Ollama", "OpenRouter"]
@@ -1183,19 +1186,20 @@ def test_a_discovery_answer_for_a_connection_that_has_since_changed_is_not_used(
 
 def test_the_kinds_a_caller_excludes_are_not_offered(ctx) -> None:
     _open(ctx, excludeKinds=["ollama", "anthropic"])
-    # the class's own exclusion (claude_code, the agent runtimes kind) rides on top of the caller's
+    # the class's own exclusions (claude_code and codex, the agent runtimes kinds) ride on top of the caller's
     assert js(ctx, "options('pc-field:type')") == ["openchat", "openresponses", "gemini", "openrouter"]
 
 
 # ---- agent runtimes (the claude_code plan, task 8) -------------------------------------------------------------------
 
-def test_the_agent_runtime_wizard_offers_exactly_claude_code(ctx) -> None:
-    """The agent runtimes class is the LLM plural's wizard narrowed to its own kind: the Type select offers exactly claude_code, under the console's name."""
+def test_the_agent_runtime_wizard_offers_exactly_its_own_kinds(ctx) -> None:
+    """The agent runtimes class is the LLM plural's wizard narrowed to its own kinds: the Type select offers exactly claude_code and codex, under the
+    console's names (codex, the codex plan)."""
     _open(ctx, initialClass="agent_runtime")
-    assert js(ctx, "options('pc-field:type')") == ["claude_code"]
+    assert js(ctx, "options('pc-field:type')") == ["claude_code", "codex"]
     assert ctx.eval("value('pc-field:type')") == "claude_code"
     labels = js(ctx, "ALL('pc-field:type').filter(function (n) { return n.type === 'option'; }).map(function (n) { return textOf(n); })")
-    assert labels == ["Claude Code"]
+    assert labels == ["Claude Code", "Codex"]
 
 
 def test_the_agent_runtime_connection_page_carries_the_disclosure(ctx) -> None:

@@ -56,11 +56,12 @@ window.PC_profileIdFor = PC_profileIdFor;
 const PC_CLASSES = [
   { key: "llm", label: "LLM", noun: "LLM", plural: "llm_providers", form: "wizard", nav: true,
     iconPath: "M2 2.5h10v9H2Z M4 5h1.5 M4 7.2h4 M4 9.4h2.5", invalidate: true, profiles: true,
-    excludeKinds: ["claude_code"] },
-  // Agent runtimes (the claude_code plan, task 8): the LLM plural's wizard narrowed to the agent runtime kind; its rows are the claude_code rows the LLM class excludes above
+    excludeKinds: ["claude_code", "codex"] },
+  // Agent runtimes (the claude_code plan, task 8; codex, the codex plan): the LLM plural's wizard narrowed to the agent runtime kinds; its rows are the
+  // claude_code and codex rows the LLM class excludes above
   // (the catalog keeps the two classes' rows apart with PC_classAccepts).
   { key: "agent_runtime", label: "Agent runtimes", noun: "Agent runtime", plural: "llm_providers", form: "wizard", nav: true,
-    iconPath: "M7 2 11.5 8H9v5H5V8H2.5Z", invalidate: true, profiles: true, kinds: ["claude_code"] },
+    iconPath: "M7 2 11.5 8H9v5H5V8H2.5Z", invalidate: true, profiles: true, kinds: ["claude_code", "codex"] },
   { key: "embedding", label: "Embedding", noun: "Embedding", plural: "embedding_providers", form: "wizard", nav: true,
     iconPath: "M2 7a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0 M5.5 3.5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0 M9 10.5a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0 "
       + "M4.6 6.1 6 4.4 M7.9 4.8l2 4.5",
@@ -130,8 +131,8 @@ const PC_BUILTIN_KINDS = { web_search: ["duckduckgo"], web_fetch: ["local"] };
 // A served kind with no name here keeps the served label, then its raw value (PC_kindLabel), and is offered after the named ones (PC_servedKinds).
 const PC_KIND_LABELS = {
   llm: { openchat: "OpenAI (completions)", openresponses: "OpenAI (responses)", anthropic: "Anthropic", gemini: "Gemini", ollama: "Ollama",
-    openrouter: "OpenRouter", claude_code: "Claude Code" },
-  agent_runtime: { claude_code: "Claude Code" },
+    openrouter: "OpenRouter", claude_code: "Claude Code", codex: "Codex" },
+  agent_runtime: { claude_code: "Claude Code", codex: "Codex" },
   embedding: { openai: "OpenAI", gemini: "Gemini", huggingface: "Hugging Face" },
   cross_encoder: { huggingface: "Hugging Face" },
   tts: { openai: "OpenAI-compatible" },
@@ -174,9 +175,9 @@ function PC_classAccepts(klass, row) {
   return true;
 }
 
-// The class a provider row of the named plural belongs to (the claude_code plan, task 8): the first class of that plural whose rules (PC_classAccepts)
-// draw the row. An LLM provider is the agent_runtime class when its kind is claude_code (the llm class excludes that kind and agent_runtime names
-// it), and the llm class for every other kind.
+// The class a provider row of the named plural belongs to (the claude_code plan, task 8; codex, the codex plan): the first class of that plural whose rules (PC_classAccepts)
+// draw the row. An LLM provider is the agent_runtime class when its kind is claude_code or codex (the llm class excludes those kinds and agent_runtime names
+// them), and the llm class for every other kind.
 function PC_classOf(plural, row) {
   for (let i = 0; i < PC_CLASSES.length; i++) {
     const klass = PC_CLASSES[i];

@@ -9,6 +9,9 @@ from pydantic import BaseModel
 
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
+from primer.llm._reasoning import openresponses_extended
+from primer.llm.settings_catalogue import validate_extended
+from primer.model.model_profile import ModelProfileConfig
 from primer.llm.codex.bridge import ModelOnlyBridge
 from primer.llm.codex.request import prepare_request
 from primer.llm.codex.lifecycle import OwnedStream
@@ -34,6 +37,9 @@ class CodexFoundationLLM(LLM):
         self._active: set[OwnedStream] = set()
         self._closed = False
 
+    def profile_extended(self, config: ModelProfileConfig, *, model: str | None = None) -> dict[str, Any]:
+        return openresponses_extended(config, flavor="openai", model=model)
+
     def stream(self, *, model: str, messages: list[Message],
                      temperature: float | None = None, top_p: float | None = None,
                      max_output_tokens: int | None = None, stop: list[str] | None = None,
@@ -56,11 +62,16 @@ class CodexFoundationLLM(LLM):
                      response_format: type[BaseModel] | dict[str, Any] | None = None,
                      tools: list[Tool] | None = None, tool_choice: ToolChoice | None = None,
                      extended: dict[str, Any] | None = None) -> AsyncIterator[StreamEvent]:
-        if temperature is not None or top_p is not None or stop or extended:
-            raise UnsupportedContentError("Codex foundation does not yet support sampling or extended overrides")
+        if temperature is not None or top_p is not None or stop:
+            raise UnsupportedContentError("Codex does not support sampling or stop overrides")
+        settings = extended or {}
+        problems = validate_extended("codex", settings)
+        if problems:
+            raise UnsupportedContentError(problems[0].message)
         schema = response_format.model_json_schema() if isinstance(response_format, type) else response_format
         request = prepare_request(model, messages, tools, tool_choice=tool_choice,
-                                  max_output_tokens=max_output_tokens, response_schema=schema)
+                                  max_output_tokens=max_output_tokens, response_schema=schema,
+                                  reasoning_effort=settings.get("reasoning_effort"))
         async with await self._limiter.acquire(self._key, max_concurrency=self._concurrency):
             stream = self._bridge.stream(request)
             try:
