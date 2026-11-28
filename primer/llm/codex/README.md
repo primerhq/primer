@@ -1,11 +1,10 @@
 # ChatGPT plan model bridge foundation
 
-Status: offline implementation for independent review. This package is not a
-registered provider, a working Codex CLI integration, or an authenticated model
-backend. No API, UI, environment variable, or runtime capability flag activates
-it. The original harness replays explicit synthetic data. A separate unregistered
-[broker candidate](broker/README.md) now implements OAuth, signed policy,
-fixed-origin HTTP and peer-checked IPC; it has only offline test evidence.
+The provider registry routes an explicitly bound `codex` row to a provisioned
+model broker. The broker owns credential handling and signed-policy admission.
+The offline harness replays synthetic data. A live session through the installed
+Codex CLI remains a separate verification requirement.
+See the [host binding and deployment prerequisites](broker/HOST.md).
 
 ## Architecture decision
 
@@ -153,7 +152,7 @@ transcript/input data, writes only protocol output, and owns no child process.
 2. Independently review the separate credential/policy broker candidate and
    its offline OAuth, storage, policy, HTTP and peer-identity tests. Then wire
    trusted host supervision, genuine authority inventory, separate OS identity,
-   callback listener ownership and management UI before registration. Honor
+   callback listener ownership and management UI before deployment. Honor
    every applicable administrator requirement; incompatible mandatory native
    actions refuse. Passing signature tests does not establish who the real
    administrators are or authorize disabling host policy.
@@ -161,8 +160,8 @@ transcript/input data, writes only protocol output, and owns no child process.
    entitlement are external facts. No such identity was read or used here.
    Obtain genuine model/tool/usage/error/refresh/cleanup evidence; never borrow
    personal auth. Missing login does not block the offline implementation work.
-4. After the safe foundation/broker review, add persisted config and factory,
-   discovery/profile validation, console status/import, wiki and E2E journey.
+4. Verify the provider factory with hosted CI. Reconcile model discovery and
+   profile validation, console status/import and the installed-CLI E2E journey.
    Full response fidelity and error/retry semantics remain required. The
    original seven-stage plan is not marked complete by these tests.
 

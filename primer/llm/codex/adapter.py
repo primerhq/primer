@@ -1,9 +1,9 @@
-"""Unregistered LLM foundation over an admitted executor-free bridge."""
+"""LLM adapter over an admitted model-only step."""
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -12,21 +12,24 @@ from primer.int.llm import LLM
 from primer.llm._reasoning import openresponses_extended
 from primer.llm.settings_catalogue import validate_extended
 from primer.model.model_profile import ModelProfileConfig
-from primer.llm.codex.bridge import ModelOnlyBridge
-from primer.llm.codex.request import prepare_request
+from primer.llm.codex.request import ModelRequest, prepare_request
 from primer.llm.codex.lifecycle import OwnedStream
 from primer.llm.codex.boundary import BoundaryError
 from primer.model.chat import Error, Message, StreamEvent, Tool, ToolChoice
 from primer.model.except_ import TokenCounterUnavailable, UnsupportedContentError
 
 
-class CodexFoundationLLM(LLM):
-    """Not a configurable provider until the live boundary is independently qualified.
+class ModelStepBridge(Protocol):
+    """Implemented by ModelOnlyBridge and its authenticated broker client."""
 
-    Receiving a bridge is trusted dependency injection, not an authorization
-    claim. No registry, enum, UI or credential-config entry enables this class.
-    """
-    def __init__(self, bridge: ModelOnlyBridge, *, provider_id: str,
+    def stream(self, request: ModelRequest) -> OwnedStream: ...
+    async def aclose(self) -> None: ...
+
+
+class CodexFoundationLLM(LLM):
+    """Run model-only steps under the provider's concurrency limiter."""
+
+    def __init__(self, bridge: ModelStepBridge, *, provider_id: str,
                  rate_limiter: RateLimiter, max_concurrency: int = 1):
         if type(max_concurrency) is not int or max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")

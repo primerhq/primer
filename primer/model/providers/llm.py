@@ -313,31 +313,24 @@ class ClaudeCodeConfig(BaseModel):
 
 
 class CodexConfig(BaseModel):
-    """Connection settings for the ``codex`` LLM provider.
+    """Stored CLI settings retained for compatibility with existing provider rows.
 
-    Drives the operator's Codex CLI (``codex app-server``) installed on each
-    worker host as a model backend, so the row carries no credential of its
-    own: just where the CLI lives, its home directory, which environment
-    variables the adapter may pass through to the child, and the operator's
-    model catalog file (section 6.6). ``pass_env`` arrives from the console
-    form as a comma-separated string; the before-validator splits it and
-    refuses a name that looks like a credential or primer-internal plumbing,
-    the same screen as ``ClaudeCodeConfig``.
+    The model broker accepts the defaults. Its connection and account binding
+    come from the operator's application configuration and host manifest.
     """
 
     binary_path: str = Field(
         default="codex",
-        description="Path or name of the codex CLI on every worker host.",
+        description="CLI executable setting. Leave at its default for the broker transport.",
     )
     codex_home: str | None = Field(
         default=None,
-        description="Optional Codex home directory; defaults to the CLI's own.",
+        description="CLI home override. The broker transport requires this field to be unset.",
     )
     pass_env: list[str] = Field(
         default_factory=list,
         description=(
-            "Extra environment variable names the adapter passes through "
-            "to the child, only when set in the worker. A name that starts "
+            "CLI environment allowlist. The broker transport requires an empty list. A name that starts "
             "with PRIMER_ or contains KEY, TOKEN, SECRET, PASSWORD or "
             "DATABASE (case-insensitive) is refused."
         ),
@@ -345,9 +338,9 @@ class CodexConfig(BaseModel):
     model_catalog_path: str | None = Field(
         default=None,
         description=(
-            "Optional path of the operator's model catalog file (Codex's "
-            "model_catalog_json): a model whose entry is marked "
-            '"tool_mode": "direct" is a direct-tool model (section 6.6).'
+            "Optional CLI model catalog used during profile validation. "
+            'An entry with "tool_mode": "direct" qualifies for a direct-tool profile. '
+            "The broker transport requires this field to be unset."
         ),
     )
 

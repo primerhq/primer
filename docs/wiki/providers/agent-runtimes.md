@@ -60,11 +60,14 @@ Reference: [`system__fetch_llm_provider_models`](reference/tools/system/fetch_ll
 - Claude Code cannot execute a tool on its own: every tool call returns to primer, which executes it, with approval gates included.
 - An interrupted step reports 0 usage; that step is not counted in the recorded token totals.
 
+## Codex model broker
+
+A `codex` provider can run model steps through a dedicated broker provisioned
+by the host operator. Use the exact provider ID bound on the worker and an
+empty provider config. The operator provisions dedicated sign-in and signed
+model permissions. If a step reports a missing or mismatched broker binding,
+ask the operator to check that worker's configuration. This transport uses
+the broker's Responses connection. Installed-CLI operation is still unverified.
+
 ## Related
 [LLM providers](providers/llm), [model profiles](providers/model-profiles).
-
-Codex / ChatGPT plan support is not currently available as a registered Primer
-provider. An internal bridge and credential-broker candidate are being tested
-offline. They do not authorize using an existing personal Codex login or enable
-a live backend. Dedicated consent, verified administrator policy and isolated
-broker deployment are required before provider activation.

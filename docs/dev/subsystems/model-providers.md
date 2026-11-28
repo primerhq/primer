@@ -805,16 +805,15 @@ Integration smokes live under `tests/integration/test_<provider>_smoke.py`, each
 - **The cross-encoder reranker family landed after the shared-architecture spec and is held to the same no-local-semaphore invariant.** Why: rerankers are a third model family that reuses the adapter contract (validate, lazy load, shared `RateLimiter`, classify) and the source-level pin keeps new adapters on the post-spec design. Spec: docs/superpowers/specs/2026-05-27-backend-architecture-audit.md.
 - **A fresh `claude` process runs per model step rather than one warm process per conversation.** Why: a Claude Code process holds exactly one conversation and sits at about 200 MB resident between turns, so a worker serving many active sessions (and every agent node of a running graph) would hold one process apiece and run out of memory; the warm-process approach was rejected in favour of the per-step cost of about 2.2 s from spawn to first result and older history reaching the model as rendered text. Spec: docs/superpowers/specs/2026-11-14-claude-code-llm-provider-design.md (section 5, approach A over B).
 
-## Codex / ChatGPT plan foundation (not registered)
+## Codex model broker
 
-`primer/llm/codex/` contains an executor-free, offline-tested model bridge
-foundation. It is not a selectable provider and has no live authentication
-acceptance. The unregistered `broker/` candidate implements protected credential
-storage, signed policy intersection, dedicated SIWC authentication/refresh and
-peer-checked model IPC, with synthetic offline evidence only. Genuine policy
-provenance and OS isolation remain deployment gates. Its integration uses the public
-Sign-in-with-ChatGPT Responses flow, not a stock Codex app-server with disabled
-tool flags. Primer still owns replay and tool execution; a separately reviewed
-broker must own credentials and enforce policy before activation. See the
-[boundary contract](../../../primer/llm/codex/README.md) and
-[broker candidate and remaining gates](../../../primer/llm/codex/broker/README.md).
+The provider factory builds `CodexFoundationLLM` for a `codex` row whose ID has
+an operator-configured broker binding. Each step uses a new peer-verified Unix
+socket. The broker checks the selected model against the account and signed
+policy before using the Responses endpoint. Primer owns tool execution and
+limits concurrent steps with the provider's shared rate limiter.
+
+Use the [host binding instructions](../../../primer/llm/codex/broker/HOST.md)
+to configure the worker's manifest pin. This path requires a separately
+provisioned broker and dedicated credentials. The installed-CLI journey still
+requires its own end-to-end verification.

@@ -1,9 +1,8 @@
-# Host trust boundary candidate (not activated)
+# Host trust for the Codex model broker
 
-This slice supplies `HostTrust`, `PolicyLedger`, `host_broker` and a peer-checked
-model-socket connection. It keeps the approved broker unregistered. It is an
-executor-free Sign-in-with-ChatGPT Responses adapter, not the Codex app-server.
-No service, user, key, credential, socket or configuration is provisioned here.
+Primer connects a bound Codex provider to a separately provisioned Linux broker.
+The broker performs Sign-in-with-ChatGPT Responses inference. The host operator
+provisions the service, dedicated identities, credentials, policy and socket.
 
 ## Trust contract
 
@@ -51,6 +50,35 @@ opposite peer UID. Same-UID code remains trusted. This is not executable identit
 attestation: compromised broker-UID code can impersonate the broker. A separately
 reviewed supervisor must pin the code/package, dependency environment and service
 identity before deployment. No arbitrary command or executable path is accepted.
+
+## Binding a Primer provider to the broker
+
+Use the same application configuration on each Primer process that constructs
+the provider, including standalone workers. For a provider row with ID
+`codex-team`, the operator TOML has this shape (replace the placeholder with
+the provisioned ledger's 64-character lowercase hex identity):
+
+```toml
+[codex_brokers."codex-team"]
+trust_directory = "/etc/primer/codex/team"
+manifest_sha256 = "<canonical manifest identity from the provisioned ledger>"
+```
+
+Use the versioned `manifest_identity(host.json)` described below. Hashing the
+file bytes produces a different digest. The row uses `provider = "codex"`
+and an empty `config` object. A missing binding, manifest mismatch or wrong
+Primer UID refuses adapter construction. CLI, home, environment and catalogue
+overrides in the provider row also refuse construction. The client repeats the
+host check and authenticates the socket peer before sending each `step/start`.
+The requested model goes to the broker verbatim. The broker checks signed policy
+and account entitlement before inference. The existing direct-model check still
+applies to profile writes, independently of broker admission.
+
+The broker returns normalized events. The client releases a terminal tool-call
+batch after receiving `done`, clean EOF and completing socket cleanup. A refusal
+or truncated batch fails the step. Primer owns tool execution. The broker must
+already be running under its provisioned identity. This transport does not
+launch the installed Codex CLI.
 
 ## Rollback and uncertain persistence
 
@@ -143,10 +171,8 @@ Responses endpoint citations remain in README.md. There is no API-key fallback.
 
 Remaining: real administrator provisioning and authenticated inventory, distinct
 OS users and supervised immutable package identity, loopback consent/management
-UX, dedicated live sign-in and entitlement/model evidence, full model IPC client
-translation/replay and configuration/UI integration, hosted regression gates and
-reviewed activation. Production registry, public tools/UI, live E2E and deployment
-are deliberately absent from this internal security slice, not declared complete.
+UX, dedicated live sign-in and entitlement/model evidence, discovery/UI
+integration, hosted regression gates and a verified end-to-end session.
 
 Disposal revokes descriptor fields before calling the OS. A late close error
 cannot leave authority live or cause a retry against a recycled descriptor number.
