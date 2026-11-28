@@ -184,6 +184,9 @@ def test_growth_after_fstat_is_still_bounded(tmp_path, monkeypatch) -> None:
 @pytest.mark.parametrize("raw", [
     b'[{"slug":"model","tool_mode":"direct"},{"slug":"model"}]',
     b'[{"slug":"model","tool_mode":"direct"},null]',
+    b'[{"slug":"model","tool_mode":"other","tool_mode":"direct"}]',
+    b'{"models":[],"models":[{"slug":"model","tool_mode":"direct"}]}',
+    b'[{"slug":"model","tool_mode":"direct","other":NaN}]',
     b'\xff',
 ])
 def test_ambiguous_or_invalid_catalogue_refuses(tmp_path, raw) -> None:

@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.access.person import person_from_request
 from primer.access.policy import catalogue_predicate, level_of, require, visible_predicate
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
+from primer.int.storage_provider import StorageProvider
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
 from primer.llm.claude_code.process import child_env
@@ -929,7 +930,7 @@ async def discover_llm_models(
 @route_tool(scoped_id="llm_providers__discover_saved_llm_models")
 async def discover_saved_llm_models(
     provider_id: str = Path(..., description="LLMProvider id"),
-    providers=Depends(get_llm_provider_storage),
+    storage_provider: StorageProvider = Depends(get_storage_provider),
     registry: ProviderRegistry = Depends(get_provider_registry),
 ) -> dict:
     """Live-probe a provider that already exists, using its stored config.
@@ -961,7 +962,7 @@ async def discover_saved_llm_models(
     """
     from primer.model.except_ import NotFoundError
 
-    row = await providers.get(provider_id)
+    row = await storage_provider.get_storage(LLMProvider).get(provider_id)
     if row is None:
         raise NotFoundError(f"LLMProvider {provider_id!r} does not exist")
     # mode="json" would re-mask every SecretStr to "**********" -- the exact
@@ -982,16 +983,18 @@ async def discover_saved_llm_models(
                 str(getattr(row.provider, "value", row.provider)), config,
             )
     except BadRequestError as exc:
-        await _stamp_saved_probe(providers, row, at=now, ok=False, error=str(exc))
+        await _stamp_saved_probe(storage_provider, row, at=now, ok=False, error=str(exc))
         raise
-    await _stamp_saved_probe(providers, row, at=now, ok=True, error=None)
+    await _stamp_saved_probe(storage_provider, row, at=now, ok=True, error=None)
     return result
 
 
 _PROBE_STAMP_FIELDS = frozenset({"last_probe_at", "last_probe_ok", "last_error"})
 
 
-async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool, error: str | None) -> None:
+async def _stamp_saved_probe(
+    storage_provider: StorageProvider, row: LLMProvider, *, at: datetime, ok: bool, error: str | None,
+) -> None:
     """Write ONLY the probe stamp (``last_probe_at``, ``last_probe_ok``, ``last_error``) onto the stored row (audit G2-10).
 
     The probe can run for seconds (Ollama asks ``/api/show`` once per model), and the stamp used to write back the whole row
@@ -1009,14 +1012,21 @@ async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool
     stamp = row.model_copy(update={"last_probe_at": at, "last_probe_ok": ok, "last_error": error}).model_dump(
         mode="json", include=set(_PROBE_STAMP_FIELDS),
     )
+    providers = storage_provider.get_storage(LLMProvider)
     where: dict[Any, list[Any]] = {"provider": [raw_generation(row, "provider")]}
+    if row.provider == LLMProviderType.CODEX:
+        # The complete config (including the pass_env list) cannot be compared
+        # with scalar patch guards. Lock only after the broker I/O finishes.
+        async with storage_provider.locking_transaction(models=(LLMProvider,)) as conn:
+            current = await providers.get_for_update(row.id, conn=conn)
+            if (current is None or current.provider != row.provider
+                    or current.config != row.config or current.limits != row.limits):
+                return
+            await patch_if_checked(providers, row.id, stamp, where=where, conn=conn)
+        return
     config = raw_generation(row, "config")
     if isinstance(config, dict) and "url" in config:
         where[("config", "url")] = [config["url"]]
-    if row.provider == LLMProviderType.CODEX:
-        # No URL: changing CLI/home/catalogue config must not retain a probe
-        # stamp made for the old broker-compatible configuration.
-        where["config"] = [config]
     try:
         written = await patch_if_checked(providers, row.id, stamp, where=where)
     except NotFoundError:

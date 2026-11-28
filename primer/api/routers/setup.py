@@ -17,7 +17,6 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
-    get_llm_provider_storage,
     get_provider_registry,
     get_semantic_search_registry,
     get_storage_provider,
@@ -290,11 +289,8 @@ async def _live_llm_provider_check(storage_provider, provider_registry=None) -> 
         detail = None
         for row in candidates:
             try:
-                extra = {"registry": provider_registry} if row.provider.value == "codex" else {}
                 await discover_saved_llm_models(
-                    provider_id=row.id,
-                    providers=get_llm_provider_storage(storage_provider),
-                    **extra,
+                    provider_id=row.id, storage_provider=storage_provider, registry=provider_registry,
                 )
             except BadRequestError as exc:
                 if "live model discovery is not supported" in str(exc):

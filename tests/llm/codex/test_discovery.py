@@ -111,17 +111,48 @@ async def test_discovery_cancellation_and_stall_dispose_connection(binding, loca
     listener = await asyncio.start_unix_server(handle, binding.trust_directory / "model.sock")
     limits = row(connect_timeout_seconds=0.5).limits
     async with listener, aclosing(BrokerClient(binding.trust_directory, binding.manifest_sha256, limits)) as client:
-        task = asyncio.create_task(client.models())
+        caller_continued, finish_caller = asyncio.Event(), asyncio.Event()
+
+        async def caller():
+            try:
+                return await client.models()
+            except asyncio.CancelledError:
+                if ending == "client_close":
+                    caller_continued.set()
+                    await finish_caller.wait()
+                raise
+
+        task = asyncio.create_task(caller())
         try:
             await asyncio.wait_for(entered.wait(), 2)
             if ending == "cancel":
                 task.cancel()
             elif ending == "client_close":
-                await client.aclose()
+                async with asyncio.timeout(2):
+                    await client.aclose()
+                    await caller_continued.wait()
+                    await finished.wait()
+                assert not task.done()
+                finish_caller.set()
             with pytest.raises(TimeoutError if ending == "stall" else asyncio.CancelledError):
                 await task
             await asyncio.wait_for(finished.wait(), 2)
             assert not client._discoveries
         finally:
+            finish_caller.set()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_zero_discovery_deadline_expires_at_first_wait(binding, local_peer, monkeypatch):
+    async def connect():
+        await asyncio.sleep(0)
+        pytest.fail("continued after a zero total timeout")
+
+    limits = row(total_timeout_seconds=0).limits
+    async with aclosing(BrokerClient(binding.trust_directory, binding.manifest_sha256, limits)) as client:
+        monkeypatch.setattr(client, "_connected_socket", connect)
+        with pytest.raises(TimeoutError):
+            await client.models()
+        assert not client._discoveries

@@ -37,7 +37,7 @@ class BrokerClient:
         self._identity = manifest_sha256
         self._limits = limits
         self._active: set[OwnedStream] = set()
-        self._discoveries: set[asyncio.Task] = set()
+        self._discoveries: set[asyncio.Task[list[dict[str, str]]]] = set()
         self._closed = False
         # Fail during executor construction, before receiving a prompt. Keep
         # only the operator's pins in the registry, never an idle descriptor.
@@ -100,13 +100,22 @@ class BrokerClient:
         catalogue file can select it. Require one complete bounded frame
         followed by EOF before exposing any results.
         """
-        task = asyncio.current_task()
-        if self._closed or task in self._discoveries:
+        if self._closed or asyncio.current_task() in self._discoveries:
             raise BoundaryError("Codex broker client is closed or reentered")
-        self._discoveries.add(task)
+        # Shutdown may cancel and join the socket operation. The caller can
+        # keep serving other work after it handles discovery cancellation.
+        operation = asyncio.create_task(self._read_models())
+        self._discoveries.add(operation)
+        try:
+            return await operation
+        finally:
+            self._discoveries.discard(operation)
+
+    async def _read_models(self) -> list[dict[str, str]]:
         writer = None
         try:
-            deadline = min(30.0, self._limits.total_timeout_seconds or 30.0)
+            total = self._limits.total_timeout_seconds
+            deadline = 30.0 if total is None else min(30.0, total)
             async with asyncio.timeout(deadline):
                 async with asyncio.timeout(self._limits.connect_timeout_seconds):
                     sock = await self._connected_socket()
@@ -141,24 +150,21 @@ class BrokerClient:
                 return models
         finally:
             failure = sys.exception()
-            try:
-                if writer is not None:
-                    async def close():
-                        writer.close()
-                        try:
-                            async with asyncio.timeout(_BOUNDS.cleanup_seconds):
-                                await writer.wait_closed()
-                        except BaseException:
-                            writer.transport.abort()
-                            raise
+            if writer is not None:
+                async def close():
+                    writer.close()
                     try:
-                        await drain(asyncio.create_task(close()))
+                        async with asyncio.timeout(_BOUNDS.cleanup_seconds):
+                            await writer.wait_closed()
                     except BaseException:
-                        if not isinstance(failure, asyncio.CancelledError):
-                            raise
-                        failure.add_note("Codex discovery cleanup failed during cancellation")
-            finally:
-                self._discoveries.discard(task)
+                        writer.transport.abort()
+                        raise
+                try:
+                    await drain(asyncio.create_task(close()))
+                except BaseException:
+                    if not isinstance(failure, asyncio.CancelledError):
+                        raise
+                    failure.add_note("Codex discovery cleanup failed during cancellation")
 
     async def _events(self, request: ModelRequest) -> AsyncGenerator[StreamEvent, None]:
         nonce = secrets.token_hex(32)

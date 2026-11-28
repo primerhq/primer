@@ -10,9 +10,10 @@ the model before use.
 
 from __future__ import annotations
 
-import json
 import os
 import stat
+
+from .request import decode
 
 SOURCE_REFERENCE = "rust-v0.169.0"
 MAX_CATALOG_BYTES = 4 * 1024 * 1024
@@ -59,7 +60,7 @@ def _catalog_tool_modes(catalog_path: str | None) -> dict[str, str | None]:
     if close_failed:
         return {}
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = decode(raw.decode("utf-8"))
     except (ValueError, RecursionError):
         return {}
     entries = data.get("models") if isinstance(data, dict) else data

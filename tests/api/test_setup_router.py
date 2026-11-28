@@ -462,7 +462,7 @@ async def test_live_check_reads_the_default_profiles_provider_by_id(client, app,
             inner = sp.get_storage(model)
             return Counting(inner) if model is LLMProvider else inner
 
-    async def probe(*, provider_id, providers):
+    async def probe(*, provider_id, storage_provider, registry):
         calls["probed"].append(provider_id)
 
     async def default_id(_sp):

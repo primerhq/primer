@@ -842,8 +842,10 @@ from the current list (`codex_model_unavailable`). Saving a profile is not an
 authorization lease: inference still performs its independent current-policy
 checks. Draft discovery cannot select an account from config and refuses until
 the provider has a saved ID and operator binding. Setup's saved-provider check
-uses the same registry path. A probe stamp compares the complete Codex config
-to avoid stamping a concurrent config change with old results.
+uses the same registry path. After broker I/O, the probe locks the saved
+provider row and compares its kind, complete config and limits before writing
+the three probe fields. Concurrent edits to the environment list and timeouts
+are included in that comparison.
 
 The Codex `_types` entry has no editable CLI config fields and advertises
 `saved_discovery_only: true`. The registration wizard therefore offers

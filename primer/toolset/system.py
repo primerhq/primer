@@ -1311,7 +1311,7 @@ def build_system_toolset(
 
         return await discover_saved_llm_models(
             provider_id=provider_id,
-            providers=storage_provider.get_storage(LLMProvider),
+            storage_provider=storage_provider,
             registry=provider_registry,
         )
 
