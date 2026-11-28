@@ -63,12 +63,12 @@ Reference: [`system__fetch_llm_provider_models`](reference/tools/system/fetch_ll
 
 ## Codex model broker
 
-A `codex` provider can run model steps through a dedicated broker provisioned
-by the host operator. Use the exact provider ID bound on the worker and an
-empty provider config. The operator provisions dedicated sign-in and signed
-model permissions. If a step reports a missing or mismatched broker binding,
-ask the operator to check that worker's configuration. This transport uses
-the broker's Responses connection. Installed-CLI operation is still unverified.
+A `codex` provider runs model steps through the broker's Responses connection.
+The operator provisions dedicated sign-in and signed model permissions, and
+binds the provider ID on the API for discovery and on each worker for inference.
+If a step reports a missing or mismatched binding, check that worker's configuration.
+Stock Codex CLI 0.171.0 has no qualified mode for running this provider with
+Primer as the sole tool executor.
 Terminal tool calls and completion events are readmitted against the original broker policy after a
 paused consumer resumes. A policy change or expired registration fails the step;
 start a new admitted step rather than replaying buffered tool actions.

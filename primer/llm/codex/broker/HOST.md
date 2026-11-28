@@ -53,8 +53,8 @@ identity before deployment. No arbitrary command or executable path is accepted.
 
 ## Binding a Primer provider to the broker
 
-Use the same application configuration on each Primer process that constructs
-the provider, including standalone workers. For a provider row with ID
+Give the API process that handles discovery and every worker that runs model
+steps the same provider-ID binding. For a provider row with ID
 `codex-team`, the YAML supplied to `primer api --config` or `primer worker --config`
 has this shape (replace the placeholder with
 the provisioned ledger's 64-character lowercase hex identity):
@@ -68,8 +68,7 @@ codex_brokers:
 
 The separate `PRIMER_CONFIG_PATH` environment setting selects a TOML file via
 `AppConfig`; it is not the CLI `--config` YAML argument. CLI YAML values override
-environment values, which override that TOML source. Configure the binding on
-every worker that may construct the provider.
+environment values, which override that TOML source.
 
 Use the versioned `manifest_identity(host.json)` described below. Hashing the
 file bytes produces a different digest. The row uses `provider = "codex"`
@@ -77,9 +76,15 @@ and an empty `config` object. A missing binding, manifest mismatch or wrong
 Primer UID refuses adapter construction. CLI, home, environment and catalogue
 overrides in the provider row also refuse construction. The client repeats the
 host check and authenticates the socket peer before sending each `step/start`.
-The requested model goes to the broker verbatim. The broker checks signed policy
-and account entitlement before inference. The existing direct-model check still
-applies to profile writes, independently of broker admission.
+
+In **Providers > Agent runtimes**, register **Codex** with the bound ID
+and `config: {}`. Reopen the saved row and choose **Import more models**.
+The console calls `GET /v1/llm_providers/{id}/discovered_models` to list the
+bound account's visible models allowed by signed policy. Discovery requires
+a saved provider. Select a returned model and enter its supported context length
+in tokens. The broker catalogue supplies names and display names only.
+Creating or updating a single-model profile checks that the model is still
+on that account's list. Each inference step checks current access again.
 
 The broker returns normalized events with ephemeral terminal receipts. The client
 buffers terminal calls until `done`, clean EOF and socket cleanup. Each subsequent
@@ -188,10 +193,11 @@ requires separate account registrations and protected token storage. Refreshed
 not an OpenAI-admin-policy API or OpenAI attestation. Original sign-in, token and
 Responses endpoint citations remain in README.md. There is no API-key fallback.
 
-Remaining: real administrator provisioning and authenticated inventory, distinct
-OS users and supervised immutable package identity, loopback consent/management
-UX, dedicated live sign-in and entitlement/model evidence, discovery/UI
-integration, hosted regression gates and a verified end-to-end session.
+Deployment verification requires real administrator provisioning and authenticated
+policy inventory, distinct OS users, supervised package identity, and a managed
+loopback consent flow. Verify dedicated sign-in, model access, and a complete
+Primer tool call and result replay on that deployment. The stock CLI has a
+separate [transport qualification and end-to-end requirement](../README.md#installed-cli-qualification-for-01710).
 
 Disposal revokes descriptor fields before calling the OS. A late close error
 cannot leave authority live or cause a retry against a recycled descriptor number.

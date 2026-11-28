@@ -8,12 +8,10 @@ See the [host binding and deployment prerequisites](broker/HOST.md).
 
 ## Architecture decision
 
-Use an executor-free **Sign-in-with-ChatGPT Responses adapter** as the next
-integration direction. Do not run the stock Codex agent harness and then filter
-its emitted tool events. The original product goal remains: eligible ChatGPT
-plan inference, Primer-owned history and tool execution, and credentials kept
-outside Primer. The CLI/process/thread implementation in the original proposal
-is replaced, not claimed implemented by this package.
+The provider uses an executor-free **Sign-in-with-ChatGPT Responses adapter**.
+The broker holds the dedicated account's credentials. Primer supplies the
+conversation history, executes authorized tool calls, and returns their results
+on the next model step.
 
 Official documentation fetched on 2026-11-21:
 
@@ -41,8 +39,8 @@ Official documentation fetched on 2026-11-21:
 
 These are documentation facts, not executed account/entitlement proofs. The
 endpoint is not a ChatGPT `backend-api` URL. No API-key fallback is implemented.
-The separate credential-owning broker candidate implements this flow for review;
-Primer's adapter must never receive its tokens or read its credential files.
+The separate credential-owning broker implements this flow. Primer's adapter
+receives model data through the peer-verified socket.
 Its deployment and genuine authentication gates remain open.
 
 The current released Codex source was also inspected at tag `rust-v0.171.0`,
@@ -156,8 +154,9 @@ advance; owners must explicitly close abandoned idle streams. No timeout context
 spans an async-generator yield. Timeouts rely on cooperative
 Python transport/authority implementations: this is not an OS sandbox, does
 not preempt a blocking Python constructor, and cannot kill an implementation
-that swallows cancellation forever. A future broker must add process ownership,
-OS isolation, bounded IPC, and forced reaping before relying on hard deadlines.
+that swallows cancellation forever. The broker bounds IPC. Hard process
+deadlines still require an OS-isolated service with a supervisor that can
+terminate and reap it.
 `CodexFoundationLLM` supplies the Primer stream shape and rate-limit ownership;
 error classification is deliberately generic and sanitized for this first slice.
 
@@ -194,10 +193,10 @@ transcript/input data, writes only protocol output, and owns no child process.
 1. Independently review this actual source and tests. Pin the accepted package
    and dependency identity; a hash or a runtime's own capability flag alone is
    not an authority grant.
-2. Independently review the separate credential/policy broker candidate and
+2. Independently review the credential/policy broker and
    its offline OAuth, storage, policy, HTTP and peer-identity tests. Then wire
    trusted host supervision, genuine authority inventory, separate OS identity,
-   callback listener ownership and management UI before deployment. Honor
+   callback listener ownership and credential management before deployment. Honor
    every applicable administrator requirement; incompatible mandatory native
    actions refuse. Passing signature tests does not establish who the real
    administrators are or authorize disabling host policy.
@@ -205,10 +204,11 @@ transcript/input data, writes only protocol output, and owns no child process.
    entitlement are external facts. No such identity was read or used here.
    Obtain genuine model/tool/usage/error/refresh/cleanup evidence; never borrow
    personal auth. Missing login does not block the offline implementation work.
-4. Verify the provider factory with hosted CI. Reconcile model discovery and
-   profile validation, console status/import and the installed-CLI E2E journey.
-   Full response fidelity and error/retry semantics remain required. The
-   original seven-stage plan is not marked complete by these tests.
+4. Verify the provider factory, saved-provider discovery, profile validation
+   and console import with hosted CI. The [host guide](broker/HOST.md) covers
+   the binding and registration steps. An installed-CLI session still requires
+   a qualified transport and its own end-to-end tool replay. Full response
+   fidelity and error/retry semantics also remain open.
 
 Original semantic mapping: ephemeral app-server threads become fresh stateless
 Responses steps; raw response completion becomes `response.completed`; held

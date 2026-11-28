@@ -822,9 +822,12 @@ cleanup. Broker and client must support this protocol together; there is no
 fallback that releases calls without fresh admission.
 
 Use the [host binding instructions](../../../primer/llm/codex/broker/HOST.md)
-to configure the worker's manifest pin. This path requires a separately
-provisioned broker and dedicated credentials. The installed-CLI journey still
-requires its own end-to-end verification.
+to configure the manifest pin on the API and each worker that runs this
+provider. This path requires a separately provisioned broker and dedicated
+credentials. The inspected stock CLI 0.171.0 lacks a qualified entry point
+that both excludes native tools before initialization and returns structured
+calls to Primer. An installed-CLI session therefore still requires a compatible
+transport and its own end-to-end verification.
 
 Saved-provider discovery (`GET /v1/llm_providers/{id}/discovered_models` and
 `system__fetch_llm_provider_models`) uses `ProviderRegistry.discover_codex_models`
