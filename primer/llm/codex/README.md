@@ -54,6 +54,51 @@ accepts an already-constructed handler. This is a source observation, not proof
 that that constructor executes a patch. It means the stock registry filter is
 not a literal pre-constructor ceiling. No production binary is approved here.
 
+### Installed CLI qualification for 0.171.0
+
+The inspected Linux x86_64 musl executable reported `codex-cli 0.171.0`
+and had SHA-256 `b76a027d6b210f9a8da7aaf321dd235c700f0ef7a794d4a5314b9af6c134f0f0`.
+This fingerprint identifies the sampled bytes. The source references below
+use the matching release tag. The inspection used empty private home and
+configuration directories for CLI help and schema generation.
+
+- **App-server threads.** `thread/start.dynamicTools` adds caller tools.
+  Sandbox, approval and config settings are independent of the tool allowlist
+  supplied through the host's `ExtensionDataInit`. Ordinary threads default to
+  normal tool selection. Startup also constructs hooks and installs the MCP
+  runtime. Even the built-in Guardian reviewer permits native command and image
+  handlers. A successful dynamic call alone cannot establish exclusive tool
+  ownership through startup and refresh.
+  [Tool policy](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/ext/extension-api/src/tool_policy.rs#L6-L29)
+  · [Session startup](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/session/session.rs#L1682-L1702)
+  · [Dynamic registration](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/tools/spec_plan.rs#L1658-L1671)
+  · [Reviewer policy](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/ext/guardian-reviewer/src/settings.rs#L44-L55)
+- **Thread sampling.** `thread/sample` requires `threadId`, `expectedTurnId`
+  and `prompt`. Its `disableMcp` option applies only to inherited incremental
+  tools on Responses Lite. A tool attempt produces null `text`. The response
+  omits the tool name, arguments and call ID needed for dispatch.
+- **Discovery.** `model/list` and `modelProvider/capabilities/read` return
+  metadata. Neither accepts a conversation and tool definitions for inference.
+- **Internal Responses proxy.** `responses-api-proxy` forwards a Responses
+  HTTP POST. Its credential inputs are an API key on stdin or GitHub workload
+  identity. It provides no Codex plan-login lifecycle or app-server dynamic-tool
+  protocol.
+  [Command dispatch](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/cli/src/main.rs#L1943-L1951)
+  · [Authentication](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/responses-api-proxy/src/lib.rs#L92-L107)
+
+To check the protocol surface on this release, run
+`codex app-server generate-json-schema --experimental --out <scratch-dir>`
+with an empty private `HOME` and `CODEX_HOME`. Inspect the 189 methods in
+`ClientRequest.json` and the request and response schemas under `v2/`.
+This operation requires no sign-in or running server.
+
+A CLI transport still needs an identifiable build or entry point that enforces
+the Primer-only tool set before native initialization and across configuration
+refresh, accepts the dedicated account's managed policy, and returns structured
+tool calls to Primer. Verify it with a full result-replay turn through the
+normal Primer factory, including refusal on policy loss. This release inspection
+did not establish such an entry point or an end-to-end Primer session.
+
 ## What executes
 
 `prepare_request` snapshots input and tool schemas, maps canonical Primer tool
