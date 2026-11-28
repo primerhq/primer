@@ -103,6 +103,30 @@ async def test_workspace_session_replays_tool_results_and_writes_receipt(
             response.raise_for_status()
             return response.json()
 
+        async def read_records(session_id):
+            # messages.jsonl is hybrid: unsequenced role/parts Messages are
+            # model history, not SessionMessageRecords. On this fresh session,
+            # after_seq=0 selects ALL durable events (including errors) before
+            # pagination. Do not silently filter missing kind/payload locally.
+            records = []
+            while True:
+                response = await client.get(f"/v1/sessions/{session_id}/messages", params={
+                    "limit": 500, "offset": len(records), "after_seq": 0,
+                    "visible": "false", "tail": "false",
+                })
+                response.raise_for_status()
+                page = response.json()
+                for record in page["items"]:
+                    assert type(record["seq"]) is int and record["seq"] > 0, record
+                    assert isinstance(record["kind"], str), record
+                    assert isinstance(record["payload"], dict), record
+                records.extend(page["items"])
+                if len(records) >= page["total"]:
+                    seqs = [record["seq"] for record in records]
+                    assert seqs == sorted(set(seqs)), records
+                    return records
+                assert page["items"], "log pagination stopped before its reported total"
+
         await create("auth/register", {"username": "operator", "password": secrets.token_urlsafe(18)})
         await create("llm_providers", {"id": "cx", "provider": "codex", "config": {},
                                        "limits": {"max_concurrency": 1, "max_retries": 0}})
@@ -132,9 +156,7 @@ async def test_workspace_session_replays_tool_results_and_writes_receipt(
         })
         async with asyncio.timeout(30):
             while True:
-                response = await client.get(f"/v1/sessions/{session['id']}/messages", params={"limit": 500})
-                response.raise_for_status()
-                items = response.json()["items"]
+                items = await read_records(session["id"])
                 errors = [item["payload"] for item in items if item["kind"] == "error"]
                 assert not errors, errors
                 detail = await client.get(f"/v1/sessions/{session['id']}")
