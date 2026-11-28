@@ -25,6 +25,8 @@ import pytest_asyncio
 # scripts/e2e/ sets the env var; contributors running `uv run pytest` from
 # the root do not, so they never see e2e collection failures.
 if os.environ.get("PRIMER_RUN_E2E") != "1":
+    if os.environ.get("PRIMER_E2E_REAL_CODEX_BROKER") == "1":
+        raise pytest.UsageError("The real Codex broker journeys require PRIMER_RUN_E2E=1")
     collect_ignore_glob = ["test_*.py"]
 
 
