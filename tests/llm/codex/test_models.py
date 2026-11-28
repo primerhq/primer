@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +14,17 @@ from primer.llm.codex.models import (
     SOURCE_REFERENCE,
     is_direct_model,
 )
+
+
+@pytest.fixture
+def catalog_os(monkeypatch):
+    from primer.llm.codex import models
+
+    # os is shared with pytest's FD capture and coverage/xdist. Replace only
+    # this reader's namespace so injected faults cannot break the runner.
+    operations = SimpleNamespace(**vars(os))
+    monkeypatch.setattr(models, "os", operations)
+    return operations
 
 
 def test_source_reference_does_not_admit_gpt_5_5() -> None:
@@ -76,7 +89,7 @@ def test_fifo_is_not_direct(tmp_path) -> None:
     assert is_direct_model("anything", catalog_path=str(fifo)) is False
 
 
-def test_replacement_with_fifo_at_open_is_nonblocking(tmp_path, monkeypatch) -> None:
+def test_replacement_with_fifo_at_open_is_nonblocking(tmp_path, monkeypatch, catalog_os) -> None:
     catalog = tmp_path / "catalog.json"
     catalog.write_text('[{"slug":"model","tool_mode":"direct"}]')
     real_open = os.open
@@ -92,14 +105,14 @@ def test_replacement_with_fifo_at_open_is_nonblocking(tmp_path, monkeypatch) -> 
         opened.append(fd)
         return fd
 
-    monkeypatch.setattr(os, "open", replace_then_open)
+    monkeypatch.setattr(catalog_os, "open", replace_then_open)
     assert is_direct_model("model", catalog_path=str(catalog)) is False
     assert len(opened) == 1
     with pytest.raises(OSError):
         os.fstat(opened[0])
 
 
-def test_read_uses_validated_descriptor_after_path_replacement(tmp_path, monkeypatch) -> None:
+def test_read_uses_validated_descriptor_after_path_replacement(tmp_path, monkeypatch, catalog_os) -> None:
     catalog = tmp_path / "catalog.json"
     catalog.write_text('[{"slug":"original","tool_mode":"direct"}]')
     real_fstat = os.fstat
@@ -112,7 +125,7 @@ def test_read_uses_validated_descriptor_after_path_replacement(tmp_path, monkeyp
         catalog.write_text('[{"slug":"replacement","tool_mode":"direct"}]')
         return info
 
-    monkeypatch.setattr(os, "fstat", replace_after_fstat)
+    monkeypatch.setattr(catalog_os, "fstat", replace_after_fstat)
     assert is_direct_model("original", catalog_path=str(catalog)) is True
     assert len(checked) == 1
     with pytest.raises(OSError):
@@ -129,14 +142,15 @@ def test_final_symlink_refused(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("operation", ["open", "fstat", "read", "close"])
-def test_io_failure_refuses_and_disposes_descriptor(tmp_path, monkeypatch, operation) -> None:
+def test_io_failure_refuses_and_disposes_descriptor(tmp_path, monkeypatch, catalog_os, operation) -> None:
     catalog = tmp_path / "catalog"
     catalog.write_text('[{"slug":"model","tool_mode":"direct"}]')
-    real_open, real_close = os.open, os.close
-    opened, closed = [], []
+    real_open, real_close, real_fstat = os.open, os.close, os.fstat
+    opened, closed, failures = [], [], []
 
     def tracked_open(*args):
         if operation == "open":
+            failures.append(operation)
             raise PermissionError("private pathname must not escape")
         fd = real_open(*args)
         opened.append(fd)
@@ -146,20 +160,32 @@ def test_io_failure_refuses_and_disposes_descriptor(tmp_path, monkeypatch, opera
         closed.append(fd)
         real_close(fd)
         if operation == "close":
+            failures.append(operation)
             raise OSError("uncertain close must not admit")
 
     def fail(*args):
+        failures.append(operation)
         raise OSError("read failure")
 
-    monkeypatch.setattr(os, "open", tracked_open)
-    monkeypatch.setattr(os, "close", tracked_close)
+    monkeypatch.setattr(catalog_os, "open", tracked_open)
+    monkeypatch.setattr(catalog_os, "close", tracked_close)
     if operation in {"fstat", "read"}:
-        monkeypatch.setattr(os, operation, fail)
+        monkeypatch.setattr(catalog_os, operation, fail)
     assert is_direct_model("model", catalog_path=str(catalog)) is False
+    assert failures == [operation]
+    assert len(opened) == (0 if operation == "open" else 1)
     assert closed == opened
+    for fd in opened:
+        with pytest.raises(OSError) as error:
+            real_fstat(fd)
+        assert error.value.errno == errno.EBADF
+    # The injected failure remains installed, but unrelated FD I/O still works.
+    with catalog.open("rb") as unrelated:
+        assert os.fstat(unrelated.fileno()).st_size > 0
+    assert failures == [operation] and closed == opened
 
 
-def test_growth_after_fstat_is_still_bounded(tmp_path, monkeypatch) -> None:
+def test_growth_after_fstat_is_still_bounded(tmp_path, monkeypatch, catalog_os) -> None:
     catalog = tmp_path / "catalog"
     catalog.write_text("[]")
     real_fstat, real_read = os.fstat, os.read
@@ -175,8 +201,8 @@ def test_growth_after_fstat_is_still_bounded(tmp_path, monkeypatch) -> None:
         read_sizes.append(len(data))
         return data
 
-    monkeypatch.setattr(os, "fstat", grow)
-    monkeypatch.setattr(os, "read", read)
+    monkeypatch.setattr(catalog_os, "fstat", grow)
+    monkeypatch.setattr(catalog_os, "read", read)
     assert is_direct_model("model", catalog_path=str(catalog)) is False
     assert sum(read_sizes) == MAX_CATALOG_BYTES + 1
 
